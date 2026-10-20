@@ -9,6 +9,7 @@ import type { BoardRow } from '../../daemon/conductor-board.js';
 import type { ProcessEntry } from '../../daemon/conductor-process.js';
 import { LAUNCHD_LABEL, SYSTEMD_UNIT } from '../../daemon/supervisor-control.js';
 import type { ExecResult, LifecycleDeps } from './conductor-lifecycle-deps.js';
+import type { RegistryClient } from '../../daemon/conductor-registry.js';
 import { runRestart, runStart, runStatus, runStop } from './conductor-lifecycle.js';
 
 const repo = (rel: string) => fileURLToPath(new URL(`../../../${rel}`, import.meta.url));
@@ -47,6 +48,13 @@ interface Opts {
   autoLoginOff?: boolean;
   keyMissing?: boolean;
   branch?: string;
+  registry?: RegistryClient;
+}
+
+/** A registry whose functions are not on the database (the pre-promote state). */
+function unavailableRegistry(): RegistryClient {
+  const unavailable = async () => ({ kind: 'unavailable' as const, detail: 'function does not exist' });
+  return { acquire: unavailable, heartbeat: async () => ({ kind: 'unknown' as const, detail: 'x' }), release: unavailable, claimRequest: unavailable, completeRequest: unavailable, request: unavailable, status: unavailable };
 }
 
 function makeWorld(o: Opts = {}) {
@@ -178,6 +186,7 @@ function makeWorld(o: Opts = {}) {
     mkdirSync: () => {},
     rmSync: (p) => { vfs.delete(p); },
     readBoard: async () => board.map((b) => ({ ...b })),
+    registryClient: async () => (o.registry ?? unavailableRegistry()),
   };
   return { deps, calls, order, written, vfs, board, w, addProc };
 }
@@ -193,7 +202,7 @@ describe('status', () => {
     const m = makeWorld();
     const r = await runStatus(m.deps);
     expect(r.exitCode).toBe(0);
-    expect(r.lines[0]).toBe('No conductor is running here. Status for a conductor elsewhere arrives with the registry.');
+    expect(r.lines[0]).toBe('No conductor is running here.');
     expect(r.data.state).toBe('stopped');
   });
 
@@ -306,6 +315,7 @@ describe('start', () => {
     const r = await runStart(m.deps, { remote: true });
     expect(r.exitCode).not.toBe(0);
     expect(r.errLines.join('\n')).toContain('not available yet');
+    expect(r.errLines.join('\n')).toContain('B-1173');
     expect(m.written).toEqual([]);
     expect(m.calls).toEqual([]);
   });
@@ -632,5 +642,230 @@ describe('the Mac mini adoption sequence (nohup conductor -> launchd)', () => {
     expect(text).toMatch(/Adoption: every lease on this host is held by pid 900\d with a fresh heartbeat\./);
     expect(status.data.adoption_complete).toBe(true);
     expect(status.data.legs).toHaveLength(2);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------
+// B-1172: the registry — remote status/restart (no conductor here), --no-pull, --request
+// ---------------------------------------------------------------------------------------------------
+
+import type { CompleteOutcome, RegistryStatus, RequestOutcome, StatusOutcome } from '../../daemon/conductor-registry.js';
+import { REMOTE_RESTART_BUDGET_MS, REMOTE_RESTART_POLL_MS } from './conductor-lifecycle.js';
+
+const regStatus = (over: Partial<RegistryStatus> = {}): StatusOutcome => ({
+  kind: 'status',
+  status: {
+    is_owner: true, state: 'running', location: 'local', profile: 'gke', channel: 'staging', plugin_version: '1.0.0',
+    started_at: '2026-10-20T10:00:00Z', last_heartbeat_at: '2026-10-20T11:59:50Z', heartbeat_age_seconds: 10,
+    host: 'macmini', holder_id: 'macmini:1:old', log_url: null, request: null, events: [], running_legs: [], now: 'n', ...over,
+  },
+});
+
+function fakeRegistry(o: { statuses?: StatusOutcome[]; request?: RequestOutcome; complete?: CompleteOutcome } = {}) {
+  const statuses = [...(o.statuses ?? [])];
+  const requests: string[] = [];
+  const completes: Array<Record<string, unknown>> = [];
+  let statusCalls = 0;
+  const client = {
+    status: async () => {
+      statusCalls += 1;
+      return statuses.length > 1 ? (statuses.shift() as StatusOutcome) : (statuses[0] ?? { kind: 'unavailable', detail: 'x' });
+    },
+    request: async (action: string) => {
+      requests.push(action);
+      return o.request ?? { kind: 'queued', requestId: 'req-1', action };
+    },
+    completeRequest: async (_h: string, a: Record<string, unknown>) => {
+      completes.push(a);
+      return o.complete ?? { kind: 'ok' };
+    },
+  } as unknown as RegistryClient;
+  return { client, requests, completes, statusCalls: () => statusCalls };
+}
+
+describe('status with no local conductor (registry)', () => {
+  it('prints the registered conductor elsewhere; host as returned', async () => {
+    const reg = fakeRegistry({ statuses: [regStatus()] });
+    const m = makeWorld({ registry: reg.client });
+    const r = await runStatus(m.deps);
+    const text = r.lines.join('\n');
+    expect(r.exitCode).toBe(0);
+    expect(text).toContain('Registry: a conductor is running elsewhere');
+    expect(text).toContain('host:            macmini');
+    expect(text).toContain('plugin version:  1.0.0 (channel staging)');
+    expect(text).toContain('last heartbeat:  2026-10-20T11:59:50Z (10s ago)');
+    expect(r.data.state).toBe('running-elsewhere');
+  });
+
+  it('a non-owner sees the host redacted (null from the registry)', async () => {
+    const reg = fakeRegistry({ statuses: [regStatus({ is_owner: false, host: null, holder_id: null })] });
+    const r = await runStatus(makeWorld({ registry: reg.client }).deps);
+    expect(r.lines.join('\n')).toContain('(hidden: only the project owner sees the host)');
+  });
+
+  it('a stale row is flagged; not_running says so', async () => {
+    const stale = await runStatus(makeWorld({ registry: fakeRegistry({ statuses: [regStatus({ state: 'stale', heartbeat_age_seconds: 900 })] }).client }).deps);
+    expect(stale.lines.join('\n')).toContain('heartbeat is STALE');
+    expect(stale.data.state).toBe('stale-elsewhere');
+    const none = await runStatus(makeWorld({ registry: fakeRegistry({ statuses: [regStatus({ state: 'not_running' })] }).client }).deps);
+    expect(none.lines.join('\n')).toContain('no conductor is registered for this project');
+    expect(none.data.state).toBe('stopped');
+  });
+
+  it('registry not deployed: says so, still exits 0', async () => {
+    const r = await runStatus(makeWorld().deps);
+    expect(r.exitCode).toBe(0);
+    expect(r.lines.join('\n')).toContain('registry not deployed on this project');
+  });
+
+  it('with a LOCAL conductor the registry is not consulted', async () => {
+    const reg = fakeRegistry({ statuses: [regStatus()] });
+    await runStatus(makeWorld({ procs: [{ pid: 4242 }], held: HELD, registry: reg.client }).deps);
+    expect(reg.statusCalls()).toBe(0);
+  });
+});
+
+describe('restart with no local conductor (registry)', () => {
+  const NEW = { holder_id: 'macmini:2:new' };
+  const done = (over: Partial<RegistryStatus> = {}) => regStatus({ request: { id: 'req-1', action: 'update', state: 'done', reason: null, requested_by: 'u', requested_at: 't' }, ...NEW, ...over });
+  const pending = regStatus({ request: { id: 'req-1', action: 'update', state: 'claimed', reason: null, requested_by: 'u', requested_at: 't' } });
+
+  it("queues an 'update', polls every 2s and exits 0 once the request is done and a NEW holder heartbeats", async () => {
+    const reg = fakeRegistry({ statuses: [regStatus(), pending, pending, done()] });
+    const m = makeWorld({ registry: reg.client });
+    const t0 = m.w.now;
+    const r = await runRestart(m.deps, {});
+    expect(r.exitCode).toBe(0);
+    expect(reg.requests).toEqual(['update']);
+    expect(r.data.restarted).toBe(true);
+    expect(r.data.new_holder_id).toBe('macmini:2:new');
+    expect(m.w.now - t0).toBe(2 * REMOTE_RESTART_POLL_MS + 0); // three polls: pending, pending, done
+    expect(signalled(m.calls)).toBe(false);
+  });
+
+  it("--no-pull maps to the 'restart' action", async () => {
+    const reg = fakeRegistry({ statuses: [regStatus(), done()] });
+    await runRestart(makeWorld({ registry: reg.client }).deps, { noPull: true });
+    expect(reg.requests).toEqual(['restart']);
+  });
+
+  it('done but the SAME holder is still registered: not yet adopted, so it keeps waiting then exits 4 at the 90s budget', async () => {
+    const reg = fakeRegistry({ statuses: [regStatus(), regStatus({ request: { id: 'req-1', action: 'update', state: 'done', reason: null, requested_by: 'u', requested_at: 't' } })] });
+    const m = makeWorld({ registry: reg.client });
+    const t0 = m.w.now;
+    const r = await runRestart(m.deps, {});
+    expect(r.exitCode).toBe(4);
+    expect(m.w.now - t0).toBeGreaterThanOrEqual(REMOTE_RESTART_BUDGET_MS);
+    expect(r.errLines.join('\n')).toContain('NOT confirmed within 90s');
+  });
+
+  it('a request that never leaves pending: exit 4', async () => {
+    const reg = fakeRegistry({ statuses: [regStatus(), pending] });
+    expect((await runRestart(makeWorld({ registry: reg.client }).deps, {})).exitCode).toBe(4);
+  });
+
+  it('a failed request: exit 1 with the reason', async () => {
+    const failed = regStatus({ request: { id: 'req-1', action: 'update', state: 'failed', reason: 'git pull --ff-only failed', requested_by: 'u', requested_at: 't' } });
+    const r = await runRestart(makeWorld({ registry: fakeRegistry({ statuses: [regStatus(), failed] }).client }).deps, {});
+    expect(r.exitCode).toBe(1);
+    expect(r.errLines.join('\n')).toContain('git pull --ff-only failed');
+  });
+
+  it('refused: no live conductor -> exit 1 with the message', async () => {
+    const reg = fakeRegistry({ statuses: [regStatus({ state: 'not_running' })], request: { kind: 'refused', reason: 'no_live_conductor', message: 'no live conductor is registered for this project', pending: null } });
+    const r = await runRestart(makeWorld({ registry: reg.client }).deps, {});
+    expect(r.exitCode).toBe(1);
+    expect(r.errLines.join('\n')).toContain('no live conductor is registered for this project');
+  });
+
+  it('refused: request pending names who and when', async () => {
+    const reg = fakeRegistry({
+      statuses: [regStatus()],
+      request: { kind: 'refused', reason: 'request_pending', message: 'a request is already pending', pending: { id: 'r0', action: 'update', state: 'pending', requested_by: 'u9', requested_by_name: 'Ada', requested_at: '2026-10-20T11:58:00Z' } },
+    });
+    const r = await runRestart(makeWorld({ registry: reg.client }).deps, {});
+    expect(r.exitCode).toBe(1);
+    const err = r.errLines.join('\n');
+    expect(err).toContain('already pending');
+    expect(err).toContain('Ada');
+    expect(err).toContain('2026-10-20T11:58:00Z');
+  });
+
+  it('registry not deployed: exit 1 with a clear message, nothing requested', async () => {
+    const r = await runRestart(makeWorld().deps, {});
+    expect(r.exitCode).toBe(1);
+    expect(r.errLines.join('\n')).toContain('registry not deployed on this project');
+  });
+
+  it('a non-owner is told only the owner may request', async () => {
+    const reg = fakeRegistry({ statuses: [regStatus()], request: { kind: 'forbidden', detail: '42501: only the project owner' } });
+    const r = await runRestart(makeWorld({ registry: reg.client }).deps, {});
+    expect(r.exitCode).toBe(1);
+    expect(r.errLines.join('\n')).toContain('only the project owner');
+  });
+});
+
+describe('local restart: --no-pull and --request', () => {
+  it('--no-pull restarts without any git pull and keeps the version', async () => {
+    const m = makeWorld({ procs: [{ pid: 4242 }], held: HELD });
+    const r = await runRestart(m.deps, { noPull: true });
+    expect(r.exitCode).toBe(0);
+    expect(m.order.some((x) => x.includes('pull'))).toBe(false);
+    expect(r.data.plugin_version_before).toBe('1.0.0');
+    expect(r.data.plugin_version_after).toBe('1.0.0');
+    expect(signalled(m.calls)).toBe(true);
+  });
+
+  it('--request: after adoption the request is completed DONE with the version pair', async () => {
+    const reg = fakeRegistry();
+    const m = makeWorld({ procs: [{ pid: 4242 }], held: HELD, registry: reg.client });
+    const r = await runRestart(m.deps, { request: 'req-9' });
+    expect(r.exitCode).toBe(0);
+    expect(reg.completes).toEqual([{ requestId: 'req-9', result: 'done', reason: null, versionBefore: '1.0.0', versionAfter: '1.0.1' }]);
+    expect(r.lines.join('\n')).toContain('Registry request req-9 completed as done');
+  });
+
+  it('--request with --no-pull completes done without a version change', async () => {
+    const reg = fakeRegistry();
+    const m = makeWorld({ procs: [{ pid: 4242 }], held: HELD, registry: reg.client });
+    await runRestart(m.deps, { request: 'req-9', noPull: true });
+    expect(reg.completes[0]).toMatchObject({ result: 'done', versionBefore: '1.0.0', versionAfter: '1.0.0' });
+  });
+
+  it('--request, pull fails: the OLD conductor stays running (never signalled) and the request is completed FAILED with the reason', async () => {
+    const reg = fakeRegistry();
+    const m = makeWorld({ procs: [{ pid: 4242 }], held: HELD, pullFails: true, registry: reg.client });
+    const r = await runRestart(m.deps, { request: 'req-9' });
+    expect(r.exitCode).toBe(1);
+    expect(signalled(m.calls)).toBe(false);
+    expect(m.w.procs.map((p) => p.pid)).toEqual([4242]);
+    expect(reg.completes).toHaveLength(1);
+    expect(reg.completes[0]).toMatchObject({ requestId: 'req-9', result: 'failed' });
+    expect(String(reg.completes[0].reason)).toContain('git pull --ff-only origin staging failed');
+    expect(String(reg.completes[0].reason)).toContain('left untouched');
+  });
+
+  it('--request, adoption not confirmed (exit 4): completed FAILED', async () => {
+    const reg = fakeRegistry();
+    const m = makeWorld({ procs: [{ pid: 4242 }], held: HELD, noAdopt: true, registry: reg.client });
+    const r = await runRestart(m.deps, { request: 'req-9' });
+    expect(r.exitCode).toBe(4);
+    expect(reg.completes[0]).toMatchObject({ result: 'failed' });
+  });
+
+  it('--request with no conductor here never recurses into the remote path', async () => {
+    const reg = fakeRegistry();
+    const r = await runRestart(makeWorld({ registry: reg.client }).deps, { request: 'req-9' });
+    expect(r.exitCode).toBe(1);
+    expect(reg.requests).toEqual([]);
+    expect(reg.completes[0]).toMatchObject({ result: 'failed' });
+  });
+
+  it('a registry that cannot be reached at completion does not change the restart result', async () => {
+    const reg = fakeRegistry({ complete: { kind: 'unknown', detail: 'fetch failed' } });
+    const m = makeWorld({ procs: [{ pid: 4242 }], held: HELD, registry: reg.client });
+    const r = await runRestart(m.deps, { request: 'req-9' });
+    expect(r.exitCode).toBe(0);
+    expect(r.lines.join('\n')).toContain('unknown (fetch failed)');
   });
 });

@@ -1014,8 +1014,8 @@ var require_serializer = __commonJS({
         if (msg.event === this.BROADCAST_EVENT && !(msg.payload instanceof ArrayBuffer) && typeof msg.payload.event === "string") {
           return callback(this._binaryEncodeUserBroadcastPush(msg));
         }
-        let payload = [msg.join_ref, msg.ref, msg.topic, msg.event, msg.payload];
-        return callback(JSON.stringify(payload));
+        let payload2 = [msg.join_ref, msg.ref, msg.topic, msg.event, msg.payload];
+        return callback(JSON.stringify(payload2));
       }
       _binaryEncodeUserBroadcastPush(message) {
         var _a;
@@ -1088,8 +1088,8 @@ var require_serializer = __commonJS({
         }
         if (typeof rawPayload === "string") {
           const jsonPayload = JSON.parse(rawPayload);
-          const [join_ref, ref, topic, event, payload] = jsonPayload;
-          return callback({ join_ref, ref, topic, event, payload });
+          const [join_ref, ref, topic, event, payload2] = jsonPayload;
+          return callback({ join_ref, ref, topic, event, payload: payload2 });
         }
         return callback({});
       }
@@ -1114,8 +1114,8 @@ var require_serializer = __commonJS({
         offset = offset + userEventSize;
         const metadata = decoder.decode(buffer.slice(offset, offset + metadataSize));
         offset = offset + metadataSize;
-        const payload = buffer.slice(offset, buffer.byteLength);
-        const parsedPayload = payloadEncoding === this.JSON_ENCODING ? JSON.parse(decoder.decode(payload)) : payload;
+        const payload2 = buffer.slice(offset, buffer.byteLength);
+        const parsedPayload = payloadEncoding === this.JSON_ENCODING ? JSON.parse(decoder.decode(payload2)) : payload2;
         const data = {
           type: this.BROADCAST_EVENT,
           event: userEvent,
@@ -1417,10 +1417,10 @@ var require_phoenix_cjs = __commonJS({
        * @param {() => Record<string, unknown>} payload - The payload, for example `{user_id: 123}`
        * @param {number} timeout - The push timeout in milliseconds
        */
-      constructor(channel, event, payload, timeout) {
+      constructor(channel, event, payload2, timeout) {
         this.channel = channel;
         this.event = event;
-        this.payload = payload || function() {
+        this.payload = payload2 || function() {
           return {};
         };
         this.receivedResp = null;
@@ -1504,11 +1504,11 @@ var require_phoenix_cjs = __commonJS({
         }
         this.ref = this.channel.socket.makeRef();
         this.refEvent = this.channel.replyEventName(this.ref);
-        this.channel.on(this.refEvent, (payload) => {
+        this.channel.on(this.refEvent, (payload2) => {
           this.cancelRefEvent();
           this.cancelTimeout();
-          this.receivedResp = payload;
-          this.matchReceive(payload);
+          this.receivedResp = payload2;
+          this.matchReceive(payload2);
         });
         this.timeoutTimer = setTimeout(() => {
           this.trigger("timeout", {});
@@ -1621,8 +1621,8 @@ var require_phoenix_cjs = __commonJS({
             this.rejoinTimer.scheduleTimeout();
           }
         });
-        this.on(CHANNEL_EVENTS.reply, (payload, ref) => {
-          this.trigger(this.replyEventName(ref), payload);
+        this.on(CHANNEL_EVENTS.reply, (payload2, ref) => {
+          this.trigger(this.replyEventName(ref), payload2);
         });
       }
       /**
@@ -1735,13 +1735,13 @@ var require_phoenix_cjs = __commonJS({
        * @param {number} [timeout]
        * @returns {Push}
        */
-      push(event, payload, timeout = this.timeout) {
-        payload = payload || {};
+      push(event, payload2, timeout = this.timeout) {
+        payload2 = payload2 || {};
         if (!this.joinedOnce) {
           throw new Error(`tried to push '${event}' to '${this.topic}' before joining. Use channel.join() before pushing events`);
         }
         let pushEvent = new Push(this, event, function() {
-          return payload;
+          return payload2;
         }, timeout);
         if (this.canPush()) {
           pushEvent.send();
@@ -1792,8 +1792,8 @@ var require_phoenix_cjs = __commonJS({
        * Must return the payload, modified or unmodified
        * @type{ChannelOnMessage}
        */
-      onMessage(_event, payload, _ref) {
-        return payload;
+      onMessage(_event, payload2, _ref) {
+        return payload2;
       }
       /**
        * Overridable filter hook
@@ -1805,12 +1805,12 @@ var require_phoenix_cjs = __commonJS({
       filterBindings(_binding, _payload, _ref) {
         return true;
       }
-      isMember(topic, event, payload, joinRef) {
+      isMember(topic, event, payload2, joinRef) {
         if (this.topic !== topic) {
           return false;
         }
         if (joinRef && joinRef !== this.joinRef()) {
-          if (this.socket.hasLogger()) this.socket.log("channel", "dropping outdated message", { topic, event, payload, joinRef });
+          if (this.socket.hasLogger()) this.socket.log("channel", "dropping outdated message", { topic, event, payload: payload2, joinRef });
           return false;
         } else {
           return true;
@@ -1836,12 +1836,12 @@ var require_phoenix_cjs = __commonJS({
        * @param {?string} [ref]
        * @param {?string} [joinRef]
        */
-      trigger(event, payload, ref, joinRef) {
-        let handledPayload = this.onMessage(event, payload, ref, joinRef);
-        if (payload && !handledPayload) {
+      trigger(event, payload2, ref, joinRef) {
+        let handledPayload = this.onMessage(event, payload2, ref, joinRef);
+        if (payload2 && !handledPayload) {
           throw new Error("channel onMessage callbacks must return the payload, modified or unmodified");
         }
-        let eventBindings = this.bindings.filter((bind) => bind.event === event && this.filterBindings(bind, payload, ref));
+        let eventBindings = this.bindings.filter((bind) => bind.event === event && this.filterBindings(bind, payload2, ref));
         for (let i = 0; i < eventBindings.length; i++) {
           let bind = eventBindings[i];
           bind.callback(handledPayload, ref, joinRef || this.joinRef());
@@ -2350,8 +2350,8 @@ var require_phoenix_cjs = __commonJS({
         if (msg.payload.constructor === ArrayBuffer) {
           return callback(this.binaryEncode(msg));
         } else {
-          let payload = [msg.join_ref, msg.ref, msg.topic, msg.event, msg.payload];
-          return callback(JSON.stringify(payload));
+          let payload2 = [msg.join_ref, msg.ref, msg.topic, msg.event, msg.payload];
+          return callback(JSON.stringify(payload2));
         }
       },
       /**
@@ -2364,13 +2364,13 @@ var require_phoenix_cjs = __commonJS({
         if (rawPayload.constructor === ArrayBuffer) {
           return callback(this.binaryDecode(rawPayload));
         } else {
-          let [join_ref, ref, topic, event, payload] = JSON.parse(rawPayload);
-          return callback({ join_ref, ref, topic, event, payload });
+          let [join_ref, ref, topic, event, payload2] = JSON.parse(rawPayload);
+          return callback({ join_ref, ref, topic, event, payload: payload2 });
         }
       },
       /** @private */
       binaryEncode(message) {
-        let { join_ref, ref, event, topic, payload } = message;
+        let { join_ref, ref, event, topic, payload: payload2 } = message;
         let metaLength = this.META_LENGTH + join_ref.length + ref.length + topic.length + event.length;
         let header = new ArrayBuffer(this.HEADER_LENGTH + metaLength);
         let view = new DataView(header);
@@ -2384,9 +2384,9 @@ var require_phoenix_cjs = __commonJS({
         Array.from(ref, (char) => view.setUint8(offset++, char.charCodeAt(0)));
         Array.from(topic, (char) => view.setUint8(offset++, char.charCodeAt(0)));
         Array.from(event, (char) => view.setUint8(offset++, char.charCodeAt(0)));
-        var combined = new Uint8Array(header.byteLength + payload.byteLength);
+        var combined = new Uint8Array(header.byteLength + payload2.byteLength);
         combined.set(new Uint8Array(header), 0);
-        combined.set(new Uint8Array(payload), header.byteLength);
+        combined.set(new Uint8Array(payload2), header.byteLength);
         return combined.buffer;
       },
       /**
@@ -2436,8 +2436,8 @@ var require_phoenix_cjs = __commonJS({
         let event = decoder.decode(buffer.slice(offset, offset + eventSize));
         offset = offset + eventSize;
         let data = buffer.slice(offset, buffer.byteLength);
-        let payload = { status: event, response: data };
-        return { join_ref: joinRef, ref, topic, event: CHANNEL_EVENTS.reply, payload };
+        let payload2 = { status: event, response: data };
+        return { join_ref: joinRef, ref, topic, event: CHANNEL_EVENTS.reply, payload: payload2 };
       },
       /** @private */
       decodeBroadcast(buffer, view, decoder) {
@@ -3009,8 +3009,8 @@ var require_phoenix_cjs = __commonJS({
        */
       push(data) {
         if (this.hasLogger()) {
-          let { topic, event, payload, ref, join_ref } = data;
-          this.log("push", `${topic} ${event} (${join_ref}, ${ref})`, payload);
+          let { topic, event, payload: payload2, ref, join_ref } = data;
+          this.log("push", `${topic} ${event} (${join_ref}, ${ref})`, payload2);
         }
         if (this.isConnected()) {
           this.encode(data, (result) => this.conn.send(result));
@@ -3065,12 +3065,12 @@ var require_phoenix_cjs = __commonJS({
       */
       onConnMessage(rawMessage) {
         this.decode(rawMessage.data, (msg) => {
-          let { topic, event, payload, ref, join_ref } = msg;
+          let { topic, event, payload: payload2, ref, join_ref } = msg;
           if (ref && ref === this.pendingHeartbeatRef) {
             const latency = this.heartbeatSentAt ? Date.now() - this.heartbeatSentAt : void 0;
             this.clearHeartbeats();
             try {
-              this.heartbeatCallback(payload.status === "ok" ? "ok" : "error", latency);
+              this.heartbeatCallback(payload2.status === "ok" ? "ok" : "error", latency);
             } catch (e) {
               this.log("error", "error in heartbeat callback", e);
             }
@@ -3080,13 +3080,13 @@ var require_phoenix_cjs = __commonJS({
               this.heartbeatTimer = setTimeout(() => this.sendHeartbeat(), this.heartbeatIntervalMs);
             }
           }
-          if (this.hasLogger()) this.log("receive", `${payload.status || ""} ${topic} ${event} ${ref && "(" + ref + ")" || ""}`.trim(), payload);
+          if (this.hasLogger()) this.log("receive", `${payload2.status || ""} ${topic} ${event} ${ref && "(" + ref + ")" || ""}`.trim(), payload2);
           for (let i = 0; i < this.channels.length; i++) {
             const channel = this.channels[i];
-            if (!channel.isMember(topic, event, payload, join_ref)) {
+            if (!channel.isMember(topic, event, payload2, join_ref)) {
               continue;
             }
-            channel.trigger(event, payload, ref, join_ref);
+            channel.trigger(event, payload2, ref, join_ref);
           }
           this.triggerStateCallbacks("message", msg);
         });
@@ -3312,10 +3312,10 @@ var require_channelAdapter = __commonJS({
       onError(callback) {
         return this.channel.onError(callback);
       }
-      push(event, payload, timeout) {
+      push(event, payload2, timeout) {
         let push;
         try {
-          push = this.channel.push(event, payload, timeout);
+          push = this.channel.push(event, payload2, timeout);
         } catch (error) {
           throw `tried to push '${event}' to '${this.channel.topic}' before joining. Use channel.subscribe() before pushing events`;
         }
@@ -3326,9 +3326,9 @@ var require_channelAdapter = __commonJS({
         }
         return push;
       }
-      updateJoinPayload(payload) {
+      updateJoinPayload(payload2) {
         const oldPayload = this.channel.joinPush.payload();
-        this.channel.joinPush.payload = () => Object.assign(Object.assign({}, oldPayload), payload);
+        this.channel.joinPush.payload = () => Object.assign(Object.assign({}, oldPayload), payload2);
       }
       canPush() {
         return this.socket.isConnected() && this.state === constants_1.CHANNEL_STATES.joined;
@@ -3553,11 +3553,11 @@ var require_RealtimeChannel = __commonJS({
        *
        * @category Realtime
        */
-      async track(payload, opts = {}) {
+      async track(payload2, opts = {}) {
         return await this.send({
           type: "presence",
           event: "track",
-          payload
+          payload: payload2
         }, opts.timeout || this.timeout);
       }
       /**
@@ -3750,9 +3750,9 @@ var require_RealtimeChannel = __commonJS({
        *
        * @category Realtime
        */
-      async httpSend(event, payload, opts = {}) {
+      async httpSend(event, payload2, opts = {}) {
         var _a;
-        if (payload === void 0 || payload === null) {
+        if (payload2 === void 0 || payload2 === null) {
           return Promise.reject("Payload is required for httpSend()");
         }
         const headers = {
@@ -3770,7 +3770,7 @@ var require_RealtimeChannel = __commonJS({
               {
                 topic: this.subTopic,
                 event,
-                payload,
+                payload: payload2,
                 private: this.private
               }
             ]
@@ -3886,8 +3886,8 @@ var require_RealtimeChannel = __commonJS({
        *
        * @category Realtime
        */
-      updateJoinPayload(payload) {
-        this.channelAdapter.updateJoinPayload(payload);
+      updateJoinPayload(payload2) {
+        this.channelAdapter.updateJoinPayload(payload2);
       }
       /**
        * Leaves the channel.
@@ -3957,7 +3957,7 @@ var require_RealtimeChannel = __commonJS({
       }
       /** @internal */
       _updateFilterMessage() {
-        this.channelAdapter.updateFilterBindings((binding, payload, ref) => {
+        this.channelAdapter.updateFilterBindings((binding, payload2, ref) => {
           var _a, _b, _c, _d, _e, _f, _g;
           const typeLower = binding.event.toLocaleLowerCase();
           if (this._notThisChannelEvent(typeLower, ref)) {
@@ -3971,10 +3971,10 @@ var require_RealtimeChannel = __commonJS({
             if ("id" in bind) {
               const bindId = bind.id;
               const bindEvent = (_b = bind.filter) === null || _b === void 0 ? void 0 : _b.event;
-              return bindId && ((_c = payload.ids) === null || _c === void 0 ? void 0 : _c.includes(bindId)) && (bindEvent === "*" || (bindEvent === null || bindEvent === void 0 ? void 0 : bindEvent.toLocaleLowerCase()) === ((_d = payload.data) === null || _d === void 0 ? void 0 : _d.type.toLocaleLowerCase()));
+              return bindId && ((_c = payload2.ids) === null || _c === void 0 ? void 0 : _c.includes(bindId)) && (bindEvent === "*" || (bindEvent === null || bindEvent === void 0 ? void 0 : bindEvent.toLocaleLowerCase()) === ((_d = payload2.data) === null || _d === void 0 ? void 0 : _d.type.toLocaleLowerCase()));
             } else {
               const bindEvent = (_f = (_e = bind === null || bind === void 0 ? void 0 : bind.filter) === null || _e === void 0 ? void 0 : _e.event) === null || _f === void 0 ? void 0 : _f.toLocaleLowerCase();
-              return bindEvent === "*" || bindEvent === ((_g = payload === null || payload === void 0 ? void 0 : payload.event) === null || _g === void 0 ? void 0 : _g.toLocaleLowerCase());
+              return bindEvent === "*" || bindEvent === ((_g = payload2 === null || payload2 === void 0 ? void 0 : payload2.event) === null || _g === void 0 ? void 0 : _g.toLocaleLowerCase());
             }
           } else {
             return bind.type.toLocaleLowerCase() === typeLower;
@@ -3983,15 +3983,15 @@ var require_RealtimeChannel = __commonJS({
       }
       /** @internal */
       _notThisChannelEvent(event, ref) {
-        const { close, error, leave, join: join5 } = constants_1.CHANNEL_EVENTS;
-        const events2 = [close, error, leave, join5];
+        const { close, error, leave, join: join6 } = constants_1.CHANNEL_EVENTS;
+        const events2 = [close, error, leave, join6];
         return ref && events2.includes(event) && ref !== this.joinPush.ref;
       }
       /** @internal */
       _updateFilterTransform() {
-        this.channelAdapter.updatePayloadTransform((event, payload, ref) => {
-          if (typeof payload === "object" && "ids" in payload) {
-            const postgresChanges = payload.data;
+        this.channelAdapter.updatePayloadTransform((event, payload2, ref) => {
+          if (typeof payload2 === "object" && "ids" in payload2) {
+            const postgresChanges = payload2.data;
             const { schema, table, commit_timestamp, type, errors } = postgresChanges;
             const enrichedPayload = {
               schema,
@@ -4004,7 +4004,7 @@ var require_RealtimeChannel = __commonJS({
             };
             return Object.assign(Object.assign({}, enrichedPayload), this._getPayloadRecords(postgresChanges));
           }
-          return payload;
+          return payload2;
         });
       }
       /**
@@ -4018,16 +4018,16 @@ var require_RealtimeChannel = __commonJS({
         return normalizedServer === normalizedClient;
       }
       /** @internal */
-      _getPayloadRecords(payload) {
+      _getPayloadRecords(payload2) {
         const records = {
           new: {},
           old: {}
         };
-        if (payload.type === "INSERT" || payload.type === "UPDATE") {
-          records.new = Transformers.convertChangeData(payload.columns, payload.record);
+        if (payload2.type === "INSERT" || payload2.type === "UPDATE") {
+          records.new = Transformers.convertChangeData(payload2.columns, payload2.record);
         }
-        if (payload.type === "UPDATE" || payload.type === "DELETE") {
-          records.old = Transformers.convertChangeData(payload.columns, payload.old_record);
+        if (payload2.type === "UPDATE" || payload2.type === "DELETE") {
+          records.old = Transformers.convertChangeData(payload2.columns, payload2.old_record);
         }
         return records;
       }
@@ -4565,11 +4565,11 @@ Option 2: Install and provide the "ws" package:
         if (this.accessTokenValue != tokenToSend) {
           this.accessTokenValue = tokenToSend;
           this.channels.forEach((channel) => {
-            const payload = {
+            const payload2 = {
               access_token: tokenToSend,
               version: constants_1.DEFAULT_VERSION
             };
-            tokenToSend && channel.updateJoinPayload(payload);
+            tokenToSend && channel.updateJoinPayload(payload2);
             if (channel.joinedOnce && channel.channelAdapter.isJoined()) {
               channel.channelAdapter.push(constants_1.CHANNEL_EVENTS.access_token, {
                 access_token: tokenToSend
@@ -4704,11 +4704,11 @@ Option 2: Install and provide the "ws" package:
         const vsn = (_g = options === null || options === void 0 ? void 0 : options.vsn) !== null && _g !== void 0 ? _g : constants_1.DEFAULT_VSN;
         switch (vsn) {
           case constants_1.VSN_1_0_0:
-            defaultEncode = (payload, callback) => {
-              return callback(JSON.stringify(payload));
+            defaultEncode = (payload2, callback) => {
+              return callback(JSON.stringify(payload2));
             };
-            defaultDecode = (payload, callback) => {
-              return callback(JSON.parse(payload));
+            defaultDecode = (payload2, callback) => {
+              return callback(JSON.parse(payload2));
             };
             break;
           case constants_1.VSN_2_0_0:
@@ -5032,19 +5032,19 @@ var require_base64url = __commonJS({
         throw new Error(`Invalid Base64-URL character "${String.fromCharCode(charCode)}"`);
       }
     }
-    function stringToBase64URL(str) {
+    function stringToBase64URL(str2) {
       const base64 = [];
       const emitter = (char) => {
         base64.push(char);
       };
       const state = { queue: 0, queuedBits: 0 };
-      stringToUTF8(str, (byte) => {
+      stringToUTF8(str2, (byte) => {
         byteToBase64URL(byte, state, emitter);
       });
       byteToBase64URL(null, state, emitter);
       return base64.join("");
     }
-    function stringFromBase64URL(str) {
+    function stringFromBase64URL(str2) {
       const conv = [];
       const utf8Emit = (codepoint) => {
         conv.push(String.fromCodePoint(codepoint));
@@ -5057,8 +5057,8 @@ var require_base64url = __commonJS({
       const byteEmit = (byte) => {
         stringFromUTF8(byte, utf8State, utf8Emit);
       };
-      for (let i = 0; i < str.length; i += 1) {
-        byteFromBase64URL(str.charCodeAt(i), b64State, byteEmit);
+      for (let i = 0; i < str2.length; i += 1) {
+        byteFromBase64URL(str2.charCodeAt(i), b64State, byteEmit);
       }
       return conv.join("");
     }
@@ -5084,12 +5084,12 @@ var require_base64url = __commonJS({
       }
       throw new Error(`Unrecognized Unicode codepoint: ${codepoint.toString(16)}`);
     }
-    function stringToUTF8(str, emit) {
-      for (let i = 0; i < str.length; i += 1) {
-        let codepoint = str.charCodeAt(i);
+    function stringToUTF8(str2, emit) {
+      for (let i = 0; i < str2.length; i += 1) {
+        let codepoint = str2.charCodeAt(i);
         if (codepoint > 55295 && codepoint <= 56319) {
           const highSurrogate = (codepoint - 55296) * 1024 & 65535;
-          const lowSurrogate = str.charCodeAt(i + 1) - 56320 & 65535;
+          const lowSurrogate = str2.charCodeAt(i + 1) - 56320 & 65535;
           codepoint = (lowSurrogate | highSurrogate) + 65536;
           i += 1;
         }
@@ -5129,20 +5129,20 @@ var require_base64url = __commonJS({
         }
       }
     }
-    function base64UrlToUint8Array(str) {
+    function base64UrlToUint8Array(str2) {
       const result = [];
       const state = { queue: 0, queuedBits: 0 };
       const onByte = (byte) => {
         result.push(byte);
       };
-      for (let i = 0; i < str.length; i += 1) {
-        byteFromBase64URL(str.charCodeAt(i), state, onByte);
+      for (let i = 0; i < str2.length; i += 1) {
+        byteFromBase64URL(str2.charCodeAt(i), state, onByte);
       }
       return new Uint8Array(result);
     }
-    function stringToUint8Array(str) {
+    function stringToUint8Array(str2) {
       const result = [];
-      stringToUTF8(str, (byte) => result.push(byte));
+      stringToUTF8(str2, (byte) => result.push(byte));
       return new Uint8Array(result);
     }
     function bytesToBase64URL(bytes) {
@@ -5420,8 +5420,8 @@ var require_helpers = __commonJS({
       }
     }
     var UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-    function validateUUID(str) {
-      if (!UUID_REGEX.test(str)) {
+    function validateUUID(str2) {
+      if (!UUID_REGEX.test(str2)) {
         throw new Error("@supabase/auth-js: Expected parameter to be UUID but is not");
       }
     }
@@ -8668,9 +8668,9 @@ var require_GoTrueClient = __commonJS({
           let expiresAt = timeNow;
           let hasExpired = true;
           let session = null;
-          const { payload } = (0, helpers_1.decodeJWT)(currentSession.access_token);
-          if (payload.exp) {
-            expiresAt = payload.exp;
+          const { payload: payload2 } = (0, helpers_1.decodeJWT)(currentSession.access_token);
+          if (payload2.exp) {
+            expiresAt = payload2.exp;
             hasExpired = expiresAt <= timeNow;
           }
           if (hasExpired) {
@@ -9704,10 +9704,10 @@ var require_GoTrueClient = __commonJS({
         var _a, _b, _c, _d;
         if (jwt) {
           try {
-            const { payload: payload2 } = (0, helpers_1.decodeJWT)(jwt);
+            const { payload: payload3 } = (0, helpers_1.decodeJWT)(jwt);
             let currentLevel2 = null;
-            if (payload2.aal) {
-              currentLevel2 = payload2.aal;
+            if (payload3.aal) {
+              currentLevel2 = payload3.aal;
             }
             let nextLevel2 = currentLevel2;
             const { data: { user }, error: userError } = await this.getUser(jwt);
@@ -9718,7 +9718,7 @@ var require_GoTrueClient = __commonJS({
             if (verifiedFactors2.length > 0) {
               nextLevel2 = "aal2";
             }
-            const currentAuthenticationMethods2 = payload2.amr || [];
+            const currentAuthenticationMethods2 = payload3.amr || [];
             return { data: { currentLevel: currentLevel2, nextLevel: nextLevel2, currentAuthenticationMethods: currentAuthenticationMethods2 }, error: null };
           } catch (error) {
             if ((0, errors_1.isAuthError)(error)) {
@@ -9737,17 +9737,17 @@ var require_GoTrueClient = __commonJS({
             error: null
           };
         }
-        const { payload } = (0, helpers_1.decodeJWT)(session.access_token);
+        const { payload: payload2 } = (0, helpers_1.decodeJWT)(session.access_token);
         let currentLevel = null;
-        if (payload.aal) {
-          currentLevel = payload.aal;
+        if (payload2.aal) {
+          currentLevel = payload2.aal;
         }
         let nextLevel = currentLevel;
         const verifiedFactors = (_d = (_c = session.user.factors) === null || _c === void 0 ? void 0 : _c.filter((factor) => factor.status === "verified")) !== null && _d !== void 0 ? _d : [];
         if (verifiedFactors.length > 0) {
           nextLevel = "aal2";
         }
-        const currentAuthenticationMethods = payload.amr || [];
+        const currentAuthenticationMethods = payload2.amr || [];
         return { data: { currentLevel, nextLevel, currentAuthenticationMethods }, error: null };
       }
       /**
@@ -9958,9 +9958,9 @@ var require_GoTrueClient = __commonJS({
             }
             token = data.session.access_token;
           }
-          const { header, payload, signature, raw: { header: rawHeader, payload: rawPayload } } = (0, helpers_1.decodeJWT)(token);
+          const { header, payload: payload2, signature, raw: { header: rawHeader, payload: rawPayload } } = (0, helpers_1.decodeJWT)(token);
           if (!(options === null || options === void 0 ? void 0 : options.allowExpired)) {
-            (0, helpers_1.validateExp)(payload.exp);
+            (0, helpers_1.validateExp)(payload2.exp);
           }
           const signingKey = !header.alg || header.alg.startsWith("HS") || !header.kid || !("crypto" in globalThis && "subtle" in globalThis.crypto) ? null : await this.fetchJwk(header.kid, (options === null || options === void 0 ? void 0 : options.keys) ? { keys: options.keys } : options === null || options === void 0 ? void 0 : options.jwks);
           if (!signingKey) {
@@ -9970,7 +9970,7 @@ var require_GoTrueClient = __commonJS({
             }
             return {
               data: {
-                claims: payload,
+                claims: payload2,
                 header,
                 signature
               },
@@ -9987,7 +9987,7 @@ var require_GoTrueClient = __commonJS({
           }
           return {
             data: {
-              claims: payload,
+              claims: payload2,
               header,
               signature
             },
@@ -11008,13 +11008,13 @@ var require_Collection = __commonJS({
 var require_stringifyComment = __commonJS({
   "node_modules/yaml/dist/stringify/stringifyComment.js"(exports) {
     "use strict";
-    var stringifyComment = (str) => str.replace(/^(?!$)(?: $)?/gm, "#");
+    var stringifyComment = (str2) => str2.replace(/^(?!$)(?: $)?/gm, "#");
     function indentComment(comment, indent) {
       if (/^\n+$/.test(comment))
         return comment.substring(1);
       return indent ? comment.replace(/^(?! *$)/gm, indent) : comment;
     }
-    var lineComment = (str, indent, comment) => str.endsWith("\n") ? indentComment(comment, indent) : comment.includes("\n") ? "\n" + indentComment(comment, indent) : (str.endsWith(" ") ? "" : " ") + comment;
+    var lineComment = (str2, indent, comment) => str2.endsWith("\n") ? indentComment(comment, indent) : comment.includes("\n") ? "\n" + indentComment(comment, indent) : (str2.endsWith(" ") ? "" : " ") + comment;
     exports.indentComment = indentComment;
     exports.lineComment = lineComment;
     exports.stringifyComment = stringifyComment;
@@ -11168,16 +11168,16 @@ var require_stringifyString = __commonJS({
       lineWidth: ctx.options.lineWidth,
       minContentWidth: ctx.options.minContentWidth
     });
-    var containsDocumentMarker = (str) => /^(%|---|\.\.\.)/m.test(str);
-    function lineLengthOverLimit(str, lineWidth, indentLength) {
+    var containsDocumentMarker = (str2) => /^(%|---|\.\.\.)/m.test(str2);
+    function lineLengthOverLimit(str2, lineWidth, indentLength) {
       if (!lineWidth || lineWidth < 0)
         return false;
       const limit = lineWidth - indentLength;
-      const strLen = str.length;
+      const strLen = str2.length;
       if (strLen <= limit)
         return false;
       for (let i = 0, start = 0; i < strLen; ++i) {
-        if (str[i] === "\n") {
+        if (str2[i] === "\n") {
           if (i - start > limit)
             return true;
           start = i + 1;
@@ -11194,11 +11194,11 @@ var require_stringifyString = __commonJS({
       const { implicitKey } = ctx;
       const minMultiLineLength = ctx.options.doubleQuotedMinMultiLineLength;
       const indent = ctx.indent || (containsDocumentMarker(value) ? "  " : "");
-      let str = "";
+      let str2 = "";
       let start = 0;
       for (let i = 0, ch = json[i]; ch; ch = json[++i]) {
         if (ch === " " && json[i + 1] === "\\" && json[i + 2] === "n") {
-          str += json.slice(start, i) + "\\ ";
+          str2 += json.slice(start, i) + "\\ ";
           i += 1;
           start = i;
           ch = "\\";
@@ -11207,38 +11207,38 @@ var require_stringifyString = __commonJS({
           switch (json[i + 1]) {
             case "u":
               {
-                str += json.slice(start, i);
+                str2 += json.slice(start, i);
                 const code = json.substr(i + 2, 4);
                 switch (code) {
                   case "0000":
-                    str += "\\0";
+                    str2 += "\\0";
                     break;
                   case "0007":
-                    str += "\\a";
+                    str2 += "\\a";
                     break;
                   case "000b":
-                    str += "\\v";
+                    str2 += "\\v";
                     break;
                   case "001b":
-                    str += "\\e";
+                    str2 += "\\e";
                     break;
                   case "0085":
-                    str += "\\N";
+                    str2 += "\\N";
                     break;
                   case "00a0":
-                    str += "\\_";
+                    str2 += "\\_";
                     break;
                   case "2028":
-                    str += "\\L";
+                    str2 += "\\L";
                     break;
                   case "2029":
-                    str += "\\P";
+                    str2 += "\\P";
                     break;
                   default:
                     if (code.substr(0, 2) === "00")
-                      str += "\\x" + code.substr(2);
+                      str2 += "\\x" + code.substr(2);
                     else
-                      str += json.substr(i, 6);
+                      str2 += json.substr(i, 6);
                 }
                 i += 5;
                 start = i + 1;
@@ -11248,14 +11248,14 @@ var require_stringifyString = __commonJS({
               if (implicitKey || json[i + 2] === '"' || json.length < minMultiLineLength) {
                 i += 1;
               } else {
-                str += json.slice(start, i) + "\n\n";
+                str2 += json.slice(start, i) + "\n\n";
                 while (json[i + 2] === "\\" && json[i + 3] === "n" && json[i + 4] !== '"') {
-                  str += "\n";
+                  str2 += "\n";
                   i += 2;
                 }
-                str += indent;
+                str2 += indent;
                 if (json[i + 2] === " ")
-                  str += "\\";
+                  str2 += "\\";
                 i += 1;
                 start = i + 1;
               }
@@ -11264,8 +11264,8 @@ var require_stringifyString = __commonJS({
               i += 1;
           }
       }
-      str = start ? str + json.slice(start) : json;
-      return implicitKey ? str : foldFlowLines.foldFlowLines(str, indent, foldFlowLines.FOLD_QUOTED, getFoldOptions(ctx, false));
+      str2 = start ? str2 + json.slice(start) : json;
+      return implicitKey ? str2 : foldFlowLines.foldFlowLines(str2, indent, foldFlowLines.FOLD_QUOTED, getFoldOptions(ctx, false));
     }
     function singleQuotedString(value, ctx) {
       if (ctx.options.singleQuote === false || ctx.implicitKey && value.includes("\n") || /[ \t]\n|\n[ \t]/.test(value))
@@ -11393,15 +11393,15 @@ ${indent}${start}${value}${end}`;
           return quotedString(value, ctx);
         }
       }
-      const str = value.replace(/\n+/g, `$&
+      const str2 = value.replace(/\n+/g, `$&
 ${indent}`);
       if (actualString) {
-        const test = (tag) => tag.default && tag.tag !== "tag:yaml.org,2002:str" && tag.test?.test(str);
+        const test = (tag) => tag.default && tag.tag !== "tag:yaml.org,2002:str" && tag.test?.test(str2);
         const { compat, tags } = ctx.doc.schema;
         if (tags.some(test) || compat?.some(test))
           return quotedString(value, ctx);
       }
-      return implicitKey ? str : foldFlowLines.foldFlowLines(str, indent, foldFlowLines.FOLD_FLOW, getFoldOptions(ctx, false));
+      return implicitKey ? str2 : foldFlowLines.foldFlowLines(str2, indent, foldFlowLines.FOLD_FLOW, getFoldOptions(ctx, false));
     }
     function stringifyString(item, ctx, onComment, onChompKeep) {
       const { implicitKey, inFlow } = ctx;
@@ -11553,11 +11553,11 @@ var require_stringify = __commonJS({
       const props = stringifyProps(node, tagObj, ctx);
       if (props.length > 0)
         ctx.indentAtStart = (ctx.indentAtStart ?? 0) + props.length + 1;
-      const str = typeof tagObj.stringify === "function" ? tagObj.stringify(node, ctx, onComment, onChompKeep) : identity.isScalar(node) ? stringifyString.stringifyString(node, ctx, onComment, onChompKeep) : node.toString(ctx, onComment, onChompKeep);
+      const str2 = typeof tagObj.stringify === "function" ? tagObj.stringify(node, ctx, onComment, onChompKeep) : identity.isScalar(node) ? stringifyString.stringifyString(node, ctx, onComment, onChompKeep) : node.toString(ctx, onComment, onChompKeep);
       if (!props)
-        return str;
-      return identity.isScalar(node) || str[0] === "{" || str[0] === "[" ? `${props} ${str}` : `${props}
-${ctx.indent}${str}`;
+        return str2;
+      return identity.isScalar(node) || str2[0] === "{" || str2[0] === "[" ? `${props} ${str2}` : `${props}
+${ctx.indent}${str2}`;
     }
     exports.createStringifyContext = createStringifyContext;
     exports.stringify = stringify;
@@ -11592,8 +11592,8 @@ var require_stringifyPair = __commonJS({
       });
       let keyCommentDone = false;
       let chompKeep = false;
-      let str = stringify.stringify(key, ctx, () => keyCommentDone = true, () => chompKeep = true);
-      if (!explicitKey && !ctx.inFlow && str.length > 1024) {
+      let str2 = stringify.stringify(key, ctx, () => keyCommentDone = true, () => chompKeep = true);
+      if (!explicitKey && !ctx.inFlow && str2.length > 1024) {
         if (simpleKeys)
           throw new Error("With simple keys, single line scalar must not span more than 1024 characters");
         explicitKey = true;
@@ -11602,27 +11602,27 @@ var require_stringifyPair = __commonJS({
         if (allNullValues || value == null) {
           if (keyCommentDone && onComment)
             onComment();
-          return str === "" ? "?" : explicitKey ? `? ${str}` : str;
+          return str2 === "" ? "?" : explicitKey ? `? ${str2}` : str2;
         }
       } else if (allNullValues && !simpleKeys || value == null && explicitKey) {
-        str = `? ${str}`;
+        str2 = `? ${str2}`;
         if (keyComment && !keyCommentDone) {
-          str += stringifyComment.lineComment(str, ctx.indent, commentString(keyComment));
+          str2 += stringifyComment.lineComment(str2, ctx.indent, commentString(keyComment));
         } else if (chompKeep && onChompKeep)
           onChompKeep();
-        return str;
+        return str2;
       }
       if (keyCommentDone)
         keyComment = null;
       if (explicitKey) {
         if (keyComment)
-          str += stringifyComment.lineComment(str, ctx.indent, commentString(keyComment));
-        str = `? ${str}
+          str2 += stringifyComment.lineComment(str2, ctx.indent, commentString(keyComment));
+        str2 = `? ${str2}
 ${indent}:`;
       } else {
-        str = `${str}:`;
+        str2 = `${str2}:`;
         if (keyComment)
-          str += stringifyComment.lineComment(str, ctx.indent, commentString(keyComment));
+          str2 += stringifyComment.lineComment(str2, ctx.indent, commentString(keyComment));
       }
       let vsb, vcb, valueComment;
       if (identity.isNode(value)) {
@@ -11638,7 +11638,7 @@ ${indent}:`;
       }
       ctx.implicitKey = false;
       if (!explicitKey && !keyComment && identity.isScalar(value))
-        ctx.indentAtStart = str.length + 1;
+        ctx.indentAtStart = str2.length + 1;
       chompKeep = false;
       if (!indentSeq && indentStep.length >= 2 && !ctx.inFlow && !explicitKey && identity.isSeq(value) && !value.flow && !value.tag && !value.anchor) {
         ctx.indent = ctx.indent.substring(2);
@@ -11682,16 +11682,16 @@ ${ctx.indent}`;
       } else if (valueStr === "" || valueStr[0] === "\n") {
         ws = "";
       }
-      str += ws + valueStr;
+      str2 += ws + valueStr;
       if (ctx.inFlow) {
         if (valueCommentDone && onComment)
           onComment();
       } else if (valueComment && !valueCommentDone) {
-        str += stringifyComment.lineComment(str, ctx.indent, commentString(valueComment));
+        str2 += stringifyComment.lineComment(str2, ctx.indent, commentString(valueComment));
       } else if (chompKeep && onChompKeep) {
         onChompKeep();
       }
-      return str;
+      return str2;
     }
     exports.stringifyPair = stringifyPair;
   }
@@ -11918,31 +11918,31 @@ var require_stringifyCollection = __commonJS({
           }
         }
         chompKeep = false;
-        let str2 = stringify.stringify(item, itemCtx, () => comment2 = null, () => chompKeep = true);
+        let str3 = stringify.stringify(item, itemCtx, () => comment2 = null, () => chompKeep = true);
         if (comment2)
-          str2 += stringifyComment.lineComment(str2, itemIndent, commentString(comment2));
+          str3 += stringifyComment.lineComment(str3, itemIndent, commentString(comment2));
         if (chompKeep && comment2)
           chompKeep = false;
-        lines.push(blockItemPrefix + str2);
+        lines.push(blockItemPrefix + str3);
       }
-      let str;
+      let str2;
       if (lines.length === 0) {
-        str = flowChars.start + flowChars.end;
+        str2 = flowChars.start + flowChars.end;
       } else {
-        str = lines[0];
+        str2 = lines[0];
         for (let i = 1; i < lines.length; ++i) {
           const line = lines[i];
-          str += line ? `
+          str2 += line ? `
 ${indent}${line}` : "\n";
         }
       }
       if (comment) {
-        str += "\n" + stringifyComment.indentComment(commentString(comment), indent);
+        str2 += "\n" + stringifyComment.indentComment(commentString(comment), indent);
         if (onComment)
           onComment();
       } else if (chompKeep && onChompKeep)
         onChompKeep();
-      return str;
+      return str2;
     }
     function stringifyFlowCollection({ items }, ctx, { flowChars, itemIndent }) {
       const { indent, indentStep, flowCollectionPadding: fcPadding, options: { commentString } } = ctx;
@@ -11985,21 +11985,21 @@ ${indent}${line}` : "\n";
         }
         if (comment)
           reqNewline = true;
-        let str = stringify.stringify(item, itemCtx, () => comment = null);
-        reqNewline || (reqNewline = lines.length > linesAtValue || str.includes("\n"));
+        let str2 = stringify.stringify(item, itemCtx, () => comment = null);
+        reqNewline || (reqNewline = lines.length > linesAtValue || str2.includes("\n"));
         if (i < items.length - 1) {
-          str += ",";
+          str2 += ",";
         } else if (ctx.options.trailingComma) {
           if (ctx.options.lineWidth > 0) {
-            reqNewline || (reqNewline = lines.reduce((sum, line) => sum + line.length + 2, 2) + (str.length + 2) > ctx.options.lineWidth);
+            reqNewline || (reqNewline = lines.reduce((sum, line) => sum + line.length + 2, 2) + (str2.length + 2) > ctx.options.lineWidth);
           }
           if (reqNewline) {
-            str += ",";
+            str2 += ",";
           }
         }
         if (comment)
-          str += stringifyComment.lineComment(str, itemIndent, commentString(comment));
-        lines.push(str);
+          str2 += stringifyComment.lineComment(str2, itemIndent, commentString(comment));
+        lines.push(str2);
         linesAtValue = lines.length;
       }
       const { start, end } = flowChars;
@@ -12011,11 +12011,11 @@ ${indent}${line}` : "\n";
           reqNewline = ctx.options.lineWidth > 0 && len > ctx.options.lineWidth;
         }
         if (reqNewline) {
-          let str = start;
+          let str2 = start;
           for (const line of lines)
-            str += line ? `
+            str2 += line ? `
 ${indentStep}${indent}${line}` : "\n";
-          return `${str}
+          return `${str2}
 ${indent}${end}`;
         } else {
           return `${start}${fcPadding}${lines.join(" ")}${fcPadding}${end}`;
@@ -12347,7 +12347,7 @@ var require_string = __commonJS({
       identify: (value) => typeof value === "string",
       default: true,
       tag: "tag:yaml.org,2002:str",
-      resolve: (str) => str,
+      resolve: (str2) => str2,
       stringify(item, ctx, onComment, onChompKeep) {
         ctx = Object.assign({ actualString: true }, ctx);
         return stringifyString.stringifyString(item, ctx, onComment, onChompKeep);
@@ -12385,7 +12385,7 @@ var require_bool = __commonJS({
       default: true,
       tag: "tag:yaml.org,2002:bool",
       test: /^(?:[Tt]rue|TRUE|[Ff]alse|FALSE)$/,
-      resolve: (str) => new Scalar.Scalar(str[0] === "t" || str[0] === "T"),
+      resolve: (str2) => new Scalar.Scalar(str2[0] === "t" || str2[0] === "T"),
       stringify({ source, value }, ctx) {
         if (source && boolTag.test.test(source)) {
           const sv = source[0] === "t" || source[0] === "T";
@@ -12406,9 +12406,9 @@ var require_stringifyNumber = __commonJS({
     function stringifyNumber({ format, minFractionDigits, tag, value }) {
       if (typeof value === "bigint")
         return String(value);
-      const num = typeof value === "number" ? value : Number(value);
-      if (!isFinite(num))
-        return isNaN(num) ? ".nan" : num < 0 ? "-.inf" : ".inf";
+      const num2 = typeof value === "number" ? value : Number(value);
+      if (!isFinite(num2))
+        return isNaN(num2) ? ".nan" : num2 < 0 ? "-.inf" : ".inf";
       let n = Object.is(value, -0) ? "-0" : JSON.stringify(value);
       if (!format && minFractionDigits && (!tag || tag === "tag:yaml.org,2002:float") && /^-?\d/.test(n) && !n.includes("e")) {
         let i = n.indexOf(".");
@@ -12437,7 +12437,7 @@ var require_float = __commonJS({
       default: true,
       tag: "tag:yaml.org,2002:float",
       test: /^(?:[-+]?\.(?:inf|Inf|INF)|\.nan|\.NaN|\.NAN)$/,
-      resolve: (str) => str.slice(-3).toLowerCase() === "nan" ? NaN : str[0] === "-" ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY,
+      resolve: (str2) => str2.slice(-3).toLowerCase() === "nan" ? NaN : str2[0] === "-" ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY,
       stringify: stringifyNumber.stringifyNumber
     };
     var floatExp = {
@@ -12446,10 +12446,10 @@ var require_float = __commonJS({
       tag: "tag:yaml.org,2002:float",
       format: "EXP",
       test: /^[-+]?(?:\.[0-9]+|[0-9]+(?:\.[0-9]*)?)[eE][-+]?[0-9]+$/,
-      resolve: (str) => parseFloat(str),
+      resolve: (str2) => parseFloat(str2),
       stringify(node) {
-        const num = Number(node.value);
-        return isFinite(num) ? num.toExponential() : stringifyNumber.stringifyNumber(node);
+        const num2 = Number(node.value);
+        return isFinite(num2) ? num2.toExponential() : stringifyNumber.stringifyNumber(node);
       }
     };
     var float = {
@@ -12457,11 +12457,11 @@ var require_float = __commonJS({
       default: true,
       tag: "tag:yaml.org,2002:float",
       test: /^[-+]?(?:\.[0-9]+|[0-9]+\.[0-9]*)$/,
-      resolve(str) {
-        const node = new Scalar.Scalar(parseFloat(str));
-        const dot = str.indexOf(".");
-        if (dot !== -1 && str[str.length - 1] === "0")
-          node.minFractionDigits = str.length - dot - 1;
+      resolve(str2) {
+        const node = new Scalar.Scalar(parseFloat(str2));
+        const dot = str2.indexOf(".");
+        if (dot !== -1 && str2[str2.length - 1] === "0")
+          node.minFractionDigits = str2.length - dot - 1;
         return node;
       },
       stringify: stringifyNumber.stringifyNumber
@@ -12478,7 +12478,7 @@ var require_int = __commonJS({
     "use strict";
     var stringifyNumber = require_stringifyNumber();
     var intIdentify = (value) => typeof value === "bigint" || Number.isInteger(value);
-    var intResolve = (str, offset, radix, { intAsBigInt }) => intAsBigInt ? BigInt(str) : parseInt(str.substring(offset), radix);
+    var intResolve = (str2, offset, radix, { intAsBigInt }) => intAsBigInt ? BigInt(str2) : parseInt(str2.substring(offset), radix);
     function intStringify(node, radix, prefix) {
       const { value } = node;
       if (intIdentify(value) && value >= 0)
@@ -12491,7 +12491,7 @@ var require_int = __commonJS({
       tag: "tag:yaml.org,2002:int",
       format: "OCT",
       test: /^0o[0-7]+$/,
-      resolve: (str, _onError, opt) => intResolve(str, 2, 8, opt),
+      resolve: (str2, _onError, opt) => intResolve(str2, 2, 8, opt),
       stringify: (node) => intStringify(node, 8, "0o")
     };
     var int = {
@@ -12499,7 +12499,7 @@ var require_int = __commonJS({
       default: true,
       tag: "tag:yaml.org,2002:int",
       test: /^[-+]?[0-9]+$/,
-      resolve: (str, _onError, opt) => intResolve(str, 0, 10, opt),
+      resolve: (str2, _onError, opt) => intResolve(str2, 0, 10, opt),
       stringify: stringifyNumber.stringifyNumber
     };
     var intHex = {
@@ -12508,7 +12508,7 @@ var require_int = __commonJS({
       tag: "tag:yaml.org,2002:int",
       format: "HEX",
       test: /^0x[0-9a-fA-F]+$/,
-      resolve: (str, _onError, opt) => intResolve(str, 2, 16, opt),
+      resolve: (str2, _onError, opt) => intResolve(str2, 2, 16, opt),
       stringify: (node) => intStringify(node, 16, "0x")
     };
     exports.int = int;
@@ -12561,7 +12561,7 @@ var require_schema2 = __commonJS({
         identify: (value) => typeof value === "string",
         default: true,
         tag: "tag:yaml.org,2002:str",
-        resolve: (str) => str,
+        resolve: (str2) => str2,
         stringify: stringifyJSON
       },
       {
@@ -12578,7 +12578,7 @@ var require_schema2 = __commonJS({
         default: true,
         tag: "tag:yaml.org,2002:bool",
         test: /^true$|^false$/,
-        resolve: (str) => str === "true",
+        resolve: (str2) => str2 === "true",
         stringify: stringifyJSON
       },
       {
@@ -12586,7 +12586,7 @@ var require_schema2 = __commonJS({
         default: true,
         tag: "tag:yaml.org,2002:int",
         test: /^-?(?:0|[1-9][0-9]*)$/,
-        resolve: (str, _onError, { intAsBigInt }) => intAsBigInt ? BigInt(str) : parseInt(str, 10),
+        resolve: (str2, _onError, { intAsBigInt }) => intAsBigInt ? BigInt(str2) : parseInt(str2, 10),
         stringify: ({ value }) => intIdentify(value) ? value.toString() : JSON.stringify(value)
       },
       {
@@ -12594,7 +12594,7 @@ var require_schema2 = __commonJS({
         default: true,
         tag: "tag:yaml.org,2002:float",
         test: /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]*)?(?:[eE][-+]?[0-9]+)?$/,
-        resolve: (str) => parseFloat(str),
+        resolve: (str2) => parseFloat(str2),
         stringify: stringifyJSON
       }
     ];
@@ -12602,9 +12602,9 @@ var require_schema2 = __commonJS({
       default: true,
       tag: "",
       test: /^/,
-      resolve(str, onError) {
-        onError(`Unresolved plain scalar ${JSON.stringify(str)}`);
-        return str;
+      resolve(str2, onError) {
+        onError(`Unresolved plain scalar ${JSON.stringify(str2)}`);
+        return str2;
       }
     };
     var schema = [map.map, seq.seq].concat(jsonScalars, jsonError);
@@ -12636,10 +12636,10 @@ var require_binary = __commonJS({
         if (typeof node_buffer.Buffer === "function") {
           return node_buffer.Buffer.from(src, "base64");
         } else if (typeof atob === "function") {
-          const str = atob(src.replace(/[\n\r]/g, ""));
-          const buffer = new Uint8Array(str.length);
-          for (let i = 0; i < str.length; ++i)
-            buffer[i] = str.charCodeAt(i);
+          const str2 = atob(src.replace(/[\n\r]/g, ""));
+          const buffer = new Uint8Array(str2.length);
+          for (let i = 0; i < str2.length; ++i)
+            buffer[i] = str2.charCodeAt(i);
           return buffer;
         } else {
           onError("This environment does not support reading binary tags; either Buffer or atob is required");
@@ -12650,28 +12650,28 @@ var require_binary = __commonJS({
         if (!value)
           return "";
         const buf = value;
-        let str;
+        let str2;
         if (typeof node_buffer.Buffer === "function") {
-          str = buf instanceof node_buffer.Buffer ? buf.toString("base64") : node_buffer.Buffer.from(buf.buffer).toString("base64");
+          str2 = buf instanceof node_buffer.Buffer ? buf.toString("base64") : node_buffer.Buffer.from(buf.buffer).toString("base64");
         } else if (typeof btoa === "function") {
           let s = "";
           for (let i = 0; i < buf.length; ++i)
             s += String.fromCharCode(buf[i]);
-          str = btoa(s);
+          str2 = btoa(s);
         } else {
           throw new Error("This environment does not support writing binary tags; either Buffer or btoa is required");
         }
         type ?? (type = Scalar.Scalar.BLOCK_LITERAL);
         if (type !== Scalar.Scalar.QUOTE_DOUBLE) {
           const lineWidth = Math.max(ctx.options.lineWidth - ctx.indent.length, ctx.options.minContentWidth);
-          const n = Math.ceil(str.length / lineWidth);
+          const n = Math.ceil(str2.length / lineWidth);
           const lines = new Array(n);
           for (let i = 0, o = 0; i < n; ++i, o += lineWidth) {
-            lines[i] = str.substr(o, lineWidth);
+            lines[i] = str2.substr(o, lineWidth);
           }
-          str = lines.join(type === Scalar.Scalar.BLOCK_LITERAL ? "\n" : " ");
+          str2 = lines.join(type === Scalar.Scalar.BLOCK_LITERAL ? "\n" : " ");
         }
-        return stringifyString.stringifyString({ comment, type, value: str }, ctx, onComment, onChompKeep);
+        return stringifyString.stringifyString({ comment, type, value: str2 }, ctx, onComment, onChompKeep);
       }
     };
     exports.binary = binary;
@@ -12877,7 +12877,7 @@ var require_float2 = __commonJS({
       default: true,
       tag: "tag:yaml.org,2002:float",
       test: /^(?:[-+]?\.(?:inf|Inf|INF)|\.nan|\.NaN|\.NAN)$/,
-      resolve: (str) => str.slice(-3).toLowerCase() === "nan" ? NaN : str[0] === "-" ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY,
+      resolve: (str2) => str2.slice(-3).toLowerCase() === "nan" ? NaN : str2[0] === "-" ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY,
       stringify: stringifyNumber.stringifyNumber
     };
     var floatExp = {
@@ -12886,10 +12886,10 @@ var require_float2 = __commonJS({
       tag: "tag:yaml.org,2002:float",
       format: "EXP",
       test: /^[-+]?(?:[0-9][0-9_]*)?(?:\.[0-9_]*)?[eE][-+]?[0-9]+$/,
-      resolve: (str) => parseFloat(str.replace(/_/g, "")),
+      resolve: (str2) => parseFloat(str2.replace(/_/g, "")),
       stringify(node) {
-        const num = Number(node.value);
-        return isFinite(num) ? num.toExponential() : stringifyNumber.stringifyNumber(node);
+        const num2 = Number(node.value);
+        return isFinite(num2) ? num2.toExponential() : stringifyNumber.stringifyNumber(node);
       }
     };
     var float = {
@@ -12897,11 +12897,11 @@ var require_float2 = __commonJS({
       default: true,
       tag: "tag:yaml.org,2002:float",
       test: /^[-+]?(?:[0-9][0-9_]*)?\.[0-9_]*$/,
-      resolve(str) {
-        const node = new Scalar.Scalar(parseFloat(str.replace(/_/g, "")));
-        const dot = str.indexOf(".");
+      resolve(str2) {
+        const node = new Scalar.Scalar(parseFloat(str2.replace(/_/g, "")));
+        const dot = str2.indexOf(".");
         if (dot !== -1) {
-          const f = str.substring(dot + 1).replace(/_/g, "");
+          const f = str2.substring(dot + 1).replace(/_/g, "");
           if (f[f.length - 1] === "0")
             node.minFractionDigits = f.length;
         }
@@ -12921,34 +12921,34 @@ var require_int2 = __commonJS({
     "use strict";
     var stringifyNumber = require_stringifyNumber();
     var intIdentify = (value) => typeof value === "bigint" || Number.isInteger(value);
-    function intResolve(str, offset, radix, { intAsBigInt }) {
-      const sign = str[0];
+    function intResolve(str2, offset, radix, { intAsBigInt }) {
+      const sign = str2[0];
       if (sign === "-" || sign === "+")
         offset += 1;
-      str = str.substring(offset).replace(/_/g, "");
+      str2 = str2.substring(offset).replace(/_/g, "");
       if (intAsBigInt) {
         switch (radix) {
           case 2:
-            str = `0b${str}`;
+            str2 = `0b${str2}`;
             break;
           case 8:
-            str = `0o${str}`;
+            str2 = `0o${str2}`;
             break;
           case 16:
-            str = `0x${str}`;
+            str2 = `0x${str2}`;
             break;
         }
-        const n2 = BigInt(str);
+        const n2 = BigInt(str2);
         return sign === "-" ? BigInt(-1) * n2 : n2;
       }
-      const n = parseInt(str, radix);
+      const n = parseInt(str2, radix);
       return sign === "-" ? -1 * n : n;
     }
     function intStringify(node, radix, prefix) {
       const { value } = node;
       if (intIdentify(value)) {
-        const str = value.toString(radix);
-        return value < 0 ? "-" + prefix + str.substr(1) : prefix + str;
+        const str2 = value.toString(radix);
+        return value < 0 ? "-" + prefix + str2.substr(1) : prefix + str2;
       }
       return stringifyNumber.stringifyNumber(node);
     }
@@ -12958,7 +12958,7 @@ var require_int2 = __commonJS({
       tag: "tag:yaml.org,2002:int",
       format: "BIN",
       test: /^[-+]?0b[0-1_]+$/,
-      resolve: (str, _onError, opt) => intResolve(str, 2, 2, opt),
+      resolve: (str2, _onError, opt) => intResolve(str2, 2, 2, opt),
       stringify: (node) => intStringify(node, 2, "0b")
     };
     var intOct = {
@@ -12967,7 +12967,7 @@ var require_int2 = __commonJS({
       tag: "tag:yaml.org,2002:int",
       format: "OCT",
       test: /^[-+]?0[0-7_]+$/,
-      resolve: (str, _onError, opt) => intResolve(str, 1, 8, opt),
+      resolve: (str2, _onError, opt) => intResolve(str2, 1, 8, opt),
       stringify: (node) => intStringify(node, 8, "0")
     };
     var int = {
@@ -12975,7 +12975,7 @@ var require_int2 = __commonJS({
       default: true,
       tag: "tag:yaml.org,2002:int",
       test: /^[-+]?[0-9][0-9_]*$/,
-      resolve: (str, _onError, opt) => intResolve(str, 0, 10, opt),
+      resolve: (str2, _onError, opt) => intResolve(str2, 0, 10, opt),
       stringify: stringifyNumber.stringifyNumber
     };
     var intHex = {
@@ -12984,7 +12984,7 @@ var require_int2 = __commonJS({
       tag: "tag:yaml.org,2002:int",
       format: "HEX",
       test: /^[-+]?0x[0-9a-fA-F_]+$/,
-      resolve: (str, _onError, opt) => intResolve(str, 2, 16, opt),
+      resolve: (str2, _onError, opt) => intResolve(str2, 2, 16, opt),
       stringify: (node) => intStringify(node, 16, "0x")
     };
     exports.int = int;
@@ -13088,26 +13088,26 @@ var require_timestamp = __commonJS({
   "node_modules/yaml/dist/schema/yaml-1.1/timestamp.js"(exports) {
     "use strict";
     var stringifyNumber = require_stringifyNumber();
-    function parseSexagesimal(str, asBigInt) {
-      const sign = str[0];
-      const parts = sign === "-" || sign === "+" ? str.substring(1) : str;
-      const num = (n) => asBigInt ? BigInt(n) : Number(n);
-      const res = parts.replace(/_/g, "").split(":").reduce((res2, p) => res2 * num(60) + num(p), num(0));
-      return sign === "-" ? num(-1) * res : res;
+    function parseSexagesimal(str2, asBigInt) {
+      const sign = str2[0];
+      const parts = sign === "-" || sign === "+" ? str2.substring(1) : str2;
+      const num2 = (n) => asBigInt ? BigInt(n) : Number(n);
+      const res = parts.replace(/_/g, "").split(":").reduce((res2, p) => res2 * num2(60) + num2(p), num2(0));
+      return sign === "-" ? num2(-1) * res : res;
     }
     function stringifySexagesimal(node) {
       let { value } = node;
-      let num = (n) => n;
+      let num2 = (n) => n;
       if (typeof value === "bigint")
-        num = (n) => BigInt(n);
+        num2 = (n) => BigInt(n);
       else if (isNaN(value) || !isFinite(value))
         return stringifyNumber.stringifyNumber(node);
       let sign = "";
       if (value < 0) {
         sign = "-";
-        value *= num(-1);
+        value *= num2(-1);
       }
-      const _60 = num(60);
+      const _60 = num2(60);
       const parts = [value % _60];
       if (value < 60) {
         parts.unshift(0);
@@ -13127,7 +13127,7 @@ var require_timestamp = __commonJS({
       tag: "tag:yaml.org,2002:int",
       format: "TIME",
       test: /^[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+$/,
-      resolve: (str, _onError, { intAsBigInt }) => parseSexagesimal(str, intAsBigInt),
+      resolve: (str2, _onError, { intAsBigInt }) => parseSexagesimal(str2, intAsBigInt),
       stringify: stringifySexagesimal
     };
     var floatTime = {
@@ -13136,7 +13136,7 @@ var require_timestamp = __commonJS({
       tag: "tag:yaml.org,2002:float",
       format: "TIME",
       test: /^[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\.[0-9_]*$/,
-      resolve: (str) => parseSexagesimal(str, false),
+      resolve: (str2) => parseSexagesimal(str2, false),
       stringify: stringifySexagesimal
     };
     var timestamp = {
@@ -13147,8 +13147,8 @@ var require_timestamp = __commonJS({
       // may be omitted altogether, resulting in a date format. In such a case, the time part is
       // assumed to be 00:00:00Z (start of day, UTC).
       test: RegExp("^([0-9]{4})-([0-9]{1,2})-([0-9]{1,2})(?:(?:t|T|[ \\t]+)([0-9]{1,2}):([0-9]{1,2}):([0-9]{1,2}(\\.[0-9]+)?)(?:[ \\t]*(Z|[-+][012]?[0-9](?::[0-9]{2})?))?)?$"),
-      resolve(str) {
-        const match = str.match(timestamp.test);
+      resolve(str2) {
+        const match = str2.match(timestamp.test);
         if (!match)
           throw new Error("!!timestamp expects a date, starting with yyyy-mm-dd");
         const [, year, month, day, hour, minute, second] = match.map(Number);
@@ -17391,9 +17391,11 @@ var require_dist = __commonJS({
 });
 
 // src/bin/daemon.ts
-import { readFileSync as readFileSync5 } from "node:fs";
-import { exec } from "node:child_process";
+import { existsSync as existsSync3, readFileSync as readFileSync5 } from "node:fs";
+import { exec, spawn } from "node:child_process";
 import { hostname } from "node:os";
+import { dirname as dirname4, join as join5 } from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
 import { randomUUID } from "node:crypto";
 
 // src/env.ts
@@ -17486,8 +17488,8 @@ var HarmonyAuth = class {
     this.projectId = data.project_id;
     this.expiresAt = Date.now() + data.expires_in * 1e3;
     const payloadB64 = data.access_token.split(".")[1];
-    const payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString());
-    this.userId = payload.sub;
+    const payload2 = JSON.parse(Buffer.from(payloadB64, "base64url").toString());
+    this.userId = payload2.sub;
   }
 };
 
@@ -32176,7 +32178,7 @@ function firstToken(command) {
 function looksLikeScriptPath(token) {
   return token.includes("/");
 }
-function validateSteps(file, extensionPoint, steps, projectRoot, existsSync3) {
+function validateSteps(file, extensionPoint, steps, projectRoot, existsSync4) {
   if (!steps) return void 0;
   for (const step of steps) {
     if (isAgentTaskStep(step)) {
@@ -32189,7 +32191,7 @@ function validateSteps(file, extensionPoint, steps, projectRoot, existsSync3) {
     const token = firstToken(step.run);
     if (looksLikeScriptPath(token)) {
       const resolved = nodeResolve(projectRoot, token);
-      if (!existsSync3(resolved)) {
+      if (!existsSync4(resolved)) {
         return {
           file,
           reason: "missing-script",
@@ -32201,10 +32203,10 @@ function validateSteps(file, extensionPoint, steps, projectRoot, existsSync3) {
   return void 0;
 }
 function loadProjectManifest(projectRoot, deps = {}) {
-  const existsSync3 = deps.existsSync ?? nodeExistsSync2;
+  const existsSync4 = deps.existsSync ?? nodeExistsSync2;
   const readFileSync6 = deps.readFileSync ?? ((p) => nodeReadFileSync2(p, "utf8"));
   const file = nodeJoin(projectRoot, PROJECT_MANIFEST_RELATIVE_PATH);
-  if (!existsSync3(file)) return { kind: "absent" };
+  if (!existsSync4(file)) return { kind: "absent" };
   const raw = readFileSync6(file);
   let parsed;
   try {
@@ -32300,17 +32302,17 @@ function loadProjectManifest(projectRoot, deps = {}) {
     };
   }
   const stepErrors = {};
-  const buildErr = validateSteps(file, "build.before_pr", manifest.build?.before_pr, projectRoot, existsSync3);
+  const buildErr = validateSteps(file, "build.before_pr", manifest.build?.before_pr, projectRoot, existsSync4);
   if (buildErr) stepErrors["build.before_pr"] = buildErr;
   const releaseErr = validateSteps(
     file,
     "release.before_merge",
     manifest.release?.before_merge,
     projectRoot,
-    existsSync3
+    existsSync4
   );
   if (releaseErr) stepErrors["release.before_merge"] = releaseErr;
-  const verifyErr = validateSteps(file, "verify.before_ack", manifest.verify?.before_ack, projectRoot, existsSync3);
+  const verifyErr = validateSteps(file, "verify.before_ack", manifest.verify?.before_ack, projectRoot, existsSync4);
   if (verifyErr) stepErrors["verify.before_ack"] = verifyErr;
   return { kind: "ok", file, manifest, stepErrors };
 }
@@ -32785,8 +32787,8 @@ function itemLines(doc) {
   }
   return out;
 }
-function proposedAcLines(payload) {
-  return (payload ?? []).filter((p) => p.write_kind === "acceptance_criterion" && typeof p.content === "string" && p.content.trim().length > 0).map((p) => `- ${p.content}`);
+function proposedAcLines(payload2) {
+  return (payload2 ?? []).filter((p) => p.write_kind === "acceptance_criterion" && typeof p.content === "string" && p.content.trim().length > 0).map((p) => `- ${p.content}`);
 }
 function promisedWriteLine(item) {
   const text = (v) => typeof v === "string" && v.trim() ? v.trim() : null;
@@ -32829,8 +32831,8 @@ function promisedWriteLine(item) {
       return null;
   }
 }
-function promisedWriteLines(payload, skipAcceptanceCriteria) {
-  return (payload ?? []).filter((p) => !(skipAcceptanceCriteria && p.write_kind === "acceptance_criterion")).map(promisedWriteLine).filter((line) => line !== null);
+function promisedWriteLines(payload2, skipAcceptanceCriteria) {
+  return (payload2 ?? []).filter((p) => !(skipAcceptanceCriteria && p.write_kind === "acceptance_criterion")).map(promisedWriteLine).filter((line) => line !== null);
 }
 function renderBrief(doc, decisionRef, ctx) {
   const out = [];
@@ -33699,7 +33701,7 @@ async function composeBrief(client, projectId, userId, args) {
     throw new Error(`Brief failed the \xA73.2 pre-send lint:
 - ${lint.errors.join("\n- ")}`);
   }
-  const payload = {
+  const payload2 = {
     reason: args.reason,
     doc,
     content,
@@ -33760,7 +33762,7 @@ async function composeBrief(client, projectId, userId, args) {
     if (!revisionErr) {
       brief = revision;
     } else if (isMissingComposeBriefRevision(revisionErr)) {
-      const updateRow = { ...payload, iteration: (existing.iteration ?? 1) + 1 };
+      const updateRow = { ...payload2, iteration: (existing.iteration ?? 1) + 1 };
       const { data, error } = await client.from("briefs").update(updateRow).eq("id", briefId).select(BRIEF_COLS).single();
       if (error) {
         if (!isMissingPendingResolution(error.message)) throw new Error(error.message);
@@ -33788,7 +33790,7 @@ async function composeBrief(client, projectId, userId, args) {
     }
   } else {
     const insertBriefRow = async () => {
-      const insertRow = { task_id: taskId, created_by: userId, ...payload };
+      const insertRow = { task_id: taskId, created_by: userId, ...payload2 };
       const { data, error } = await client.from("briefs").insert(insertRow).select(BRIEF_COLS).single();
       if (error) {
         if (!isMissingPendingResolution(error.message)) throw new Error(error.message);
@@ -33802,7 +33804,7 @@ async function composeBrief(client, projectId, userId, args) {
     if (args.couple_claim_ids !== void 0) {
       const { data: initialData, error: initialErr } = await client.rpc("compose_brief_initial", {
         _task_id: taskId,
-        _payload: payload,
+        _payload: payload2,
         _claim_ids: args.couple_claim_ids,
         _created_by: userId
       });
@@ -34347,22 +34349,22 @@ async function updateTask(client, projectId, args) {
   if (typeof updates.description === "string") {
     updates.description = normalizeHtmlEntities(updates.description.replace(/\\n/g, "\n"));
   }
-  const payload = {};
+  const payload2 = {};
   for (const [k, v] of Object.entries(updates)) {
-    if (v !== void 0) payload[k] = v;
+    if (v !== void 0) payload2[k] = v;
   }
   if (field_values) {
     const { data: existing } = await client.from("tasks").select("field_values").eq("id", resolvedId).eq("project_id", projectId).single();
-    payload.field_values = { ...existing?.field_values ?? {}, ...field_values };
+    payload2.field_values = { ...existing?.field_values ?? {}, ...field_values };
   }
   let taskData;
-  if (Object.keys(payload).length > 0) {
-    if (payload.status !== void 0) {
+  if (Object.keys(payload2).length > 0) {
+    if (payload2.status !== void 0) {
       const { data: projectRow, error: projErr } = await client.from("projects").select("custom_statuses").eq("id", projectId).single();
       if (projErr) throw projErr;
       const statuses = projectRow?.custom_statuses ?? [];
       const terminal = statuses.length > 0 ? statuses[statuses.length - 1] : "Done";
-      if (payload.status === terminal) {
+      if (payload2.status === terminal) {
         const { data: blocked, error: rpcErr } = await client.rpc("task_blocked_from_terminal", {
           _task_id: resolvedId
         });
@@ -34374,7 +34376,7 @@ async function updateTask(client, projectId, args) {
         }
       }
     }
-    const { data, error } = await client.from("tasks").update(payload).eq("id", resolvedId).eq("project_id", projectId).select().single();
+    const { data, error } = await client.from("tasks").update(payload2).eq("id", resolvedId).eq("project_id", projectId).select().single();
     if (error) throw error;
     taskData = data;
   } else {
@@ -34557,18 +34559,18 @@ async function getPendingAcceptanceEvent(client, projectId, taskId) {
   return event ?? null;
 }
 var KNOWN_WRITE_KINDS = /* @__PURE__ */ new Set(["acceptance_criterion", "child_ticket", "checklist_item", "ac_transfer", "label_add", "knowledge_entry_content", "gate_slot", "supersede_decision", "implements_entities", "entity_link"]);
-function rawItemsOf(payload) {
-  const withNestedPayload = payload;
+function rawItemsOf(payload2) {
+  const withNestedPayload = payload2;
   if (Array.isArray(withNestedPayload?.payload)) return withNestedPayload.payload;
-  if (Array.isArray(payload)) return payload;
-  const withItems = payload;
+  if (Array.isArray(payload2)) return payload2;
+  const withItems = payload2;
   return Array.isArray(withItems?.items) ? withItems.items : [];
 }
-function itemsOf(payload) {
-  return rawItemsOf(payload);
+function itemsOf(payload2) {
+  return rawItemsOf(payload2);
 }
-function classifyPayload(payload) {
-  const raw = rawItemsOf(payload);
+function classifyPayload(payload2) {
+  const raw = rawItemsOf(payload2);
   if (raw.length === 0) return "empty";
   const allStructured = raw.every(
     (i) => typeof i === "object" && i !== null && KNOWN_WRITE_KINDS.has(i.write_kind)
@@ -34963,11 +34965,11 @@ async function manageAcceptanceCriteria(client, projectId, userId, args) {
   if (args.update && args.update.length > 0) {
     for (const item of args.update) {
       const { id, ...updates } = item;
-      const payload = {};
-      if (updates.content !== void 0) payload.content = normalizeHtmlEntities(updates.content);
-      if (updates.checked !== void 0) payload.checked = updates.checked;
-      if (Object.keys(payload).length === 0) continue;
-      const { data, error } = await client.from("acceptance_criteria").update(payload).eq("id", id).eq("task_id", resolvedTaskId).select().single();
+      const payload2 = {};
+      if (updates.content !== void 0) payload2.content = normalizeHtmlEntities(updates.content);
+      if (updates.checked !== void 0) payload2.checked = updates.checked;
+      if (Object.keys(payload2).length === 0) continue;
+      const { data, error } = await client.from("acceptance_criteria").update(payload2).eq("id", id).eq("task_id", resolvedTaskId).select().single();
       if (error) throw error;
       results.updated.push(data);
     }
@@ -35748,11 +35750,11 @@ var TOKEN_REFRESH_MARGIN_MS = 5 * 6e4;
 function buildAppJwt(appId, privateKey, nowSeconds) {
   const b64url = (input) => Buffer.from(input).toString("base64url");
   const header = b64url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
-  const payload = b64url(JSON.stringify({ iat: nowSeconds - 60, exp: nowSeconds + 540, iss: String(appId) }));
+  const payload2 = b64url(JSON.stringify({ iat: nowSeconds - 60, exp: nowSeconds + 540, iss: String(appId) }));
   const signer = createSign("RSA-SHA256");
-  signer.update(`${header}.${payload}`);
+  signer.update(`${header}.${payload2}`);
   signer.end();
-  return `${header}.${payload}.${signer.sign(privateKey).toString("base64url")}`;
+  return `${header}.${payload2}.${signer.sign(privateKey).toString("base64url")}`;
 }
 function createGithubTokenProvider(deps) {
   const { env } = deps;
@@ -37309,6 +37311,515 @@ function createDaemonLogger(opts) {
   };
 }
 
+// src/daemon/conductor-registry.ts
+var DEFAULT_SLOT = "default";
+var DEFAULT_RPC_TIMEOUT_MS = 8e3;
+var RegistryTimeoutError = class extends Error {
+  // ETIMEDOUT => classifyRetrySafety's post-send bucket (idempotent retries allowed, cas never).
+  code = "ETIMEDOUT";
+  constructor(fn, ms) {
+    super(`${fn} timed out after ${ms}ms`);
+    this.name = "RegistryTimeoutError";
+  }
+};
+var asObj = (v) => typeof v === "object" && v !== null && !Array.isArray(v) ? v : null;
+var str = (v) => typeof v === "string" ? v : null;
+var num = (v) => typeof v === "number" && Number.isFinite(v) ? v : null;
+function payload(data) {
+  if (Array.isArray(data) && data.length === 1) return asObj(data[0]);
+  return asObj(data);
+}
+function parsePending(v) {
+  const o = asObj(v);
+  if (!o) return null;
+  const id = str(o.id);
+  const action = o.action;
+  if (!id || action !== "restart" && action !== "update") return null;
+  return { id, action, requestedBy: str(o.requested_by), requestedAt: str(o.requested_at) };
+}
+function parseRequestRef(v) {
+  const o = asObj(v);
+  if (!o) return null;
+  const id = str(o.id);
+  if (!id) return null;
+  return {
+    id,
+    action: str(o.action) ?? "?",
+    state: str(o.state) ?? "?",
+    requested_by: str(o.requested_by),
+    requested_by_name: str(o.requested_by_name),
+    requested_at: str(o.requested_at)
+  };
+}
+var detailOf = (err) => {
+  try {
+    const o = asObj(err);
+    if (o && !(err instanceof Error) && (typeof o.message === "string" || typeof o.code === "string")) {
+      return `${typeof o.code === "string" && o.code ? `${o.code}: ` : ""}${typeof o.message === "string" ? o.message : ""}`.trim();
+    }
+    return formatDaemonError(err);
+  } catch {
+    return "unreadable error";
+  }
+};
+var isMissing = (err) => {
+  const o = asObj(err);
+  if (!o) return false;
+  return isMissingRelationOrFunction({ code: str(o.code) ?? void 0, message: str(o.message) ?? void 0 });
+};
+function createRegistryClient(deps) {
+  const defaultTimeout = deps.timeoutMs ?? DEFAULT_RPC_TIMEOUT_MS;
+  const call = (name, args, cls, timeoutMs = defaultTimeout) => withWriteRetry(
+    deps,
+    { class: cls, endpoint: `rpc(${name})` },
+    () => new Promise((resolve, reject) => {
+      let done = false;
+      const cancel = deps.startTimeout(timeoutMs, () => {
+        if (done) return;
+        done = true;
+        reject(new RegistryTimeoutError(name, timeoutMs));
+      });
+      let pending;
+      try {
+        pending = deps.rpc(name, { p_project_id: deps.projectId, ...args });
+      } catch (err) {
+        done = true;
+        cancel();
+        reject(err);
+        return;
+      }
+      pending.then(
+        ({ data, error }) => {
+          if (done) return;
+          done = true;
+          cancel();
+          if (error) reject(error);
+          else resolve(data);
+        },
+        (err) => {
+          if (done) return;
+          done = true;
+          cancel();
+          reject(err);
+        }
+      );
+    })
+  );
+  const idArgs = (id) => ({
+    p_holder_id: id.holderId,
+    p_host: id.host,
+    p_location: id.location,
+    p_profile: id.profile,
+    p_channel: id.channel,
+    p_plugin_version: id.pluginVersion,
+    p_log_url: id.logUrl,
+    p_slot: DEFAULT_SLOT
+  });
+  return {
+    async acquire(id, opts = {}) {
+      try {
+        const data = await call("conductor_acquire", { ...idArgs(id), p_takeover_dead_pid: opts.takeoverDeadPid === true }, "cas");
+        const o = payload(data);
+        const status = o && str(o.status);
+        if (!o || status !== "acquired" && status !== "taken_over" && status !== "refused") {
+          return { kind: "unknown", detail: "conductor_acquire returned an unrecognised payload" };
+        }
+        if (status === "refused") {
+          return {
+            kind: "refused",
+            reason: str(o.reason),
+            holderId: str(o.holder_id),
+            holderHost: str(o.holder_host),
+            holderPluginVersion: str(o.holder_plugin_version),
+            heartbeatAgeSeconds: num(o.heartbeat_age_seconds)
+          };
+        }
+        const req = asObj(o.request);
+        return {
+          kind: status,
+          reason: str(o.reason),
+          previousHolderId: str(o.previous_holder_id),
+          previousHost: str(o.previous_host),
+          previousPluginVersion: str(o.previous_plugin_version),
+          request: req && str(req.id) ? { id: str(req.id), action: str(req.action) ?? "?", state: str(req.state) ?? "?" } : null
+        };
+      } catch (err) {
+        return isMissing(err) ? { kind: "unavailable", detail: detailOf(err) } : { kind: "unknown", detail: detailOf(err) };
+      }
+    },
+    async heartbeat(id) {
+      try {
+        const data = await call("conductor_heartbeat", idArgs(id), "idempotent");
+        const o = payload(data);
+        const status = o && str(o.status);
+        if (o && status === "ok") return { kind: "held", reasserted: o.reasserted === true, request: parsePending(o.request) };
+        if (o && status === "lost" && str(o.lost_reason) === "held-by-other-holder") {
+          return { kind: "lost", holderId: str(o.holder_id), holderHost: str(o.holder_host) };
+        }
+        return { kind: "unknown", detail: `conductor_heartbeat returned an unrecognised payload (status ${JSON.stringify(status)})` };
+      } catch (err) {
+        return { kind: "unknown", detail: detailOf(err) };
+      }
+    },
+    async release(holderId, opts = {}) {
+      try {
+        const data = await call("conductor_release", { p_holder_id: holderId, p_slot: DEFAULT_SLOT }, "cas", opts.timeoutMs);
+        const status = str(payload(data)?.status);
+        if (status === "ok") return { kind: "ok" };
+        if (status === "not_holder") return { kind: "not_holder" };
+        return { kind: "unknown", detail: "conductor_release returned an unrecognised payload" };
+      } catch (err) {
+        return isMissing(err) ? { kind: "unavailable", detail: detailOf(err) } : { kind: "unknown", detail: detailOf(err) };
+      }
+    },
+    async claimRequest(holderId, requestId) {
+      try {
+        const data = await call("conductor_claim_request", { p_holder_id: holderId, p_request_id: requestId, p_slot: DEFAULT_SLOT }, "cas");
+        const o = payload(data);
+        const status = o && str(o.status);
+        if (o && status === "claimed") return { kind: "claimed", action: str(o.action) };
+        if (o && (status === "expired" || status === "refused")) return { kind: status, reason: str(o.reason) };
+        return { kind: "unknown", detail: "conductor_claim_request returned an unrecognised payload" };
+      } catch (err) {
+        return isMissing(err) ? { kind: "unavailable", detail: detailOf(err) } : { kind: "unknown", detail: detailOf(err) };
+      }
+    },
+    async completeRequest(holderId, args) {
+      try {
+        const data = await call(
+          "conductor_complete_request",
+          {
+            p_holder_id: holderId,
+            p_request_id: args.requestId,
+            p_result: args.result,
+            p_reason: args.reason ?? null,
+            p_version_before: args.versionBefore ?? null,
+            p_version_after: args.versionAfter ?? null,
+            p_slot: DEFAULT_SLOT
+          },
+          "idempotent"
+        );
+        const o = payload(data);
+        const status = o && str(o.status);
+        if (o && status === "ok") return { kind: "ok" };
+        if (o && status === "refused") return { kind: "refused", reason: str(o.reason) };
+        return { kind: "unknown", detail: "conductor_complete_request returned an unrecognised payload" };
+      } catch (err) {
+        return isMissing(err) ? { kind: "unavailable", detail: detailOf(err) } : { kind: "unknown", detail: detailOf(err) };
+      }
+    },
+    async request(action) {
+      try {
+        const data = await call("conductor_request", { p_action: action }, "cas");
+        const o = payload(data);
+        const status = o && str(o.status);
+        if (o && status === "queued") {
+          const requestId = str(o.request_id);
+          if (requestId) return { kind: "queued", requestId, action: str(o.action) ?? action };
+        }
+        if (o && status === "refused") {
+          return { kind: "refused", reason: str(o.reason) ?? "refused", message: str(o.message) ?? "the request was refused", pending: parseRequestRef(o.pending) };
+        }
+        return { kind: "unknown", detail: "conductor_request returned an unrecognised payload" };
+      } catch (err) {
+        if (isMissing(err)) return { kind: "unavailable", detail: detailOf(err) };
+        if (asObj(err)?.code === "42501") return { kind: "forbidden", detail: detailOf(err) };
+        return { kind: "unknown", detail: detailOf(err) };
+      }
+    },
+    async status() {
+      try {
+        const data = await call("conductor_status", {}, "idempotent");
+        const o = payload(data);
+        const state = o && str(o.state);
+        if (!o || o.available === false || state !== "running" && state !== "stale" && state !== "not_running") {
+          return { kind: "unknown", detail: "conductor_status returned an unrecognised payload" };
+        }
+        const r = asObj(o.request);
+        return {
+          kind: "status",
+          status: {
+            is_owner: o.is_owner === true,
+            state,
+            location: str(o.location),
+            profile: str(o.profile),
+            channel: str(o.channel),
+            plugin_version: str(o.plugin_version),
+            started_at: str(o.started_at),
+            last_heartbeat_at: str(o.last_heartbeat_at),
+            heartbeat_age_seconds: num(o.heartbeat_age_seconds),
+            host: str(o.host),
+            holder_id: str(o.holder_id),
+            log_url: str(o.log_url),
+            request: r && str(r.id) ? { id: str(r.id), action: str(r.action) ?? "?", state: str(r.state) ?? "?", reason: str(r.reason), requested_by: str(r.requested_by), requested_at: str(r.requested_at) } : null,
+            events: Array.isArray(o.events) ? o.events : [],
+            running_legs: Array.isArray(o.running_legs) ? o.running_legs : [],
+            now: str(o.now)
+          }
+        };
+      } catch (err) {
+        return isMissing(err) ? { kind: "unavailable", detail: detailOf(err) } : { kind: "unknown", detail: detailOf(err) };
+      }
+    }
+  };
+}
+function rpcFromClient(client) {
+  return async (fn, args) => {
+    const r = await client.rpc(fn, args);
+    return { data: r.data, error: r.error ?? null };
+  };
+}
+function parseHolderId(holderId) {
+  const parts = holderId.split(":");
+  if (parts.length < 3) return null;
+  const pid = Number(parts[parts.length - 2]);
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  return { host: parts.slice(0, -2).join(":"), pid };
+}
+function buildLogUrl(gcpProject, logName) {
+  const query = `logName="projects/${gcpProject}/logs/${logName}"`;
+  return `https://console.cloud.google.com/logs/query;query=${encodeURIComponent(query)}?project=${encodeURIComponent(gcpProject)}`;
+}
+
+// src/daemon/conductor-registry-keeper.ts
+var DEFAULT_REPROBE_MS = 5 * 6e4;
+function refusalMessage(r) {
+  const where = r.holderHost ? r.holderHost : "another host";
+  const age = r.heartbeatAgeSeconds === null ? "age unknown" : `last heartbeat ${Math.round(r.heartbeatAgeSeconds)}s ago`;
+  return `a conductor for this project is already running on ${where} (${age}); refusing to start`;
+}
+function createRegistryKeeper(deps) {
+  const reprobeMs = deps.reprobeMs ?? DEFAULT_REPROBE_MS;
+  const { identity, log } = deps;
+  let state = "unacquired";
+  let cancelTimer = null;
+  let inFlight = false;
+  let outage = false;
+  let outageTicks = 0;
+  let lastProbeAt = Number.NEGATIVE_INFINITY;
+  let notHeldBecause = "absent";
+  let halted = false;
+  let loggedRefusalFor = null;
+  const requestsSeen = /* @__PURE__ */ new Set();
+  const deadSameHostHolder = (r) => {
+    if (!r.holderId || !r.holderHost || r.holderHost !== identity.host) return null;
+    const parsed = parseHolderId(r.holderId);
+    if (!parsed || parsed.host !== identity.host) return null;
+    if (parsed.pid === deps.ownPid) return { pid: parsed.pid };
+    return deps.isPidAlive(parsed.pid) ? null : { pid: parsed.pid };
+  };
+  const adopt = (r, how) => {
+    state = "held";
+    outage = false;
+    const prev = r.previousHolderId ? ` (previous holder ${r.previousHolderId}${r.previousHost ? ` on ${r.previousHost}` : ""}${r.reason ? `, ${r.reason}` : ""})` : "";
+    log(`registry: ${r.kind === "taken_over" ? "took over" : "acquired"} the conductor row${how}${prev}`);
+    if (r.request) log(`registry: request ${r.request.id} (${r.request.action}) is ${r.request.state}; the restarter completes it`);
+  };
+  const acquireOnce = async () => {
+    let r = await deps.client.acquire(identity);
+    if (r.kind === "refused") {
+      const dead = deadSameHostHolder(r);
+      if (dead) {
+        log(`registry: holder ${r.holderId} is on this host and pid ${dead.pid} is not running \u2014 taking over its row`);
+        r = await deps.client.acquire(identity, { takeoverDeadPid: true });
+      }
+    }
+    return r;
+  };
+  const heartbeatOnce = async () => {
+    const r = await deps.client.heartbeat(identity);
+    if (r.kind === "held") {
+      if (outage) {
+        log(`registry: heartbeat recovered after ${outageTicks} failed attempt${outageTicks === 1 ? "" : "s"}`);
+        outage = false;
+        outageTicks = 0;
+      }
+      if (r.reasserted) log("registry: our lease had gone stale and no other conductor took it; re-asserted, continuing");
+      const req = r.request;
+      if (req && deps.onRequest && !requestsSeen.has(req.id)) {
+        requestsSeen.add(req.id);
+        let verdict = "retry";
+        try {
+          verdict = await deps.onRequest(req);
+        } catch (err) {
+          log(`registry: handling request ${req.id} failed (${err instanceof Error ? err.message : String(err)})`);
+        }
+        if (verdict === "retry") requestsSeen.delete(req.id);
+      }
+      return;
+    }
+    if (r.kind === "lost") {
+      state = "lost";
+      cancelTimer?.();
+      cancelTimer = null;
+      log(
+        `registry: the conductor row is held by ${r.holderHost ?? "another host"}${r.holderId ? ` (${r.holderId})` : ""} with a fresh heartbeat; this conductor is no longer the registered one \u2014 stopping launches and shutting down`
+      );
+      deps.onLost({ holderId: r.holderId, holderHost: r.holderHost });
+      return;
+    }
+    outageTicks += 1;
+    if (!outage) {
+      outage = true;
+      log(`registry: heartbeat failed (${r.detail}); continuing, will retry every ${Math.round(deps.heartbeatMs / 1e3)}s`);
+    }
+  };
+  const reacquireOnce = async () => {
+    if (notHeldBecause === "absent" && deps.now() - lastProbeAt < reprobeMs) return;
+    lastProbeAt = deps.now();
+    const r = await acquireOnce();
+    switch (r.kind) {
+      case "acquired":
+      case "taken_over":
+        adopt(r, " (the registry is now reachable)");
+        return;
+      case "refused": {
+        notHeldBecause = "absent";
+        const key = r.holderId ?? r.holderHost ?? "unknown";
+        if (loggedRefusalFor !== key) {
+          loggedRefusalFor = key;
+          log(`registry: ${refusalMessage(r)} \u2014 NOT applied: this conductor is already running, so it continues unregistered and re-checks every ${Math.round(reprobeMs / 6e4)} minutes`);
+        }
+        return;
+      }
+      case "unavailable":
+        notHeldBecause = "absent";
+        return;
+      case "unknown":
+        notHeldBecause = "transient";
+        if (!outage) {
+          outage = true;
+          log(`registry: acquire failed (${r.detail}); continuing unregistered, will retry`);
+        }
+        return;
+    }
+  };
+  const tick = async () => {
+    if (state === "lost" || halted || inFlight) return;
+    inFlight = true;
+    try {
+      if (state === "held") await heartbeatOnce();
+      else await reacquireOnce();
+    } catch (err) {
+      log(`registry: tick failed unexpectedly (${err instanceof Error ? err.message : String(err)}); continuing`);
+    } finally {
+      inFlight = false;
+    }
+  };
+  return {
+    async boot() {
+      lastProbeAt = deps.now();
+      const r = await acquireOnce();
+      switch (r.kind) {
+        case "acquired":
+        case "taken_over":
+          adopt(r, "");
+          return { proceed: true };
+        case "refused":
+          return { proceed: false, message: refusalMessage(r) };
+        case "unavailable":
+          notHeldBecause = "absent";
+          log(`registry unavailable (${r.detail}) \u2014 the conductor registry is not deployed on this project; continuing with the same-machine check only, re-checking every ${Math.round(reprobeMs / 6e4)} minutes`);
+          return { proceed: true };
+        case "unknown":
+          notHeldBecause = "transient";
+          outage = true;
+          log(`registry: could not acquire at boot (${r.detail}); starting anyway and retrying every ${Math.round(deps.heartbeatMs / 1e3)}s`);
+          return { proceed: true };
+      }
+    },
+    start() {
+      if (cancelTimer || state === "lost" || halted) return;
+      cancelTimer = deps.startInterval(deps.heartbeatMs, () => {
+        void tick();
+      });
+    },
+    tick,
+    stop() {
+      halted = true;
+      cancelTimer?.();
+      cancelTimer = null;
+    },
+    async release() {
+      halted = true;
+      cancelTimer?.();
+      cancelTimer = null;
+      if (state !== "held") return;
+      try {
+        const r = await deps.client.release(identity.holderId, { timeoutMs: deps.releaseTimeoutMs ?? 2e3 });
+        if (r.kind === "ok") log("registry: released the conductor row");
+        else if (r.kind === "not_holder") log("registry: release skipped \u2014 the row is held by another holder");
+        else log(`registry: release failed (${r.detail}) \u2014 exiting anyway; the row goes stale on its own`);
+      } catch (err) {
+        log(`registry: release failed (${err instanceof Error ? err.message : String(err)}) \u2014 exiting anyway`);
+      }
+    },
+    state: () => halted && state !== "lost" ? "stopped" : state
+  };
+}
+async function bootRegistry(keeper, io) {
+  const decision = await keeper.boot();
+  if (decision.proceed) return true;
+  io.writeStderr(`${decision.message}
+`);
+  io.log(decision.message);
+  io.exit(1);
+  return false;
+}
+
+// src/daemon/conductor-request.ts
+var RESTART_RESUME_AFTER_MS = 15 * 6e4;
+function restarterArgs(req, configPath) {
+  return [
+    "conductor",
+    "restart",
+    ...req.action === "restart" ? ["--no-pull"] : [],
+    "--request",
+    req.id,
+    ...configPath ? ["--config", configPath] : []
+  ];
+}
+function createRequestHandler(deps) {
+  return async (req) => {
+    const claim = await deps.client.claimRequest(deps.holderId, req.id);
+    if (claim.kind === "unknown" || claim.kind === "unavailable") {
+      deps.log(`registry: could not claim request ${req.id} (${claim.detail}); will retry next tick`);
+      return "retry";
+    }
+    if (claim.kind !== "claimed") {
+      deps.log(`registry: request ${req.id} (${req.action}) was ${claim.kind}${claim.reason ? ` (${claim.reason})` : ""}; ignoring it`);
+      return "handled";
+    }
+    deps.log(`registry: claimed ${req.action} request ${req.id}${req.requestedBy ? ` from ${req.requestedBy}` : ""}; no new legs will launch, running legs are left alone`);
+    deps.pauseLaunching();
+    let resumed = false;
+    let cancelFallback = () => {
+    };
+    const resume = (why) => {
+      if (resumed) return;
+      resumed = true;
+      cancelFallback();
+      deps.resumeLaunching();
+      deps.log(`registry: launching resumed (${why})`);
+    };
+    try {
+      const child = deps.spawnRestarter(restarterArgs(req, deps.configPath));
+      if (child) {
+        child.onExit((code) => resume(`the restarter exited with code ${code ?? "unknown"} while this conductor is still running; the old conductor stays`));
+      }
+      cancelFallback = deps.startTimeout(RESTART_RESUME_AFTER_MS, () => resume(`still running ${Math.round(RESTART_RESUME_AFTER_MS / 6e4)} minutes after the restarter was spawned`));
+      deps.log(`registry: spawned the restarter (harmony ${restarterArgs(req, deps.configPath).join(" ")})`);
+    } catch (err) {
+      const reason = `could not spawn the restarter: ${err instanceof Error ? err.message : String(err)}`;
+      deps.log(`registry: ${reason}; completing request ${req.id} as failed`);
+      resume("the restarter could not be spawned");
+      const done = await deps.client.completeRequest(deps.holderId, { requestId: req.id, result: "failed", reason });
+      if (done.kind !== "ok") deps.log(`registry: completing request ${req.id} failed (${done.kind === "refused" ? done.reason ?? "refused" : done.detail})`);
+    }
+    return "handled";
+  };
+}
+
 // src/daemon/conductor-config-runtime.ts
 import { existsSync as fsExistsSync2, readFileSync as fsReadFileSync2 } from "node:fs";
 
@@ -38742,6 +39253,7 @@ async function fireReadyCandidates(deps, state, keeper, runtime, byId) {
   });
   const held = heldRuntimes(runtime, byId.values(), now);
   for (const [id, entry] of eligible) {
+    if (deps.launchPaused?.()) break;
     if (runtime.running.size >= deps.config.maxConcurrentWorkers) break;
     const row = byId.get(id);
     if (!row) continue;
@@ -38761,6 +39273,7 @@ async function fireStealCandidates(deps, state, keeper, runtime, candidates, byI
   let authShapedFailures = 0;
   const held = heldRuntimes(runtime, byId ? byId.values() : candidates.map((c) => c.row), deps.now());
   for (const { row, current } of candidates) {
+    if (deps.launchPaused?.()) break;
     if (runtime.running.size >= deps.config.maxConcurrentWorkers) break;
     if (skipHeld(deps, runtime, row, held)) continue;
     try {
@@ -38993,14 +39506,14 @@ function asRecord(value) {
 }
 function hintDropReason(msg, leaseHolder) {
   if (!msg.event || !HINT_EVENTS.includes(msg.event)) return "unknown-event";
-  const payload = asRecord(msg.payload);
-  if (!payload) return null;
-  const record = asRecord(payload.record);
+  const payload2 = asRecord(msg.payload);
+  if (!payload2) return null;
+  const record = asRecord(payload2.record);
   if (!record) return null;
   if (typeof record.lease_holder === "string" && record.lease_holder === leaseHolder) {
     return "self-lease";
   }
-  const oldRecord = asRecord(payload.old_record);
+  const oldRecord = asRecord(payload2.old_record);
   if (oldRecord) {
     const keys = /* @__PURE__ */ new Set([...Object.keys(record), ...Object.keys(oldRecord)]);
     let differs = false;
@@ -39440,6 +39953,87 @@ ${err instanceof Error ? err.message : String(err)}
     timer.unref?.();
     return () => clearTimeout(timer);
   };
+  let registryLost = false;
+  let restartClaimed = false;
+  let shutdown = async () => {
+  };
+  const registryClient = createRegistryClient({
+    rpc: rpcFromClient(client),
+    projectId,
+    startTimeout,
+    forceRefresh: () => auth.forceRefresh(),
+    sleep
+  });
+  const registryPluginVersion = await resolveEnvironment(process.env, import.meta.url).then((e) => e.plugin_version).catch(() => null);
+  const postureChannel = process.env.HARMONY_PLUGIN_POSTURE;
+  const gcpProject = conductorRuntime?.getGcpProject();
+  const registryKeeper = createRegistryKeeper({
+    client: registryClient,
+    identity: {
+      holderId: leaseHolder,
+      host: hostname(),
+      location: "local",
+      // remote conductors arrive with B-1173
+      profile: preflightProfileName,
+      channel: postureChannel === "prod" ? "prod" : postureChannel === "ack:staging" || postureChannel === "staging" ? "staging" : null,
+      pluginVersion: registryPluginVersion,
+      logUrl: gcpProject && conductorRuntime?.getLogShipping() !== false ? buildLogUrl(gcpProject, LOG_NAME) : null
+    },
+    now: Date.now,
+    startInterval: (ms, fn) => {
+      const timer = setInterval(fn, ms);
+      timer.unref?.();
+      return () => clearInterval(timer);
+    },
+    heartbeatMs: config.heartbeatMs,
+    isPidAlive: (pid) => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch (err) {
+        return err.code === "EPERM";
+      }
+    },
+    ownPid: process.pid,
+    log,
+    onLost: () => {
+      registryLost = true;
+      void shutdown("registry-lost");
+    },
+    onRequest: createRequestHandler({
+      client: registryClient,
+      holderId: leaseHolder,
+      configPath: daemonArgv.config,
+      spawnRestarter: (args) => {
+        const harmonyBin = join5(dirname4(fileURLToPath2(import.meta.url)), "harmony.js");
+        if (!existsSync3(harmonyBin)) throw new Error(`${harmonyBin} does not exist`);
+        const child = spawn(process.execPath, [harmonyBin, ...args], { detached: true, stdio: "ignore", env: process.env });
+        child.on("error", () => {
+        });
+        child.unref();
+        if (child.pid === void 0) throw new Error(`could not start ${process.execPath}`);
+        return { onExit: (cb) => void child.on("exit", cb) };
+      },
+      pauseLaunching: () => {
+        restartClaimed = true;
+      },
+      resumeLaunching: () => {
+        restartClaimed = false;
+      },
+      startTimeout,
+      log
+    })
+  });
+  if (!await bootRegistry(registryKeeper, {
+    writeStderr: (text) => void process.stderr.write(text),
+    log,
+    exit: (code) => {
+      conductorLogger.stop();
+      process.exit(code);
+    }
+  })) {
+    return;
+  }
   let realChannel = null;
   const hints = workspaceId ? startHintSubscription({
     createChannel: (topic) => {
@@ -39487,6 +40081,8 @@ ${err instanceof Error ? err.message : String(err)}
     // B-1011: OPTIONAL. Present only when the workspace uuid resolved and a channel was created;
     // absent otherwise, which leaves the scheduler's sleep the literal line it has always been.
     hints: hints?.source,
+    // B-1172: no NEW legs once the registry row is held elsewhere or a restart/update request was claimed.
+    launchPaused: () => registryLost || restartClaimed,
     takeoverConduction: (args) => takeoverConduction(client, args),
     // B-717 item 3: the multi-daemon steal CAS.
     stealConduction: (args) => stealConduction(client, args),
@@ -39568,12 +40164,16 @@ ${err instanceof Error ? err.message : String(err)}
   const stop = async (signal) => {
     conductorRuntime?.stop();
     keeper.stopAll();
+    registryKeeper.stop();
     if (hints) await closeHintsBounded(hints, log, HINT_CLOSE_TIMEOUT_MS);
     await markCleanShutdownBounded(client, leaseHolder, log, CLEAN_SHUTDOWN_TIMEOUT_MS);
+    await registryKeeper.release();
     log(shutdownLine(signal, detectSupervisor(process.env)));
     conductorLogger.stop();
     process.exit(0);
   };
+  shutdown = stop;
+  registryKeeper.start();
   process.on("SIGTERM", () => {
     void stop("SIGTERM");
   });

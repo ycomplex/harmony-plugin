@@ -205,6 +205,10 @@ export type DaemonTask = Taskish & {
 
 export interface SchedulerDeps extends WriteRetryDeps {
   now(): number;
+  /** B-1172: true while this conductor must start NO new legs — a registry restart/update request was claimed,
+   *  or the registry row is held by another conductor. Running legs are untouched; adoption and settlement
+   *  continue. Absent = never paused (every existing deployment/test). */
+  launchPaused?(): boolean;
   sleep(ms: number): Promise<void>;
   listConductions(args: { status?: ConductionStatus }): Promise<ConductionRecord[]>;
   getTaskMeta(taskId: string): Promise<DaemonTask>;
@@ -1962,6 +1966,7 @@ async function fireReadyCandidates(
   // B-1149: a runtime is held while any of its active conductions is quota-paused.
   const held = heldRuntimes(runtime, byId.values(), now);
   for (const [id, entry] of eligible) {
+    if (deps.launchPaused?.()) break; // B-1172: registry lost / restart claimed — no NEW legs
     if (runtime.running.size >= deps.config.maxConcurrentWorkers) break;
     const row = byId.get(id);
     if (!row) continue;
@@ -1997,6 +2002,7 @@ async function fireStealCandidates(
   // B-1149: the same runtime-wide hold as fireReadyCandidates — over every ACTIVE row.
   const held = heldRuntimes(runtime, byId ? byId.values() : candidates.map((c) => c.row), deps.now());
   for (const { row, current } of candidates) {
+    if (deps.launchPaused?.()) break; // B-1172: registry lost / restart claimed — no NEW legs
     if (runtime.running.size >= deps.config.maxConcurrentWorkers) break;
     if (skipHeld(deps, runtime, row, held)) continue;
     try {

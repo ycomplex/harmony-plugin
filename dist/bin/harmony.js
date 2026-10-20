@@ -603,8 +603,8 @@ var require_help = __commonJS({
        * @param {string} str
        * @returns {number}
        */
-      displayWidth(str) {
-        return stripColor(str).length;
+      displayWidth(str2) {
+        return stripColor(str2).length;
       }
       /**
        * Style the title for displaying in the help. Called with 'Usage:', 'Options:', etc.
@@ -612,11 +612,11 @@ var require_help = __commonJS({
        * @param {string} str
        * @returns {string}
        */
-      styleTitle(str) {
-        return str;
+      styleTitle(str2) {
+        return str2;
       }
-      styleUsage(str) {
-        return str.split(" ").map((word) => {
+      styleUsage(str2) {
+        return str2.split(" ").map((word) => {
           if (word === "[options]") return this.styleOptionText(word);
           if (word === "[command]") return this.styleSubcommandText(word);
           if (word[0] === "[" || word[0] === "<")
@@ -624,46 +624,46 @@ var require_help = __commonJS({
           return this.styleCommandText(word);
         }).join(" ");
       }
-      styleCommandDescription(str) {
-        return this.styleDescriptionText(str);
+      styleCommandDescription(str2) {
+        return this.styleDescriptionText(str2);
       }
-      styleOptionDescription(str) {
-        return this.styleDescriptionText(str);
+      styleOptionDescription(str2) {
+        return this.styleDescriptionText(str2);
       }
-      styleSubcommandDescription(str) {
-        return this.styleDescriptionText(str);
+      styleSubcommandDescription(str2) {
+        return this.styleDescriptionText(str2);
       }
-      styleArgumentDescription(str) {
-        return this.styleDescriptionText(str);
+      styleArgumentDescription(str2) {
+        return this.styleDescriptionText(str2);
       }
-      styleDescriptionText(str) {
-        return str;
+      styleDescriptionText(str2) {
+        return str2;
       }
-      styleOptionTerm(str) {
-        return this.styleOptionText(str);
+      styleOptionTerm(str2) {
+        return this.styleOptionText(str2);
       }
-      styleSubcommandTerm(str) {
-        return str.split(" ").map((word) => {
+      styleSubcommandTerm(str2) {
+        return str2.split(" ").map((word) => {
           if (word === "[options]") return this.styleOptionText(word);
           if (word[0] === "[" || word[0] === "<")
             return this.styleArgumentText(word);
           return this.styleSubcommandText(word);
         }).join(" ");
       }
-      styleArgumentTerm(str) {
-        return this.styleArgumentText(str);
+      styleArgumentTerm(str2) {
+        return this.styleArgumentText(str2);
       }
-      styleOptionText(str) {
-        return str;
+      styleOptionText(str2) {
+        return str2;
       }
-      styleArgumentText(str) {
-        return str;
+      styleArgumentText(str2) {
+        return str2;
       }
-      styleSubcommandText(str) {
-        return str;
+      styleSubcommandText(str2) {
+        return str2;
       }
-      styleCommandText(str) {
-        return str;
+      styleCommandText(str2) {
+        return str2;
       }
       /**
        * Calculate the pad width from the maximum term length.
@@ -686,8 +686,8 @@ var require_help = __commonJS({
        * @param {string} str
        * @returns {boolean}
        */
-      preformatted(str) {
-        return /\n[^\S\r\n]/.test(str);
+      preformatted(str2) {
+        return /\n[^\S\r\n]/.test(str2);
       }
       /**
        * Format the "item", which consists of a term and description. Pad the term and wrap the description, indenting the following lines.
@@ -733,9 +733,9 @@ ${itemIndentStr}`);
        * @param {number} width
        * @returns {string}
        */
-      boxWrap(str, width) {
-        if (width < this.minWidthToWrap) return str;
-        const rawLines = str.split(/\r\n|\n/);
+      boxWrap(str2, width) {
+        if (width < this.minWidthToWrap) return str2;
+        const rawLines = str2.split(/\r\n|\n/);
         const chunkPattern = /[\s]*[^\s]+/g;
         const wrappedLines = [];
         rawLines.forEach((line) => {
@@ -763,9 +763,9 @@ ${itemIndentStr}`);
         return wrappedLines.join("\n");
       }
     };
-    function stripColor(str) {
+    function stripColor(str2) {
       const sgrPattern = /\x1b\[\d*(;\d*)*m/g;
-      return str.replace(sgrPattern, "");
+      return str2.replace(sgrPattern, "");
     }
     exports.Help = Help2;
     exports.stripColor = stripColor;
@@ -1024,9 +1024,9 @@ var require_option = __commonJS({
         return option.negate === (negativeValue === value);
       }
     };
-    function camelcase(str) {
-      return str.split("-").reduce((str2, word) => {
-        return str2 + word[0].toUpperCase() + word.slice(1);
+    function camelcase(str2) {
+      return str2.split("-").reduce((str3, word) => {
+        return str3 + word[0].toUpperCase() + word.slice(1);
       });
     }
     function splitOptionFlags(flags) {
@@ -1207,14 +1207,14 @@ var require_command = __commonJS({
         this._showSuggestionAfterError = true;
         this._savedState = null;
         this._outputConfiguration = {
-          writeOut: (str) => process3.stdout.write(str),
-          writeErr: (str) => process3.stderr.write(str),
-          outputError: (str, write) => write(str),
+          writeOut: (str2) => process3.stdout.write(str2),
+          writeErr: (str2) => process3.stderr.write(str2),
+          outputError: (str2, write) => write(str2),
           getOutHelpWidth: () => process3.stdout.isTTY ? process3.stdout.columns : void 0,
           getErrHelpWidth: () => process3.stderr.isTTY ? process3.stderr.columns : void 0,
           getOutHasColors: () => useColor() ?? (process3.stdout.isTTY && process3.stdout.hasColors?.()),
           getErrHasColors: () => useColor() ?? (process3.stderr.isTTY && process3.stderr.hasColors?.()),
-          stripColor: (str) => stripColor(str)
+          stripColor: (str2) => stripColor(str2)
         };
         this._hidden = false;
         this._helpOption = void 0;
@@ -2920,18 +2920,18 @@ Expecting one of '${allowedValues.join("', '")}'`);
        * @param {string} [description]
        * @return {(this | string | undefined)} `this` command for chaining, or version string if no arguments
        */
-      version(str, flags, description) {
-        if (str === void 0) return this._version;
-        this._version = str;
+      version(str2, flags, description) {
+        if (str2 === void 0) return this._version;
+        this._version = str2;
         flags = flags || "-V, --version";
         description = description || "output the version number";
         const versionOption = this.createOption(flags, description);
         this._versionOptionName = versionOption.attributeName();
         this._registerOption(versionOption);
         this.on("option:" + versionOption.name(), () => {
-          this._outputConfiguration.writeOut(`${str}
+          this._outputConfiguration.writeOut(`${str2}
 `);
-          this._exit(0, "commander.version", str);
+          this._exit(0, "commander.version", str2);
         });
         return this;
       }
@@ -2942,10 +2942,10 @@ Expecting one of '${allowedValues.join("', '")}'`);
        * @param {object} [argsDescription]
        * @return {(string|Command)}
        */
-      description(str, argsDescription) {
-        if (str === void 0 && argsDescription === void 0)
+      description(str2, argsDescription) {
+        if (str2 === void 0 && argsDescription === void 0)
           return this._description;
-        this._description = str;
+        this._description = str2;
         if (argsDescription) {
           this._argsDescription = argsDescription;
         }
@@ -2957,9 +2957,9 @@ Expecting one of '${allowedValues.join("', '")}'`);
        * @param {string} [str]
        * @return {(string|Command)}
        */
-      summary(str) {
-        if (str === void 0) return this._summary;
-        this._summary = str;
+      summary(str2) {
+        if (str2 === void 0) return this._summary;
+        this._summary = str2;
         return this;
       }
       /**
@@ -3007,8 +3007,8 @@ Expecting one of '${allowedValues.join("', '")}'`);
        * @param {string} [str]
        * @return {(string|Command)}
        */
-      usage(str) {
-        if (str === void 0) {
+      usage(str2) {
+        if (str2 === void 0) {
           if (this._usage) return this._usage;
           const args = this.registeredArguments.map((arg) => {
             return humanReadableArgName(arg);
@@ -3019,7 +3019,7 @@ Expecting one of '${allowedValues.join("', '")}'`);
             this.registeredArguments.length ? args : []
           ).join(" ");
         }
-        this._usage = str;
+        this._usage = str2;
         return this;
       }
       /**
@@ -3028,9 +3028,9 @@ Expecting one of '${allowedValues.join("', '")}'`);
        * @param {string} [str]
        * @return {(string|Command)}
        */
-      name(str) {
-        if (str === void 0) return this._name;
-        this._name = str;
+      name(str2) {
+        if (str2 === void 0) return this._name;
+        this._name = str2;
         return this;
       }
       /**
@@ -3101,17 +3101,17 @@ Expecting one of '${allowedValues.join("', '")}'`);
         let hasColors;
         let helpWidth;
         if (error) {
-          baseWrite = (str) => this._outputConfiguration.writeErr(str);
+          baseWrite = (str2) => this._outputConfiguration.writeErr(str2);
           hasColors = this._outputConfiguration.getErrHasColors();
           helpWidth = this._outputConfiguration.getErrHelpWidth();
         } else {
-          baseWrite = (str) => this._outputConfiguration.writeOut(str);
+          baseWrite = (str2) => this._outputConfiguration.writeOut(str2);
           hasColors = this._outputConfiguration.getOutHasColors();
           helpWidth = this._outputConfiguration.getOutHelpWidth();
         }
-        const write = (str) => {
-          if (!hasColors) str = this._outputConfiguration.stripColor(str);
-          return baseWrite(str);
+        const write = (str2) => {
+          if (!hasColors) str2 = this._outputConfiguration.stripColor(str2);
+          return baseWrite(str2);
         };
         return { error, write, hasColors, helpWidth };
       }
@@ -4307,8 +4307,8 @@ var require_serializer = __commonJS({
         if (msg.event === this.BROADCAST_EVENT && !(msg.payload instanceof ArrayBuffer) && typeof msg.payload.event === "string") {
           return callback(this._binaryEncodeUserBroadcastPush(msg));
         }
-        let payload = [msg.join_ref, msg.ref, msg.topic, msg.event, msg.payload];
-        return callback(JSON.stringify(payload));
+        let payload2 = [msg.join_ref, msg.ref, msg.topic, msg.event, msg.payload];
+        return callback(JSON.stringify(payload2));
       }
       _binaryEncodeUserBroadcastPush(message) {
         var _a;
@@ -4381,8 +4381,8 @@ var require_serializer = __commonJS({
         }
         if (typeof rawPayload === "string") {
           const jsonPayload = JSON.parse(rawPayload);
-          const [join_ref, ref, topic, event, payload] = jsonPayload;
-          return callback({ join_ref, ref, topic, event, payload });
+          const [join_ref, ref, topic, event, payload2] = jsonPayload;
+          return callback({ join_ref, ref, topic, event, payload: payload2 });
         }
         return callback({});
       }
@@ -4407,8 +4407,8 @@ var require_serializer = __commonJS({
         offset = offset + userEventSize;
         const metadata = decoder.decode(buffer.slice(offset, offset + metadataSize));
         offset = offset + metadataSize;
-        const payload = buffer.slice(offset, buffer.byteLength);
-        const parsedPayload = payloadEncoding === this.JSON_ENCODING ? JSON.parse(decoder.decode(payload)) : payload;
+        const payload2 = buffer.slice(offset, buffer.byteLength);
+        const parsedPayload = payloadEncoding === this.JSON_ENCODING ? JSON.parse(decoder.decode(payload2)) : payload2;
         const data = {
           type: this.BROADCAST_EVENT,
           event: userEvent,
@@ -4710,10 +4710,10 @@ var require_phoenix_cjs = __commonJS({
        * @param {() => Record<string, unknown>} payload - The payload, for example `{user_id: 123}`
        * @param {number} timeout - The push timeout in milliseconds
        */
-      constructor(channel, event, payload, timeout) {
+      constructor(channel, event, payload2, timeout) {
         this.channel = channel;
         this.event = event;
-        this.payload = payload || function() {
+        this.payload = payload2 || function() {
           return {};
         };
         this.receivedResp = null;
@@ -4797,11 +4797,11 @@ var require_phoenix_cjs = __commonJS({
         }
         this.ref = this.channel.socket.makeRef();
         this.refEvent = this.channel.replyEventName(this.ref);
-        this.channel.on(this.refEvent, (payload) => {
+        this.channel.on(this.refEvent, (payload2) => {
           this.cancelRefEvent();
           this.cancelTimeout();
-          this.receivedResp = payload;
-          this.matchReceive(payload);
+          this.receivedResp = payload2;
+          this.matchReceive(payload2);
         });
         this.timeoutTimer = setTimeout(() => {
           this.trigger("timeout", {});
@@ -4914,8 +4914,8 @@ var require_phoenix_cjs = __commonJS({
             this.rejoinTimer.scheduleTimeout();
           }
         });
-        this.on(CHANNEL_EVENTS.reply, (payload, ref) => {
-          this.trigger(this.replyEventName(ref), payload);
+        this.on(CHANNEL_EVENTS.reply, (payload2, ref) => {
+          this.trigger(this.replyEventName(ref), payload2);
         });
       }
       /**
@@ -5028,13 +5028,13 @@ var require_phoenix_cjs = __commonJS({
        * @param {number} [timeout]
        * @returns {Push}
        */
-      push(event, payload, timeout = this.timeout) {
-        payload = payload || {};
+      push(event, payload2, timeout = this.timeout) {
+        payload2 = payload2 || {};
         if (!this.joinedOnce) {
           throw new Error(`tried to push '${event}' to '${this.topic}' before joining. Use channel.join() before pushing events`);
         }
         let pushEvent = new Push(this, event, function() {
-          return payload;
+          return payload2;
         }, timeout);
         if (this.canPush()) {
           pushEvent.send();
@@ -5085,8 +5085,8 @@ var require_phoenix_cjs = __commonJS({
        * Must return the payload, modified or unmodified
        * @type{ChannelOnMessage}
        */
-      onMessage(_event, payload, _ref) {
-        return payload;
+      onMessage(_event, payload2, _ref) {
+        return payload2;
       }
       /**
        * Overridable filter hook
@@ -5098,12 +5098,12 @@ var require_phoenix_cjs = __commonJS({
       filterBindings(_binding, _payload, _ref) {
         return true;
       }
-      isMember(topic, event, payload, joinRef) {
+      isMember(topic, event, payload2, joinRef) {
         if (this.topic !== topic) {
           return false;
         }
         if (joinRef && joinRef !== this.joinRef()) {
-          if (this.socket.hasLogger()) this.socket.log("channel", "dropping outdated message", { topic, event, payload, joinRef });
+          if (this.socket.hasLogger()) this.socket.log("channel", "dropping outdated message", { topic, event, payload: payload2, joinRef });
           return false;
         } else {
           return true;
@@ -5129,12 +5129,12 @@ var require_phoenix_cjs = __commonJS({
        * @param {?string} [ref]
        * @param {?string} [joinRef]
        */
-      trigger(event, payload, ref, joinRef) {
-        let handledPayload = this.onMessage(event, payload, ref, joinRef);
-        if (payload && !handledPayload) {
+      trigger(event, payload2, ref, joinRef) {
+        let handledPayload = this.onMessage(event, payload2, ref, joinRef);
+        if (payload2 && !handledPayload) {
           throw new Error("channel onMessage callbacks must return the payload, modified or unmodified");
         }
-        let eventBindings = this.bindings.filter((bind) => bind.event === event && this.filterBindings(bind, payload, ref));
+        let eventBindings = this.bindings.filter((bind) => bind.event === event && this.filterBindings(bind, payload2, ref));
         for (let i = 0; i < eventBindings.length; i++) {
           let bind = eventBindings[i];
           bind.callback(handledPayload, ref, joinRef || this.joinRef());
@@ -5643,8 +5643,8 @@ var require_phoenix_cjs = __commonJS({
         if (msg.payload.constructor === ArrayBuffer) {
           return callback(this.binaryEncode(msg));
         } else {
-          let payload = [msg.join_ref, msg.ref, msg.topic, msg.event, msg.payload];
-          return callback(JSON.stringify(payload));
+          let payload2 = [msg.join_ref, msg.ref, msg.topic, msg.event, msg.payload];
+          return callback(JSON.stringify(payload2));
         }
       },
       /**
@@ -5657,13 +5657,13 @@ var require_phoenix_cjs = __commonJS({
         if (rawPayload.constructor === ArrayBuffer) {
           return callback(this.binaryDecode(rawPayload));
         } else {
-          let [join_ref, ref, topic, event, payload] = JSON.parse(rawPayload);
-          return callback({ join_ref, ref, topic, event, payload });
+          let [join_ref, ref, topic, event, payload2] = JSON.parse(rawPayload);
+          return callback({ join_ref, ref, topic, event, payload: payload2 });
         }
       },
       /** @private */
       binaryEncode(message) {
-        let { join_ref, ref, event, topic, payload } = message;
+        let { join_ref, ref, event, topic, payload: payload2 } = message;
         let metaLength = this.META_LENGTH + join_ref.length + ref.length + topic.length + event.length;
         let header = new ArrayBuffer(this.HEADER_LENGTH + metaLength);
         let view = new DataView(header);
@@ -5677,9 +5677,9 @@ var require_phoenix_cjs = __commonJS({
         Array.from(ref, (char) => view.setUint8(offset++, char.charCodeAt(0)));
         Array.from(topic, (char) => view.setUint8(offset++, char.charCodeAt(0)));
         Array.from(event, (char) => view.setUint8(offset++, char.charCodeAt(0)));
-        var combined = new Uint8Array(header.byteLength + payload.byteLength);
+        var combined = new Uint8Array(header.byteLength + payload2.byteLength);
         combined.set(new Uint8Array(header), 0);
-        combined.set(new Uint8Array(payload), header.byteLength);
+        combined.set(new Uint8Array(payload2), header.byteLength);
         return combined.buffer;
       },
       /**
@@ -5729,8 +5729,8 @@ var require_phoenix_cjs = __commonJS({
         let event = decoder.decode(buffer.slice(offset, offset + eventSize));
         offset = offset + eventSize;
         let data = buffer.slice(offset, buffer.byteLength);
-        let payload = { status: event, response: data };
-        return { join_ref: joinRef, ref, topic, event: CHANNEL_EVENTS.reply, payload };
+        let payload2 = { status: event, response: data };
+        return { join_ref: joinRef, ref, topic, event: CHANNEL_EVENTS.reply, payload: payload2 };
       },
       /** @private */
       decodeBroadcast(buffer, view, decoder) {
@@ -6302,8 +6302,8 @@ var require_phoenix_cjs = __commonJS({
        */
       push(data) {
         if (this.hasLogger()) {
-          let { topic, event, payload, ref, join_ref } = data;
-          this.log("push", `${topic} ${event} (${join_ref}, ${ref})`, payload);
+          let { topic, event, payload: payload2, ref, join_ref } = data;
+          this.log("push", `${topic} ${event} (${join_ref}, ${ref})`, payload2);
         }
         if (this.isConnected()) {
           this.encode(data, (result) => this.conn.send(result));
@@ -6358,12 +6358,12 @@ var require_phoenix_cjs = __commonJS({
       */
       onConnMessage(rawMessage) {
         this.decode(rawMessage.data, (msg) => {
-          let { topic, event, payload, ref, join_ref } = msg;
+          let { topic, event, payload: payload2, ref, join_ref } = msg;
           if (ref && ref === this.pendingHeartbeatRef) {
             const latency = this.heartbeatSentAt ? Date.now() - this.heartbeatSentAt : void 0;
             this.clearHeartbeats();
             try {
-              this.heartbeatCallback(payload.status === "ok" ? "ok" : "error", latency);
+              this.heartbeatCallback(payload2.status === "ok" ? "ok" : "error", latency);
             } catch (e) {
               this.log("error", "error in heartbeat callback", e);
             }
@@ -6373,13 +6373,13 @@ var require_phoenix_cjs = __commonJS({
               this.heartbeatTimer = setTimeout(() => this.sendHeartbeat(), this.heartbeatIntervalMs);
             }
           }
-          if (this.hasLogger()) this.log("receive", `${payload.status || ""} ${topic} ${event} ${ref && "(" + ref + ")" || ""}`.trim(), payload);
+          if (this.hasLogger()) this.log("receive", `${payload2.status || ""} ${topic} ${event} ${ref && "(" + ref + ")" || ""}`.trim(), payload2);
           for (let i = 0; i < this.channels.length; i++) {
             const channel = this.channels[i];
-            if (!channel.isMember(topic, event, payload, join_ref)) {
+            if (!channel.isMember(topic, event, payload2, join_ref)) {
               continue;
             }
-            channel.trigger(event, payload, ref, join_ref);
+            channel.trigger(event, payload2, ref, join_ref);
           }
           this.triggerStateCallbacks("message", msg);
         });
@@ -6605,10 +6605,10 @@ var require_channelAdapter = __commonJS({
       onError(callback) {
         return this.channel.onError(callback);
       }
-      push(event, payload, timeout) {
+      push(event, payload2, timeout) {
         let push;
         try {
-          push = this.channel.push(event, payload, timeout);
+          push = this.channel.push(event, payload2, timeout);
         } catch (error) {
           throw `tried to push '${event}' to '${this.channel.topic}' before joining. Use channel.subscribe() before pushing events`;
         }
@@ -6619,9 +6619,9 @@ var require_channelAdapter = __commonJS({
         }
         return push;
       }
-      updateJoinPayload(payload) {
+      updateJoinPayload(payload2) {
         const oldPayload = this.channel.joinPush.payload();
-        this.channel.joinPush.payload = () => Object.assign(Object.assign({}, oldPayload), payload);
+        this.channel.joinPush.payload = () => Object.assign(Object.assign({}, oldPayload), payload2);
       }
       canPush() {
         return this.socket.isConnected() && this.state === constants_1.CHANNEL_STATES.joined;
@@ -6846,11 +6846,11 @@ var require_RealtimeChannel = __commonJS({
        *
        * @category Realtime
        */
-      async track(payload, opts = {}) {
+      async track(payload2, opts = {}) {
         return await this.send({
           type: "presence",
           event: "track",
-          payload
+          payload: payload2
         }, opts.timeout || this.timeout);
       }
       /**
@@ -7043,9 +7043,9 @@ var require_RealtimeChannel = __commonJS({
        *
        * @category Realtime
        */
-      async httpSend(event, payload, opts = {}) {
+      async httpSend(event, payload2, opts = {}) {
         var _a;
-        if (payload === void 0 || payload === null) {
+        if (payload2 === void 0 || payload2 === null) {
           return Promise.reject("Payload is required for httpSend()");
         }
         const headers = {
@@ -7063,7 +7063,7 @@ var require_RealtimeChannel = __commonJS({
               {
                 topic: this.subTopic,
                 event,
-                payload,
+                payload: payload2,
                 private: this.private
               }
             ]
@@ -7179,8 +7179,8 @@ var require_RealtimeChannel = __commonJS({
        *
        * @category Realtime
        */
-      updateJoinPayload(payload) {
-        this.channelAdapter.updateJoinPayload(payload);
+      updateJoinPayload(payload2) {
+        this.channelAdapter.updateJoinPayload(payload2);
       }
       /**
        * Leaves the channel.
@@ -7250,7 +7250,7 @@ var require_RealtimeChannel = __commonJS({
       }
       /** @internal */
       _updateFilterMessage() {
-        this.channelAdapter.updateFilterBindings((binding, payload, ref) => {
+        this.channelAdapter.updateFilterBindings((binding, payload2, ref) => {
           var _a, _b, _c, _d, _e, _f, _g;
           const typeLower = binding.event.toLocaleLowerCase();
           if (this._notThisChannelEvent(typeLower, ref)) {
@@ -7264,10 +7264,10 @@ var require_RealtimeChannel = __commonJS({
             if ("id" in bind) {
               const bindId = bind.id;
               const bindEvent = (_b = bind.filter) === null || _b === void 0 ? void 0 : _b.event;
-              return bindId && ((_c = payload.ids) === null || _c === void 0 ? void 0 : _c.includes(bindId)) && (bindEvent === "*" || (bindEvent === null || bindEvent === void 0 ? void 0 : bindEvent.toLocaleLowerCase()) === ((_d = payload.data) === null || _d === void 0 ? void 0 : _d.type.toLocaleLowerCase()));
+              return bindId && ((_c = payload2.ids) === null || _c === void 0 ? void 0 : _c.includes(bindId)) && (bindEvent === "*" || (bindEvent === null || bindEvent === void 0 ? void 0 : bindEvent.toLocaleLowerCase()) === ((_d = payload2.data) === null || _d === void 0 ? void 0 : _d.type.toLocaleLowerCase()));
             } else {
               const bindEvent = (_f = (_e = bind === null || bind === void 0 ? void 0 : bind.filter) === null || _e === void 0 ? void 0 : _e.event) === null || _f === void 0 ? void 0 : _f.toLocaleLowerCase();
-              return bindEvent === "*" || bindEvent === ((_g = payload === null || payload === void 0 ? void 0 : payload.event) === null || _g === void 0 ? void 0 : _g.toLocaleLowerCase());
+              return bindEvent === "*" || bindEvent === ((_g = payload2 === null || payload2 === void 0 ? void 0 : payload2.event) === null || _g === void 0 ? void 0 : _g.toLocaleLowerCase());
             }
           } else {
             return bind.type.toLocaleLowerCase() === typeLower;
@@ -7282,9 +7282,9 @@ var require_RealtimeChannel = __commonJS({
       }
       /** @internal */
       _updateFilterTransform() {
-        this.channelAdapter.updatePayloadTransform((event, payload, ref) => {
-          if (typeof payload === "object" && "ids" in payload) {
-            const postgresChanges = payload.data;
+        this.channelAdapter.updatePayloadTransform((event, payload2, ref) => {
+          if (typeof payload2 === "object" && "ids" in payload2) {
+            const postgresChanges = payload2.data;
             const { schema, table, commit_timestamp, type, errors } = postgresChanges;
             const enrichedPayload = {
               schema,
@@ -7297,7 +7297,7 @@ var require_RealtimeChannel = __commonJS({
             };
             return Object.assign(Object.assign({}, enrichedPayload), this._getPayloadRecords(postgresChanges));
           }
-          return payload;
+          return payload2;
         });
       }
       /**
@@ -7311,16 +7311,16 @@ var require_RealtimeChannel = __commonJS({
         return normalizedServer === normalizedClient;
       }
       /** @internal */
-      _getPayloadRecords(payload) {
+      _getPayloadRecords(payload2) {
         const records = {
           new: {},
           old: {}
         };
-        if (payload.type === "INSERT" || payload.type === "UPDATE") {
-          records.new = Transformers.convertChangeData(payload.columns, payload.record);
+        if (payload2.type === "INSERT" || payload2.type === "UPDATE") {
+          records.new = Transformers.convertChangeData(payload2.columns, payload2.record);
         }
-        if (payload.type === "UPDATE" || payload.type === "DELETE") {
-          records.old = Transformers.convertChangeData(payload.columns, payload.old_record);
+        if (payload2.type === "UPDATE" || payload2.type === "DELETE") {
+          records.old = Transformers.convertChangeData(payload2.columns, payload2.old_record);
         }
         return records;
       }
@@ -7858,11 +7858,11 @@ Option 2: Install and provide the "ws" package:
         if (this.accessTokenValue != tokenToSend) {
           this.accessTokenValue = tokenToSend;
           this.channels.forEach((channel) => {
-            const payload = {
+            const payload2 = {
               access_token: tokenToSend,
               version: constants_1.DEFAULT_VERSION
             };
-            tokenToSend && channel.updateJoinPayload(payload);
+            tokenToSend && channel.updateJoinPayload(payload2);
             if (channel.joinedOnce && channel.channelAdapter.isJoined()) {
               channel.channelAdapter.push(constants_1.CHANNEL_EVENTS.access_token, {
                 access_token: tokenToSend
@@ -7997,11 +7997,11 @@ Option 2: Install and provide the "ws" package:
         const vsn = (_g = options === null || options === void 0 ? void 0 : options.vsn) !== null && _g !== void 0 ? _g : constants_1.DEFAULT_VSN;
         switch (vsn) {
           case constants_1.VSN_1_0_0:
-            defaultEncode = (payload, callback) => {
-              return callback(JSON.stringify(payload));
+            defaultEncode = (payload2, callback) => {
+              return callback(JSON.stringify(payload2));
             };
-            defaultDecode = (payload, callback) => {
-              return callback(JSON.parse(payload));
+            defaultDecode = (payload2, callback) => {
+              return callback(JSON.parse(payload2));
             };
             break;
           case constants_1.VSN_2_0_0:
@@ -8325,19 +8325,19 @@ var require_base64url = __commonJS({
         throw new Error(`Invalid Base64-URL character "${String.fromCharCode(charCode)}"`);
       }
     }
-    function stringToBase64URL(str) {
+    function stringToBase64URL(str2) {
       const base64 = [];
       const emitter = (char) => {
         base64.push(char);
       };
       const state = { queue: 0, queuedBits: 0 };
-      stringToUTF8(str, (byte) => {
+      stringToUTF8(str2, (byte) => {
         byteToBase64URL(byte, state, emitter);
       });
       byteToBase64URL(null, state, emitter);
       return base64.join("");
     }
-    function stringFromBase64URL(str) {
+    function stringFromBase64URL(str2) {
       const conv = [];
       const utf8Emit = (codepoint) => {
         conv.push(String.fromCodePoint(codepoint));
@@ -8350,8 +8350,8 @@ var require_base64url = __commonJS({
       const byteEmit = (byte) => {
         stringFromUTF8(byte, utf8State, utf8Emit);
       };
-      for (let i = 0; i < str.length; i += 1) {
-        byteFromBase64URL(str.charCodeAt(i), b64State, byteEmit);
+      for (let i = 0; i < str2.length; i += 1) {
+        byteFromBase64URL(str2.charCodeAt(i), b64State, byteEmit);
       }
       return conv.join("");
     }
@@ -8377,12 +8377,12 @@ var require_base64url = __commonJS({
       }
       throw new Error(`Unrecognized Unicode codepoint: ${codepoint.toString(16)}`);
     }
-    function stringToUTF8(str, emit2) {
-      for (let i = 0; i < str.length; i += 1) {
-        let codepoint = str.charCodeAt(i);
+    function stringToUTF8(str2, emit2) {
+      for (let i = 0; i < str2.length; i += 1) {
+        let codepoint = str2.charCodeAt(i);
         if (codepoint > 55295 && codepoint <= 56319) {
           const highSurrogate = (codepoint - 55296) * 1024 & 65535;
-          const lowSurrogate = str.charCodeAt(i + 1) - 56320 & 65535;
+          const lowSurrogate = str2.charCodeAt(i + 1) - 56320 & 65535;
           codepoint = (lowSurrogate | highSurrogate) + 65536;
           i += 1;
         }
@@ -8422,20 +8422,20 @@ var require_base64url = __commonJS({
         }
       }
     }
-    function base64UrlToUint8Array(str) {
+    function base64UrlToUint8Array(str2) {
       const result = [];
       const state = { queue: 0, queuedBits: 0 };
       const onByte = (byte) => {
         result.push(byte);
       };
-      for (let i = 0; i < str.length; i += 1) {
-        byteFromBase64URL(str.charCodeAt(i), state, onByte);
+      for (let i = 0; i < str2.length; i += 1) {
+        byteFromBase64URL(str2.charCodeAt(i), state, onByte);
       }
       return new Uint8Array(result);
     }
-    function stringToUint8Array(str) {
+    function stringToUint8Array(str2) {
       const result = [];
-      stringToUTF8(str, (byte) => result.push(byte));
+      stringToUTF8(str2, (byte) => result.push(byte));
       return new Uint8Array(result);
     }
     function bytesToBase64URL(bytes) {
@@ -8713,8 +8713,8 @@ var require_helpers = __commonJS({
       }
     }
     var UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-    function validateUUID(str) {
-      if (!UUID_REGEX.test(str)) {
+    function validateUUID(str2) {
+      if (!UUID_REGEX.test(str2)) {
         throw new Error("@supabase/auth-js: Expected parameter to be UUID but is not");
       }
     }
@@ -11961,9 +11961,9 @@ var require_GoTrueClient = __commonJS({
           let expiresAt = timeNow;
           let hasExpired = true;
           let session = null;
-          const { payload } = (0, helpers_1.decodeJWT)(currentSession.access_token);
-          if (payload.exp) {
-            expiresAt = payload.exp;
+          const { payload: payload2 } = (0, helpers_1.decodeJWT)(currentSession.access_token);
+          if (payload2.exp) {
+            expiresAt = payload2.exp;
             hasExpired = expiresAt <= timeNow;
           }
           if (hasExpired) {
@@ -12997,10 +12997,10 @@ var require_GoTrueClient = __commonJS({
         var _a, _b, _c, _d;
         if (jwt) {
           try {
-            const { payload: payload2 } = (0, helpers_1.decodeJWT)(jwt);
+            const { payload: payload3 } = (0, helpers_1.decodeJWT)(jwt);
             let currentLevel2 = null;
-            if (payload2.aal) {
-              currentLevel2 = payload2.aal;
+            if (payload3.aal) {
+              currentLevel2 = payload3.aal;
             }
             let nextLevel2 = currentLevel2;
             const { data: { user }, error: userError } = await this.getUser(jwt);
@@ -13011,7 +13011,7 @@ var require_GoTrueClient = __commonJS({
             if (verifiedFactors2.length > 0) {
               nextLevel2 = "aal2";
             }
-            const currentAuthenticationMethods2 = payload2.amr || [];
+            const currentAuthenticationMethods2 = payload3.amr || [];
             return { data: { currentLevel: currentLevel2, nextLevel: nextLevel2, currentAuthenticationMethods: currentAuthenticationMethods2 }, error: null };
           } catch (error) {
             if ((0, errors_1.isAuthError)(error)) {
@@ -13030,17 +13030,17 @@ var require_GoTrueClient = __commonJS({
             error: null
           };
         }
-        const { payload } = (0, helpers_1.decodeJWT)(session.access_token);
+        const { payload: payload2 } = (0, helpers_1.decodeJWT)(session.access_token);
         let currentLevel = null;
-        if (payload.aal) {
-          currentLevel = payload.aal;
+        if (payload2.aal) {
+          currentLevel = payload2.aal;
         }
         let nextLevel = currentLevel;
         const verifiedFactors = (_d = (_c = session.user.factors) === null || _c === void 0 ? void 0 : _c.filter((factor) => factor.status === "verified")) !== null && _d !== void 0 ? _d : [];
         if (verifiedFactors.length > 0) {
           nextLevel = "aal2";
         }
-        const currentAuthenticationMethods = payload.amr || [];
+        const currentAuthenticationMethods = payload2.amr || [];
         return { data: { currentLevel, nextLevel, currentAuthenticationMethods }, error: null };
       }
       /**
@@ -13251,9 +13251,9 @@ var require_GoTrueClient = __commonJS({
             }
             token = data.session.access_token;
           }
-          const { header, payload, signature, raw: { header: rawHeader, payload: rawPayload } } = (0, helpers_1.decodeJWT)(token);
+          const { header, payload: payload2, signature, raw: { header: rawHeader, payload: rawPayload } } = (0, helpers_1.decodeJWT)(token);
           if (!(options === null || options === void 0 ? void 0 : options.allowExpired)) {
-            (0, helpers_1.validateExp)(payload.exp);
+            (0, helpers_1.validateExp)(payload2.exp);
           }
           const signingKey = !header.alg || header.alg.startsWith("HS") || !header.kid || !("crypto" in globalThis && "subtle" in globalThis.crypto) ? null : await this.fetchJwk(header.kid, (options === null || options === void 0 ? void 0 : options.keys) ? { keys: options.keys } : options === null || options === void 0 ? void 0 : options.jwks);
           if (!signingKey) {
@@ -13263,7 +13263,7 @@ var require_GoTrueClient = __commonJS({
             }
             return {
               data: {
-                claims: payload,
+                claims: payload2,
                 header,
                 signature
               },
@@ -13280,7 +13280,7 @@ var require_GoTrueClient = __commonJS({
           }
           return {
             data: {
-              claims: payload,
+              claims: payload2,
               header,
               signature
             },
@@ -13493,39 +13493,39 @@ var require_utils = __commonJS({
     function codeRegex(capture) {
       return capture ? /\u001b\[((?:\d*;){0,5}\d*)m/g : /\u001b\[(?:\d*;){0,5}\d*m/g;
     }
-    function strlen(str) {
+    function strlen(str2) {
       let code = codeRegex();
-      let stripped = ("" + str).replace(code, "");
+      let stripped = ("" + str2).replace(code, "");
       let split = stripped.split("\n");
       return split.reduce(function(memo, s) {
         return stringWidth(s) > memo ? stringWidth(s) : memo;
       }, 0);
     }
-    function repeat(str, times) {
-      return Array(times + 1).join(str);
+    function repeat(str2, times) {
+      return Array(times + 1).join(str2);
     }
-    function pad(str, len, pad2, dir) {
-      let length = strlen(str);
+    function pad(str2, len, pad2, dir) {
+      let length = strlen(str2);
       if (len + 1 >= length) {
         let padlen = len - length;
         switch (dir) {
           case "right": {
-            str = repeat(pad2, padlen) + str;
+            str2 = repeat(pad2, padlen) + str2;
             break;
           }
           case "center": {
             let right = Math.ceil(padlen / 2);
             let left = padlen - right;
-            str = repeat(pad2, left) + str + repeat(pad2, right);
+            str2 = repeat(pad2, left) + str2 + repeat(pad2, right);
             break;
           }
           default: {
-            str = str + repeat(pad2, padlen);
+            str2 = str2 + repeat(pad2, padlen);
             break;
           }
         }
       }
-      return str;
+      return str2;
     }
     var codeCache = {};
     function addToCodeCache(name, on, off) {
@@ -13609,25 +13609,25 @@ var require_utils = __commonJS({
       }
       return ret;
     }
-    function truncateWidth(str, desiredLength) {
-      if (str.length === strlen(str)) {
-        return str.substr(0, desiredLength);
+    function truncateWidth(str2, desiredLength) {
+      if (str2.length === strlen(str2)) {
+        return str2.substr(0, desiredLength);
       }
-      while (strlen(str) > desiredLength) {
-        str = str.slice(0, -1);
+      while (strlen(str2) > desiredLength) {
+        str2 = str2.slice(0, -1);
       }
-      return str;
+      return str2;
     }
-    function truncateWidthWithAnsi(str, desiredLength) {
+    function truncateWidthWithAnsi(str2, desiredLength) {
       let code = codeRegex(true);
-      let split = str.split(codeRegex());
+      let split = str2.split(codeRegex());
       let splitIndex = 0;
       let retLen = 0;
       let ret = "";
       let myArray;
       let state = {};
       while (retLen < desiredLength) {
-        myArray = code.exec(str);
+        myArray = code.exec(str2);
         let toAdd = split[splitIndex];
         splitIndex++;
         if (retLen + strlen(toAdd) > desiredLength) {
@@ -13645,17 +13645,17 @@ var require_utils = __commonJS({
       }
       return unwindState(state, ret);
     }
-    function truncate(str, desiredLength, truncateChar) {
+    function truncate(str2, desiredLength, truncateChar) {
       truncateChar = truncateChar || "\u2026";
-      let lengthOfStr = strlen(str);
+      let lengthOfStr = strlen(str2);
       if (lengthOfStr <= desiredLength) {
-        return str;
+        return str2;
       }
       desiredLength -= strlen(truncateChar);
-      let ret = truncateWidthWithAnsi(str, desiredLength);
+      let ret = truncateWidthWithAnsi(str2, desiredLength);
       ret += truncateChar;
       const hrefTag = "\x1B]8;;\x07";
-      if (str.includes(hrefTag) && !ret.includes(hrefTag)) {
+      if (str2.includes(hrefTag) && !ret.includes(hrefTag)) {
         ret += hrefTag;
       }
       return ret;
@@ -13734,9 +13734,9 @@ var require_utils = __commonJS({
     function textWrap(maxLength, input) {
       let lines = [];
       let line = "";
-      function pushLine(str, ws) {
+      function pushLine(str2, ws) {
         if (line.length && ws) line += ws;
-        line += str;
+        line += str2;
         while (line.length > maxLength) {
           lines.push(line.slice(0, maxLength));
           line = line.slice(maxLength);
@@ -14317,25 +14317,25 @@ var require_colors = __commonJS({
     colors.disable = function() {
       colors.enabled = false;
     };
-    colors.stripColors = colors.strip = function(str) {
-      return ("" + str).replace(/\x1B\[\d+m/g, "");
+    colors.stripColors = colors.strip = function(str2) {
+      return ("" + str2).replace(/\x1B\[\d+m/g, "");
     };
-    var stylize = colors.stylize = function stylize2(str, style) {
+    var stylize = colors.stylize = function stylize2(str2, style) {
       if (!colors.enabled) {
-        return str + "";
+        return str2 + "";
       }
       var styleMap = ansiStyles2[style];
       if (!styleMap && style in colors) {
-        return colors[style](str);
+        return colors[style](str2);
       }
-      return styleMap.open + str + styleMap.close;
+      return styleMap.open + str2 + styleMap.close;
     };
     var matchOperatorsRe = /[|\\{}()[\]^$+*?.]/g;
-    var escapeStringRegexp = function(str) {
-      if (typeof str !== "string") {
+    var escapeStringRegexp = function(str2) {
+      if (typeof str2 !== "string") {
         throw new TypeError("Expected a string");
       }
-      return str.replace(matchOperatorsRe, "\\$&");
+      return str2.replace(matchOperatorsRe, "\\$&");
     };
     function build(_styles) {
       var builder = function builder2() {
@@ -14362,29 +14362,29 @@ var require_colors = __commonJS({
     }, styles3);
     function applyStyle2() {
       var args = Array.prototype.slice.call(arguments);
-      var str = args.map(function(arg) {
+      var str2 = args.map(function(arg) {
         if (arg != null && arg.constructor === String) {
           return arg;
         } else {
           return util2.inspect(arg);
         }
       }).join(" ");
-      if (!colors.enabled || !str) {
-        return str;
+      if (!colors.enabled || !str2) {
+        return str2;
       }
-      var newLinesPresent = str.indexOf("\n") != -1;
+      var newLinesPresent = str2.indexOf("\n") != -1;
       var nestedStyles = this._styles;
       var i = nestedStyles.length;
       while (i--) {
         var code = ansiStyles2[nestedStyles[i]];
-        str = code.open + str.replace(code.closeRe, code.open) + code.close;
+        str2 = code.open + str2.replace(code.closeRe, code.open) + code.close;
         if (newLinesPresent) {
-          str = str.replace(newLineRegex, function(match) {
+          str2 = str2.replace(newLineRegex, function(match) {
             return code.close + match + code.open;
           });
         }
       }
-      return str;
+      return str2;
     }
     colors.setTheme = function(theme) {
       if (typeof theme === "string") {
@@ -14393,15 +14393,15 @@ var require_colors = __commonJS({
       }
       for (var style in theme) {
         (function(style2) {
-          colors[style2] = function(str) {
+          colors[style2] = function(str2) {
             if (typeof theme[style2] === "object") {
-              var out = str;
+              var out = str2;
               for (var i in theme[style2]) {
                 out = colors[theme[style2][i]](out);
               }
               return out;
             }
-            return colors[theme[style2]](str);
+            return colors[theme[style2]](str2);
           };
         })(style);
       }
@@ -14417,8 +14417,8 @@ var require_colors = __commonJS({
       });
       return ret;
     }
-    var sequencer = function sequencer2(map2, str) {
-      var exploded = str.split("");
+    var sequencer = function sequencer2(map2, str2) {
+      var exploded = str2.split("");
       exploded = exploded.map(map2);
       return exploded.join("");
     };
@@ -14431,8 +14431,8 @@ var require_colors = __commonJS({
     colors.maps.random = require_random()(colors);
     for (map in colors.maps) {
       (function(map2) {
-        colors[map2] = function(str) {
-          return sequencer(colors.maps[map2], str);
+        colors[map2] = function(str2) {
+          return sequencer(colors.maps[map2], str2);
         };
       })(map);
     }
@@ -15137,8 +15137,8 @@ var require_table = __commonJS({
         return result.join("\n");
       }
       get width() {
-        let str = this.toString().split("\n");
-        return str[0].length;
+        let str2 = this.toString().split("\n");
+        return str2[0].length;
       }
     };
     Table2.reset = () => debug.reset();
@@ -15147,8 +15147,8 @@ var require_table = __commonJS({
       row.forEach(function(cell2) {
         line.push(cell2.draw(lineNum));
       });
-      let str = line.join("");
-      if (str.length) result.push(str);
+      let str2 = line.join("");
+      if (str2.length) result.push(str2);
     }
     module.exports = Table2;
   }
@@ -16106,13 +16106,13 @@ var require_Collection = __commonJS({
 var require_stringifyComment = __commonJS({
   "node_modules/yaml/dist/stringify/stringifyComment.js"(exports) {
     "use strict";
-    var stringifyComment = (str) => str.replace(/^(?!$)(?: $)?/gm, "#");
+    var stringifyComment = (str2) => str2.replace(/^(?!$)(?: $)?/gm, "#");
     function indentComment(comment, indent) {
       if (/^\n+$/.test(comment))
         return comment.substring(1);
       return indent ? comment.replace(/^(?! *$)/gm, indent) : comment;
     }
-    var lineComment = (str, indent, comment) => str.endsWith("\n") ? indentComment(comment, indent) : comment.includes("\n") ? "\n" + indentComment(comment, indent) : (str.endsWith(" ") ? "" : " ") + comment;
+    var lineComment = (str2, indent, comment) => str2.endsWith("\n") ? indentComment(comment, indent) : comment.includes("\n") ? "\n" + indentComment(comment, indent) : (str2.endsWith(" ") ? "" : " ") + comment;
     exports.indentComment = indentComment;
     exports.lineComment = lineComment;
     exports.stringifyComment = stringifyComment;
@@ -16266,16 +16266,16 @@ var require_stringifyString = __commonJS({
       lineWidth: ctx.options.lineWidth,
       minContentWidth: ctx.options.minContentWidth
     });
-    var containsDocumentMarker = (str) => /^(%|---|\.\.\.)/m.test(str);
-    function lineLengthOverLimit(str, lineWidth, indentLength) {
+    var containsDocumentMarker = (str2) => /^(%|---|\.\.\.)/m.test(str2);
+    function lineLengthOverLimit(str2, lineWidth, indentLength) {
       if (!lineWidth || lineWidth < 0)
         return false;
       const limit = lineWidth - indentLength;
-      const strLen = str.length;
+      const strLen = str2.length;
       if (strLen <= limit)
         return false;
       for (let i = 0, start = 0; i < strLen; ++i) {
-        if (str[i] === "\n") {
+        if (str2[i] === "\n") {
           if (i - start > limit)
             return true;
           start = i + 1;
@@ -16292,11 +16292,11 @@ var require_stringifyString = __commonJS({
       const { implicitKey } = ctx;
       const minMultiLineLength = ctx.options.doubleQuotedMinMultiLineLength;
       const indent = ctx.indent || (containsDocumentMarker(value) ? "  " : "");
-      let str = "";
+      let str2 = "";
       let start = 0;
       for (let i = 0, ch = json[i]; ch; ch = json[++i]) {
         if (ch === " " && json[i + 1] === "\\" && json[i + 2] === "n") {
-          str += json.slice(start, i) + "\\ ";
+          str2 += json.slice(start, i) + "\\ ";
           i += 1;
           start = i;
           ch = "\\";
@@ -16305,38 +16305,38 @@ var require_stringifyString = __commonJS({
           switch (json[i + 1]) {
             case "u":
               {
-                str += json.slice(start, i);
+                str2 += json.slice(start, i);
                 const code = json.substr(i + 2, 4);
                 switch (code) {
                   case "0000":
-                    str += "\\0";
+                    str2 += "\\0";
                     break;
                   case "0007":
-                    str += "\\a";
+                    str2 += "\\a";
                     break;
                   case "000b":
-                    str += "\\v";
+                    str2 += "\\v";
                     break;
                   case "001b":
-                    str += "\\e";
+                    str2 += "\\e";
                     break;
                   case "0085":
-                    str += "\\N";
+                    str2 += "\\N";
                     break;
                   case "00a0":
-                    str += "\\_";
+                    str2 += "\\_";
                     break;
                   case "2028":
-                    str += "\\L";
+                    str2 += "\\L";
                     break;
                   case "2029":
-                    str += "\\P";
+                    str2 += "\\P";
                     break;
                   default:
                     if (code.substr(0, 2) === "00")
-                      str += "\\x" + code.substr(2);
+                      str2 += "\\x" + code.substr(2);
                     else
-                      str += json.substr(i, 6);
+                      str2 += json.substr(i, 6);
                 }
                 i += 5;
                 start = i + 1;
@@ -16346,14 +16346,14 @@ var require_stringifyString = __commonJS({
               if (implicitKey || json[i + 2] === '"' || json.length < minMultiLineLength) {
                 i += 1;
               } else {
-                str += json.slice(start, i) + "\n\n";
+                str2 += json.slice(start, i) + "\n\n";
                 while (json[i + 2] === "\\" && json[i + 3] === "n" && json[i + 4] !== '"') {
-                  str += "\n";
+                  str2 += "\n";
                   i += 2;
                 }
-                str += indent;
+                str2 += indent;
                 if (json[i + 2] === " ")
-                  str += "\\";
+                  str2 += "\\";
                 i += 1;
                 start = i + 1;
               }
@@ -16362,8 +16362,8 @@ var require_stringifyString = __commonJS({
               i += 1;
           }
       }
-      str = start ? str + json.slice(start) : json;
-      return implicitKey ? str : foldFlowLines.foldFlowLines(str, indent, foldFlowLines.FOLD_QUOTED, getFoldOptions(ctx, false));
+      str2 = start ? str2 + json.slice(start) : json;
+      return implicitKey ? str2 : foldFlowLines.foldFlowLines(str2, indent, foldFlowLines.FOLD_QUOTED, getFoldOptions(ctx, false));
     }
     function singleQuotedString(value, ctx) {
       if (ctx.options.singleQuote === false || ctx.implicitKey && value.includes("\n") || /[ \t]\n|\n[ \t]/.test(value))
@@ -16491,15 +16491,15 @@ ${indent}${start}${value}${end}`;
           return quotedString(value, ctx);
         }
       }
-      const str = value.replace(/\n+/g, `$&
+      const str2 = value.replace(/\n+/g, `$&
 ${indent}`);
       if (actualString) {
-        const test = (tag) => tag.default && tag.tag !== "tag:yaml.org,2002:str" && tag.test?.test(str);
+        const test = (tag) => tag.default && tag.tag !== "tag:yaml.org,2002:str" && tag.test?.test(str2);
         const { compat, tags } = ctx.doc.schema;
         if (tags.some(test) || compat?.some(test))
           return quotedString(value, ctx);
       }
-      return implicitKey ? str : foldFlowLines.foldFlowLines(str, indent, foldFlowLines.FOLD_FLOW, getFoldOptions(ctx, false));
+      return implicitKey ? str2 : foldFlowLines.foldFlowLines(str2, indent, foldFlowLines.FOLD_FLOW, getFoldOptions(ctx, false));
     }
     function stringifyString(item, ctx, onComment, onChompKeep) {
       const { implicitKey, inFlow } = ctx;
@@ -16651,11 +16651,11 @@ var require_stringify = __commonJS({
       const props = stringifyProps(node, tagObj, ctx);
       if (props.length > 0)
         ctx.indentAtStart = (ctx.indentAtStart ?? 0) + props.length + 1;
-      const str = typeof tagObj.stringify === "function" ? tagObj.stringify(node, ctx, onComment, onChompKeep) : identity.isScalar(node) ? stringifyString.stringifyString(node, ctx, onComment, onChompKeep) : node.toString(ctx, onComment, onChompKeep);
+      const str2 = typeof tagObj.stringify === "function" ? tagObj.stringify(node, ctx, onComment, onChompKeep) : identity.isScalar(node) ? stringifyString.stringifyString(node, ctx, onComment, onChompKeep) : node.toString(ctx, onComment, onChompKeep);
       if (!props)
-        return str;
-      return identity.isScalar(node) || str[0] === "{" || str[0] === "[" ? `${props} ${str}` : `${props}
-${ctx.indent}${str}`;
+        return str2;
+      return identity.isScalar(node) || str2[0] === "{" || str2[0] === "[" ? `${props} ${str2}` : `${props}
+${ctx.indent}${str2}`;
     }
     exports.createStringifyContext = createStringifyContext;
     exports.stringify = stringify;
@@ -16690,8 +16690,8 @@ var require_stringifyPair = __commonJS({
       });
       let keyCommentDone = false;
       let chompKeep = false;
-      let str = stringify.stringify(key, ctx, () => keyCommentDone = true, () => chompKeep = true);
-      if (!explicitKey && !ctx.inFlow && str.length > 1024) {
+      let str2 = stringify.stringify(key, ctx, () => keyCommentDone = true, () => chompKeep = true);
+      if (!explicitKey && !ctx.inFlow && str2.length > 1024) {
         if (simpleKeys)
           throw new Error("With simple keys, single line scalar must not span more than 1024 characters");
         explicitKey = true;
@@ -16700,27 +16700,27 @@ var require_stringifyPair = __commonJS({
         if (allNullValues || value == null) {
           if (keyCommentDone && onComment)
             onComment();
-          return str === "" ? "?" : explicitKey ? `? ${str}` : str;
+          return str2 === "" ? "?" : explicitKey ? `? ${str2}` : str2;
         }
       } else if (allNullValues && !simpleKeys || value == null && explicitKey) {
-        str = `? ${str}`;
+        str2 = `? ${str2}`;
         if (keyComment && !keyCommentDone) {
-          str += stringifyComment.lineComment(str, ctx.indent, commentString(keyComment));
+          str2 += stringifyComment.lineComment(str2, ctx.indent, commentString(keyComment));
         } else if (chompKeep && onChompKeep)
           onChompKeep();
-        return str;
+        return str2;
       }
       if (keyCommentDone)
         keyComment = null;
       if (explicitKey) {
         if (keyComment)
-          str += stringifyComment.lineComment(str, ctx.indent, commentString(keyComment));
-        str = `? ${str}
+          str2 += stringifyComment.lineComment(str2, ctx.indent, commentString(keyComment));
+        str2 = `? ${str2}
 ${indent}:`;
       } else {
-        str = `${str}:`;
+        str2 = `${str2}:`;
         if (keyComment)
-          str += stringifyComment.lineComment(str, ctx.indent, commentString(keyComment));
+          str2 += stringifyComment.lineComment(str2, ctx.indent, commentString(keyComment));
       }
       let vsb, vcb, valueComment;
       if (identity.isNode(value)) {
@@ -16736,7 +16736,7 @@ ${indent}:`;
       }
       ctx.implicitKey = false;
       if (!explicitKey && !keyComment && identity.isScalar(value))
-        ctx.indentAtStart = str.length + 1;
+        ctx.indentAtStart = str2.length + 1;
       chompKeep = false;
       if (!indentSeq && indentStep.length >= 2 && !ctx.inFlow && !explicitKey && identity.isSeq(value) && !value.flow && !value.tag && !value.anchor) {
         ctx.indent = ctx.indent.substring(2);
@@ -16780,16 +16780,16 @@ ${ctx.indent}`;
       } else if (valueStr === "" || valueStr[0] === "\n") {
         ws = "";
       }
-      str += ws + valueStr;
+      str2 += ws + valueStr;
       if (ctx.inFlow) {
         if (valueCommentDone && onComment)
           onComment();
       } else if (valueComment && !valueCommentDone) {
-        str += stringifyComment.lineComment(str, ctx.indent, commentString(valueComment));
+        str2 += stringifyComment.lineComment(str2, ctx.indent, commentString(valueComment));
       } else if (chompKeep && onChompKeep) {
         onChompKeep();
       }
-      return str;
+      return str2;
     }
     exports.stringifyPair = stringifyPair;
   }
@@ -17016,31 +17016,31 @@ var require_stringifyCollection = __commonJS({
           }
         }
         chompKeep = false;
-        let str2 = stringify.stringify(item, itemCtx, () => comment2 = null, () => chompKeep = true);
+        let str3 = stringify.stringify(item, itemCtx, () => comment2 = null, () => chompKeep = true);
         if (comment2)
-          str2 += stringifyComment.lineComment(str2, itemIndent, commentString(comment2));
+          str3 += stringifyComment.lineComment(str3, itemIndent, commentString(comment2));
         if (chompKeep && comment2)
           chompKeep = false;
-        lines.push(blockItemPrefix + str2);
+        lines.push(blockItemPrefix + str3);
       }
-      let str;
+      let str2;
       if (lines.length === 0) {
-        str = flowChars.start + flowChars.end;
+        str2 = flowChars.start + flowChars.end;
       } else {
-        str = lines[0];
+        str2 = lines[0];
         for (let i = 1; i < lines.length; ++i) {
           const line = lines[i];
-          str += line ? `
+          str2 += line ? `
 ${indent}${line}` : "\n";
         }
       }
       if (comment) {
-        str += "\n" + stringifyComment.indentComment(commentString(comment), indent);
+        str2 += "\n" + stringifyComment.indentComment(commentString(comment), indent);
         if (onComment)
           onComment();
       } else if (chompKeep && onChompKeep)
         onChompKeep();
-      return str;
+      return str2;
     }
     function stringifyFlowCollection({ items }, ctx, { flowChars, itemIndent }) {
       const { indent, indentStep, flowCollectionPadding: fcPadding, options: { commentString } } = ctx;
@@ -17083,21 +17083,21 @@ ${indent}${line}` : "\n";
         }
         if (comment)
           reqNewline = true;
-        let str = stringify.stringify(item, itemCtx, () => comment = null);
-        reqNewline || (reqNewline = lines.length > linesAtValue || str.includes("\n"));
+        let str2 = stringify.stringify(item, itemCtx, () => comment = null);
+        reqNewline || (reqNewline = lines.length > linesAtValue || str2.includes("\n"));
         if (i < items.length - 1) {
-          str += ",";
+          str2 += ",";
         } else if (ctx.options.trailingComma) {
           if (ctx.options.lineWidth > 0) {
-            reqNewline || (reqNewline = lines.reduce((sum, line) => sum + line.length + 2, 2) + (str.length + 2) > ctx.options.lineWidth);
+            reqNewline || (reqNewline = lines.reduce((sum, line) => sum + line.length + 2, 2) + (str2.length + 2) > ctx.options.lineWidth);
           }
           if (reqNewline) {
-            str += ",";
+            str2 += ",";
           }
         }
         if (comment)
-          str += stringifyComment.lineComment(str, itemIndent, commentString(comment));
-        lines.push(str);
+          str2 += stringifyComment.lineComment(str2, itemIndent, commentString(comment));
+        lines.push(str2);
         linesAtValue = lines.length;
       }
       const { start, end } = flowChars;
@@ -17109,11 +17109,11 @@ ${indent}${line}` : "\n";
           reqNewline = ctx.options.lineWidth > 0 && len > ctx.options.lineWidth;
         }
         if (reqNewline) {
-          let str = start;
+          let str2 = start;
           for (const line of lines)
-            str += line ? `
+            str2 += line ? `
 ${indentStep}${indent}${line}` : "\n";
-          return `${str}
+          return `${str2}
 ${indent}${end}`;
         } else {
           return `${start}${fcPadding}${lines.join(" ")}${fcPadding}${end}`;
@@ -17445,7 +17445,7 @@ var require_string = __commonJS({
       identify: (value) => typeof value === "string",
       default: true,
       tag: "tag:yaml.org,2002:str",
-      resolve: (str) => str,
+      resolve: (str2) => str2,
       stringify(item, ctx, onComment, onChompKeep) {
         ctx = Object.assign({ actualString: true }, ctx);
         return stringifyString.stringifyString(item, ctx, onComment, onChompKeep);
@@ -17483,7 +17483,7 @@ var require_bool = __commonJS({
       default: true,
       tag: "tag:yaml.org,2002:bool",
       test: /^(?:[Tt]rue|TRUE|[Ff]alse|FALSE)$/,
-      resolve: (str) => new Scalar.Scalar(str[0] === "t" || str[0] === "T"),
+      resolve: (str2) => new Scalar.Scalar(str2[0] === "t" || str2[0] === "T"),
       stringify({ source, value }, ctx) {
         if (source && boolTag.test.test(source)) {
           const sv = source[0] === "t" || source[0] === "T";
@@ -17504,9 +17504,9 @@ var require_stringifyNumber = __commonJS({
     function stringifyNumber({ format, minFractionDigits, tag, value }) {
       if (typeof value === "bigint")
         return String(value);
-      const num = typeof value === "number" ? value : Number(value);
-      if (!isFinite(num))
-        return isNaN(num) ? ".nan" : num < 0 ? "-.inf" : ".inf";
+      const num2 = typeof value === "number" ? value : Number(value);
+      if (!isFinite(num2))
+        return isNaN(num2) ? ".nan" : num2 < 0 ? "-.inf" : ".inf";
       let n = Object.is(value, -0) ? "-0" : JSON.stringify(value);
       if (!format && minFractionDigits && (!tag || tag === "tag:yaml.org,2002:float") && /^-?\d/.test(n) && !n.includes("e")) {
         let i = n.indexOf(".");
@@ -17535,7 +17535,7 @@ var require_float = __commonJS({
       default: true,
       tag: "tag:yaml.org,2002:float",
       test: /^(?:[-+]?\.(?:inf|Inf|INF)|\.nan|\.NaN|\.NAN)$/,
-      resolve: (str) => str.slice(-3).toLowerCase() === "nan" ? NaN : str[0] === "-" ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY,
+      resolve: (str2) => str2.slice(-3).toLowerCase() === "nan" ? NaN : str2[0] === "-" ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY,
       stringify: stringifyNumber.stringifyNumber
     };
     var floatExp = {
@@ -17544,10 +17544,10 @@ var require_float = __commonJS({
       tag: "tag:yaml.org,2002:float",
       format: "EXP",
       test: /^[-+]?(?:\.[0-9]+|[0-9]+(?:\.[0-9]*)?)[eE][-+]?[0-9]+$/,
-      resolve: (str) => parseFloat(str),
+      resolve: (str2) => parseFloat(str2),
       stringify(node) {
-        const num = Number(node.value);
-        return isFinite(num) ? num.toExponential() : stringifyNumber.stringifyNumber(node);
+        const num2 = Number(node.value);
+        return isFinite(num2) ? num2.toExponential() : stringifyNumber.stringifyNumber(node);
       }
     };
     var float = {
@@ -17555,11 +17555,11 @@ var require_float = __commonJS({
       default: true,
       tag: "tag:yaml.org,2002:float",
       test: /^[-+]?(?:\.[0-9]+|[0-9]+\.[0-9]*)$/,
-      resolve(str) {
-        const node = new Scalar.Scalar(parseFloat(str));
-        const dot = str.indexOf(".");
-        if (dot !== -1 && str[str.length - 1] === "0")
-          node.minFractionDigits = str.length - dot - 1;
+      resolve(str2) {
+        const node = new Scalar.Scalar(parseFloat(str2));
+        const dot = str2.indexOf(".");
+        if (dot !== -1 && str2[str2.length - 1] === "0")
+          node.minFractionDigits = str2.length - dot - 1;
         return node;
       },
       stringify: stringifyNumber.stringifyNumber
@@ -17576,7 +17576,7 @@ var require_int = __commonJS({
     "use strict";
     var stringifyNumber = require_stringifyNumber();
     var intIdentify = (value) => typeof value === "bigint" || Number.isInteger(value);
-    var intResolve = (str, offset, radix, { intAsBigInt }) => intAsBigInt ? BigInt(str) : parseInt(str.substring(offset), radix);
+    var intResolve = (str2, offset, radix, { intAsBigInt }) => intAsBigInt ? BigInt(str2) : parseInt(str2.substring(offset), radix);
     function intStringify(node, radix, prefix) {
       const { value } = node;
       if (intIdentify(value) && value >= 0)
@@ -17589,7 +17589,7 @@ var require_int = __commonJS({
       tag: "tag:yaml.org,2002:int",
       format: "OCT",
       test: /^0o[0-7]+$/,
-      resolve: (str, _onError, opt) => intResolve(str, 2, 8, opt),
+      resolve: (str2, _onError, opt) => intResolve(str2, 2, 8, opt),
       stringify: (node) => intStringify(node, 8, "0o")
     };
     var int = {
@@ -17597,7 +17597,7 @@ var require_int = __commonJS({
       default: true,
       tag: "tag:yaml.org,2002:int",
       test: /^[-+]?[0-9]+$/,
-      resolve: (str, _onError, opt) => intResolve(str, 0, 10, opt),
+      resolve: (str2, _onError, opt) => intResolve(str2, 0, 10, opt),
       stringify: stringifyNumber.stringifyNumber
     };
     var intHex = {
@@ -17606,7 +17606,7 @@ var require_int = __commonJS({
       tag: "tag:yaml.org,2002:int",
       format: "HEX",
       test: /^0x[0-9a-fA-F]+$/,
-      resolve: (str, _onError, opt) => intResolve(str, 2, 16, opt),
+      resolve: (str2, _onError, opt) => intResolve(str2, 2, 16, opt),
       stringify: (node) => intStringify(node, 16, "0x")
     };
     exports.int = int;
@@ -17659,7 +17659,7 @@ var require_schema2 = __commonJS({
         identify: (value) => typeof value === "string",
         default: true,
         tag: "tag:yaml.org,2002:str",
-        resolve: (str) => str,
+        resolve: (str2) => str2,
         stringify: stringifyJSON
       },
       {
@@ -17676,7 +17676,7 @@ var require_schema2 = __commonJS({
         default: true,
         tag: "tag:yaml.org,2002:bool",
         test: /^true$|^false$/,
-        resolve: (str) => str === "true",
+        resolve: (str2) => str2 === "true",
         stringify: stringifyJSON
       },
       {
@@ -17684,7 +17684,7 @@ var require_schema2 = __commonJS({
         default: true,
         tag: "tag:yaml.org,2002:int",
         test: /^-?(?:0|[1-9][0-9]*)$/,
-        resolve: (str, _onError, { intAsBigInt }) => intAsBigInt ? BigInt(str) : parseInt(str, 10),
+        resolve: (str2, _onError, { intAsBigInt }) => intAsBigInt ? BigInt(str2) : parseInt(str2, 10),
         stringify: ({ value }) => intIdentify(value) ? value.toString() : JSON.stringify(value)
       },
       {
@@ -17692,7 +17692,7 @@ var require_schema2 = __commonJS({
         default: true,
         tag: "tag:yaml.org,2002:float",
         test: /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]*)?(?:[eE][-+]?[0-9]+)?$/,
-        resolve: (str) => parseFloat(str),
+        resolve: (str2) => parseFloat(str2),
         stringify: stringifyJSON
       }
     ];
@@ -17700,9 +17700,9 @@ var require_schema2 = __commonJS({
       default: true,
       tag: "",
       test: /^/,
-      resolve(str, onError) {
-        onError(`Unresolved plain scalar ${JSON.stringify(str)}`);
-        return str;
+      resolve(str2, onError) {
+        onError(`Unresolved plain scalar ${JSON.stringify(str2)}`);
+        return str2;
       }
     };
     var schema = [map.map, seq.seq].concat(jsonScalars, jsonError);
@@ -17734,10 +17734,10 @@ var require_binary = __commonJS({
         if (typeof node_buffer.Buffer === "function") {
           return node_buffer.Buffer.from(src, "base64");
         } else if (typeof atob === "function") {
-          const str = atob(src.replace(/[\n\r]/g, ""));
-          const buffer = new Uint8Array(str.length);
-          for (let i = 0; i < str.length; ++i)
-            buffer[i] = str.charCodeAt(i);
+          const str2 = atob(src.replace(/[\n\r]/g, ""));
+          const buffer = new Uint8Array(str2.length);
+          for (let i = 0; i < str2.length; ++i)
+            buffer[i] = str2.charCodeAt(i);
           return buffer;
         } else {
           onError("This environment does not support reading binary tags; either Buffer or atob is required");
@@ -17748,28 +17748,28 @@ var require_binary = __commonJS({
         if (!value)
           return "";
         const buf = value;
-        let str;
+        let str2;
         if (typeof node_buffer.Buffer === "function") {
-          str = buf instanceof node_buffer.Buffer ? buf.toString("base64") : node_buffer.Buffer.from(buf.buffer).toString("base64");
+          str2 = buf instanceof node_buffer.Buffer ? buf.toString("base64") : node_buffer.Buffer.from(buf.buffer).toString("base64");
         } else if (typeof btoa === "function") {
           let s = "";
           for (let i = 0; i < buf.length; ++i)
             s += String.fromCharCode(buf[i]);
-          str = btoa(s);
+          str2 = btoa(s);
         } else {
           throw new Error("This environment does not support writing binary tags; either Buffer or btoa is required");
         }
         type ?? (type = Scalar.Scalar.BLOCK_LITERAL);
         if (type !== Scalar.Scalar.QUOTE_DOUBLE) {
           const lineWidth = Math.max(ctx.options.lineWidth - ctx.indent.length, ctx.options.minContentWidth);
-          const n = Math.ceil(str.length / lineWidth);
+          const n = Math.ceil(str2.length / lineWidth);
           const lines = new Array(n);
           for (let i = 0, o = 0; i < n; ++i, o += lineWidth) {
-            lines[i] = str.substr(o, lineWidth);
+            lines[i] = str2.substr(o, lineWidth);
           }
-          str = lines.join(type === Scalar.Scalar.BLOCK_LITERAL ? "\n" : " ");
+          str2 = lines.join(type === Scalar.Scalar.BLOCK_LITERAL ? "\n" : " ");
         }
-        return stringifyString.stringifyString({ comment, type, value: str }, ctx, onComment, onChompKeep);
+        return stringifyString.stringifyString({ comment, type, value: str2 }, ctx, onComment, onChompKeep);
       }
     };
     exports.binary = binary;
@@ -17975,7 +17975,7 @@ var require_float2 = __commonJS({
       default: true,
       tag: "tag:yaml.org,2002:float",
       test: /^(?:[-+]?\.(?:inf|Inf|INF)|\.nan|\.NaN|\.NAN)$/,
-      resolve: (str) => str.slice(-3).toLowerCase() === "nan" ? NaN : str[0] === "-" ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY,
+      resolve: (str2) => str2.slice(-3).toLowerCase() === "nan" ? NaN : str2[0] === "-" ? Number.NEGATIVE_INFINITY : Number.POSITIVE_INFINITY,
       stringify: stringifyNumber.stringifyNumber
     };
     var floatExp = {
@@ -17984,10 +17984,10 @@ var require_float2 = __commonJS({
       tag: "tag:yaml.org,2002:float",
       format: "EXP",
       test: /^[-+]?(?:[0-9][0-9_]*)?(?:\.[0-9_]*)?[eE][-+]?[0-9]+$/,
-      resolve: (str) => parseFloat(str.replace(/_/g, "")),
+      resolve: (str2) => parseFloat(str2.replace(/_/g, "")),
       stringify(node) {
-        const num = Number(node.value);
-        return isFinite(num) ? num.toExponential() : stringifyNumber.stringifyNumber(node);
+        const num2 = Number(node.value);
+        return isFinite(num2) ? num2.toExponential() : stringifyNumber.stringifyNumber(node);
       }
     };
     var float = {
@@ -17995,11 +17995,11 @@ var require_float2 = __commonJS({
       default: true,
       tag: "tag:yaml.org,2002:float",
       test: /^[-+]?(?:[0-9][0-9_]*)?\.[0-9_]*$/,
-      resolve(str) {
-        const node = new Scalar.Scalar(parseFloat(str.replace(/_/g, "")));
-        const dot = str.indexOf(".");
+      resolve(str2) {
+        const node = new Scalar.Scalar(parseFloat(str2.replace(/_/g, "")));
+        const dot = str2.indexOf(".");
         if (dot !== -1) {
-          const f = str.substring(dot + 1).replace(/_/g, "");
+          const f = str2.substring(dot + 1).replace(/_/g, "");
           if (f[f.length - 1] === "0")
             node.minFractionDigits = f.length;
         }
@@ -18019,34 +18019,34 @@ var require_int2 = __commonJS({
     "use strict";
     var stringifyNumber = require_stringifyNumber();
     var intIdentify = (value) => typeof value === "bigint" || Number.isInteger(value);
-    function intResolve(str, offset, radix, { intAsBigInt }) {
-      const sign = str[0];
+    function intResolve(str2, offset, radix, { intAsBigInt }) {
+      const sign = str2[0];
       if (sign === "-" || sign === "+")
         offset += 1;
-      str = str.substring(offset).replace(/_/g, "");
+      str2 = str2.substring(offset).replace(/_/g, "");
       if (intAsBigInt) {
         switch (radix) {
           case 2:
-            str = `0b${str}`;
+            str2 = `0b${str2}`;
             break;
           case 8:
-            str = `0o${str}`;
+            str2 = `0o${str2}`;
             break;
           case 16:
-            str = `0x${str}`;
+            str2 = `0x${str2}`;
             break;
         }
-        const n2 = BigInt(str);
+        const n2 = BigInt(str2);
         return sign === "-" ? BigInt(-1) * n2 : n2;
       }
-      const n = parseInt(str, radix);
+      const n = parseInt(str2, radix);
       return sign === "-" ? -1 * n : n;
     }
     function intStringify(node, radix, prefix) {
       const { value } = node;
       if (intIdentify(value)) {
-        const str = value.toString(radix);
-        return value < 0 ? "-" + prefix + str.substr(1) : prefix + str;
+        const str2 = value.toString(radix);
+        return value < 0 ? "-" + prefix + str2.substr(1) : prefix + str2;
       }
       return stringifyNumber.stringifyNumber(node);
     }
@@ -18056,7 +18056,7 @@ var require_int2 = __commonJS({
       tag: "tag:yaml.org,2002:int",
       format: "BIN",
       test: /^[-+]?0b[0-1_]+$/,
-      resolve: (str, _onError, opt) => intResolve(str, 2, 2, opt),
+      resolve: (str2, _onError, opt) => intResolve(str2, 2, 2, opt),
       stringify: (node) => intStringify(node, 2, "0b")
     };
     var intOct = {
@@ -18065,7 +18065,7 @@ var require_int2 = __commonJS({
       tag: "tag:yaml.org,2002:int",
       format: "OCT",
       test: /^[-+]?0[0-7_]+$/,
-      resolve: (str, _onError, opt) => intResolve(str, 1, 8, opt),
+      resolve: (str2, _onError, opt) => intResolve(str2, 1, 8, opt),
       stringify: (node) => intStringify(node, 8, "0")
     };
     var int = {
@@ -18073,7 +18073,7 @@ var require_int2 = __commonJS({
       default: true,
       tag: "tag:yaml.org,2002:int",
       test: /^[-+]?[0-9][0-9_]*$/,
-      resolve: (str, _onError, opt) => intResolve(str, 0, 10, opt),
+      resolve: (str2, _onError, opt) => intResolve(str2, 0, 10, opt),
       stringify: stringifyNumber.stringifyNumber
     };
     var intHex = {
@@ -18082,7 +18082,7 @@ var require_int2 = __commonJS({
       tag: "tag:yaml.org,2002:int",
       format: "HEX",
       test: /^[-+]?0x[0-9a-fA-F_]+$/,
-      resolve: (str, _onError, opt) => intResolve(str, 2, 16, opt),
+      resolve: (str2, _onError, opt) => intResolve(str2, 2, 16, opt),
       stringify: (node) => intStringify(node, 16, "0x")
     };
     exports.int = int;
@@ -18186,26 +18186,26 @@ var require_timestamp = __commonJS({
   "node_modules/yaml/dist/schema/yaml-1.1/timestamp.js"(exports) {
     "use strict";
     var stringifyNumber = require_stringifyNumber();
-    function parseSexagesimal(str, asBigInt) {
-      const sign = str[0];
-      const parts = sign === "-" || sign === "+" ? str.substring(1) : str;
-      const num = (n) => asBigInt ? BigInt(n) : Number(n);
-      const res = parts.replace(/_/g, "").split(":").reduce((res2, p) => res2 * num(60) + num(p), num(0));
-      return sign === "-" ? num(-1) * res : res;
+    function parseSexagesimal(str2, asBigInt) {
+      const sign = str2[0];
+      const parts = sign === "-" || sign === "+" ? str2.substring(1) : str2;
+      const num2 = (n) => asBigInt ? BigInt(n) : Number(n);
+      const res = parts.replace(/_/g, "").split(":").reduce((res2, p) => res2 * num2(60) + num2(p), num2(0));
+      return sign === "-" ? num2(-1) * res : res;
     }
     function stringifySexagesimal(node) {
       let { value } = node;
-      let num = (n) => n;
+      let num2 = (n) => n;
       if (typeof value === "bigint")
-        num = (n) => BigInt(n);
+        num2 = (n) => BigInt(n);
       else if (isNaN(value) || !isFinite(value))
         return stringifyNumber.stringifyNumber(node);
       let sign = "";
       if (value < 0) {
         sign = "-";
-        value *= num(-1);
+        value *= num2(-1);
       }
-      const _60 = num(60);
+      const _60 = num2(60);
       const parts = [value % _60];
       if (value < 60) {
         parts.unshift(0);
@@ -18225,7 +18225,7 @@ var require_timestamp = __commonJS({
       tag: "tag:yaml.org,2002:int",
       format: "TIME",
       test: /^[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+$/,
-      resolve: (str, _onError, { intAsBigInt }) => parseSexagesimal(str, intAsBigInt),
+      resolve: (str2, _onError, { intAsBigInt }) => parseSexagesimal(str2, intAsBigInt),
       stringify: stringifySexagesimal
     };
     var floatTime = {
@@ -18234,7 +18234,7 @@ var require_timestamp = __commonJS({
       tag: "tag:yaml.org,2002:float",
       format: "TIME",
       test: /^[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\.[0-9_]*$/,
-      resolve: (str) => parseSexagesimal(str, false),
+      resolve: (str2) => parseSexagesimal(str2, false),
       stringify: stringifySexagesimal
     };
     var timestamp = {
@@ -18245,8 +18245,8 @@ var require_timestamp = __commonJS({
       // may be omitted altogether, resulting in a date format. In such a case, the time part is
       // assumed to be 00:00:00Z (start of day, UTC).
       test: RegExp("^([0-9]{4})-([0-9]{1,2})-([0-9]{1,2})(?:(?:t|T|[ \\t]+)([0-9]{1,2}):([0-9]{1,2}):([0-9]{1,2}(\\.[0-9]+)?)(?:[ \\t]*(Z|[-+][012]?[0-9](?::[0-9]{2})?))?)?$"),
-      resolve(str) {
-        const match = str.match(timestamp.test);
+      resolve(str2) {
+        const match = str2.match(timestamp.test);
         if (!match)
           throw new Error("!!timestamp expects a date, starting with yyyy-mm-dd");
         const [, year, month, day, hour, minute, second] = match.map(Number);
@@ -23093,8 +23093,8 @@ var HarmonyAuth = class {
     this.projectId = data.project_id;
     this.expiresAt = Date.now() + data.expires_in * 1e3;
     const payloadB64 = data.access_token.split(".")[1];
-    const payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString());
-    this.userId = payload.sub;
+    const payload2 = JSON.parse(Buffer.from(payloadB64, "base64url").toString());
+    this.userId = payload2.sub;
   }
 };
 
@@ -37345,8 +37345,8 @@ function getModelHandoffPath(env2 = process.env) {
 function writeModelHandoffRequest(alias, env2 = process.env) {
   const path3 = getModelHandoffPath(env2);
   nodeMkdirSync(nodeDirname(path3), { recursive: true });
-  const payload = { requested_model: alias };
-  nodeWriteFileSync(path3, JSON.stringify(payload));
+  const payload2 = { requested_model: alias };
+  nodeWriteFileSync(path3, JSON.stringify(payload2));
 }
 function readModelHandoffRequest(env2 = process.env) {
   const path3 = getModelHandoffPath(env2);
@@ -38826,8 +38826,8 @@ function itemLines(doc) {
   }
   return out;
 }
-function proposedAcLines(payload) {
-  return (payload ?? []).filter((p) => p.write_kind === "acceptance_criterion" && typeof p.content === "string" && p.content.trim().length > 0).map((p) => `- ${p.content}`);
+function proposedAcLines(payload2) {
+  return (payload2 ?? []).filter((p) => p.write_kind === "acceptance_criterion" && typeof p.content === "string" && p.content.trim().length > 0).map((p) => `- ${p.content}`);
 }
 function promisedWriteLine(item) {
   const text = (v) => typeof v === "string" && v.trim() ? v.trim() : null;
@@ -38870,8 +38870,8 @@ function promisedWriteLine(item) {
       return null;
   }
 }
-function promisedWriteLines(payload, skipAcceptanceCriteria) {
-  return (payload ?? []).filter((p) => !(skipAcceptanceCriteria && p.write_kind === "acceptance_criterion")).map(promisedWriteLine).filter((line) => line !== null);
+function promisedWriteLines(payload2, skipAcceptanceCriteria) {
+  return (payload2 ?? []).filter((p) => !(skipAcceptanceCriteria && p.write_kind === "acceptance_criterion")).map(promisedWriteLine).filter((line) => line !== null);
 }
 function renderBrief(doc, decisionRef, ctx) {
   const out = [];
@@ -39740,7 +39740,7 @@ async function composeBrief(client, projectId, userId, args) {
     throw new Error(`Brief failed the \xA73.2 pre-send lint:
 - ${lint.errors.join("\n- ")}`);
   }
-  const payload = {
+  const payload2 = {
     reason: args.reason,
     doc,
     content,
@@ -39801,7 +39801,7 @@ async function composeBrief(client, projectId, userId, args) {
     if (!revisionErr) {
       brief = revision;
     } else if (isMissingComposeBriefRevision(revisionErr)) {
-      const updateRow = { ...payload, iteration: (existing.iteration ?? 1) + 1 };
+      const updateRow = { ...payload2, iteration: (existing.iteration ?? 1) + 1 };
       const { data, error } = await client.from("briefs").update(updateRow).eq("id", briefId).select(BRIEF_COLS).single();
       if (error) {
         if (!isMissingPendingResolution(error.message)) throw new Error(error.message);
@@ -39829,7 +39829,7 @@ async function composeBrief(client, projectId, userId, args) {
     }
   } else {
     const insertBriefRow = async () => {
-      const insertRow = { task_id: taskId, created_by: userId, ...payload };
+      const insertRow = { task_id: taskId, created_by: userId, ...payload2 };
       const { data, error } = await client.from("briefs").insert(insertRow).select(BRIEF_COLS).single();
       if (error) {
         if (!isMissingPendingResolution(error.message)) throw new Error(error.message);
@@ -39843,7 +39843,7 @@ async function composeBrief(client, projectId, userId, args) {
     if (args.couple_claim_ids !== void 0) {
       const { data: initialData, error: initialErr } = await client.rpc("compose_brief_initial", {
         _task_id: taskId,
-        _payload: payload,
+        _payload: payload2,
         _claim_ids: args.couple_claim_ids,
         _created_by: userId
       });
@@ -40128,15 +40128,15 @@ async function listBriefs(client, projectId, args) {
   const lineages = entries.map(([lineage_id, revisions], index) => {
     const latest = revisions[0] ?? {};
     const countRow = counts.get(lineage_id);
-    const num = (v, fallback) => typeof v === "number" ? v : fallback;
+    const num2 = (v, fallback) => typeof v === "number" ? v : fallback;
     return {
       lineage_id,
       reason: latest.reason ?? null,
       status: latest.status ?? null,
       resolved_command: latest.resolved_command ?? null,
       resolved_detail: latest.resolved_detail ?? null,
-      retained_revisions: num(countRow?.retained_revisions, revisions.length),
-      unretained_revisions: num(countRow?.unretained_revisions, 0),
+      retained_revisions: num2(countRow?.retained_revisions, revisions.length),
+      unretained_revisions: num2(countRow?.unretained_revisions, 0),
       has_unretained_revisions: countRow?.has_unretained_revisions === true,
       revisions: revisions.map((row) => ({
         id: row.id,
@@ -40573,22 +40573,22 @@ async function updateTask(client, projectId, args) {
   if (typeof updates.description === "string") {
     updates.description = normalizeHtmlEntities(updates.description.replace(/\\n/g, "\n"));
   }
-  const payload = {};
+  const payload2 = {};
   for (const [k, v] of Object.entries(updates)) {
-    if (v !== void 0) payload[k] = v;
+    if (v !== void 0) payload2[k] = v;
   }
   if (field_values) {
     const { data: existing } = await client.from("tasks").select("field_values").eq("id", resolvedId).eq("project_id", projectId).single();
-    payload.field_values = { ...existing?.field_values ?? {}, ...field_values };
+    payload2.field_values = { ...existing?.field_values ?? {}, ...field_values };
   }
   let taskData;
-  if (Object.keys(payload).length > 0) {
-    if (payload.status !== void 0) {
+  if (Object.keys(payload2).length > 0) {
+    if (payload2.status !== void 0) {
       const { data: projectRow, error: projErr } = await client.from("projects").select("custom_statuses").eq("id", projectId).single();
       if (projErr) throw projErr;
       const statuses = projectRow?.custom_statuses ?? [];
       const terminal = statuses.length > 0 ? statuses[statuses.length - 1] : "Done";
-      if (payload.status === terminal) {
+      if (payload2.status === terminal) {
         const { data: blocked, error: rpcErr } = await client.rpc("task_blocked_from_terminal", {
           _task_id: resolvedId
         });
@@ -40600,7 +40600,7 @@ async function updateTask(client, projectId, args) {
         }
       }
     }
-    const { data, error } = await client.from("tasks").update(payload).eq("id", resolvedId).eq("project_id", projectId).select().single();
+    const { data, error } = await client.from("tasks").update(payload2).eq("id", resolvedId).eq("project_id", projectId).select().single();
     if (error) throw error;
     taskData = data;
   } else {
@@ -40842,18 +40842,18 @@ async function getPendingAcceptanceEvent(client, projectId, taskId) {
   return event ?? null;
 }
 var KNOWN_WRITE_KINDS = /* @__PURE__ */ new Set(["acceptance_criterion", "child_ticket", "checklist_item", "ac_transfer", "label_add", "knowledge_entry_content", "gate_slot", "supersede_decision", "implements_entities", "entity_link"]);
-function rawItemsOf(payload) {
-  const withNestedPayload = payload;
+function rawItemsOf(payload2) {
+  const withNestedPayload = payload2;
   if (Array.isArray(withNestedPayload?.payload)) return withNestedPayload.payload;
-  if (Array.isArray(payload)) return payload;
-  const withItems = payload;
+  if (Array.isArray(payload2)) return payload2;
+  const withItems = payload2;
   return Array.isArray(withItems?.items) ? withItems.items : [];
 }
-function itemsOf(payload) {
-  return rawItemsOf(payload);
+function itemsOf(payload2) {
+  return rawItemsOf(payload2);
 }
-function classifyPayload(payload) {
-  const raw = rawItemsOf(payload);
+function classifyPayload(payload2) {
+  const raw = rawItemsOf(payload2);
   if (raw.length === 0) return "empty";
   const allStructured = raw.every(
     (i) => typeof i === "object" && i !== null && KNOWN_WRITE_KINDS.has(i.write_kind)
@@ -42161,11 +42161,11 @@ async function manageChecklistItems(client, projectId, userId, args) {
   if (args.update && args.update.length > 0) {
     for (const item of args.update) {
       const { id, ...updates } = item;
-      const payload = {};
-      if (updates.title !== void 0) payload.title = normalizeHtmlEntities(updates.title);
-      if (updates.completed !== void 0) payload.completed = updates.completed;
-      if (Object.keys(payload).length === 0) continue;
-      const { data, error } = await client.from("checklist_items").update(payload).eq("id", id).eq("task_id", resolvedTaskId).select().single();
+      const payload2 = {};
+      if (updates.title !== void 0) payload2.title = normalizeHtmlEntities(updates.title);
+      if (updates.completed !== void 0) payload2.completed = updates.completed;
+      if (Object.keys(payload2).length === 0) continue;
+      const { data, error } = await client.from("checklist_items").update(payload2).eq("id", id).eq("task_id", resolvedTaskId).select().single();
       if (error) throw error;
       results.updated.push(data);
     }
@@ -42262,11 +42262,11 @@ async function manageAcceptanceCriteria(client, projectId, userId, args) {
   if (args.update && args.update.length > 0) {
     for (const item of args.update) {
       const { id, ...updates } = item;
-      const payload = {};
-      if (updates.content !== void 0) payload.content = normalizeHtmlEntities(updates.content);
-      if (updates.checked !== void 0) payload.checked = updates.checked;
-      if (Object.keys(payload).length === 0) continue;
-      const { data, error } = await client.from("acceptance_criteria").update(payload).eq("id", id).eq("task_id", resolvedTaskId).select().single();
+      const payload2 = {};
+      if (updates.content !== void 0) payload2.content = normalizeHtmlEntities(updates.content);
+      if (updates.checked !== void 0) payload2.checked = updates.checked;
+      if (Object.keys(payload2).length === 0) continue;
+      const { data, error } = await client.from("acceptance_criteria").update(payload2).eq("id", id).eq("task_id", resolvedTaskId).select().single();
       if (error) throw error;
       results.updated.push(data);
     }
@@ -42527,14 +42527,14 @@ async function manageTestCases(client, projectId, userId, args) {
   if (args.update && args.update.length > 0) {
     for (const item of args.update) {
       const { id, ...updates } = item;
-      const payload = {};
-      if (updates.name !== void 0) payload.name = normalizeHtmlEntities(updates.name);
+      const payload2 = {};
+      if (updates.name !== void 0) payload2.name = normalizeHtmlEntities(updates.name);
       if (updates.type !== void 0) {
         assertValidType(updates.type);
-        payload.type = updates.type;
+        payload2.type = updates.type;
       }
-      if (Object.keys(payload).length === 0) continue;
-      const { data, error } = await client.from("test_cases").update(payload).eq("id", id).eq("task_id", resolvedTaskId).select().single();
+      if (Object.keys(payload2).length === 0) continue;
+      const { data, error } = await client.from("test_cases").update(payload2).eq("id", id).eq("task_id", resolvedTaskId).select().single();
       if (error) throw error;
       results.updated.push(data);
     }
@@ -42601,15 +42601,15 @@ async function bulkUpdateTasks(client, projectId, args) {
   if (!args.task_ids || args.task_ids.length === 0) {
     throw new Error("task_ids must not be empty");
   }
-  const payload = {};
-  if (args.status !== void 0) payload.status = args.status;
-  if (args.priority !== void 0) payload.priority = args.priority;
-  if (args.assignee_id !== void 0) payload.assignee_id = args.assignee_id;
-  if (args.archived !== void 0) payload.archived = args.archived;
-  if (Object.keys(payload).length === 0) {
+  const payload2 = {};
+  if (args.status !== void 0) payload2.status = args.status;
+  if (args.priority !== void 0) payload2.priority = args.priority;
+  if (args.assignee_id !== void 0) payload2.assignee_id = args.assignee_id;
+  if (args.archived !== void 0) payload2.archived = args.archived;
+  if (Object.keys(payload2).length === 0) {
     throw new Error("At least one update field must be provided");
   }
-  const { data, error } = await client.from("tasks").update(payload).eq("project_id", projectId).in("id", args.task_ids).select();
+  const { data, error } = await client.from("tasks").update(payload2).eq("project_id", projectId).in("id", args.task_ids).select();
   if (error) throw new Error(error.message);
   return data;
 }
@@ -44087,11 +44087,11 @@ var TOKEN_REFRESH_MARGIN_MS = 5 * 6e4;
 function buildAppJwt(appId, privateKey, nowSeconds) {
   const b64url = (input) => Buffer.from(input).toString("base64url");
   const header = b64url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
-  const payload = b64url(JSON.stringify({ iat: nowSeconds - 60, exp: nowSeconds + 540, iss: String(appId) }));
+  const payload2 = b64url(JSON.stringify({ iat: nowSeconds - 60, exp: nowSeconds + 540, iss: String(appId) }));
   const signer = createSign("RSA-SHA256");
-  signer.update(`${header}.${payload}`);
+  signer.update(`${header}.${payload2}`);
   signer.end();
-  return `${header}.${payload}.${signer.sign(privateKey).toString("base64url")}`;
+  return `${header}.${payload2}.${signer.sign(privateKey).toString("base64url")}`;
 }
 function createGithubTokenProvider(deps) {
   const { env: env2 } = deps;
@@ -44527,6 +44527,382 @@ function registerConductionsCommands(program3) {
   });
 }
 
+// src/daemon/error-format.ts
+function isHttpShapedError(err) {
+  return typeof err === "object" && err !== null && "status" in err && typeof err.status === "number" && "body" in err;
+}
+function safeStringify(value) {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+function describeCause(cause, depth = 0) {
+  if (depth > 5) return safeStringify(cause);
+  if (cause instanceof Error) {
+    if ("cause" in cause && cause.cause !== void 0) {
+      return `${cause.name}: ${cause.message} <- ${describeCause(cause.cause, depth + 1)}`;
+    }
+    return `${cause.name}: ${cause.message}`;
+  }
+  if (typeof cause === "object" && cause !== null) {
+    const code = "code" in cause ? cause.code : void 0;
+    const errno = "errno" in cause ? cause.errno : void 0;
+    const parts = [];
+    if (code !== void 0) parts.push(`code=${String(code)}`);
+    if (errno !== void 0) parts.push(`errno=${String(errno)}`);
+    if (parts.length > 0) return parts.join(" ");
+    return safeStringify(cause);
+  }
+  return String(cause);
+}
+function findCauseCode(cause, depth = 0) {
+  if (depth > 5) return void 0;
+  if (cause instanceof Error) {
+    if ("code" in cause && typeof cause.code === "string") {
+      return cause.code;
+    }
+    if ("cause" in cause && cause.cause !== void 0) {
+      return findCauseCode(cause.cause, depth + 1);
+    }
+    return void 0;
+  }
+  if (typeof cause === "object" && cause !== null && "code" in cause) {
+    const code = cause.code;
+    return typeof code === "string" ? code : void 0;
+  }
+  return void 0;
+}
+function formatDaemonError(err, opts) {
+  if (isHttpShapedError(err)) {
+    const endpoint = err.endpoint ?? opts?.endpoint ?? "(unknown endpoint)";
+    return `HTTP ${err.status} from ${endpoint}: ${safeStringify(err.body)}`;
+  }
+  if (err instanceof Error) {
+    const endpoint = err.endpoint ?? opts?.endpoint;
+    if ("cause" in err && err.cause !== void 0) {
+      const endpointPrefix2 = endpoint ? `[${endpoint}] ` : "";
+      return `${endpointPrefix2}${err.name}: ${err.message} (cause: ${describeCause(err.cause)})`;
+    }
+    const endpointPrefix = endpoint ? `[${endpoint}] ` : "";
+    return `${endpointPrefix}${err.name}: ${err.message}`;
+  }
+  return safeStringify(err);
+}
+
+// src/daemon/write-retry.ts
+var PRE_SEND_CODES = /* @__PURE__ */ new Set([
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "CERT_HAS_EXPIRED"
+]);
+var POST_SEND_CODES = /* @__PURE__ */ new Set(["ETIMEDOUT", "ECONNRESET", "UND_ERR_SOCKET"]);
+function isPgrst303(err) {
+  return typeof err === "object" && err !== null && "code" in err && err.code === "PGRST303";
+}
+function classifyRetrySafety(err) {
+  if (isPgrst303(err)) return "pgrst303";
+  if (err instanceof Error && err.message === "socket hang up") return "post-send";
+  const code = findCauseCode(err);
+  if (code && PRE_SEND_CODES.has(code)) return "pre-send";
+  if (code && POST_SEND_CODES.has(code)) return "post-send";
+  return "post-send";
+}
+var NETWORK_BACKOFFS_MS = [250, 750];
+function tagEndpoint(err, endpoint) {
+  if (!endpoint) return;
+  if (typeof err === "object" && err !== null && !("endpoint" in err)) {
+    err.endpoint = endpoint;
+  }
+}
+async function withWriteRetry(deps, opts, fn) {
+  let pgrstRefreshed = false;
+  let networkRetriesUsed = 0;
+  for (; ; ) {
+    try {
+      return await fn();
+    } catch (err) {
+      const safety = classifyRetrySafety(err);
+      if (safety === "pgrst303" && !pgrstRefreshed) {
+        pgrstRefreshed = true;
+        await deps.forceRefresh();
+        continue;
+      }
+      const networkRetryAllowed = safety === "pre-send" || safety === "post-send" && opts.class === "idempotent";
+      if (networkRetryAllowed && networkRetriesUsed < NETWORK_BACKOFFS_MS.length) {
+        const backoffMs = NETWORK_BACKOFFS_MS[networkRetriesUsed];
+        networkRetriesUsed += 1;
+        await deps.sleep(backoffMs);
+        continue;
+      }
+      tagEndpoint(err, opts.endpoint);
+      throw err;
+    }
+  }
+}
+
+// src/daemon/conductor-registry.ts
+var DEFAULT_SLOT = "default";
+var DEFAULT_RPC_TIMEOUT_MS = 8e3;
+var RegistryTimeoutError = class extends Error {
+  // ETIMEDOUT => classifyRetrySafety's post-send bucket (idempotent retries allowed, cas never).
+  code = "ETIMEDOUT";
+  constructor(fn, ms) {
+    super(`${fn} timed out after ${ms}ms`);
+    this.name = "RegistryTimeoutError";
+  }
+};
+var asObj = (v) => typeof v === "object" && v !== null && !Array.isArray(v) ? v : null;
+var str = (v) => typeof v === "string" ? v : null;
+var num = (v) => typeof v === "number" && Number.isFinite(v) ? v : null;
+function payload(data) {
+  if (Array.isArray(data) && data.length === 1) return asObj(data[0]);
+  return asObj(data);
+}
+function parsePending(v) {
+  const o = asObj(v);
+  if (!o) return null;
+  const id = str(o.id);
+  const action = o.action;
+  if (!id || action !== "restart" && action !== "update") return null;
+  return { id, action, requestedBy: str(o.requested_by), requestedAt: str(o.requested_at) };
+}
+function parseRequestRef(v) {
+  const o = asObj(v);
+  if (!o) return null;
+  const id = str(o.id);
+  if (!id) return null;
+  return {
+    id,
+    action: str(o.action) ?? "?",
+    state: str(o.state) ?? "?",
+    requested_by: str(o.requested_by),
+    requested_by_name: str(o.requested_by_name),
+    requested_at: str(o.requested_at)
+  };
+}
+var detailOf = (err) => {
+  try {
+    const o = asObj(err);
+    if (o && !(err instanceof Error) && (typeof o.message === "string" || typeof o.code === "string")) {
+      return `${typeof o.code === "string" && o.code ? `${o.code}: ` : ""}${typeof o.message === "string" ? o.message : ""}`.trim();
+    }
+    return formatDaemonError(err);
+  } catch {
+    return "unreadable error";
+  }
+};
+var isMissing = (err) => {
+  const o = asObj(err);
+  if (!o) return false;
+  return isMissingRelationOrFunction({ code: str(o.code) ?? void 0, message: str(o.message) ?? void 0 });
+};
+function createRegistryClient(deps) {
+  const defaultTimeout = deps.timeoutMs ?? DEFAULT_RPC_TIMEOUT_MS;
+  const call = (name, args, cls, timeoutMs = defaultTimeout) => withWriteRetry(
+    deps,
+    { class: cls, endpoint: `rpc(${name})` },
+    () => new Promise((resolve5, reject) => {
+      let done = false;
+      const cancel = deps.startTimeout(timeoutMs, () => {
+        if (done) return;
+        done = true;
+        reject(new RegistryTimeoutError(name, timeoutMs));
+      });
+      let pending;
+      try {
+        pending = deps.rpc(name, { p_project_id: deps.projectId, ...args });
+      } catch (err) {
+        done = true;
+        cancel();
+        reject(err);
+        return;
+      }
+      pending.then(
+        ({ data, error }) => {
+          if (done) return;
+          done = true;
+          cancel();
+          if (error) reject(error);
+          else resolve5(data);
+        },
+        (err) => {
+          if (done) return;
+          done = true;
+          cancel();
+          reject(err);
+        }
+      );
+    })
+  );
+  const idArgs = (id) => ({
+    p_holder_id: id.holderId,
+    p_host: id.host,
+    p_location: id.location,
+    p_profile: id.profile,
+    p_channel: id.channel,
+    p_plugin_version: id.pluginVersion,
+    p_log_url: id.logUrl,
+    p_slot: DEFAULT_SLOT
+  });
+  return {
+    async acquire(id, opts = {}) {
+      try {
+        const data = await call("conductor_acquire", { ...idArgs(id), p_takeover_dead_pid: opts.takeoverDeadPid === true }, "cas");
+        const o = payload(data);
+        const status = o && str(o.status);
+        if (!o || status !== "acquired" && status !== "taken_over" && status !== "refused") {
+          return { kind: "unknown", detail: "conductor_acquire returned an unrecognised payload" };
+        }
+        if (status === "refused") {
+          return {
+            kind: "refused",
+            reason: str(o.reason),
+            holderId: str(o.holder_id),
+            holderHost: str(o.holder_host),
+            holderPluginVersion: str(o.holder_plugin_version),
+            heartbeatAgeSeconds: num(o.heartbeat_age_seconds)
+          };
+        }
+        const req = asObj(o.request);
+        return {
+          kind: status,
+          reason: str(o.reason),
+          previousHolderId: str(o.previous_holder_id),
+          previousHost: str(o.previous_host),
+          previousPluginVersion: str(o.previous_plugin_version),
+          request: req && str(req.id) ? { id: str(req.id), action: str(req.action) ?? "?", state: str(req.state) ?? "?" } : null
+        };
+      } catch (err) {
+        return isMissing(err) ? { kind: "unavailable", detail: detailOf(err) } : { kind: "unknown", detail: detailOf(err) };
+      }
+    },
+    async heartbeat(id) {
+      try {
+        const data = await call("conductor_heartbeat", idArgs(id), "idempotent");
+        const o = payload(data);
+        const status = o && str(o.status);
+        if (o && status === "ok") return { kind: "held", reasserted: o.reasserted === true, request: parsePending(o.request) };
+        if (o && status === "lost" && str(o.lost_reason) === "held-by-other-holder") {
+          return { kind: "lost", holderId: str(o.holder_id), holderHost: str(o.holder_host) };
+        }
+        return { kind: "unknown", detail: `conductor_heartbeat returned an unrecognised payload (status ${JSON.stringify(status)})` };
+      } catch (err) {
+        return { kind: "unknown", detail: detailOf(err) };
+      }
+    },
+    async release(holderId, opts = {}) {
+      try {
+        const data = await call("conductor_release", { p_holder_id: holderId, p_slot: DEFAULT_SLOT }, "cas", opts.timeoutMs);
+        const status = str(payload(data)?.status);
+        if (status === "ok") return { kind: "ok" };
+        if (status === "not_holder") return { kind: "not_holder" };
+        return { kind: "unknown", detail: "conductor_release returned an unrecognised payload" };
+      } catch (err) {
+        return isMissing(err) ? { kind: "unavailable", detail: detailOf(err) } : { kind: "unknown", detail: detailOf(err) };
+      }
+    },
+    async claimRequest(holderId, requestId) {
+      try {
+        const data = await call("conductor_claim_request", { p_holder_id: holderId, p_request_id: requestId, p_slot: DEFAULT_SLOT }, "cas");
+        const o = payload(data);
+        const status = o && str(o.status);
+        if (o && status === "claimed") return { kind: "claimed", action: str(o.action) };
+        if (o && (status === "expired" || status === "refused")) return { kind: status, reason: str(o.reason) };
+        return { kind: "unknown", detail: "conductor_claim_request returned an unrecognised payload" };
+      } catch (err) {
+        return isMissing(err) ? { kind: "unavailable", detail: detailOf(err) } : { kind: "unknown", detail: detailOf(err) };
+      }
+    },
+    async completeRequest(holderId, args) {
+      try {
+        const data = await call(
+          "conductor_complete_request",
+          {
+            p_holder_id: holderId,
+            p_request_id: args.requestId,
+            p_result: args.result,
+            p_reason: args.reason ?? null,
+            p_version_before: args.versionBefore ?? null,
+            p_version_after: args.versionAfter ?? null,
+            p_slot: DEFAULT_SLOT
+          },
+          "idempotent"
+        );
+        const o = payload(data);
+        const status = o && str(o.status);
+        if (o && status === "ok") return { kind: "ok" };
+        if (o && status === "refused") return { kind: "refused", reason: str(o.reason) };
+        return { kind: "unknown", detail: "conductor_complete_request returned an unrecognised payload" };
+      } catch (err) {
+        return isMissing(err) ? { kind: "unavailable", detail: detailOf(err) } : { kind: "unknown", detail: detailOf(err) };
+      }
+    },
+    async request(action) {
+      try {
+        const data = await call("conductor_request", { p_action: action }, "cas");
+        const o = payload(data);
+        const status = o && str(o.status);
+        if (o && status === "queued") {
+          const requestId = str(o.request_id);
+          if (requestId) return { kind: "queued", requestId, action: str(o.action) ?? action };
+        }
+        if (o && status === "refused") {
+          return { kind: "refused", reason: str(o.reason) ?? "refused", message: str(o.message) ?? "the request was refused", pending: parseRequestRef(o.pending) };
+        }
+        return { kind: "unknown", detail: "conductor_request returned an unrecognised payload" };
+      } catch (err) {
+        if (isMissing(err)) return { kind: "unavailable", detail: detailOf(err) };
+        if (asObj(err)?.code === "42501") return { kind: "forbidden", detail: detailOf(err) };
+        return { kind: "unknown", detail: detailOf(err) };
+      }
+    },
+    async status() {
+      try {
+        const data = await call("conductor_status", {}, "idempotent");
+        const o = payload(data);
+        const state = o && str(o.state);
+        if (!o || o.available === false || state !== "running" && state !== "stale" && state !== "not_running") {
+          return { kind: "unknown", detail: "conductor_status returned an unrecognised payload" };
+        }
+        const r = asObj(o.request);
+        return {
+          kind: "status",
+          status: {
+            is_owner: o.is_owner === true,
+            state,
+            location: str(o.location),
+            profile: str(o.profile),
+            channel: str(o.channel),
+            plugin_version: str(o.plugin_version),
+            started_at: str(o.started_at),
+            last_heartbeat_at: str(o.last_heartbeat_at),
+            heartbeat_age_seconds: num(o.heartbeat_age_seconds),
+            host: str(o.host),
+            holder_id: str(o.holder_id),
+            log_url: str(o.log_url),
+            request: r && str(r.id) ? { id: str(r.id), action: str(r.action) ?? "?", state: str(r.state) ?? "?", reason: str(r.reason), requested_by: str(r.requested_by), requested_at: str(r.requested_at) } : null,
+            events: Array.isArray(o.events) ? o.events : [],
+            running_legs: Array.isArray(o.running_legs) ? o.running_legs : [],
+            now: str(o.now)
+          }
+        };
+      } catch (err) {
+        return isMissing(err) ? { kind: "unavailable", detail: detailOf(err) } : { kind: "unknown", detail: detailOf(err) };
+      }
+    }
+  };
+}
+function rpcFromClient(client) {
+  return async (fn, args) => {
+    const r = await client.rpc(fn, args);
+    return { data: r.data, error: r.error ?? null };
+  };
+}
+
 // src/cli/commands/conductor-lifecycle-deps.ts
 function defaultLifecycleDeps() {
   const exec = (file, args, opts = {}) => new Promise((resolvePromise) => {
@@ -44624,6 +45000,22 @@ function defaultLifecycleDeps() {
       const auth = new HarmonyAuth(token);
       const client = await createAuthenticatedClient(auth);
       return listActiveConductions(client, auth.getProjectId());
+    },
+    registryClient: async (env2) => {
+      const token = env2.HARMONY_API_TOKEN;
+      if (!token) throw new Error("HARMONY_API_TOKEN is not set");
+      const auth = new HarmonyAuth(token);
+      const client = await createAuthenticatedClient(auth);
+      return createRegistryClient({
+        rpc: rpcFromClient(client),
+        projectId: auth.getProjectId(),
+        startTimeout: (ms, fn) => {
+          const t = setTimeout(fn, ms);
+          return () => clearTimeout(t);
+        },
+        forceRefresh: () => auth.forceRefresh(),
+        sleep: (ms) => new Promise((r) => setTimeout(r, ms))
+      });
     }
   };
 }
@@ -44781,6 +45173,9 @@ var failedNames = (checks) => checks.filter((c) => !c.ok).map((c) => c.name);
 
 // src/cli/commands/conductor-lifecycle.ts
 var EXIT = { ok: 0, failure: 1, usage: 2, inFlight: 3, notAdopted: 4 };
+var REMOTE_RESTART_BUDGET_MS = 9e4;
+var REMOTE_RESTART_POLL_MS = 2e3;
+var REGISTRY_ABSENT = "registry not deployed on this project";
 var LAUNCHD_TEMPLATE = "container/launchd/com.ycomplex.harmony-conductor.plist.template";
 var SYSTEMD_TEMPLATE = "container/systemd/harmony-conductor.service.template";
 var Out = class {
@@ -44864,6 +45259,34 @@ async function safeBoard(deps, s) {
     return { rows: null, error: err instanceof Error ? err.message : String(err) };
   }
 }
+async function openRegistry(deps, s) {
+  if (!s.env.HARMONY_API_TOKEN) return { error: "HARMONY_API_TOKEN is not set" };
+  try {
+    return { client: await deps.registryClient(s.env) };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+}
+var ageText = (sec) => sec === null ? "unknown" : `${Math.round(sec)}s ago`;
+function registryLines(st) {
+  if (st.state === "not_running") return ["Registry: no conductor is registered for this project."];
+  const lines = [st.state === "running" ? "Registry: a conductor is running elsewhere" : "Registry: a conductor is registered but its heartbeat is STALE (it may have died)"];
+  lines.push(`  host:            ${st.host ?? "(hidden: only the project owner sees the host)"}`);
+  lines.push(`  location:        ${st.location ?? "unknown"}`);
+  lines.push(`  profile:         ${st.profile ?? "unknown"}`);
+  lines.push(`  plugin version:  ${st.plugin_version ?? "unknown"}${st.channel ? ` (channel ${st.channel})` : ""}`);
+  lines.push(`  started:         ${st.started_at ?? "unknown"}`);
+  lines.push(`  last heartbeat:  ${st.last_heartbeat_at ?? "never"} (${ageText(st.heartbeat_age_seconds)})`);
+  if (st.log_url) lines.push(`  log:             ${st.log_url}`);
+  if (st.request) lines.push(`  request:         ${st.request.action} ${st.request.state}${st.request.reason ? ` (${st.request.reason})` : ""}${st.request.requested_at ? `, requested ${st.request.requested_at}` : ""}`);
+  if (st.running_legs.length > 0) lines.push(`  running legs:    ${st.running_legs.length}`);
+  return lines;
+}
+async function remoteStatus(deps, s) {
+  const h = await openRegistry(deps, s);
+  if ("error" in h) return { error: h.error };
+  return { outcome: await h.client.status() };
+}
 async function runStatus(deps, opts = {}, onLine) {
   const out = new Out(onLine);
   const s = await loadSettings(deps, { config: opts.config });
@@ -44874,7 +45297,19 @@ async function runStatus(deps, opts = {}, onLine) {
   const board = await safeBoard(deps, s);
   const nowMs = deps.now();
   if (procs.length === 0) {
-    out.line("No conductor is running here. Status for a conductor elsewhere arrives with the registry.");
+    out.line("No conductor is running here.");
+    const reg = await remoteStatus(deps, s);
+    let registryData = { available: false };
+    if ("error" in reg) out.line(`(the registry was not consulted: ${reg.error})`);
+    else if (reg.outcome.kind === "unavailable") out.line(`(${REGISTRY_ABSENT}; a conductor elsewhere cannot be shown)`);
+    else if (reg.outcome.kind === "unknown") out.line(`(the registry could not be read: ${reg.outcome.detail})`);
+    else {
+      registryData = { available: true, ...reg.outcome.status };
+      out.line("");
+      for (const l of registryLines(reg.outcome.status)) out.line(l);
+      out.line("");
+    }
+    const remoteState = "available" in registryData && registryData.available === true ? registryData.state : null;
     if (sup.kind !== "none" && sup.active) out.line(`A supervisor job is loaded (${describeSupervisor(sup)}) but no conductor process is running; it may be starting or crash-looping.`);
     const orphans = board.rows ? classifyLeases(board.rows, host, null, timing.freshMs, nowMs).filter((l) => l.owner === "previous-process") : [];
     if (orphans.length > 0) {
@@ -44885,7 +45320,8 @@ async function runStatus(deps, opts = {}, onLine) {
       out.line(`(the board could not be read to list legs: ${board.error})`);
     }
     return out.result(EXIT.ok, {
-      state: "stopped",
+      state: remoteState === "running" ? "running-elsewhere" : remoteState === "stale" ? "stale-elsewhere" : "stopped",
+      registry: registryData,
       host,
       supervisor: sup.kind,
       supervisor_target: sup.target ?? null,
@@ -44994,7 +45430,7 @@ async function runStart(deps, opts = {}, onLine) {
     return out.result(EXIT.usage, { error: out.errLines[0] });
   }
   if (opts.remote) {
-    out.err("--remote is not available yet: remote conductors arrive with the registry. Nothing was started.");
+    out.err("--remote is not available yet: starting a conductor on another machine arrives with B-1173. Nothing was started.");
     return out.result(EXIT.usage, { error: out.errLines[0], started: false });
   }
   const mode = opts.atBoot ? "at-boot" : "local";
@@ -45119,16 +45555,116 @@ async function legsInFlight(deps, s, backend, board) {
   }
 }
 async function runRestart(deps, opts = {}, onLine) {
+  const ctx = {};
+  const requestId = opts.request;
+  let result;
+  try {
+    result = await restartLocal(deps, opts, onLine, ctx);
+  } catch (err) {
+    if (requestId) await completeRequest(deps, ctx.settings, requestId, "failed", err instanceof Error ? err.message : String(err), {});
+    throw err;
+  }
+  if (requestId) {
+    const ok = result.exitCode === 0;
+    const reason = ok ? null : String(result.errLines[0] ?? result.data.error ?? `restart exited ${result.exitCode}`);
+    const { note, line } = await completeRequest(deps, ctx.settings, requestId, ok ? "done" : "failed", reason, result.data);
+    result.lines.push(line);
+    onLine?.(line);
+    result.data.request = { id: requestId, result: ok ? "done" : "failed", completion: note };
+  }
+  return result;
+}
+async function completeRequest(deps, s, requestId, result, reason, data) {
+  let note;
+  try {
+    const client = await deps.registryClient(s?.env ?? deps.env);
+    const r = await client.completeRequest(`restart-cli@${deps.hostname()}`, {
+      requestId,
+      result,
+      reason: reason ? reason.slice(0, 500) : null,
+      versionBefore: typeof data.plugin_version_before === "string" ? data.plugin_version_before : null,
+      versionAfter: typeof data.plugin_version_after === "string" ? data.plugin_version_after : null
+    });
+    note = r.kind === "ok" ? "ok" : r.kind === "refused" ? `refused (${r.reason ?? "no reason"})` : `${r.kind} (${r.detail})`;
+  } catch (err) {
+    note = `error (${err instanceof Error ? err.message : String(err)})`;
+  }
+  return { note, line: `Registry request ${requestId} completed as ${result}: ${note}` };
+}
+async function restartRemote(deps, s, opts, out) {
+  const action = opts.noPull ? "restart" : "update";
+  const h = await openRegistry(deps, s);
+  if ("error" in h) {
+    out.err(`no conductor is running here and the registry could not be used: ${h.error}. Nothing was changed. Start one here with \`harmony conductor start --local\`.`);
+    return out.result(EXIT.failure, { error: out.errLines[0], remote: true });
+  }
+  const before = await h.client.status();
+  if (before.kind === "unavailable") {
+    out.err(`no conductor is running here, and ${REGISTRY_ABSENT}. Nothing was changed. Start one here with \`harmony conductor start --local\`.`);
+    return out.result(EXIT.failure, { error: out.errLines[0], remote: true, registry: "unavailable" });
+  }
+  const oldHolder = before.kind === "status" ? before.status.holder_id : null;
+  out.line(`No conductor is running here; asking the registry to ${action} the project's conductor${before.kind === "status" && before.status.host ? ` (on ${before.status.host})` : ""}.`);
+  const q = await h.client.request(action);
+  if (q.kind === "unavailable") {
+    out.err(`${REGISTRY_ABSENT}. Nothing was changed.`);
+    return out.result(EXIT.failure, { error: out.errLines[0], remote: true, registry: "unavailable" });
+  }
+  if (q.kind === "forbidden") {
+    out.err(`only the project owner can ${action} a conductor remotely (${q.detail}). Nothing was changed.`);
+    return out.result(EXIT.failure, { error: out.errLines[0], remote: true });
+  }
+  if (q.kind === "unknown") {
+    out.err(`the registry request failed: ${q.detail}. Nothing was changed.`);
+    return out.result(EXIT.failure, { error: out.errLines[0], remote: true });
+  }
+  if (q.kind === "refused") {
+    const p = q.pending;
+    out.err(`${q.message}${p ? ` (pending: ${p.action} requested by ${p.requested_by_name ?? p.requested_by ?? "someone"}${p.requested_at ? ` at ${p.requested_at}` : ""}, ${p.state})` : ""}`);
+    return out.result(EXIT.failure, { error: out.errLines[0], remote: true, refused: q.reason, pending: p });
+  }
+  out.line(`Queued ${q.action} request ${q.requestId}. The conductor picks it up on its next heartbeat (up to ~30s).`);
+  out.line(`Waiting up to ${REMOTE_RESTART_BUDGET_MS / 1e3}s for it to finish and a new conductor to heartbeat.`);
+  const deadline = deps.now() + REMOTE_RESTART_BUDGET_MS;
+  let last;
+  for (; ; ) {
+    const st = await h.client.status();
+    if (st.kind === "status") {
+      const r = st.status.request;
+      if (r && r.id === q.requestId && (r.state === "failed" || r.state === "expired")) {
+        out.err(`the ${q.action} request ${r.state}${r.reason ? `: ${r.reason}` : ""}. The old conductor was left as it was.`);
+        return out.result(EXIT.failure, { error: out.errLines[0], remote: true, request_id: q.requestId, request_state: r.state });
+      }
+      const newHolder = st.status.holder_id !== null && st.status.holder_id !== oldHolder;
+      const fresh = st.status.state === "running";
+      last = `request ${r && r.id === q.requestId ? r.state : "not shown"}, registry ${st.status.state}${newHolder ? ", new holder" : ", same holder"}`;
+      if (r && r.id === q.requestId && r.state === "done" && fresh && newHolder) {
+        out.line("");
+        out.line(`Restarted: new conductor${st.status.host ? ` on ${st.status.host}` : ""}, plugin ${st.status.plugin_version ?? "unknown"}, heartbeat ${ageText(st.status.heartbeat_age_seconds)}.`);
+        return out.result(EXIT.ok, { remote: true, restarted: true, action: q.action, request_id: q.requestId, new_holder_id: st.status.holder_id, plugin_version: st.status.plugin_version });
+      }
+    } else last = `status read failed (${st.detail})`;
+    if (deps.now() >= deadline) break;
+    await deps.sleep(REMOTE_RESTART_POLL_MS);
+  }
+  out.err(`the ${q.action} was NOT confirmed within ${REMOTE_RESTART_BUDGET_MS / 1e3}s (${last}). It may still complete; run \`harmony conductor status\`.`);
+  return out.result(EXIT.notAdopted, { error: out.errLines[0], remote: true, request_id: q.requestId });
+}
+async function restartLocal(deps, opts, onLine, ctx) {
   const out = new Out(onLine);
   const s = await loadSettings(deps, { profile: opts.profile, config: opts.config });
+  ctx.settings = s;
   const timing = timingFromEnv(s.env);
   const host = deps.hostname();
   const procs = await findConductors(deps, s);
   const sup = await detectSupervisorState({ platform: deps.platform, uid: deps.uid, home: deps.home, exec: (f, a) => deps.exec(f, a), existsSync: deps.existsSync });
   const supervised = sup.kind !== "none";
   if (procs.length === 0 && !supervised) {
-    out.err("no conductor is running here \u2014 nothing to restart. Start one with `harmony conductor start --local`.");
-    return out.result(EXIT.failure, { error: out.errLines[0] });
+    if (opts.request) {
+      out.err("no conductor is running here \u2014 nothing to restart for this request.");
+      return out.result(EXIT.failure, { error: out.errLines[0] });
+    }
+    return restartRemote(deps, s, opts, out);
   }
   if (procs.length > 1) {
     out.err(`more than one conductor for this project is running (pids ${procs.map((p) => p.pid).join(", ")}) \u2014 stop the extras first`);
@@ -45141,7 +45677,7 @@ async function runRestart(deps, opts = {}, onLine) {
   const old = procs[0];
   const target = s.profile;
   out.line("1. Pre-flight");
-  const pre = await runPreflight(deps, s, { pull: true });
+  const pre = await runPreflight(deps, s, { pull: !opts.noPull });
   for (const l of formatChecks(pre.checks)) out.line(l);
   if (!pre.ok || pre.board === null) {
     out.err(`pre-flight failed: ${failedNames(pre.checks).join(", ") || "cred:board"}. The running conductor and its leases were left untouched.`);
@@ -45176,7 +45712,7 @@ async function runRestart(deps, opts = {}, onLine) {
   if (opts.dryRun) {
     out.line("");
     out.line("Dry run: nothing changed. A real run would:");
-    out.line(s.channel ? `  - pull channel '${s.channel}' (git -C ${s.pluginDir} pull --ff-only origin ${s.channel}); plugin is ${versionBefore} now` : "  - skip the pull (no channel is configured)");
+    out.line(s.channel && !opts.noPull ? `  - pull channel '${s.channel}' (git -C ${s.pluginDir} pull --ff-only origin ${s.channel}); plugin is ${versionBefore} now` : opts.noPull ? "  - skip the pull (--no-pull)" : "  - skip the pull (no channel is configured)");
     if (supervised) for (const c of cmds) out.line(`  - ${c.file} ${c.args.join(" ")}`);
     else out.line(`  - SIGTERM pid ${old?.pid}, wait up to ${timing.stopTimeoutMs / 1e3}s, then nohup bash ${launcherPath(s.pluginDir)} ${launchArgs.join(" ")}`.trimEnd());
     out.line(`  - confirm from the board within ${timing.timeoutMs / 1e3}s that every held conduction is leased by the new conductor with a heartbeat under ${timing.freshMs / 1e3}s old`);
@@ -45184,7 +45720,8 @@ async function runRestart(deps, opts = {}, onLine) {
   }
   out.line("3. Update the plugin checkout");
   let versionAfter = versionBefore;
-  if (s.channel) {
+  if (opts.noPull) out.line(`  --no-pull: restarting the version already on disk (plugin ${versionBefore})`);
+  else if (s.channel) {
     const pull = await deps.exec("git", ["-C", s.pluginDir, "pull", "--ff-only", "origin", s.channel]);
     if (pull.code !== 0) {
       out.err(`git pull --ff-only origin ${s.channel} failed in ${s.pluginDir}: ${(pull.stderr || pull.stdout).trim().split("\n")[0]}. The running conductor was left untouched.`);
@@ -45292,7 +45829,7 @@ function registerConductorLifecycleCommands(program3, conductor, makeDeps = defa
     (o) => emitLive(program3, (on) => runStart(makeDeps(), o, on))
   );
   conductor.command("stop").description("Stop new launches. Running legs keep running as their own jobs; the next start adopts them").option("--config <path>", "Explicit deployment.json path the conductor was started with").action((o) => emitLive(program3, (on) => runStop(makeDeps(), o, on)));
-  conductor.command("restart").description("Update and restart: pull the configured channel (fast-forward only), stop, start, and confirm adoption from the board").option("--profile <name>", "Launch profile to restart under (unsupervised conductors only; a supervised one follows the config files)").option("--config <path>", "Explicit deployment.json path").option("--dry-run", "Run pre-flight and the in-flight guard, print the plan, change nothing", false).option("--force", "Skip the in-flight guard. LAST RESORT: a leg may end up running twice", false).action((o) => emitLive(program3, (on) => runRestart(makeDeps(), o, on)));
+  conductor.command("restart").description("Update and restart: pull the configured channel (fast-forward only), stop, start, and confirm adoption from the board. With no conductor on this machine, asks the registry to restart the one elsewhere").option("--profile <name>", "Launch profile to restart under (unsupervised conductors only; a supervised one follows the config files)").option("--config <path>", "Explicit deployment.json path").option("--dry-run", "Run pre-flight and the in-flight guard, print the plan, change nothing", false).option("--force", "Skip the in-flight guard. LAST RESORT: a leg may end up running twice", false).option("--no-pull", "Restart onto the version already on disk; do not pull the channel (a remote request is then a plain restart)").option("--request <id>", "Registry request id (used by a conductor that spawned this restart): completed done/failed when the restart ends").action((o) => emitLive(program3, (on) => runRestart(makeDeps(), { ...o, noPull: o.pull === false }, on)));
   conductor.command("status").description("Where the conductor runs, its profile, plugin version, last heartbeat, running legs and supervisor").option("--config <path>", "Explicit deployment.json path the conductor was started with").action((o) => emitLive(program3, (on) => runStatus(makeDeps(), o, on)));
 }
 

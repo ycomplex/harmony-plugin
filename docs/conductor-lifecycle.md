@@ -31,8 +31,11 @@ heartbeat, and the legs running under it (read from the board by this host and p
 every lease on this host is held by the running process with a fresh heartbeat, or lists the ones that are
 **not yet adopted**.
 
-With no conductor on this machine it prints `No conductor is running here. Status for a conductor elsewhere
-arrives with the registry.` and exits 0, followed by any legs still running under the stopped conductor.
+With no conductor on this machine it prints `No conductor is running here.`, then asks the **registry**
+(B-1172) and prints the registered conductor's host (hidden from non-owners), location, profile, plugin
+version, start time, last heartbeat, log link and any restart request. If the registry functions are not on
+this project's database yet it says so (`registry not deployed on this project`). It exits 0 either way, and
+lists any legs still running under a stopped conductor.
 `--json` prints the same facts as one object (`state`, `host`, `pids`, `profile`, `plugin_version`,
 `supervisor`, `last_heartbeat_at`, `legs`, `not_adopted`, `adoption_complete`).
 
@@ -48,8 +51,8 @@ machine. Otherwise runs the pre-flight and installs a supervisor job so the cond
   $USER`).
 - `--at-boot` (macOS only, needs `sudo` once): installs a **LaunchDaemon** in `/Library/LaunchDaemons` with a
   `UserName` key, so it starts at boot as that user with that user's `HOME`, no login needed.
-- `--remote`: exits non-zero ("not available yet"); remote conductors arrive with the registry. Nothing is
-  started locally.
+- `--remote`: exits non-zero ("not available yet"); starting a conductor on another machine arrives with
+  B-1173. Nothing is started locally.
 
 Both supervisor jobs run `container/conductor-launch.sh`, which loads `~/.harmony/conductor.env` and `exec`s
 `node <plugin>/dist/bin/daemon.js`. The job is rendered from `container/launchd/*.plist.template` or
@@ -69,7 +72,7 @@ Stops the conductor as the supervisor requires, so it is not brought back:
 It waits up to 60 s for the process to exit, then lists the legs still running. `status` and `stop` handle
 **both** launchd domains (`gui/$UID` and `system`).
 
-### `harmony conductor restart [--profile P] [--config C] [--dry-run] [--force]`
+### `harmony conductor restart [--profile P] [--config C] [--dry-run] [--force] [--no-pull] [--request ID]`
 
 1. **Pre-flight** (below), before any signal.
 2. Records the conductions the old process holds (from the board).
@@ -89,6 +92,29 @@ It waits up to 60 s for the process to exit, then lists the legs still running. 
 
 A supervised conductor takes its profile from the config files, so `--profile` is refused for it (exit 2);
 change `profile` in the config and run `restart`. `--dry-run` runs steps 1-3 and prints the rest.
+
+`--no-pull` restarts onto the version already on disk (step 4 is skipped; the registry action `restart`).
+`--request ID` is what a conductor passes to the restarter it spawns for a registry request (B-1172): after
+the adoption check the request is completed `done`, or `failed` with the reason (a failed pull leaves the old
+conductor running, then the request is completed `failed`).
+
+**With no conductor on this machine** (and no supervisor job) `restart` asks the registry instead: it queues an
+`update` request (`restart` with `--no-pull`), the conductor picks it up on its next heartbeat (up to 30 s),
+and the command polls every 2 s for up to 90 s until the request is done and the registry shows a fresh
+heartbeat from a *new* holder. Exit 0 once confirmed, **4** if not confirmed in the budget, **1** with the
+reason when refused (no live conductor; a request already pending, naming who and when; only the project
+owner may request) or when the registry is not deployed on this project.
+
+## The conductor registry (B-1172)
+
+The conductor registers itself at boot (`conductor_acquire`) and heartbeats the row every `heartbeatMs`
+(30 s). A second conductor for the project is refused with `a conductor for this project is already running
+on <host> (last heartbeat <N>s ago); refusing to start` (exit 1, no scheduler started). A crash restart on the
+same host is not refused for 5 minutes: if the holder is on this host and its pid is dead, the acquire is
+retried with the dead-pid takeover. A failed registry call (network, timeout, 5xx, missing function) is never
+"lost": the conductor keeps running and launching, logs once per outage and once on recovery. Only a
+different holder with a fresh heartbeat makes it stop launching and exit like SIGTERM. A registry that is not
+deployed yet is logged once at boot and re-probed every 5 minutes. SIGTERM/SIGINT release the row.
 
 Exit codes, identical to `container/gke/switch-daemon-profile.sh`: **0** ok, **1** failure, **2** usage,
 **3** a leg is in flight on another backend, **4** adoption not confirmed. Timing knobs are the script's:

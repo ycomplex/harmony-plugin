@@ -12,6 +12,7 @@ import { createAuthenticatedClient } from '../../supabase.js';
 import { parsePsOutput, type ProcessEntry } from '../../daemon/conductor-process.js';
 import type { BoardRow } from '../../daemon/conductor-board.js';
 import { listActiveConductions } from './conductions.js';
+import { createRegistryClient, rpcFromClient, type RegistryClient } from '../../daemon/conductor-registry.js';
 
 export interface ExecResult {
   code: number;
@@ -53,6 +54,8 @@ export interface LifecycleDeps {
   rmSync(path: string): void;
   /** Active conductions on the board, read with the conductor's own token (from `env`). */
   readBoard(env: Record<string, string | undefined>): Promise<BoardRow[]>;
+  /** B-1172: the conductor-registry client, authenticated with the token in `env`. Rejects when there is none. */
+  registryClient(env: Record<string, string | undefined>): Promise<RegistryClient>;
 }
 
 export function defaultLifecycleDeps(): LifecycleDeps {
@@ -154,6 +157,22 @@ export function defaultLifecycleDeps(): LifecycleDeps {
       const auth = new HarmonyAuth(token);
       const client = await createAuthenticatedClient(auth);
       return listActiveConductions(client, auth.getProjectId());
+    },
+    registryClient: async (env) => {
+      const token = env.HARMONY_API_TOKEN;
+      if (!token) throw new Error('HARMONY_API_TOKEN is not set');
+      const auth = new HarmonyAuth(token);
+      const client = await createAuthenticatedClient(auth);
+      return createRegistryClient({
+        rpc: rpcFromClient(client as unknown as Parameters<typeof rpcFromClient>[0]),
+        projectId: auth.getProjectId(),
+        startTimeout: (ms, fn) => {
+          const t = setTimeout(fn, ms);
+          return () => clearTimeout(t);
+        },
+        forceRefresh: () => auth.forceRefresh(),
+        sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+      });
     },
   };
 }
