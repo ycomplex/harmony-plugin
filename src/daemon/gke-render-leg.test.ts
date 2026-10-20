@@ -72,6 +72,11 @@ describe('the transcript bucket mount (B-1169)', () => {
     expect(a['gke-gcsfuse/volumes']).toBe('true');
     expect(a['gke-gcsfuse/cpu-request']).toBe('250m');
     expect(a['gke-gcsfuse/memory-request']).toBe('256Mi');
+    // limits must be explicit "0": with requests alone GKE sets limit = request, and a 1Gi
+    // ephemeral limit on the sidecar evicts the whole leg pod (B-1171 build leg, 2026-10-20)
+    expect(a['gke-gcsfuse/cpu-limit']).toBe('0');
+    expect(a['gke-gcsfuse/memory-limit']).toBe('0');
+    expect(a['gke-gcsfuse/ephemeral-storage-limit']).toBe('0');
   });
 
   it('runs as the service account, defaulting to harmony-leg', () => {
