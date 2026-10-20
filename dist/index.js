@@ -46662,6 +46662,20 @@ var PATH_REGEX_TABLE = {
   "irreversible-destructive": PATH_GLOB_TABLE["irreversible-destructive"].map(globToRegExp),
   "shared-core": PATH_GLOB_TABLE["shared-core"].map(globToRegExp)
 };
+var MIGRATION_DIRECTORY_REGEXES = ["**/migrations/**", "**/migration/**"].map(globToRegExp);
+var SQL_TEST_REGEXES = [
+  "**/tests/**",
+  "**/test/**",
+  "**/__tests__/**",
+  "supabase/tests/**",
+  "**/*.test.sql",
+  "**/*.spec.sql",
+  "**/*_test.sql"
+].map(globToRegExp);
+function isMigrationRiskPath(path3) {
+  if (MIGRATION_DIRECTORY_REGEXES.some((re) => re.test(path3))) return true;
+  return PATH_REGEX_TABLE["data-migration"].some((re) => re.test(path3)) && !SQL_TEST_REGEXES.some((re) => re.test(path3));
+}
 function labelToRiskClass(label) {
   const l = label.trim().toLowerCase().replace(/^risk[:/-]/, "");
   switch (l) {
@@ -46696,6 +46710,7 @@ function authBasenameHit(path3) {
   return tokens.some((t) => AUTH_WORD_REGEX.test(t) || OAUTH_WORD_REGEX.test(t));
 }
 function pathHitsClass(paths, cls) {
+  if (cls === "data-migration") return paths.some(isMigrationRiskPath);
   const globs = PATH_REGEX_TABLE[cls];
   if (globs.length === 0) return false;
   return paths.some((p) => {
@@ -53770,10 +53785,9 @@ function evaluateMultiRepoItem(evidence) {
   }
   return { item: "multi_repo", label: "Single repo", verdict: "pass", value };
 }
-var MIGRATION_GLOB_REGEXES = PATH_GLOB_TABLE["data-migration"].map(globToRegExp);
 function evaluateMigrationItem(evidence) {
   const allPaths = evidence.flatMap((e) => e.paths ?? []);
-  const migrationPaths = allPaths.filter((p) => MIGRATION_GLOB_REGEXES.some((re) => re.test(p)));
+  const migrationPaths = allPaths.filter(isMigrationRiskPath);
   const value = `migration paths: ${migrationPaths.length} (${migrationPaths.slice(0, 5).join(", ") || "none"})`;
   if (migrationPaths.length > 0) {
     return {
