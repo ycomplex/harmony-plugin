@@ -153,7 +153,7 @@ attestation — the gate is the same whoever drives the ticket.
 `scripts/check-generated-artifacts.sh` — the inverted gate described above. The staging generation
 job (push to `main`) is the thing that builds and commits the bundle.
 
-**B-992:** any adopter of `.harmony/project.yml` (B-991) that also wants the PreToolUse gate's enforcement (`hooks/pretooluse-gate.sh` — denies a positively-identified daemon worker from opening/merging a PR or accepting a verify brief until the declared gate point has run) must also gitignore `.harmony/.gate-evidence/` — the local, best-effort evidence markers `harmony gates run <extension-point>` writes there are never meant to be committed. This repo's own `.gitignore` is the reference example.
+**B-992:** any adopter of `.harmony/project.yml` (B-991) that also wants the PreToolUse gate's enforcement (`hooks/pretooluse-gate.sh` — denies a positively-identified conductor worker from opening/merging a PR or accepting a verify brief until the declared gate point has run) must also gitignore `.harmony/.gate-evidence/` — the local, best-effort evidence markers `harmony gates run <extension-point>` writes there are never meant to be committed. This repo's own `.gitignore` is the reference example.
 
 ## Staging channel (pre-prod functional verify)
 

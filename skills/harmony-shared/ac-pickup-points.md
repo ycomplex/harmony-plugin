@@ -14,7 +14,7 @@ unenumerated route is the normal state of affairs. If you find another, add it.
 |---|---|---|---|
 | 1 | **Clarify accepted in the browser, no session running** | The web is mechanical-only: `resolve_brief` advances state but cannot file criteria. A deliberate, documented deferral (B-648). | The design gate's filing-pass self-heal (`harmony-design-decide` §2b) |
 | 2 | **A design brief accepted in the browser while a session IS watching** | `harmony-conduct` §4c case 1 classified design sub-tracks as a **pure** gate — "nothing further" — so the criteria writes its accept owes were dropped. B-648 made the accept side-effecting but left it listed as pure. | §4c case 1's side-effecting DESIGN branch |
-| 3 | **A design brief accepted in the browser with NO session watching** — the daemon's normal path | §4c's consume branches only exist inside a live watch's poll-exit. A `--one-shot` leg exits at its pause; the daemon fires a **new** leg, which starts at loop step 1 and routes to the next forward gate. Nothing consumes the accept at all. | `harmony-conduct` §1b, the leg-start consume |
+| 3 | **A design brief accepted in the browser with NO session watching** — the conductor's normal path | §4c's consume branches only exist inside a live watch's poll-exit. A `--one-shot` leg exits at its pause; the conductor fires a **new** leg, which starts at loop step 1 and routes to the next forward gate. Nothing consumes the accept at all. | `harmony-conduct` §1b, the leg-start consume |
 | 4 | **A ticket whose required sub-tracks skip the product track** | The self-heal sat inside the product track's own step, so it was never re-entered. | §2b now runs the self-heal on **every** sub-track |
 | 5 | **A ticket clarified before criteria-at-clarify existed** (pre-B-648) | There is no proposed set to file. The gate must derive from the Accepted clarification, or refuse. | The refusal path — an elicitation round asking the human |
 | 6 | **The build and verify gates themselves** — the last places an empty set can be caught | Not a leak so much as the backstop: whatever slipped through 1–5 arrives here. | The **floors**: `start-work` O3 and `finish-work` O3 pre-check `has_acceptance_criteria`; `tasks_workflow_guard` refuses `Planned→Built` and `Deployed→Verified` |
@@ -43,7 +43,7 @@ Two rules that follow, both learned the hard way:
 
 - **Keep `gate-routing.md`'s pure/side-effecting column honest.** A row that says *pure* is a licence to
   resolve inline. Route 2 exists because that licence was wrong for a year.
-- **A consume that only exists inside a live watch does not exist for the daemon.** Route 3 is the whole
+- **A consume that only exists inside a live watch does not exist for the conductor.** Route 3 is the whole
   reason §1b runs on leg start rather than only on poll-exit.
 
 ## What the floors do and don't do
@@ -90,6 +90,6 @@ forward from the exemption set you already thought of will miss exactly the case
 `(has_criteria, is_exempt, exempt_reason)`. The substrate guard calls it directly; `get_build_evidence_status`
 reads it for `has_acceptance_criteria`; the web's verify-brief pre-check reads it too. The plugin's read
 degrades to a local computation on SQLSTATE **42883 only** (the function is absent because the environment
-predates the migration — which the daemon hits by default, running `HARMONY_PLUGIN_POSTURE`
+predates the migration — which the conductor hits by default, running `HARMONY_PLUGIN_POSTURE`
 (defaulting to `main`) against `HARMONY_TARGET=prod`). Every other error propagates: a floor that opens when it malfunctions is not a
 floor.

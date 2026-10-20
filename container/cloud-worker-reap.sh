@@ -51,7 +51,7 @@ if [ -n "$EXECUTION_NAME" ]; then
   # 12:10:54Z; cancel's own confirmation printed 12:11:01Z), exit code 1, streamed "Cancelled by
   # user." The primary --wait strategy is sufficient; the bounded-poll contingency once considered
   # here is confirmed NOT needed. This remains a hang-robustness confirmation only — NOT a
-  # classification-correctness gate, since the daemon's own `timedOut` in-process flag
+  # classification-correctness gate, since the conductor's own `timedOut` in-process flag
   # (src/daemon/scheduler.ts) resolves classification independent of whatever the blocked --wait
   # call eventually returns. See cloud-worker-launch.sh's SMOKE-TEST GAP comment: a reaped/cancelled
   # execution remains indistinguishable from a failed one by exit code, by design.
@@ -61,13 +61,13 @@ if [ -n "$EXECUTION_NAME" ]; then
     --quiet || true
   rm -f "$ENV_FILE"
   # B-761: EXECUTION_NAME was found — a real execution really was there to cancel. Distinct exit
-  # code from the "nothing found" branch below so the daemon's quiet-reap renderer
+  # code from the "nothing found" branch below so the conductor's quiet-reap renderer
   # (src/daemon/quiet-reap.ts) can tell a genuine kill apart from a routine miss.
   exit 0
 fi
 
 rm -f "$ENV_FILE"
 # B-761: EXECUTION_NAME was empty — the routine miss (nothing found to reap, e.g. the dead holder's
-# execution already completed on its own). Exit 3, not the previous always-0, so the daemon's
+# execution already completed on its own). Exit 3, not the previous always-0, so the conductor's
 # quiet-reap renderer can render this distinctly from a genuine kill.
 exit 3

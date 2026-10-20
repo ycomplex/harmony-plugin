@@ -330,7 +330,7 @@ describe('elicitation-engine: below load-bearing, the session DECIDES (B-870)', 
 
   it('the non-blocking "proceeding unless redirected" round is explicitly REJECTED, with the reason', () => {
     expect(doc).toMatch(/proceeding unless redirected.*is REJECTED/is);
-    expect(doc).toMatch(/nothing can inject a redirect into a running daemon worker/i);
+    expect(doc).toMatch(/nothing can inject a redirect into a running conductor worker/i);
     expect(doc).toMatch(/comment.*is the right vehicle/is);
   });
 
@@ -371,7 +371,7 @@ describe('clean-exit-contract: ONE rule, two surfaces (B-870)', () => {
     expect(doc).toMatch(/at most twice/);
     expect(doc).toMatch(/fails \*\*open\*\*|fails open/);
     expect(doc).toContain('HARMONY_STOP_GATE_OFF');
-    expect(doc).toMatch(/absent from every daemon profile/);
+    expect(doc).toMatch(/absent from every conductor profile/);
   });
 
   it('points at the no-drift contract test that fails if the two consumers disagree', () => {

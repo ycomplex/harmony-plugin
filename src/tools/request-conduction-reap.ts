@@ -42,7 +42,7 @@ export async function requestConductionReap(
   return {
     conduction,
     message:
-      `Reap requested for conduction ${conduction.id}. The conductor daemon will notice on its ` +
+      `Reap requested for conduction ${conduction.id}. The conductor will notice on its ` +
       "next pass (only while a launch is genuinely tracked and unsettled) and escalate the SAME " +
       'reap sequence its own per-launch deadline uses — this call never kills the worker directly.',
   };
@@ -53,7 +53,7 @@ export const requestConductionReapTool = {
   description:
     "B-740: request an early reap of a hung active conduction's currently-running leg — CLI/agent " +
     "parity with the web Conductors view's \"Reap now\" button. Sets `conductions.reap_requested_at` " +
-    'to now(); this tool NEVER performs the kill itself — the conductor daemon remains the sole ' +
+    'to now(); this tool NEVER performs the kill itself — the conductor remains the sole ' +
     'process that reaps a worker, and only notices/acts on this flag while it is actively tracking ' +
     "an in-flight launch for the conduction (a request against an already-settled/parked/completed " +
     "conduction is harmless but inert). The eventual park is recorded as " +

@@ -30,7 +30,7 @@ TICKET="${2:?usage: docker-worker-launch.sh <conduction_id> <ticket> [run_config
 DEFAULT_RUN_CONFIG='{}'
 RUN_CONFIG_JSON="${3:-$DEFAULT_RUN_CONFIG}"
 MODEL="${4:-}"
-# The deployment's worker_image (the daemon always renders it; the schema default otherwise).
+# The deployment's worker_image (the conductor always renders it; the schema default otherwise).
 WORKER_IMAGE="${5:-harmony-build-env}"
 
 : "${HARMONY_PLUGIN_DIR:?HARMONY_PLUGIN_DIR is required (checkout the mint and resume-discovery scripts run from)}"
@@ -39,7 +39,7 @@ WORKER_IMAGE="${5:-harmony-build-env}"
 CODEX_RUN=0
 CODEX_AUTH_SRC=""
 CODEX_AUTH_CONTAINER_PATH="/home/worker/.codex-auth-src/auth.json"   # provision.sh copies it into ~/.codex
-# run_config arrives as base64 JSON from the daemon (or raw JSON from a manual invocation): accept both.
+# run_config arrives as base64 JSON from the conductor (or raw JSON from a manual invocation): accept both.
 ADAPTER_PROBE="$(node -e 'let s=process.argv[1];try{JSON.parse(s)}catch{try{s=Buffer.from(s,"base64").toString("utf8")}catch{}}try{const a=JSON.parse(s).agent;process.stdout.write(a&&typeof a.adapter==="string"?a.adapter:"")}catch{}' "$RUN_CONFIG_JSON" 2>/dev/null || true)"
 if [ "$ADAPTER_PROBE" = "codex" ]; then CODEX_RUN=1; fi
 if [ "$CODEX_RUN" = "1" ]; then

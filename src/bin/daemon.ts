@@ -520,8 +520,8 @@ async function main(): Promise<void> {
   const prMergeStateReader = createGithubPrMergeStateReader({ env: process.env });
   log(
     prMergeStateReader
-      ? 'fast-track post-merge recording: daemon-filed (GitHub credential found for PR merge-state reads)'
-      : 'fast-track post-merge recording: NOT daemon-filed — no GitHub credential in the daemon env ' +
+      ? 'fast-track post-merge recording: conductor-filed (GitHub credential found for PR merge-state reads)'
+      : 'fast-track post-merge recording: NOT conductor-filed — no GitHub credential in the conductor env ' +
           '(set HARMONY_APP_ID/HARMONY_APP_INSTALLATION_ID/HARMONY_APP_PRIVATE_KEY_PATH, or GH_TOKEN); ' +
           'fast-track accepts fall back to a worker leg',
   );
@@ -662,7 +662,7 @@ async function main(): Promise<void> {
   });
 
   log(
-    `conductor daemon up: lease holder ${leaseHolder}, poll ${config.pollMs}ms, ` +
+    `conductor up: lease holder ${leaseHolder}, poll ${config.pollMs}ms, ` +
       `heartbeat ${config.heartbeatMs}ms, stale ${config.staleMs}ms, ` +
       `worker timeout ${config.workerTimeoutMs}ms, ` +
       // B-1011: "requested" — the channel is created lazily and its join has NOT been awaited at
@@ -693,7 +693,7 @@ async function main(): Promise<void> {
 
 main().catch((err) => {
   process.stderr.write(
-    `daemon failed: ${formatDaemonError(err, { endpoint: '/functions/v1/auth-token' })}\n`,
+    `conductor failed: ${formatDaemonError(err, { endpoint: '/functions/v1/auth-token' })}\n`,
   );
   process.exit(1);
 });

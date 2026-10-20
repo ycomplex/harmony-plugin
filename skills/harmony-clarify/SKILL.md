@@ -226,7 +226,7 @@ Rounds follow the engine contract (≤5 questions, stakes-split — a load-beari
   the evidence and asks for confirmation/correction (*"the record says X — confirm?"*) rather than
   eliciting a fresh decision (*"what should X be?"*) — the `context_line` and each question's phrasing
   both carry this, not just an internal note the human never sees.
-- **In a conducted session:** return control to the conductor — it arms the §4c watch and re-invokes
+- **In a conducted session:** return control to the conduct loop — it arms the §4c watch and re-invokes
   this skill when the poll classifies **`answers-landed`** (a web submit) or the human answers in the
   terminal. Never leave a filed round without an armed watch in a conducted run.
 - **In a direct terminal session:** render the round as prose — the SAME anatomy as the web surface
@@ -587,7 +587,7 @@ brief it no longer underwrites (the engine contract's iterate-prune).
 
 Show the rendered `content` verbatim. On the human's command:
 
-> **Provenance (B-734):** `human-in-session` below is the human deciding *here* — a conductor-synthesized
+> **Provenance (B-734):** `human-in-session` below is the human deciding *here* — a conduct-loop-synthesized
 > accept carries `agent-synthesized:<mode>` through this same path (`skills/harmony-shared/gate-routing.md`
 > §Resolution provenance).
 
@@ -757,14 +757,14 @@ Show the rendered `content` verbatim. On the human's command:
   session running defers the AC filing to the design gate's self-heal (branch A shape) and the de-scope
   execution to the DECOMPOSE gate's self-heal — the next gate to read the clarification (the documented
   v1 asymmetry, same shape as decompose's children); a decision-only ticket's web accept likewise leaves
-  the trailing fast-forward to the next running session (re-run the conductor to apply it) — and, for a
+  the trailing fast-forward to the next running session (re-run the conduct loop to apply it) — and, for a
   branch-B payload, leaves the FULL ledgered apply (ACs + label) to `harmony-conduct` §1c's leg-start
   consume. That generic route already handles a `payload-unrecognized` result correctly (routes to the
   owning gate's self-heal, no double-file hazard since branch A's shortcut never ran for a web accept).
   **Known gap, out of this ticket's scope:** §1c's documented handling only branches on `status` — it does
   not currently catch a THROWN `"decision-only guard blocked"` error the way branch B above does, so a web
   accept of a decision-only-proposing brief that the guard would block, picked up later by an unattended
-  conductor leg via §1c, would surface as an unhandled tool error there rather than the clean
+  conduct loop leg via §1c, would surface as an unhandled tool error there rather than the clean
   worker-question this skill's own same-session accept produces. Flagging for a human to route (fold into
   `harmony-conduct/SKILL.md` §1c, or a follow-up ticket) rather than silently leaving it undocumented.
   **When that design-gate self-heal
@@ -781,7 +781,7 @@ Show the rendered `content` verbatim. On the human's command:
     content: "<rationale: what we're not clarifying now + when to revisit>",
     review_by: "<watch/revisit date, ISO>", domain: ["product"],
     source_type: "manual", source_activity: "defer", source_task_id: "<task uuid>",
-    // B-1000: a defer is ALWAYS human (contract 3a/§4b — the conductor's synthesized accept never
+    // B-1000: a defer is ALWAYS human (contract 3a/§4b — the conduct loop's synthesized accept never
     // defers), so this carries the SAME provenance the resolve_brief defer call below declares.
     provenance: "human-in-session",
   })

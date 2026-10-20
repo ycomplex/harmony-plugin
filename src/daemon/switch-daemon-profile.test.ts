@@ -275,7 +275,7 @@ describe.skipIf(!CAPABLE)('container/gke/switch-daemon-profile.sh (EXECUTED agai
       const w = makeWorld();
       const r = go(w, 'gke', [], { STUB_NO_DAEMON: '1' });
       fails(r, w);
-      expect(r.stderr).toContain('no running daemon');
+      expect(r.stderr).toContain('no running conductor');
     });
   });
 

@@ -1,6 +1,6 @@
 ---
 name: harmony-revise-scope
-description: Draft a "revise scope / back up" reconciliation for a ticket whose downstream gate revealed the upstream spec was scoped too narrowly — back the run up to an earlier discovery gate (clarify/decompose/design) or the build gate (a release-gate merge conflict) and re-run it against the real scope. Triggers on "harmony revise-scope B-123", "back up B-123 to re-clarify", "the scope grew — re-decompose B-123", a `revise-scope`/"back up" verb at a conductor gate pause, or being delegated by harmony-conduct when iterate feedback reveals the upstream scope grew. Drafts a concrete reconciliation brief (target gate + broadened scope + supersede-list vs keep-list) for the human to accept or reject.
+description: Draft a "revise scope / back up" reconciliation for a ticket whose downstream gate revealed the upstream spec was scoped too narrowly — back the run up to an earlier discovery gate (clarify/decompose/design) or the build gate (a release-gate merge conflict) and re-run it against the real scope. Triggers on "harmony revise-scope B-123", "back up B-123 to re-clarify", "the scope grew — re-decompose B-123", a `revise-scope`/"back up" verb at a conduct loop gate pause, or being delegated by harmony-conduct when iterate feedback reveals the upstream scope grew. Drafts a concrete reconciliation brief (target gate + broadened scope + supersede-list vs keep-list) for the human to accept or reject.
 capabilities: harmony-mcp read web
 allowed-tools: mcp__harmony__* Read Grep Glob WebSearch WebFetch
 ---
@@ -13,7 +13,7 @@ allowed-tools: mcp__harmony__* Read Grep Glob WebSearch WebFetch
 
 # Harmony Revise-Scope (B-519, B-529)
 
-The mid-run **"revise scope / back up"** flow for the opinionated-mode conductor. When a *downstream*
+The mid-run **"revise scope / back up"** flow for the opinionated-mode conduct loop. When a *downstream*
 discovery gate's discussion reveals the *upstream* spec was scoped too narrowly, the run must back up to an
 earlier discovery gate and **re-run it natively** against the real scope. This skill is the agent that
 **drafts a concrete back-up proposal** and files it as a `revise-scope-review` brief so a human can **accept**
@@ -59,8 +59,8 @@ This skill produces the same drafted brief regardless of who raised it:
 
 1. **Human, standalone:** `/harmony-revise-scope <ticket> [--to <gate>]` (sibling to `harmony-stale-patch`).
 2. **Human, at a gate pause:** the human types a `revise-scope`/"back up" verb at a `harmony-conduct`
-   controlled gate pause → the conductor delegates here.
-3. **Agent-proposed (esp. on iterate):** while drafting or iterating a downstream brief, the conductor (or a
+   controlled gate pause → the conduct loop delegates here.
+3. **Agent-proposed (esp. on iterate):** while drafting or iterating a downstream brief, the conduct loop (or a
    gate skill) recognizes the human's feedback (or its own analysis) materially grew the scope — and the
    honest move is to back up a phase rather than cram the broadened scope into the current gate. It surfaces a
    revise-scope **recommendation**, and the human **accepts it exactly like any other recommendation** (same
@@ -351,7 +351,7 @@ Show the rendered `content` verbatim. On the human's command:
      accept happens in this running session or (the B-941 bug) in the browser with no session at all:
      - `mcp__harmony__resolve_brief({ task_id, command: 'accept', provenance: ... })` — provenance per
        `skills/harmony-shared/gate-routing.md` §Resolution provenance (`human-in-session` for the human's own
-       accept here; `agent-synthesized:<mode>` when a conductor delegation synthesized it). This snapshots
+       accept here; `agent-synthesized:<mode>` when a conduct loop delegation synthesized it). This snapshots
        the brief's `doc.payload` (the `supersede_decision` items, step 4) and its `pending_activity` (the
        `revising-*` back-edge) into a pending B-797 event — it does **NOT** yet execute either.
      - `mcp__harmony__consume_pending_acceptance_event({ task_id })`, in this SAME turn — mirrors the exact

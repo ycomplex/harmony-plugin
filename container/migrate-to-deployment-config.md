@@ -1,8 +1,8 @@
 # Migrating a live deployment onto `~/.harmony/deployment.json` (B-800)
 
 > **This is a procedure for a HUMAN to run by hand, once, on each machine that runs a Harmony
-> daemon / build container.** It is NOT executed by this build — B-800's build step only ships the
-> code that CAN read the new file (`src/config/deployment-config.ts`, the daemon's `--config`/
+> conductor / build container.** It is NOT executed by this build — B-800's build step only ships the
+> code that CAN read the new file (`src/config/deployment-config.ts`, the conductor's `--config`/
 > `--profile` boot flags, `mint-installation-token.mjs`'s `--config`-aware `--base` resolution, and
 > `container/provision.sh` / `container/cloud-worker-*.sh`'s already-wired preferred-with-fallback
 > reads). Actually running these steps against a real deployment happens later, at the ticket's
@@ -22,10 +22,10 @@ Today a live deployment's config is spread across up to four places:
 
 All four land in **one JSON file per deployment** — see `src/config/deployment-config.ts`'s header
 comment for the authoritative shape (zod is the single source of truth). One machine can run **N**
-daemon deployments bound to **N** boards, each with its own file — the file's PATH is the instance
+conductor deployments bound to **N** boards, each with its own file — the file's PATH is the instance
 parameter, not a fixed location. That's exactly what the two worked examples below exercise.
 
-**Nothing about this migration is required to keep working.** Every consumer (the daemon, the CLI,
+**Nothing about this migration is required to keep working.** Every consumer (the conductor, the CLI,
 `provision.sh`, the cloud-worker scripts, `mint-installation-token.mjs`) degrades gracefully when no
 deployment config exists at the resolved path — a missing file is not an error, it's "not
 configured, use the old mechanism." You can run this migration on your own schedule, one deployment
@@ -42,7 +42,7 @@ Not every consumer offers a `--config` flag — some only support the env var / 
 | Consumer | `--config` flag? | `HARMONY_DEPLOYMENT_CONFIG` env var? |
 |---|---|---|
 | `harmony config get <path>` (CLI) | yes | yes |
-| Daemon boot (`node dist/bin/daemon.js`) | yes, this ticket's item 1 | yes |
+| Conductor boot (`node dist/bin/daemon.js`) | yes, this ticket's item 1 | yes |
 | `mint-installation-token.mjs` | yes, this ticket's item 2 | yes |
 | `container/provision.sh` (`launcher.supabase.url` lookup) | no | yes |
 | `container/cloud-worker-launch.sh` (`profiles.cloud.gcloud_project` AND `repos`, B-814, lookups) | no | yes |
@@ -51,19 +51,19 @@ Not every consumer offers a `--config` flag — some only support the env var / 
 **Practical consequence:** for the DEFAULT deployment (path `~/.harmony/deployment.json`), you don't
 need to think about this — every consumer just finds it. For a SECOND, non-default deployment (like
 "Team Health" below), set `HARMONY_DEPLOYMENT_CONFIG` in every process environment that deployment's
-containers/daemon run in (the container's env-file, the daemon's launchd plist / shell env) so the
+containers/conductor run in (the container's env-file, the conductor's launchd plist / shell env) so the
 env-var-only consumers pick it up automatically — reserve the `--config` flag for one-off CLI reads.
 
 **One more load-bearing nuance for the `launcher` section specifically:** `launcher.plugin_dir` and
 `launcher.github_app.*` are, today, *documented facts*, not automatically-injected env vars — the
-daemon process itself still needs `HARMONY_PLUGIN_DIR`, `HARMONY_APP_ID`,
+conductor process itself still needs `HARMONY_PLUGIN_DIR`, `HARMONY_APP_ID`,
 `HARMONY_APP_INSTALLATION_ID`, `HARMONY_APP_PRIVATE_KEY_PATH` set directly in ITS OWN environment
 (e.g. the launchd plist's `EnvironmentVariables`), because (a) the launch/reap/probe command
-templates expand `$HARMONY_PLUGIN_DIR` via ordinary shell inheritance from the daemon's env, and (b)
+templates expand `$HARMONY_PLUGIN_DIR` via ordinary shell inheritance from the conductor's env, and (b)
 `mint-installation-token.mjs` reads the three App-identity vars directly from its own env by design
 (see its header comment's zero-dependency rationale) — B-800 does not change either read path. Put
 the same values in `deployment.json`'s `launcher` section too — it's the going-forward documented
-source of truth other tooling can read — but don't remove them from the daemon's process env when
+source of truth other tooling can read — but don't remove them from the conductor's process env when
 you do.
 
 ## `worker_image`: which container image this deployment's workers run (B-929)
@@ -85,7 +85,7 @@ launch paths read the same value.
 | | |
 |---|---|
 | **Default** | `harmony-build-env`, written in exactly one place: the zod schema in `src/config/deployment-config.ts`. Every consumer either gets it from a parsed config or imports `WORKER_IMAGE_DEFAULT`. |
-| **Local docker** | `container/daemon-profile.example.json`'s launch template says `{worker_image}`; the daemon substitutes it. With no deployment config the substitution falls back to the schema default, so the rendered command is byte-identical to the pre-B-929 literal. |
+| **Local docker** | `container/daemon-profile.example.json`'s launch template says `{worker_image}`; the conductor substitutes it. With no deployment config the substitution falls back to the schema default, so the rendered command is byte-identical to the pre-B-929 literal. |
 | **Cloud Run** | `container/cloud-worker-launch.sh` reads it via `harmony config get worker_image` (same best-effort pattern as `profiles.cloud.gcloud_project`) and adds `--image` to the **existing** `gcloud run jobs update` call. No config ⇒ no `--image` flag ⇒ the job's image is untouched, exactly as before. |
 | **Bare name vs full ref** | A value containing `/` is a fully-qualified image ref used **verbatim** (another registry, or a pinned digest). A bare name resolves against `$HARMONY_WORKER_IMAGE_REGISTRY`, defaulting to `us-central1-docker.pkg.dev/$CLOUDSDK_CORE_PROJECT/harmony-workers`. |
 
@@ -100,7 +100,7 @@ and generate the layer — `container/worker-image/README.md`. Publish it with t
 `gcloud builds submit` path (not a per-image Cloud Build trigger), then set `worker_image`.
 
 **Rolling back** a bad worker image: editing this key back to the last good version tag and
-restarting the daemon is the **primary** rollback tier — see the three-tier table in
+restarting the conductor is the **primary** rollback tier — see the three-tier table in
 `container/README.md`.
 
 ## Prerequisites
@@ -114,7 +114,7 @@ restarting the daemon is the **primary** rollback tier — see the three-tier ta
 
 ## Example (a): the default single-deployment case
 
-The common case — one daemon, one board, migrating to the default path with no flags needed
+The common case — one conductor, one board, migrating to the default path with no flags needed
 anywhere.
 
 1. **Create the directory and start the file:**
@@ -151,16 +151,16 @@ anywhere.
    content change.
 
    **`probe` is not really optional (B-842).** A profile with NO `probe` key at all is a
-   **boot-blocking error** — `src/daemon/preflight.ts`'s boot preflight refuses to start the daemon,
+   **boot-blocking error** — `src/daemon/preflight.ts`'s boot preflight refuses to start the conductor,
    because without it a takeover on this profile SIGKILLs any genuinely still-running worker
    (reap-and-refire) and silently discards its in-progress work. Two ways to satisfy the check:
    - **The normal path:** include a working `probe` template, exactly like the `local` example
      above — `"probe": "docker ps --filter name=harmony-worker-{conduction_id} --filter status=running --quiet | grep -q ."`.
-     Exits 0 when a worker for `{conduction_id}` is still running (found — the daemon re-attaches,
+     Exits 0 when a worker for `{conduction_id}` is still running (found — the conductor re-attaches,
      no reap, no re-fire), non-zero when it is not (settled/absent — safe to reap).
    - **The explicit opt-out:** set `"probe": false` when this profile's workers are genuinely safe
      to reap-and-refire on takeover (e.g. cheap, idempotent, or you've accepted the risk). This is a
-     RECORDED decision, not silence — the daemon boots and logs a note naming the opt-out on every
+     RECORDED decision, not silence — the conductor boots and logs a note naming the opt-out on every
      start, instead of the old ambiguous "Note: ... has no probe template" line that fired
      identically whether you'd thought about it or simply forgot the key.
 
@@ -216,7 +216,7 @@ anywhere.
    A schema violation (typo'd key, missing required `launch`/`reap`) throws a clear error naming the
    file and the problem — fix it before moving on.
 
-8. **Switch the daemon boot to the named-profile route** (optional but recommended — see the
+8. **Switch the conductor boot to the named-profile route** (optional but recommended — see the
    precedence recap above; the old route keeps working indefinitely if you skip this):
    - Directly: `HARMONY_API_TOKEN=<token> node dist/bin/daemon.js --profile local` (no `--config`
      needed — the default path resolves automatically).
@@ -240,7 +240,7 @@ anywhere.
 
 ## Example (b): a SECOND, differently-named deployment — "Team Health"
 
-Same machine, a second daemon bound to a different board ("Team Health"'s own project/token), at a
+Same machine, a second conductor bound to a different board ("Team Health"'s own project/token), at a
 **non-default path** so it can't collide with the default deployment from example (a).
 
 1. **Pick a dedicated directory and path** — e.g. `~/.harmony-team-health/deployment.json` (any
@@ -252,7 +252,7 @@ Same machine, a second daemon bound to a different board ("Team Health"'s own pr
 
 2. **Assemble the file** exactly as in example (a), but with Team Health's own board token and its
    own profile(s)/name(s) — reusing the SAME plugin checkout's `plugin_dir` and the SAME GitHub App
-   identity is fine if the App is installed on the same repos; give Team Health's daemon its own
+   identity is fine if the App is installed on the same repos; give Team Health's conductor its own
    `HARMONY_API_TOKEN` (its board), and its own profile name (`team-health` here, deliberately
    different from `local` above so both deployments' profile names never collide if anyone ever
    merges the two files). **This is also the worked example for a `repos` section (B-814):** Team
@@ -287,7 +287,7 @@ Same machine, a second daemon bound to a different board ("Team Health"'s own pr
    node /absolute/path/to/harmony-plugin/dist/bin/harmony.js config get repos --config ~/.harmony-team-health/deployment.json
    ```
 
-4. **Boot Team Health's daemon with BOTH flags:**
+4. **Boot Team Health's conductor with BOTH flags:**
    ```bash
    HARMONY_API_TOKEN=harmony_teamhealth_xyz789 \
    HARMONY_PLUGIN_DIR=/absolute/path/to/harmony-plugin \
@@ -305,12 +305,12 @@ Same machine, a second daemon bound to a different board ("Team Health"'s own pr
    cloud-worker scripts' `profiles.cloud.gcloud_project` lookup, and the MCP/CLI's
    `launcher.supabase_refs` merge — none of which take a `--config` flag), set
    `HARMONY_DEPLOYMENT_CONFIG=/home/you/.harmony-team-health/deployment.json` in every process
-   environment Team Health's containers/daemon run in — its own `--env-file`
+   environment Team Health's containers/conductor run in — its own `--env-file`
    (`~/.harmony-team-health-container.env`, a sibling to the default deployment's
-   `~/.harmony-container.env`) and its daemon's own launchd plist / shell env. This is what lets
+   `~/.harmony-container.env`) and its conductor's own launchd plist / shell env. This is what lets
    those consumers resolve the RIGHT file automatically without ever seeing a `--config` flag.
 
 6. **Confirm the two deployments never collide:** `harmony config get` against each path
-   independently should show each deployment's own `profiles`/`launcher` values, and each daemon
+   independently should show each deployment's own `profiles`/`launcher` values, and each conductor
    process's own env (`HARMONY_API_TOKEN` etc.) should differ. Nothing in either file references the
    other.

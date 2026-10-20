@@ -297,7 +297,7 @@ export interface Conflict {
   note?: string;
 }
 
-export const LEGACY_ENV_NOTE = 'environment wins at launch (deprecated) — unset it or remove it from daemon.env';
+export const LEGACY_ENV_NOTE = 'environment wins at launch (deprecated) — unset it or remove it from conductor.env';
 
 export interface DoctorLayers {
   project?: Obj;
@@ -439,7 +439,7 @@ export function runDoctor(deps: ConductorCliDeps, opts: { config?: string } = {}
   lines.push('', `LEGACY IN USE (${legacyInUse.length})`);
   if (legacyInUse.length === 0) lines.push('  (none)');
   for (const w of legacyInUse) lines.push(`  ${w.replace(/^deprecated: /, '')}`);
-  lines.push('  (only THIS shell\'s environment is checked; to check the daemon\'s, run `set -a; . <daemon.env>; set +a` first)');
+  lines.push('  (only THIS shell\'s environment is checked; to check the conductor\'s, run `set -a; . <conductor.env>; set +a` first)');
   if (warnings.length) {
     lines.push('', `WARNINGS (${warnings.length})`);
     for (const w of warnings) lines.push(`  ${w}`);

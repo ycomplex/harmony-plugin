@@ -33,7 +33,7 @@ already carries it. The presence probe asks `harmony agent binary`.
   `claude-code` (or removing it) is a config-only rollback, and the launch command is then
   byte-identical to the pre-B-1077 one (`src/agents/launch-routing.test.ts`). A malformed value or
   an unregistered id is **refused**, both by the worker (`Refusing to start: Unknown agent adapter
-  'opencode' — registered: claude-code, codex`) and by the daemon. It never falls back to `claude-code`.
+  'opencode' — registered: claude-code, codex`) and by the conductor. It never falls back to `claude-code`.
 - **Profiles.** Each launch profile has an optional `agents` list of registry ids, in both
   `deployment.json`'s `profiles.<name>` and the legacy profile file. An absent list means
   `["claude-code"]` only. Before a leg fires, `fireLaunch` checks that the run's adapter is
@@ -41,7 +41,7 @@ already carries it. The presence probe asks `harmony agent binary`.
   `{run_config_json}`, because the worker would never see the choice. On a refusal it parks the
   ticket the way a fast-track admission refusal does: the conduction is parked
   (`last_worker_exit_class: agent-ineligible`), the ticket is advanced to `parking`, a comment names
-  the registered adapters and the profile's list, and no worker is launched. The daemon only looks
+  the registered adapters and the profile's list, and no worker is launched. The conductor only looks
   up an id and compares it to a list. It still builds no runtime command, and
   `src/agents/daemon-runtime-guard.test.ts` keeps it that way.
 - **Credentials.** `harmony agent check-credentials` runs the adapter's `resolveCredential`.
@@ -103,7 +103,7 @@ Codex files above and **copies** the mounted login cache to `~/.codex/auth.json`
 or reads that file; `src/agents/codex-auth-file.test.ts` scans every script and source for a read, a cat or
 a log of it. `provision.sh` still has no Codex command in it: the launch is `harmony agent argv`.
 
-**Daemon.** The daemon refuses to **boot** a profile whose `agents` list names an unregistered adapter
+**Conductor.** The conductor refuses to **boot** a profile whose `agents` list names an unregistered adapter
 (`src/daemon/config.ts`, both profile routes; the message names the registered adapters), and refuses at
 **fire time** a non-default adapter on a launch template without `{run_config_json}` or not in the list.
 The example Docker-host profile now lists `["claude-code", "codex"]`; the other two examples stay Claude-only.
@@ -123,9 +123,9 @@ never sets the field gets today's behaviour (a non-zero exit is a dirty exit).
 
 Codex's `item.completed` items of type `error` (two on every run, from the hook-trust flag) are **never** read
 for a refusal. A bare clock time ("resets 3pm") is not placed on a calendar: `resets_at` is null and the
-daemon's default applies.
+conductor's default applies.
 
-**How it reaches the daemon.** `harmony leg-cost record` writes the verdict as `refusal_kind` /
+**How it reaches the conductor.** `harmony leg-cost record` writes the verdict as `refusal_kind` /
 `refusal_resets_at` on the invocation's `conduction_leg_costs` row (dropped on a retry while harmony-web's
 migration is not live). At settle the scheduler reads the leg's LAST row (written since its fire time) and
 passes it to `classify.ts`, which still never parses worker output: after the awaiting-human / terminal /
@@ -140,11 +140,11 @@ The scheduler then:
   passes, the next leg is the re-check. Any leg with board progress resets `quota_pauses` to 0; the 3rd
   consecutive pause parks the conduction (`last_worker_exit_class` `quota-repeated`) with a comment.
 - `conductions.paused_until` / `quota_pauses` are written tolerantly: absent columns fall back to an
-  in-memory hold in the daemon (lost on restart); present, the hold survives a restart.
+  in-memory hold in the conductor (lost on restart); present, the hold survives a restart.
 
 **Test hook.** `HARMONY_TEST_FORCE_REFUSAL=quota|rate-limit` in the worker's environment makes both
 adapters' refusal parse return that refusal (`resets_at` null) whatever the capture says, so staging can
-drive the daemon path end to end. The three launchers (`container/cloud-worker-launch.sh`,
+drive the conductor path end to end. The three launchers (`container/cloud-worker-launch.sh`,
 `docker-worker-launch.sh`, `docker-host-worker-launch.sh`) forward it from the launcher's environment when
 it is exactly `quota` or `rate-limit` (anything else, or unset, forwards nothing). Test runs only; never on production.
 
@@ -211,7 +211,7 @@ the turn-end, and the **PreToolUse** hook (`hooks/pretooluse-gate.sh`) denies `g
 - The flag adds two `error` items to the `--json` stream on every run. Telemetry keys `isError` on
   `turn.failed` only, so those items never mark a completed turn as errored (pinned in `codex.test.ts`).
 
-**The backstop.** The daemon's post-hoc classifier, `isCleanRowShape` (`src/daemon/classify.ts`), still
+**The backstop.** The conductor's post-hoc classifier, `isCleanRowShape` (`src/daemon/classify.ts`), still
 checks every exit and parks one whose row is not in a sanctioned shape. **Why that is enough:** the hook
 makes the leg fix its row **in the same turn** (the block reason names the row state and the sanctioned
 shapes, and the model keeps working), and the classifier parks any exit that still slips through (a hook

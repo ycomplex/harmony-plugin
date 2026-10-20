@@ -150,7 +150,7 @@ export function registerLegCostCommands(program: Command): void {
     .description(
       'B-916 per-invocation cost capture — the ONE place container/provision.sh records what each ' +
         '`claude` invocation of a leg cost, and resolves the gate to stamp on it. Capture for ' +
-        'DISPLAY only: nothing the daemon decides ever reads these rows.',
+        'DISPLAY only: nothing the conductor decides ever reads these rows.',
     );
 
   legCost

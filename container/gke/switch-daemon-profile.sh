@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# B-1164: switch the running conductor daemon between the "cloud" (Cloud Run) and "gke" launch profiles
-# in ONE command, and confirm the new daemon adopted every run the old one held.
+# B-1164: switch the running conductor between the "cloud" (Cloud Run) and "gke" launch profiles
+# in ONE command, and confirm the new conductor adopted every run the old one held.
 #
 #   bash container/gke/switch-daemon-profile.sh --to gke|cloud [--config <path>] [--log <path>]
 #                                               [--env-file <path>|none] [--dry-run] [--force]
@@ -8,9 +8,9 @@
 # The FALLBACK for a switch is the same command pointed back: `--to cloud` undoes `--to gke`.
 #
 # What it does, in order:
-#   0. Load the daemon's environment file (--env-file, default ~/.harmony/conductor.env, else the legacy
+#   0. Load the conductor's environment file (--env-file, default ~/.harmony/conductor.env, else the legacy
 #      ~/.harmony/daemon.env; `--env-file none` skips
-#      it) with `set -a`, BEFORE anything else, so the in-flight guard, the preflight and the restarted daemon
+#      it) with `set -a`, BEFORE anything else, so the in-flight guard, the preflight and the restarted conductor
 #      all see the SAME values (the Cloud Run job name, region, account, the GitHub App settings...). The file
 #      is sourced in this shell and its values are never printed. A missing file is refused, not skipped.
 #   1. Preflight (read-only). The target profile exists in the deployment config. The required settings are
@@ -19,24 +19,24 @@
 #      HARMONY_CLOUD_RUN_JOB, HARMONY_CLOUD_RUN_REGION, CLOUDSDK_CORE_ACCOUNT for Cloud Run (always needed: one
 #      side of every switch is cloud, either the target or the backend the guard inspects). For gke: kubectl
 #      reaches the cluster, the base Secret exists, and the profile's launch line carries HARMONY_GKE_IMAGE=.
-#      For cloud: the Cloud Run job exists. Also: exactly one daemon is running and the board is readable.
+#      For cloud: the Cloud Run job exists. Also: exactly one conductor is running and the board is readable.
 #   2. In-flight guard. Refuses (exit 3) while a leg is running on the OUTGOING backend (an active k8s Job in
 #      the legs namespace when leaving gke; a running Cloud Run execution when leaving cloud), and names each
 #      leg by TICKET and CONDUCTION ID so you can say exactly what is being waited for. Wait for them to end
-#      and run again. --force skips the guard: LAST RESORT ONLY — the new daemon reaps adopted leases with its
+#      and run again. --force skips the guard: LAST RESORT ONLY — the new conductor reaps adopted leases with its
 #      OWN profile's reap script, which cannot see a leg on the other backend, so a forced switch can leave a
 #      leg running twice (the old one, orphaned, plus a re-fired one).
-#   3. Records the conductions the old daemon holds (from the board), SIGTERMs it (it releases its leases
+#   3. Records the conductions the old conductor holds (from the board), SIGTERMs it (it releases its leases
 #      cleanly), waits for it to exit, restarts it under nohup with `--profile <target>`.
 #   4. Confirms adoption FROM THE BOARD: every held conduction is, within 3 minutes, leased by the NEW
-#      daemon with a fresh heartbeat (or has legitimately left the active state). The daemon's log is read
+#      conductor with a fresh heartbeat (or has legitimately left the active state). The conductor's log is read
 #      only as a secondary, fuzzy corroboration and never decides the outcome — log wording is not a contract.
 #
 # --dry-run runs the read-only parts (preflight, guard, held-lease record), lists the in-flight legs and the
 # held conductions, and prints what it WOULD do; it signals and starts nothing.
 #
-# Not for a launchd-supervised daemon with KeepAlive: launchd would restart the old profile the moment the
-# daemon exits. Use it for a daemon started by hand under nohup (the cutover's mode).
+# Not for a launchd-supervised conductor with KeepAlive: launchd would restart the old profile the moment the
+# conductor exits. Use it for a conductor started by hand under nohup (the cutover's mode).
 #
 # Exit codes: 0 switched and adopted; 1 preflight / stop / start failure; 2 bad usage; 3 refused, a leg is in
 # flight on the outgoing backend; 4 adoption not confirmed within the timeout.
@@ -46,7 +46,7 @@
 # HARMONY_SWITCH_STOP_TIMEOUT_S (60), HARMONY_SWITCH_FRESH_S (120, how recent a heartbeat must be),
 # HARMONY_SWITCH_BOARD_CMD (the board query: a command printing the JSON array of `harmony --json conductions
 # active`; default is that CLI call), HARMONY_GKE_NAMESPACE / HARMONY_GKE_CONTEXT / HARMONY_GKE_BASE_SECRET,
-# CLOUDSDK_CORE_PROJECT. The daemon's own settings (HARMONY_CLOUD_RUN_JOB / _REGION, CLOUDSDK_CORE_ACCOUNT, the
+# CLOUDSDK_CORE_PROJECT. The conductor's own settings (HARMONY_CLOUD_RUN_JOB / _REGION, CLOUDSDK_CORE_ACCOUNT, the
 # HARMONY_APP_* keys...) come from the env file, which overrides the invoking shell.
 set -euo pipefail
 
@@ -62,16 +62,16 @@ usage() {
   cat <<'USAGE'
 Usage: switch-daemon-profile.sh --to gke|cloud [options]
 
-  --to gke|cloud     the launch profile the daemon should run under (required)
+  --to gke|cloud     the launch profile the conductor should run under (required)
   --config <path>    deployment config holding profiles.<name>   [~/.harmony/deployment.json]
-  --log <path>       where the restarted daemon's output goes    [~/.harmony/daemon.log]
-  --env-file <path>  the daemon's shell-sourceable KEY=VALUE settings, loaded before the preflight so the
-                     guard, the preflight and the restarted daemon agree. `none` skips it
+  --log <path>       where the restarted conductor's output goes    [~/.harmony/daemon.log]
+  --env-file <path>  the conductor's shell-sourceable KEY=VALUE settings, loaded before the preflight so the
+                     guard, the preflight and the restarted conductor agree. `none` skips it
                      [~/.harmony/conductor.env, else the legacy ~/.harmony/daemon.env]
                      A missing file is refused unless `none` is given. Values are never printed.
   --dry-run          preflight, list in-flight legs and held conductions, change nothing
   --force            switch even though legs are in flight on the outgoing backend. LAST RESORT ONLY: the
-                     new daemon reaps adopted leases with its own profile's reap script, so a forced
+                     new conductor reaps adopted leases with its own profile's reap script, so a forced
                      switch can leave a leg running twice
   -h, --help         this text
 Needs HARMONY_API_TOKEN, HARMONY_PLUGIN_DIR, HARMONY_APP_ID, HARMONY_APP_INSTALLATION_ID, a
@@ -104,7 +104,7 @@ case "$TARGET" in
   *) die_usage "--to must be gke or cloud, got '${TARGET:-}'" ;;
 esac
 
-# --- the daemon's environment file: loaded FIRST, auto-exported, never echoed. -------------------------
+# --- the conductor's environment file: loaded FIRST, auto-exported, never echoed. -------------------------
 # B-1171: the default is conductor.env (the file container/conductor-launch.sh loads); daemon.env is the fallback.
 if [ -z "$ENV_FILE" ]; then
   if [ -f "${HOME:-}/.harmony/conductor.env" ]; then ENV_FILE="${HOME:-}/.harmony/conductor.env"; else ENV_FILE="${HOME:-}/.harmony/daemon.env"; fi
@@ -112,7 +112,7 @@ fi
 if [ "$ENV_FILE" = "none" ]; then
   ENV_NOTE="no env file (--env-file none): using the invoking shell's environment only"
 else
-  [ -f "$ENV_FILE" ] || die "env file not found: $ENV_FILE (the daemon's settings live there; pass --env-file <path>, or --env-file none to use only this shell's environment)"
+  [ -f "$ENV_FILE" ] || die "env file not found: $ENV_FILE (the conductor's settings live there; pass --env-file <path>, or --env-file none to use only this shell's environment)"
   # bash -n and the source both discard stderr: a parse error would otherwise quote a line of the file.
   bash -n "$ENV_FILE" >/dev/null 2>&1 || die "env file is not valid shell syntax: $ENV_FILE"
   set -a
@@ -165,7 +165,7 @@ process.stdin.on("end", () => {
 }
 
 # stdin: board JSON. args: conduction id, new holder prefix, fresh-seconds.
-# stdout: "ok" (new daemon holds it with a fresh heartbeat), "gone" (no longer active: it settled meanwhile),
+# stdout: "ok" (new conductor holds it with a fresh heartbeat), "gone" (no longer active: it settled meanwhile),
 # or "wait <why>". Non-zero when the JSON is unreadable.
 adoption_state() {
   node -e '
@@ -274,21 +274,21 @@ else
 fi
 
 OLD_PIDS="$(pgrep -f 'dist/bin/daemon.js' || true)"
-[ -n "$OLD_PIDS" ] || die "no running daemon found (pgrep -f dist/bin/daemon.js) — nothing to switch; start one with --profile $TARGET"
+[ -n "$OLD_PIDS" ] || die "no running conductor found (pgrep -f dist/bin/daemon.js) — nothing to switch; start one with --profile $TARGET"
 [ "$(printf '%s\n' "$OLD_PIDS" | wc -l | tr -d ' ')" = "1" ] \
-  || die "more than one daemon is running (pids: $(printf '%s' "$OLD_PIDS" | tr '\n' ' ')) — stop the extras first"
+  || die "more than one conductor is running (pids: $(printf '%s' "$OLD_PIDS" | tr '\n' ' ')) — stop the extras first"
 OLD_PID="$OLD_PIDS"
-echo "running daemon: pid $OLD_PID"
+echo "running conductor: pid $OLD_PID"
 
 BOARD_JSON="$(board_json)" || die "the board query failed — cannot record or confirm held conductions"
 HOST="$(hostname)"
 OLD_PREFIX="$HOST:$OLD_PID:"
 HELD="$(printf '%s' "$BOARD_JSON" | held_by "$OLD_PREFIX")" || die "the board query returned unreadable JSON"
 if [ -n "$HELD" ]; then
-  echo "conductions held by the running daemon:"
+  echo "conductions held by the running conductor:"
   while IFS=$'\t' read -r cid ticket; do echo "  - $ticket  conduction $cid"; done <<<"$HELD"
 else
-  echo "the running daemon holds no active conductions"
+  echo "the running conductor holds no active conductions"
 fi
 
 # --- 2. In-flight guard ----------------------------------------------------------------------------
@@ -324,7 +324,7 @@ if [ -n "$LEGS" ] && [ "$FORCE" -eq 0 ]; then
     echo "switch-daemon-profile: REFUSING to switch to '$TARGET': a leg is still running on $OUTGOING:"
     while IFS=$'\t' read -r ticket cid; do echo "  - $ticket  conduction $cid"; done <<<"$LEGS"
     echo "Wait for these to finish, then run again. --force overrides this check, but it is a LAST RESORT: the new"
-    echo "daemon reaps adopted leases with its OWN profile's reap script, which cannot see a leg on the other"
+    echo "conductor reaps adopted leases with its OWN profile's reap script, which cannot see a leg on the other"
     echo "backend, so a forced switch can leave a leg running twice."
   } >&2
   [ "$DRY_RUN" -eq 1 ] && echo "(dry-run: a real run would refuse here, exit 3)"
@@ -340,22 +340,22 @@ if [ "$DRY_RUN" -eq 1 ]; then
   echo "Cloud Run job checked for in-flight legs and preflight: $HARMONY_CLOUD_RUN_JOB (region $HARMONY_CLOUD_RUN_REGION)"
   echo "would: kill -TERM $OLD_PID, wait up to ${STOP_TIMEOUT_S}s for it to exit,"
   echo "       nohup node \$HARMONY_PLUGIN_DIR/dist/bin/daemon.js --config $CONFIG --profile $TARGET >> $LOG,"
-  echo "       then confirm from the board within ${TIMEOUT_S}s that each held conduction is leased by the new daemon"
+  echo "       then confirm from the board within ${TIMEOUT_S}s that each held conduction is leased by the new conductor"
   echo "       with a heartbeat under ${FRESH_S}s old."
   echo "fallback: the same command with --to $OUTGOING"
   exit 0
 fi
 
-# --- 3. Stop the old daemon, start the new one --------------------------------------------------------
-step "3. Restart the daemon under profile '$TARGET'"
-env kill -TERM "$OLD_PID" || die "could not signal daemon pid $OLD_PID"
+# --- 3. Stop the old conductor, start the new one --------------------------------------------------------
+step "3. Restart the conductor under profile '$TARGET'"
+env kill -TERM "$OLD_PID" || die "could not signal conductor pid $OLD_PID"
 waited=0
 while env kill -0 "$OLD_PID" 2>/dev/null; do
-  [ "$waited" -lt "$STOP_TIMEOUT_S" ] || die "daemon pid $OLD_PID did not exit within ${STOP_TIMEOUT_S}s after SIGTERM — it was NOT restarted; the fallback is not needed, it is still on '$OUTGOING'"
+  [ "$waited" -lt "$STOP_TIMEOUT_S" ] || die "conductor pid $OLD_PID did not exit within ${STOP_TIMEOUT_S}s after SIGTERM — it was NOT restarted; the fallback is not needed, it is still on '$OUTGOING'"
   sleep 1
   waited=$((waited + 1))
 done
-echo "old daemon exited"
+echo "old conductor exited"
 
 LOG_OFFSET=0
 [ -f "$LOG" ] && LOG_OFFSET="$(wc -c <"$LOG" | tr -d ' ')"
@@ -364,7 +364,7 @@ export HARMONY_API_TOKEN HARMONY_PLUGIN_DIR
 nohup node "$HARMONY_PLUGIN_DIR/dist/bin/daemon.js" --config "$CONFIG" --profile "$TARGET" >>"$LOG" 2>&1 </dev/null &
 NEW_PID=$!
 disown "$NEW_PID" 2>/dev/null || true
-echo "started daemon pid $NEW_PID (log $LOG)"
+echo "started conductor pid $NEW_PID (log $LOG)"
 NEW_PREFIX="$HOST:$NEW_PID:"
 
 # --- 4. Confirm adoption from the board ---------------------------------------------------------------
@@ -373,7 +373,7 @@ deadline=$(( $(date +%s) + TIMEOUT_S ))
 pending="$HELD"
 while :; do
   if ! env kill -0 "$NEW_PID" 2>/dev/null; then
-    echo "switch-daemon-profile: the new daemon (pid $NEW_PID) is no longer running — see $LOG. Fallback: re-run with --to $OUTGOING" >&2
+    echo "switch-daemon-profile: the new conductor (pid $NEW_PID) is no longer running — see $LOG. Fallback: re-run with --to $OUTGOING" >&2
     exit 4
   fi
   still=""
@@ -396,7 +396,7 @@ while :; do
     {
       echo "switch-daemon-profile: adoption NOT confirmed within ${TIMEOUT_S}s for:"
       printf '%s' "$reasons"
-      echo "New daemon pid $NEW_PID, profile '$TARGET', log $LOG."
+      echo "New conductor pid $NEW_PID, profile '$TARGET', log $LOG."
       echo "Fallback: re-run this command with --to $OUTGOING."
     } >&2
     exit 4
@@ -404,7 +404,7 @@ while :; do
   sleep "$POLL_S"
 done
 
-# Secondary, fuzzy corroboration from the daemon's log: informational only, never decides the outcome.
+# Secondary, fuzzy corroboration from the conductor's log: informational only, never decides the outcome.
 if [ -n "$HELD" ] && [ -f "$LOG" ]; then
   new_log="$(tail -c +"$((LOG_OFFSET + 1))" "$LOG" 2>/dev/null || true)"
   while IFS=$'\t' read -r cid ticket; do
@@ -418,5 +418,5 @@ if [ -n "$HELD" ] && [ -f "$LOG" ]; then
 fi
 
 echo
-echo "switched to '$TARGET': daemon pid $NEW_PID; all held conductions confirmed on the board."
+echo "switched to '$TARGET': conductor pid $NEW_PID; all held conductions confirmed on the board."
 echo "fallback: the same command with --to $OUTGOING"

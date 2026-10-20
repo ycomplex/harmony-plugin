@@ -33,7 +33,7 @@ URL — see §8 C9.)* The delivery chain is split across three tickets:
 
 **B-1009 owns the DB-side sync and the actual delivery.** It is B-943's fifth child. It is a
 Supabase-hosted dispatcher — an edge function triggered by a `pg_net` webhook on outbox insert, with a
-`pg_cron` sweep for anything the webhook missed. It is explicitly **not** the conductor daemon: no
+`pg_cron` sweep for anything the webhook missed. It is explicitly **not** the conductor: no
 plugin process, no worker, and no long-lived Node service anywhere in this repo dispatches a notify.
 
 ### Which document owns which boundary

@@ -55,11 +55,11 @@ describe('harmony-research skill contract', () => {
     expect(body).toMatch(/elicitation-round/);
   });
 
-  it('names WHY a bare terminal ask is wrong — invisible on the board, unrenderable in a daemon worker', () => {
+  it('names WHY a bare terminal ask is wrong — invisible on the board, unrenderable in a conductor worker', () => {
     const body = skill.body;
     expect(body).toMatch(/never on a bare terminal ask/i);
     expect(body).toMatch(/ends the turn with nothing on the board/);
-    expect(body).toMatch(/daemon worker has no terminal/);
+    expect(body).toMatch(/conductor worker has no terminal/);
   });
 
   it('keeps the inline paste for the ONE case with no ticket to hang a round on', () => {

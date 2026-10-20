@@ -69,7 +69,7 @@ and the banner (`g` key) frames it as a generated sketch.
 ### 3b. Design-tool residue (escalation path)
 
 For the irreducibly-generative residue only: hand off to **Figma** (the existing `iterate`-with-no-feedback
-hand-off, gate-ui-conductor §4.2/§4.6) with the design-system context, and capture the returned link. (B-328
+hand-off, gate-ui-conduct loop §4.2/§4.6) with the design-system context, and capture the returned link. (B-328
 did not validate this side — keep it a thin pass-through.)
 
 ### 4. Iterate — elicit, don't guess (D2)
@@ -168,7 +168,7 @@ mcp__harmony__compose_brief({
 
 ### 6. Resolve
 
-> **Provenance (B-734):** `human-in-session` below is the human deciding *here* — a conductor-synthesized
+> **Provenance (B-734):** `human-in-session` below is the human deciding *here* — a conduct-loop-synthesized
 > accept carries `agent-synthesized:<mode>` through this same path (`skills/harmony-shared/gate-routing.md`
 > §Resolution provenance).
 

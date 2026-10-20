@@ -2,7 +2,7 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!-- B-1164: launchd schedule for the GKE ticket-disk sweep (container/gke/sweep-ticket-disks.sh).
 
-     Runs every 6 hours (StartInterval 21600 seconds) on the daemon host. It deletes the per-ticket disk
+     Runs every 6 hours (StartInterval 21600 seconds) on the conductor host. It deletes the per-ticket disk
      of every Verified / Cancelled / archived ticket and of every ticket taken away from the conductor
      more than 24 hours ago; it never deletes a disk a live pod mounts, and fails closed (exit 3) when a
      ticket's state cannot be read.
@@ -17,7 +17,7 @@
        PATH                                 must contain kubectl, gke-gcloud-auth-plugin and node;
                                             launchd does not read your shell PATH (a Homebrew gcloud
                                             keeps the auth plugin in /opt/homebrew/share/google-cloud-sdk/bin)
-     The sweep loads ~/.harmony/daemon.env itself (HARMONY_API_TOKEN for the ticket-state reads).
+     The sweep loads ~/.harmony/conductor.env (else the legacy daemon.env) itself (HARMONY_API_TOKEN for the ticket-state reads).
      The sweep uses the CURRENT kubeconfig context of the user it runs as. No credential lives here. -->
 <plist version="1.0">
 <dict>

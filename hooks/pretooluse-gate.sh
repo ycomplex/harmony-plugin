@@ -2,7 +2,7 @@
 # B-992 — the Harmony PRE-TOOL-USE GATE (Claude Code `PreToolUse` hook).
 #
 # The mirror image of hooks/stop-gate.sh (B-870): where that gate stops a turn from ENDING with
-# nothing on the board, this one stops a POSITIVELY-IDENTIFIED daemon worker from USING a
+# nothing on the board, this one stops a POSITIVELY-IDENTIFIED conductor worker from USING a
 # "boundary tool" (opening/merging a PR, accepting a verify brief) before the project's declared
 # gate point has run. See src/hooks/pretooluse-gate.ts for the real decision — this wrapper exists
 # for ONE reason: the fast path, layered so a non-boundary call in a non-manifest repo costs no more

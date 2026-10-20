@@ -34,7 +34,7 @@ them concrete enough to paste verbatim. **Never bury these behind `expand`** —
 
 **The relay runs on the elicitation engine — never on a bare terminal ask (B-870).** In a ticket-driving
 session, "display them and wait for a paste" ends the turn with nothing on the board: the human on the web
-sees a ticket that simply stopped, a daemon worker has no terminal to display to at all, and the answers
+sees a ticket that simply stopped, a conductor worker has no terminal to display to at all, and the answers
 come back with no provenance trail. So hand the prompts over the same way every other question from a
 conducted session reaches a human — as a **filed elicitation round**, per
 `skills/harmony-shared/elicitation-engine.md` §The worker-question trigger:

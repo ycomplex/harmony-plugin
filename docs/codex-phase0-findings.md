@@ -155,12 +155,12 @@ about a spike that was not executed.
   `no Codex credentials were found`. Credential env names present in the binary: `OPENAI_API_KEY`,
   `CODEX_API_KEY`, `CODEX_ACCESS_TOKEN`; the login file is `auth.json` under `CODEX_HOME`.
   The adapter refuses all three beside the login cache (no metered fallback, B-934).
-- **BLOCKED — needs a founder ChatGPT plan login on the daemon host**
+- **BLOCKED — needs a founder ChatGPT plan login on the conductor host**
   (`CODEX_HOME=~/.harmony/codex-automation codex login --device-auth`), then a run with that `auth.json`:
   1. that a headless `codex exec` authenticates from a copied `auth.json`;
   2. **whether Codex rewrites `auth.json` on token refresh and whether refresh tokens rotate (single-use)**.
      This decides copy-in versus a read-write file mount. Until it is known the launcher does **copy-in**
-     (read-only mount, then copy): a refresh inside a leg works on the copy, but the daemon host's master
+     (read-only mount, then copy): a refresh inside a leg works on the copy, but the conductor host's master
      file is **not** updated. If tokens do rotate, the master goes stale after the first refreshing leg and
      needs a re-login, or a write-back step must be added;
   3. quota/rate-limit classification (429 versus an exhausted plan) — needs a live account.
@@ -176,7 +176,7 @@ about a spike that was not executed.
 | Subagent (`multi_agent_v1` is present in the tool list) as an alternative build strategy | not spiked; root-thread build chosen |
 | Hooks (`SessionStart`/`Stop`/`PreToolUse`) | **RAN (mock), B-1150**: wired. `$CODEX_HOME/hooks.json` runs Claude-shaped hooks only with `--dangerously-bypass-hook-trust` (now on both argvs); the real gate scripts fire. See "Hooks — RAN (mock), B-1150" below |
 | Cloud Run profile (Phase 4) | wired (B-1076 send-back), not run live — see "Local-docker and cloud profiles" below |
-| Provider-qualified model catalog (Phase 3) | not built. Interim: a Codex leg ignores the daemon's `HARMONY_MODEL` (a Claude alias) and takes `HARMONY_CODEX_MODEL` from the base env, or the CLI default |
+| Provider-qualified model catalog (Phase 3) | not built. Interim: a Codex leg ignores the conductor's `HARMONY_MODEL` (a Claude alias) and takes `HARMONY_CODEX_MODEL` from the base env, or the CLI default |
 
 ### Hooks — RAN (mock), B-1150
 
@@ -227,9 +227,9 @@ The B-1076 send-back gives Codex a launch path on all three profiles; each examp
 **BLOCKED — pending the live leg.** None of this has run against a real Docker daemon or Cloud Run job
 with a real login cache. Unproven:
 
-1. **Local-docker file permissions.** The cache is bind-mounted as-is (mode 600, owned by the daemon
+1. **Local-docker file permissions.** The cache is bind-mounted as-is (mode 600, owned by the conductor
    host's user). Docker Desktop's file sharing presents it readable to the worker (uid 1001); on a native
-   Linux daemon host whose user is not uid 1001 the worker cannot read it and `harmony agent render`
+   Linux conductor host whose user is not uid 1001 the worker cannot read it and `harmony agent render`
    refuses. The docker-host profile avoids this by chowning a shipped copy; local-docker does not.
 2. **Cloud secret mount.** That `--update-secrets=/home/worker/.codex-auth-src/auth.json=…` produces a
    volume the describe parse recognises (a `secret` volume mounted at the directory, item `auth.json`) is

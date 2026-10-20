@@ -1,6 +1,6 @@
 # Clean-exit contract (every leg, every surface)
 
-A leg — a build subagent, a delegated gate skill, a one-shot daemon worker — does not get to just stop.
+A leg — a build subagent, a delegated gate skill, a one-shot conductor worker — does not get to just stop.
 **Ending a turn is an action with its own obligations**, exactly like advancing state or filing a brief.
 This doctrine states the one invariant every leg owes the ticket before it voluntarily ends its turn,
 independent of WHICH skill or surface is running.
@@ -30,22 +30,22 @@ work owes both.
 A leg can do everything right — commit, push, iterate on a brief, record a knowledge decision — and still
 run out of turn before the one write that flips `workflow_state`. That is not a failure; delegated work is
 allowed to span more than one leg. The failure is when NOTHING on the ticket says so: the next reader (or
-the daemon's exit classifier, mechanically) has no way to distinguish "finished real work, ran out of turn"
+the conductor's exit classifier, mechanically) has no way to distinguish "finished real work, ran out of turn"
 from "spun and did nothing." The fix is not to force a state advance the leg isn't ready to make — it is to
-make the in-between state legible with a comment, so whatever reads the ticket next (human or the daemon)
+make the in-between state legible with a comment, so whatever reads the ticket next (human or the conductor)
 can tell the two apart.
 
 ## Where this is enforced mechanically — ONE rule, two surfaces
 
 Both surfaces are mechanical now, and both decide from the **same list**. That is the point of this
-section: the interactive side and the daemon side must state ONE rule, not two paraphrases that drift.
+section: the interactive side and the conductor side must state ONE rule, not two paraphrases that drift.
 
 **The shared list.** `isCleanRowShape(row, nonArchivedChildCount)` in `src/daemon/classify.ts` is the single
 statement of what a clean place to stop looks like, in this order:
 
 1. `awaiting_human_input: true` — a composed brief or a filed elicitation round is holding the ball;
 2. `workflow_state` ∈ `Verified` / `Cancelled` / `Parked` — a terminal outcome (a park carries an authored
-   reason). The daemon completes the conduction for `Verified` / `Cancelled`, but PARKS it
+   reason). The conductor completes the conduction for `Verified` / `Cancelled`, but PARKS it
    (`ticket-parked`, B-1107) for `Parked` so it stays on Live with Resume; the stop gate treats all three as clean;
 3. `Decomposed` with ≥1 non-archived child and the flag down — the split-umbrella report-and-stop.
 
@@ -62,11 +62,11 @@ is untouched and pays no cost — the breadcrumb check is a `test -f` before any
 is bounded on purpose: it blocks the same turn-end at most twice and then degrades with a loud line naming
 the row state it could not classify, it fails **open** on any error (query failure, timeout, malformed
 input), and an operator can disable it for their own session with `HARMONY_STOP_GATE_OFF` — a human-only
-control, logged whenever it is active, and absent from every daemon profile. It is a floor under the
+control, logged whenever it is active, and absent from every conductor profile. It is a floor under the
 discipline, never a substitute for it: `skills/harmony-conduct/SKILL.md` §4f is the doctrine it enforces,
 and §4e's backstop invariant is unchanged.
 
-**Daemon workers: the exit classifier.** The daemon's worker-exit classifier (`src/daemon/classify.ts`) is the one surface that enforces (b)
+**Conductor workers: the exit classifier.** The conductor's worker-exit classifier (`src/daemon/classify.ts`) is the one surface that enforces (b)
 **mechanically**: it now probes the repo directly (a live `git ls-remote` of the leg's known work branch,
 bracketing fire and settle — never a board-field read, since a board field can go stale the moment a
 rebase-push moves a PR head without re-recording it) and widens its board-progress read (an in-place brief
@@ -82,7 +82,7 @@ conduction; a human still decides what happens next.
 (consume every marker you acted on) and clause (b) (leave a progress comment when real repo work landed with
 no state-advancing write yet possible) remain disciplines on the interactive side: a session can satisfy the
 row-shape check while still leaving a marker dangling or a push unreported. `skills/harmony-conduct/SKILL.md`
-§4e states both and points back here; the daemon's `repo-active-board-silent` park reason is the only place
+§4e states both and points back here; the conductor's `repo-active-board-silent` park reason is the only place
 clause (b) is mechanical. A delegated build subagent (no MCP tools, no Stop hook of its own) is discipline
 throughout — it reports upward via the `WORKER-QUESTION:` marker and its delegating gate skill owns the
 board write.
@@ -95,7 +95,7 @@ skills for the mechanics; this doc is the one place the RULE itself is stated.
 
 **B-774** closed the release path's own instance of this gap: `finish-work` used to advance the ticket
 before confirming the post-merge deploy actually landed, so a failed deploy could read as done. **B-792**
-is the general form — a conductor leg that finished real work (commits, pushes, brief iterations,
+is the general form — a conduct loop leg that finished real work (commits, pushes, brief iterations,
 knowledge decisions) but made no state-advancing write was getting parked as indistinguishable from a
 worker that spun and did nothing, hiding finished work from the human triaging the park. Both specimens are
 the same defect at different points in the lifecycle: an in-between state with real progress in it, and

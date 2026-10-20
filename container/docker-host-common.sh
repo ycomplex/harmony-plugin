@@ -2,8 +2,8 @@
 # B-708: shared resolution + SSH helper for the "Docker host" launch profile's three wrappers
 # (docker-host-worker-launch.sh / -reap.sh / -probe.sh). SOURCED, never executed.
 #
-# The profile runs each worker on ONE remote Linux Docker host, reached over SSH from the daemon's
-# machine. Everything here runs on the DAEMON'S MACHINE, so it must stay bash-3.2 safe (macOS still
+# The profile runs each worker on ONE remote Linux Docker host, reached over SSH from the conductor's
+# machine. Everything here runs on the CONDUCTOR'S MACHINE, so it must stay bash-3.2 safe (macOS still
 # ships 3.2 — see cloud-worker-launch.sh's B-772 hotfix note).
 #
 # Config, not constants (B-711): every value is an env var first, then the deployment config's
@@ -40,7 +40,7 @@ dh_resolve_target() {
 }
 
 # The conduction id and ticket become path segments and a container name on the host, and are
-# spliced into commands a REMOTE shell parses. Both are daemon-supplied ids (a uuid, a ticket id);
+# spliced into commands a REMOTE shell parses. Both are conductor-supplied ids (a uuid, a ticket id);
 # anything outside this alphabet is refused rather than quoted.
 dh_require_safe_id() {
   case "$2" in
@@ -58,7 +58,7 @@ dh_quote() {
   printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
 }
 
-# Run ONE remote command line on the host. BatchMode: never prompt (the daemon has no terminal).
+# Run ONE remote command line on the host. BatchMode: never prompt (the conductor has no terminal).
 # ServerAlive*: a dead connection is noticed in about two minutes instead of hanging a leg forever.
 # Callers that do not feed stdin redirect it from /dev/null, so ssh never eats the caller's own.
 dh_ssh() {

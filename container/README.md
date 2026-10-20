@@ -2,7 +2,7 @@
 
 A containerized, parametrized environment from which a REAL Harmony build-gate
 run can execute — branch, edit, test, build `dist`, commit, push, open a PR —
-on any machine with Docker: a daemon worker, a new laptop, or a trusted
+on any machine with Docker: a conductor worker, a new laptop, or a trusted
 collaborator.
 
 ## Quick start (the one documented command)
@@ -27,7 +27,7 @@ claude --plugin-dir /workspace/workspace/plugin      # an agent session in the c
 harmony tasks list                          # or drive the CLI directly
 ```
 
-Headless (what the Conductor Daemon's workers will run):
+Headless (what the Conductor's workers will run):
 
 ```bash
 docker run --rm --env-file ~/.harmony-container.env harmony-build-env \
@@ -62,7 +62,7 @@ login with no explanation. Two paths:
   ```
   Log in once; subsequent runs with the same volume skip the browser step.
 
-Daemon/headless workers are unaffected — they authenticate via `CLAUDE_CODE_OAUTH_TOKEN`,
+Conductor/headless workers are unaffected — they authenticate via `CLAUDE_CODE_OAUTH_TOKEN`,
 not this interactive session.
 
 ## Layering (agent portability — CI-enforced)
@@ -206,7 +206,7 @@ Both launch paths read that one value:
 
 - **local docker** — `container/daemon-profile.example.json`'s launch template
   now says `{worker_image}` where it used to say the literal `harmony-build-env`.
-  The daemon substitutes it (`src/daemon/config.ts`'s `renderTemplate`, fed by
+  The conductor substitutes it (`src/daemon/config.ts`'s `renderTemplate`, fed by
   `src/daemon/scheduler.ts`'s `templateVars`), falling back to the schema default
   on the many machines that have no deployment config at all — so a deployment
   that never sets it renders exactly the literal the template carried before.
@@ -247,7 +247,7 @@ whoever owns that project. (Decided explicitly on B-929 — a trigger per image
 multiplies GCP-side state that nothing in this repo can see or verify.)
 
 ```bash
-unset CLOUDSDK_CORE_ACCOUNT   # run as the human owner, not the daemon SA
+unset CLOUDSDK_CORE_ACCOUNT   # run as the human owner, not the conductor SA
 gcloud builds submit --tag us-central1-docker.pkg.dev/<project>/harmony-workers/<image> container/
 ```
 
@@ -315,7 +315,7 @@ new or newer. `push-version` (the plugin-version tag) stays unconditional either
 
 | Tier | Move | Blast radius | Status |
 |---|---|---|---|
-| **(b) — PRIMARY** | edit `worker_image` in the deployment config to the last good tag (`harmony-build-env:0.14.170`), restart the daemon | that deployment only; explicit, greppable, and visible in the config file | **works by construction** — a different ref is a different `--image` value on the next launch, and the local template re-renders on the next launch too |
+| **(b) — PRIMARY** | edit `worker_image` in the deployment config to the last good tag (`harmony-build-env:0.14.170`), restart the conductor | that deployment only; explicit, greppable, and visible in the config file | **works by construction** — a different ref is a different `--image` value on the next launch, and the local template re-renders on the next launch too |
 | **(a)** | re-point `:latest` in Artifact Registry at the previous digest | the whole fleet, implicitly | **UNVERIFIED** — it depends on Cloud Run **re-resolving a moving tag** on `jobs update --image` rather than pinning the digest it resolved. Confirm live before relying on it |
 | **(c)** | re-publish a fixed image (`gcloud builds submit`, which re-runs the smoke gate) | the whole fleet, deliberately | works, but it is a fix-forward, not a rollback — slowest of the three |
 
@@ -325,14 +325,19 @@ written record of what the fleet is running. Tier (a)'s unverified assumption wa
 **carried unproven** out of the B-929 build (no `gcloud` in that environment) —
 it is written down here so nobody discovers it mid-incident.
 
-## Conductor daemon (B-696)
+## Conductor (B-696)
 
-The conductor daemon (`dist/bin/daemon.js`) watches every active conduction's
+The conductor (`dist/bin/daemon.js`) watches every active conduction's
 ticket and fires a fresh one-shot `harmony-conduct` worker (a container from
 this image) whenever the ball returns to the agent. Create conductions with
-`harmony conduct <ticket>`; the daemon does the rest — heartbeats, CAS
+`harmony conduct <ticket>`; the conductor does the rest — heartbeats, CAS
 takeover of stale leases (reap-then-fire), exit classification, and
 park-and-flag for anything off the happy path (no auto-retry).
+
+> **Alias note:** this process was called the "daemon" before B-1171. Files, paths and variables that still exist keep
+> that name (`dist/bin/daemon.js`, `HARMONY_DAEMON_*`, `daemon-profile*.json`, `harmony-daemon.log`, the
+> `com.ycomplex.harmony-daemon` launchd label); the environment file is `~/.harmony/conductor.env`, with the old
+> `~/.harmony/daemon.env` still read as a fallback.
 
 ### Install (launchd, macOS)
 
@@ -367,9 +372,9 @@ launchctl bootout gui/$UID/com.ycomplex.harmony-daemon # stop + unload
 
 ### Run it directly (no launchd)
 
-launchd is one option, not the mechanism. All that matters is that **the daemon
+launchd is one option, not the mechanism. All that matters is that **the conductor
 process's environment carries the knobs** — the launch profile's `launch`
-template runs as a shell command spawned by the daemon and inherits its env. So
+template runs as a shell command spawned by the conductor and inherits its env. So
 running it straight from a terminal works identically:
 
 ```bash
@@ -403,19 +408,19 @@ change.
 - **Worker creds** (`CLAUDE_CODE_OAUTH_TOKEN`, Supabase overrides, and the
   minted `GIT_TOKEN`) live **only** in the `--env-file` referenced by the launch
   profile's command template (`env.example` documents the set). They never enter
-  the daemon process, so a daemon-side leak cannot spend Claude credits.
-- **Daemon env** carries `HARMONY_API_TOKEN` — ticket reads and conduction
+  the conductor process, so a conductor-side leak cannot spend Claude credits.
+- **Conductor env** carries `HARMONY_API_TOKEN` — ticket reads and conduction
   writes — **plus the `harmony-daemon` App mint knobs** (`HARMONY_APP_ID`,
   `HARMONY_APP_INSTALLATION_ID`, `HARMONY_APP_PRIVATE_KEY_PATH`) since B-732,
   because the launcher mints the worker's git token before `docker run`.
 
-**What a daemon-side leak actually costs (corrected at B-732).** This section
-previously claimed the daemon env carried *only* `HARMONY_API_TOKEN` and that a
-daemon-side leak "can never mint commits". That is no longer true: whoever holds
+**What a conductor-side leak actually costs (corrected at B-732).** This section
+previously claimed the conductor env carried *only* `HARMONY_API_TOKEN` and that a
+conductor-side leak "can never mint commits". That is no longer true: whoever holds
 the App private key can mint a ~1h installation token. The honest property, and
 the one B-695 designed for, is narrower but still strong:
 
-> A leaked daemon credential is a **PR-spam risk, not a merge risk.**
+> A leaked conductor credential is a **PR-spam risk, not a merge risk.**
 
 The App is non-admin (`contents: write` + `pull_requests: write` + `metadata:
 read`) and holds **zero bypass allowance** on all three repos (`apps: []`). So a
@@ -427,7 +432,7 @@ forbids a PR author approving its own PR. Claude credits remain worker-only.
 
 The B-695 merge floor only engages on PRs the founder **cannot** merge without a
 review — and GitHub decides that by PR **author**. While workers authenticated
-with a founder PAT, every daemon PR was founder-authored and took the bypass
+with a founder PAT, every conductor PR was founder-authored and took the bypass
 lane, so the floor protected nothing.
 
 So the launch profile mints a credential per run:
@@ -464,7 +469,7 @@ approve it on GitHub. `finish-work` asserts bot authorship inside a worker run a
 **hard-errors rather than merging** if the PR came out founder-authored (that means
 the identity swap failed, and merging would silently ride the bypass again). When
 the PR is un-approved it flags the ticket `release-approval-pending` with the PR
-attached, so it lands in your queue and your resolution wakes the daemon to retry.
+attached, so it lands in your queue and your resolution wakes the conductor to retry.
 
 **Token expiry is known behaviour, not a solved problem.** The token lasts ~1h. A
 build that outruns it fails at push, which is a dirty exit, which fires B-713's
@@ -481,10 +486,10 @@ Everything operational is an env knob or a profile file — never a code edit:
 | `HARMONY_DAEMON_PROFILE` | *(required unless `--profile` resolves — see below)* | Path to the launch-profile JSON: `{ launch, reap }` command templates (plus two OPTIONAL fields, B-717 — see below) with `{conduction_id}` / `{ticket}` placeholders. No baked-in worker command — swapping agent brands is a profile edit. |
 | `HARMONY_DAEMON_POLL_MS` | `25000` | Pass cadence (one watch/heartbeat pass per interval — a pass never blocks on a worker, B-717). |
 | `HARMONY_DAEMON_HEARTBEAT_MS` | `30000` | Lease heartbeat cadence (poll ≤ heartbeat). |
-| `HARMONY_DAEMON_STALE_MS` | `300000` | Silence threshold after which another daemon may CAS-take the lease. |
+| `HARMONY_DAEMON_STALE_MS` | `300000` | Silence threshold after which another conductor may CAS-take the lease. |
 | `HARMONY_DAEMON_RETRY_CAP` | `2` | Bounded retries for a dirty worker exit before the conduction parks. `0` disables retry (immediate park, pre-B-713 behavior). |
 | `HARMONY_DAEMON_RETRY_BACKOFF_MS` | `15000` | Base backoff between a dirty exit and its retried re-fire — B-717 made this EXPONENTIAL (`backoff * 2**(attempt-1)`), so this knob is the FIRST retry's delay, not a flat one. |
-| `HARMONY_DAEMON_MAX_CONCURRENT_WORKERS` | *(profile's own, else `3`)* | B-717: the fire-and-track concurrency cap — how many workers this daemon runs at once. Overrides the launch profile's own `maxConcurrentWorkers` (see below) when set; falls back to 3 (sized for local-docker's host resource ceiling) when neither is set. |
+| `HARMONY_DAEMON_MAX_CONCURRENT_WORKERS` | *(profile's own, else `3`)* | B-717: the fire-and-track concurrency cap — how many workers this conductor runs at once. Overrides the launch profile's own `maxConcurrentWorkers` (see below) when set; falls back to 3 (sized for local-docker's host resource ceiling) when neither is set. |
 | `HARMONY_DAEMON_READY_AGE_MS` | `600000` (10 min) | B-717: a ready-but-unfired conduction waiting longer than this is promoted one priority tier for firing order only (aging escalation — prevents starvation under a sustained high-priority stream). |
 | `HARMONY_DAEMON_LOG` | *(unset)* | Optional extra log file (stdout is primary; launchd redirects it). |
 
@@ -492,9 +497,9 @@ Everything operational is an env knob or a profile file — never a code edit:
 --config <deployment.json path> --profile <name>` (mirrors the `harmony config get` CLI's own
 `--config`; `HARMONY_DEPLOYMENT_CONFIG` works too). This wins over `HARMONY_DAEMON_PROFILE`
 whenever it FULLY resolves (the config file is present AND `--profile` names a profile that exists
-in its `profiles` section); short of that, the daemon falls back to `HARMONY_DAEMON_PROFILE`
+in its `profiles` section); short of that, the conductor falls back to `HARMONY_DAEMON_PROFILE`
 unchanged, so an existing single-profile deployment needs zero config changes. One machine can run
-multiple daemon deployments this way, each with its own deployment-config file bound to a different
+multiple conductor deployments this way, each with its own deployment-config file bound to a different
 board — see **`container/migrate-to-deployment-config.md`** for the human, once, migration
 procedure (two worked examples: the default single-deployment case, and a second differently-named
 deployment at a non-default path).
@@ -516,15 +521,15 @@ behavior** — zero change for every existing deployment. See
 
 - **`probe`** — a command template that exits 0 when a worker for `{conduction_id}` is still
   running, non-zero when it is not. Used ONLY for restart reconciliation: on a newly-won takeover
-  of a lease whose worker MIGHT still genuinely be running (this daemon's own restart, or a dead
-  peer), the daemon probes before ever reaping — found ⇒ re-attaches (never re-fires a second
+  of a lease whose worker MIGHT still genuinely be running (this conductor's own restart, or a dead
+  peer), the conductor probes before ever reaping — found ⇒ re-attaches (never re-fires a second
   worker alongside a live one); not found ⇒ falls back to the pre-B-717 REAP-THEN-FIRE. A profile
   that omits `probe` simply skips reconciliation entirely (safe, if slightly blunter — every
   takeover reaps defensively, as it always did).
 - **`maxConcurrentWorkers`** — this profile's own concurrency default (see the env var above,
   which always wins when set). Sized per launch mechanism: local-docker's example profile sets 3
   (the host resource ceiling); the cloud example profile sets a more conservative 2 pending live
-  rate-limit data — override on the daemon host to match your subscription/quota.
+  rate-limit data — override on the conductor host to match your subscription/quota.
 
 Worker containers are named `harmony-worker-<conduction_id>` (the example
 profile's templates), so `docker ps` maps running workers to conductions and
@@ -550,11 +555,11 @@ $HOME/.harmony-conductions/<ticket-uuid>/<conduction-id>/
 To debug a worker, open the newest `.jsonl` under the conduction's
 `projects/` dir. Each one-shot leg is a fresh Claude session writing its own
 `<session-uuid>.jsonl`, so legs never overwrite each other; file mtime orders
-them. The daemon never reads these files — capture is for a human,
+them. The conductor never reads these files — capture is for a human,
 never for control flow (the same boundary as worker-stdout capture).
 
 Three constraints — the first two probe-proven at the B-724 design gate, the
-third caught by a live daemon leg at verify:
+third caught by a live conductor leg at verify:
 
 - **The base dir must sit under a Docker-file-shared path** (`$HOME`
   qualifies). Outside the sharing map the "mount" lands inside the VM and the
@@ -574,14 +579,14 @@ pre-creation of every mount target.
 
 **Deploy note:** the example profile is not read at runtime — apply the same
 template change to the live profile named by `HARMONY_DAEMON_PROFILE`, then
-restart the daemon (`launchctl bootout` + `bootstrap`, per Install above).
+restart the conductor (`launchctl bootout` + `bootstrap`, per Install above).
 The mount-parent fix lives in the image: **rebuild it** (`docker build -f
 container/Dockerfile --target agent -t harmony-build-env container`) so the
 next worker leg runs with worker-owned `~/.claude`.
 
 **Security:** transcripts can carry tool-call payloads including tokens. The
 hardening — access-scoping the base dir, a retention/cleanup sweep, token
-redaction where feasible — is **B-725** (Conductor Daemon v1.5); until it
+redaction where feasible — is **B-725** (Conductor v1.5); until it
 lands, transcripts sit host-side with default file permissions (interim
 posture accepted at the B-724 clarify). **B-718** (session resume) reuses
 this same per-conduction `projects/` dir by re-mounting it into the next leg.
@@ -595,7 +600,7 @@ job execution** instead of `docker run`, so builds run on a properly-sized
 cloud worker (8 GB / 4 vCPU, per B-694's `harmony-build-env` image) instead of
 the founder's laptop. Selection is via the SAME `HARMONY_DAEMON_PROFILE` env
 var — there is no new selection mechanism; point it at a copy of the cloud
-profile instead of the docker one to switch. The daemon's scheduler/classify
+profile instead of the docker one to switch. The conductor's scheduler/classify
 code (`src/daemon/scheduler.ts`, `src/daemon/classify.ts`) is completely
 untouched: it still just runs the profile's `launch` command to completion and
 reads its exit code. All Cloud Run CLI ambiguity is absorbed inside two new
@@ -621,19 +626,19 @@ wrapper scripts the profile points at:
 |---|---|
 | Project | `harmony-conductor` |
 | Region | `us-central1` |
-| Daemon-host SA | `harmony-daemon@harmony-conductor.iam.gserviceaccount.com` (`roles/run.developer`, `actAs` on the worker SA) |
+| Conductor-host SA | `harmony-daemon@harmony-conductor.iam.gserviceaccount.com` (`roles/run.developer`, `actAs` on the worker SA) |
 | Worker runtime SA | `harmony-worker@harmony-conductor.iam.gserviceaccount.com` (`secretAccessor` on both secrets below) |
 | Secret Manager | `HARMONY_API_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` |
 | Artifact Registry | `harmony-workers` docker repo, `us-central1` |
-| Daemon-host key file | `~/.harmony/gcp-daemon-sa.json` |
+| Conductor-host key file | `~/.harmony/gcp-daemon-sa.json` |
 
 The two wrapper scripts pin `CLOUDSDK_CORE_ACCOUNT` /
 `CLOUDSDK_CORE_PROJECT` to these values as **example env-var defaults** (B-711
-"config not constants" — override on the daemon host, they are not baked-in
+"config not constants" — override on the conductor host, they are not baked-in
 constants): `HARMONY_CLOUD_RUN_REGION`, `HARMONY_CLOUD_RUN_JOB`,
 `CLOUDSDK_CORE_PROJECT`, `CLOUDSDK_CORE_ACCOUNT`.
 
-**Still outstanding before flipping the daemon over to this profile:**
+**Still outstanding before flipping the conductor over to this profile:**
 
 1. Create/verify the actual Cloud Run **job resource** — pointing at the
    `harmony-build-env` image in the `harmony-workers` Artifact Registry repo,
@@ -648,7 +653,7 @@ constants): `HARMONY_CLOUD_RUN_REGION`, `HARMONY_CLOUD_RUN_JOB`,
    - `--service-account=harmony-worker@harmony-conductor.iam.gserviceaccount.com` — REQUIRED; job
      creation fails `actAs` on the default compute SA under the scoped `harmony-daemon` SA without it.
    - `--max-retries=0` — Cloud Run defaults to 3 internal task retries, which would stack under the
-     daemon's own B-713 retry ladder and could run one failing leg up to 4x.
+     conductor's own B-713 retry ladder and could run one failing leg up to 4x.
    - `--task-timeout=5400s` — observed default (600s) would kill a real build leg mid-run.
    - `--memory=8Gi --cpu=4` — observed defaults (512Mi / 1 vCPU) would starve a real build leg;
      matches B-694's proven sizing.
@@ -656,7 +661,7 @@ constants): `HARMONY_CLOUD_RUN_REGION`, `HARMONY_CLOUD_RUN_JOB`,
    `HARMONY_DAEMON_PROFILE` at it (same mechanism as the docker profile —
    editing the example here never updates a live profile).
 
-**Cross-build note (do this or executions 404/CrashLoop):** the daemon host is
+**Cross-build note (do this or executions 404/CrashLoop):** the conductor host is
 very likely Apple Silicon (arm64 — launchd/colima), but Cloud Run job
 executions are **linux/amd64-only**. Publishing with a local
 `docker buildx build --platform linux/amd64 ... --push` does not work on this
@@ -671,13 +676,13 @@ gcloud builds submit --tag us-central1-docker.pkg.dev/<project>/harmony-workers/
 Two operational gotchas, both settled facts:
 
 1. Run it as the human owner account — `unset CLOUDSDK_CORE_ACCOUNT` first (the
-   daemon's scoped service-account identity can't run this).
+   conductor's scoped service-account identity can't run this).
 2. A `gcloud builds submit` issued within about a minute of enabling the
    `cloudbuild.googleapis.com` API fails `PERMISSION_DENIED` while the Cloud
    Build service agent is still provisioning — the fix is to retry, not to
    debug it as a real permissions problem.
 
-**Credentials:** the daemon host needs its own least-privilege GCP identity to
+**Credentials:** the conductor host needs its own least-privilege GCP identity to
 call `execute` / `executions cancel` / `executions list` — `roles/run.developer`
 scoped to this one job (already granted to `harmony-daemon@...`, above).
 
@@ -748,14 +753,14 @@ only.
 **Still deferred / not live-verified:**
 
 - A reaped/cancelled execution is indistinguishable from a failed one by exit code, and this must
-  remain so — the daemon's own in-process `timedOut` flag (`src/daemon/scheduler.ts`) owns
+  remain so — the conductor's own in-process `timedOut` flag (`src/daemon/scheduler.ts`) owns
   worker-timeout classification, per `classify.ts`'s never-key-on-the-code rule.
 
 **B-717 (serial-execution/concurrency, named constraint):**
 `--update-env-vars` mutates the Cloud Run **job definition** itself before
 `execute` reads it — there's no per-execution-only variant of that flag. Two
 concurrent `execute` calls would race each other's env values through that
-shared mutation. This is safe only because the daemon fires strictly one
+shared mutation. This is safe only because the conductor fires strictly one
 build at a time today; see the comment at the call site in
 `cloud-worker-launch.sh` for the full constraint.
 
@@ -769,7 +774,7 @@ were touched).
 containers, so a leg cannot run the project's own container stack (a Compose
 file with a database, an identity provider, the app itself). The Docker-host
 profile is a THIRD, additive launch profile for projects that need that. The
-daemon's machine wakes one remote Linux Docker host, ships the per-run files to
+conductor's machine wakes one remote Linux Docker host, ships the per-run files to
 it over SSH, and runs the worker there as a **privileged** container that
 starts its **own Docker engine inside itself** (Docker-in-Docker). The
 project's stack then lives entirely inside the leg: its ports are on the
@@ -778,7 +783,7 @@ everything the leg started is gone when the worker container is removed. The
 host powers itself off when idle.
 
 Nothing changes for the other two profiles. As with the cloud profile, the
-daemon's scheduler/classify code is untouched — it runs the profile's `launch`
+conductor's scheduler/classify code is untouched — it runs the profile's `launch`
 command to completion and reads its exit code.
 
 **The pieces.**
@@ -787,9 +792,9 @@ command to completion and reads its exit code.
 |---|---|---|
 | `container/docker-engine/Dockerfile` + `start-dockerd.sh` | built into the worker image | The engine layer: Docker Engine, the compose and buildx plugins, and `/usr/local/bin/harmony-start-dockerd`, which the non-root `worker` may run as root through one sudoers rule. Builds on the base image, the agent image, or a project's generated image (`--build-arg BASE=<image>`). |
 | `container/provision.sh` (B-708 block) | inside the worker | Runs the start script when the image carries it and prints `provision.sh: container runtime ready (<docker version>)`. If the engine does not start it warns and the leg continues without a runtime. On an image without the layer the block does nothing. |
-| `container/docker-host-worker-launch.sh` | the daemon's machine | Wakes the host, waits for SSH, mints the per-run token locally, ships `run.env` and `run-config.json` through ssh's stdin, runs resume discovery on the host, and runs the worker in the foreground over SSH. Exits 0 when the worker exited 0, otherwise 1. |
-| `container/docker-host-worker-reap.sh` | the daemon's machine | `docker rm -f harmony-worker-<conduction_id>` on the host. Exit 0 = removed, 3 = already gone or host unreachable, 1 = a real error. |
-| `container/docker-host-worker-probe.sh` | the daemon's machine | Exit 0 if that worker container is running on the host, else 1. An unreachable host is "not running". |
+| `container/docker-host-worker-launch.sh` | the conductor's machine | Wakes the host, waits for SSH, mints the per-run token locally, ships `run.env` and `run-config.json` through ssh's stdin, runs resume discovery on the host, and runs the worker in the foreground over SSH. Exits 0 when the worker exited 0, otherwise 1. |
+| `container/docker-host-worker-reap.sh` | the conductor's machine | `docker rm -f harmony-worker-<conduction_id>` on the host. Exit 0 = removed, 3 = already gone or host unreachable, 1 = a real error. |
+| `container/docker-host-worker-probe.sh` | the conductor's machine | Exit 0 if that worker container is running on the host, else 1. An unreachable host is "not running". |
 | `container/docker-host-common.sh` | sourced by the three above | Config resolution and the one `ssh` invocation. |
 | `container/docker-host/bootstrap.sh` | the host, once | Installs Docker Engine, the idle check and its systemd timer. |
 | `container/docker-host/idle.sh` | the host, every 5 minutes | Powers the host off when no worker has run for `IDLE_MINUTES`, pruning old engine volumes first. |
@@ -797,7 +802,7 @@ command to completion and reads its exit code.
 
 **Adopting it.**
 
-1. **Create the host.** A Debian or Ubuntu machine that the daemon's machine
+1. **Create the host.** A Debian or Ubuntu machine that the conductor's machine
    can reach over SSH with a key (no password prompt — the wrappers use
    `BatchMode=yes`) and can start with one command (for example
    `gcloud compute instances start …`). Size it for the worker plus the
@@ -818,7 +823,7 @@ command to completion and reads its exit code.
    host**; this profile does not pull from or resolve against a registry.
    Rebuild them on the host when `container/Dockerfile` or the engine layer
    changes.
-4. **On the daemon's machine, add the profile to the deployment config**
+4. **On the conductor's machine, add the profile to the deployment config**
    (`~/.harmony/deployment.json`) under `profiles`, copying
    `daemon-profile.docker-host.example.json`, and point `worker_image` at the
    engine image:
@@ -846,11 +851,11 @@ command to completion and reads its exit code.
    that is always on) and must tolerate an already-running host; its exit
    status is ignored and the wrapper then polls SSH every 5 seconds for
    `wake_timeout_s` (default 180).
-5. **Start the daemon with that profile:**
+5. **Start the conductor with that profile:**
    `node dist/bin/daemon.js --config ~/.harmony/deployment.json --profile docker-host`.
-   The daemon's machine needs `bash`, `node` and `ssh`; it does not need Docker.
+   The conductor's machine needs `bash`, `node` and `ssh`; it does not need Docker.
 
-**Environment overrides** (on the daemon's machine; each wins over the
+**Environment overrides** (on the conductor's machine; each wins over the
 deployment config):
 
 | Variable | Overrides | Default |
@@ -863,7 +868,7 @@ deployment config):
 | `HARMONY_DOCKER_HOST_SETUP_RETRIES` | attempts for a setup step whose connection drops | `6` |
 | `HARMONY_DOCKER_HOST_SSH_OPTS` | extra `ssh` options, word-split (e.g. `-i ~/.ssh/harmony-host`) | *(none)* |
 
-If the daemon is started with a profile name other than `docker-host`, set
+If the conductor is started with a profile name other than `docker-host`, set
 `HARMONY_DOCKER_HOST_PROFILE` to the same name so the wrappers read that
 profile's `docker_host` block.
 
@@ -874,21 +879,21 @@ can do. The profile is built around that fact rather than around hiding it:
 - The host must be **dedicated** to this. Do not run anything else on it.
 - The host must hold **no long-lived credentials** — no cloud service-account
   key, no deploy key, no registry login with write access.
-- **The daemon must not run on the host.** The daemon's machine holds the
+- **The conductor must not run on the host.** The conductor's machine holds the
   GitHub App private key and the deployment config; the host holds neither.
-- The **GitHub App private key stays on the daemon's machine.** The per-run
+- The **GitHub App private key stays on the conductor's machine.** The per-run
   installation token is minted there, shipped inside `run.env` through ssh's
   stdin (never on a command line), written mode 600 on the host, and removed
   from the host when the launch wrapper exits (the reap wrapper removes it too).
   The token itself is short-lived. The worker's other secrets
   (`HARMONY_API_TOKEN`, the agent credential) travel in the same file and are
   exposed to the agent exactly as they are on the other profiles.
-- The SSH key the daemon's machine uses can run anything as the SSH user on the
+- The SSH key the conductor's machine uses can run anything as the SSH user on the
   host, which is in the `docker` group. Treat it as a root credential for the
   host and for nothing else.
 
 **Where transcripts live.** On the host's disk, in the same layout the local
-profile uses on the daemon's machine (B-724):
+profile uses on the conductor's machine (B-724):
 
 ```
 ~/.harmony-conductions/<ticket>/<conduction_id>/
@@ -899,7 +904,7 @@ profile uses on the daemon's machine (B-724):
 ```
 
 `projects/` and `logs/` are owned by the image's `worker` user, so read them on
-the host with `sudo`. They are NOT copied back to the daemon's machine, and
+the host with `sudo`. They are NOT copied back to the conductor's machine, and
 they are not pruned: if the host's disk is deleted the transcripts go with it.
 Session resume across conductions (B-718) works on the host, because the
 discovery step runs there, inside the worker image.
@@ -1000,14 +1005,14 @@ and `docs/codex-phase0-findings.md`.
 and cloud alike; `container/daemon-profile.docker-host.example.json` shows the shape). A profile whose
 `agents` list omits `codex` parks a Codex run (`agent-ineligible`) before any worker starts; the cloud
 profile additionally pre-flights the Codex credential mount on the Cloud Run job and refuses the run until
-it exists. The daemon also refuses to boot a profile whose `agents` list names an adapter that is not
+it exists. The conductor also refuses to boot a profile whose `agents` list names an adapter that is not
 registered. Harmony's own deployment has run Codex legs on the cloud profile since 2026-10-16.
 
 **The turn-end floor (B-1150).** A Codex leg runs the same Stop and PreToolUse gates as a Claude leg:
 `harmony agent render` writes `$CODEX_HOME/hooks.json` from the canonical hook definition
 (`src/agents/hooks.ts`, absolute plugin root), and the adapter's argv carries
 `--dangerously-bypass-hook-trust` on cold start and resume (without it Codex runs no hooks). A blocked
-turn-end makes the leg fix its board row in the same turn; the daemon's `isCleanRowShape` classifier
+turn-end makes the leg fix its board row in the same turn; the conductor's `isCleanRowShape` classifier
 (`src/daemon/classify.ts`) parks any exit that still slips through. Each skill's `forbid:` capability
 classes, which Codex cannot enforce per skill, are listed as rules in the generated `AGENTS.md`. Details:
 `docs/agent-adapter-contract.md` → "The Codex turn-end floor" and "Skill capability classes".
@@ -1022,7 +1027,7 @@ A Codex leg runs on a **plan-included login cache** (`auth.json`), never an API 
 fallback between regimes, so `OPENAI_API_KEY`, `CODEX_API_KEY` or `CODEX_ACCESS_TOKEN` set anywhere in the
 worker's environment, or in the launcher's, **refuses the start**.
 
-1. On the **daemon host** (the machine that runs the launch wrapper), mint the automation identity once,
+1. On the **conductor host** (the machine that runs the launch wrapper), mint the automation identity once,
    in its own `CODEX_HOME` so it never touches your personal Codex login:
 
    ```bash
@@ -1032,7 +1037,7 @@ worker's environment, or in the launcher's, **refuses the start**.
    Follow the device-code prompt with the ChatGPT account whose plan the automation should use. The result
    is `~/.harmony/codex-automation/auth.json`. Keep it mode 600. Treat it like a password: it holds a bearer
    token and a refresh token, and nothing in this repo reads, prints or logs it.
-2. That is all the daemon host needs. `container/docker-host-worker-launch.sh` finds the file at
+2. That is all the conductor host needs. `container/docker-host-worker-launch.sh` finds the file at
    `~/.harmony/codex-automation/auth.json` (override: `HARMONY_CODEX_AUTH_SRC`), ships it to the Docker host
    over ssh's stdin into the private run directory (mode 600, never on a command line), mounts it
    **read-only** into the worker at `/home/worker/.codex-auth-src/auth.json`, and removes the host copy when
@@ -1043,25 +1048,25 @@ worker's environment, or in the launcher's, **refuses the start**.
    file's *path* to the adapter as `HARMONY_CODEX_AUTH_FILE`. The secret itself never enters the
    environment.
 4. A Codex leg's model comes from `HARMONY_CODEX_MODEL` in the base env file (or the CLI default); the
-   daemon's `HARMONY_MODEL` is a Claude alias and is ignored. Per-run flags go in `CODEX_HEADLESS_FLAGS`.
+   conductor's `HARMONY_MODEL` is a Claude alias and is ignored. Per-run flags go in `CODEX_HEADLESS_FLAGS`.
 
 #### Codex on the local-docker profile
 
 `container/docker-worker-launch.sh` (the example profile's `launch` since B-1076) handles it. On the
-daemon host, do step 1 above; nothing else.
+conductor host, do step 1 above; nothing else.
 
 - A Codex run bind-mounts `~/.harmony/codex-automation/auth.json` (override: `HARMONY_CODEX_AUTH_SRC`)
   **read-only** at `/home/worker/.codex-auth-src/auth.json`, mounts a per-conduction
   `~/.harmony-conductions/<ticket>/<conduction>/codex-sessions` at `/home/worker/.codex/sessions`, and sets
   `HARMONY_CODEX_AUTH_FILE`. It skips the host-side resume discovery (that only finds Claude sessions).
 - It refuses, before minting anything, when the file is missing or `OPENAI_API_KEY` / `CODEX_API_KEY` /
-  `CODEX_ACCESS_TOKEN` is set in the daemon's environment.
+  `CODEX_ACCESS_TOKEN` is set in the conductor's environment.
 - The worker runs as uid 1001 and must be able to read the mounted file. Docker Desktop (macOS) presents
   it readable; on a native Linux Docker host whose user is not uid 1001 it is not. That case is unproven
   (`docs/codex-phase0-findings.md`); use the docker-host profile there, which ships a chowned copy.
 - Add `"codex"` to the live profile's `agents` list (the example already lists `["claude-code", "codex"]`;
   a live profile copied before B-1076 does not), point `worker_image` at the `agent-codex` image target,
-  and restart the daemon.
+  and restart the conductor.
 
 #### Codex on the cloud profile
 
@@ -1071,7 +1076,7 @@ refuses a Codex run (no execution started) when `gcloud run jobs describe` shows
 `/home/worker/.codex-auth-src`. Run these as the project owner (`unset CLOUDSDK_CORE_ACCOUNT`), after step 1:
 
 ```bash
-# 1. the secret, from the login cache minted on the daemon host
+# 1. the secret, from the login cache minted on the conductor host
 gcloud secrets create harmony-codex-auth --data-file=$HOME/.harmony/codex-automation/auth.json
 
 # 2. the worker runtime service account may read it
@@ -1080,7 +1085,7 @@ gcloud secrets add-iam-policy-binding harmony-codex-auth \
   --role=roles/secretmanager.secretAccessor
 
 # 3. mount it on the job, as a FILE in the copy-in source dir
-#    (the job is $HARMONY_CLOUD_RUN_JOB on the daemon host; the scripts' default is harmony-build-worker)
+#    (the job is $HARMONY_CLOUD_RUN_JOB on the conductor host; the scripts' default is harmony-build-worker)
 gcloud run jobs update harmony-build-worker --region us-central1 \
   --update-secrets=/home/worker/.codex-auth-src/auth.json=harmony-codex-auth:latest
 ```
@@ -1092,8 +1097,8 @@ gcloud run jobs update harmony-build-worker --region us-central1 \
 4. Add `"codex"` to the deployment profile's `agents` list (`profiles.cloud.agents` in
    `~/.harmony/deployment.json`, or the live profile file) and make sure `worker_image` is the `agent-codex`
    image.
-5. Restart the daemon so it reads the new list.
-6. If the daemon host's login is re-done (step 1 again, e.g. after a refresh token went stale), push it as
+5. Restart the conductor so it reads the new list.
+6. If the conductor host's login is re-done (step 1 again, e.g. after a refresh token went stale), push it as
    a new version — the job reads `:latest` at each execution:
 
    ```bash
@@ -1106,7 +1111,7 @@ cloud profiles").
 **Copy-in, not a read-write mount, and why.** It is unproven whether Codex rewrites `auth.json` when it
 refreshes the token, or whether refresh tokens rotate (single use). That needs a live plan login to
 establish (BLOCKED, `docs/codex-phase0-findings.md`). A copy is the safe default: a refresh inside a leg
-works on the copy, and nothing can corrupt the master. The cost is that the master on the daemon host is
+works on the copy, and nothing can corrupt the master. The cost is that the master on the conductor host is
 **not** updated. If refresh tokens turn out to rotate, the master goes stale after the first leg that
 refreshes and Codex legs will start failing authentication: re-run step 1, and treat that as the signal to
 add a write-back step.

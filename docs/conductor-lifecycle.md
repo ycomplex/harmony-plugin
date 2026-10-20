@@ -115,7 +115,7 @@ conductor and its leases are untouched. Credentials are reported by name, never 
 `node <plugin checkout>/dist/bin/daemon.js ...`, matched on the **full command line**: the script must be this
 checkout's `dist/bin/daemon.js`, and a process started with a different `--config` is excluded. It does not
 match the ticket-disk sweep job, a `harmony` CLI invocation (including `harmony conductor stop`), the launcher
-script (which `exec`s into node) or another checkout's daemon. A checkout path containing spaces is not
+script (which `exec`s into node) or another checkout's conductor. A checkout path containing spaces is not
 supported by the matcher.
 
 ## The environment file

@@ -93,7 +93,7 @@ knowledge-gap finding worth surfacing, not grounding. Then calibrate:
 - **Load-bearing gap** (high-impact / Type-1 decision you're genuinely out of depth on) →
   **research-first**: set `load_bearing_gap: true` on the brief doc, put the concrete research prompts
   in `research[]`, mark the decision items `deferred: true`, and **lead with the research ask** — never
-  bury it behind `expand`. Then invoke `/harmony-research` to run the relay. (The gate-ui-conductor §3.2
+  bury it behind `expand`. Then invoke `/harmony-research` to run the relay. (The gate-ui-conduct loop §3.2
   lint enforces this: a load-bearing brief with no research, or still asking a substantive decision, fails to compose.)
 
 "I don't know" is never the end state: fill the gap (write knowledge), accept the guess as precedent,
@@ -138,7 +138,7 @@ mcp__harmony__reference_knowledge({ task_id, decision_id: deferral.id })
 mcp__harmony__resolve_brief({ task_id, command: "defer", detail: "<why>", provenance: "human-in-session" })   // parks the ticket
 ```
 
-(A defer is the human's own "not now", so it is always `human-in-session` from the plugin — the conductor
+(A defer is the human's own "not now", so it is always `human-in-session` from the plugin — the conduct loop
 synthesizes only accepts, never defers. `provenance` itself is covered in
 `skills/harmony-shared/gate-routing.md` §Resolution provenance — B-734.)
 

@@ -2,7 +2,7 @@
 # B-708: Docker-host worker REAP wrapper — the "docker-host" launch profile's `reap` template target.
 #
 # The remote twin of docker-worker-reap.sh: `docker rm -f harmony-worker-<conduction_id>` on the host,
-# over SSH, re-derived into the SAME three-way exit-code contract the daemon's quiet-reap renderer
+# over SSH, re-derived into the SAME three-way exit-code contract the conductor's quiet-reap renderer
 # (src/daemon/quiet-reap.ts) depends on:
 #   0 — a real container was found and removed (a live worker was reaped).
 #   3 — the routine miss: docker named "No such container", OR the host is unreachable (ssh's own
@@ -13,7 +13,7 @@
 # never by `rm -f`'s own exit code or output: neither is stable across Docker releases (see the call
 # site). "No such container" in the output is still honoured, for an older engine that says so.
 #
-# Also deletes the per-run files on the daemon's machine, as docker-worker-reap.sh does, and
+# Also deletes the per-run files on the conductor's machine, as docker-worker-reap.sh does, and
 # best-effort removes the host's copy of run.env (the minted token).
 #
 # Usage: docker-host-worker-reap.sh <conduction_id> <ticket>

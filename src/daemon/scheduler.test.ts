@@ -1,4 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   runSchedulerPass,
   runScheduler,
@@ -2502,7 +2506,7 @@ describe('B-739: lease-guarded writes — a daemon that lost its lease goes quie
     expect(row.lease_holder).toBe('other-daemon:9:zzzz');
     expect(row.last_worker_exit_code).toBeNull();
     expect(row.last_worker_exit_class).toBeNull();
-    expect(h.logs.join(' ')).toMatch(/lease lost to another daemon while a launch was tracked/);
+    expect(h.logs.join(' ')).toMatch(/lease lost to another conductor while a launch was tracked/);
     expect(h.running()).toEqual([]); // no longer tracked — it is not ours to act on any more
   });
 
@@ -2899,7 +2903,7 @@ describe('B-1052: terminal-ticket pre-fire decline (held path)', () => {
     expect(h.launches()).toEqual([]);
   });
 
-  it('CONCURRENCY: a lease that moved to another daemon in the gap between the ticket read and the terminal-decline write is rejected — only one close write ever lands (the same writeIfHeld CAS every other decline/park write already relies on)', async () => {
+  it('CONCURRENCY: a lease that moved to another conductor in the gap between the ticket read and the terminal-decline write is rejected — only one close write ever lands (the same writeIfHeld CAS every other decline/park write already relies on)', async () => {
     const h = makeHarness({
       conductions: [conduction()],
       tasks: { 'task-1': pausedTask({ awaiting_human_input: true }) },
@@ -2925,7 +2929,7 @@ describe('B-1052: terminal-ticket pre-fire decline (held path)', () => {
     expect(row.status).toBe('active'); // our decline write was REJECTED by the CAS — no clobber
     expect(row.last_worker_exit_class).toBeNull();
     expect(h.commands).toEqual([]); // never fired a leg either
-    expect(h.logs.join(' ')).toMatch(/lease lost to another daemon/);
+    expect(h.logs.join(' ')).toMatch(/lease lost to another conductor/);
   });
 });
 
@@ -4581,5 +4585,94 @@ describe('B-1171 leg_backend — recorded at launch, honoured at adoption', () =
     expect(warn[0]).toContain('cond-1');
     expect(warn[0]).toMatch(/conductor/);
     expect(warn[0]).not.toMatch(/daemon/);
+  });
+});
+
+// B-1171: container/gke/switch-daemon-profile.sh corroborates an adoption by grepping the conductor log for
+// the conduction id plus a fixed pattern. Every adoption / takeover / reconcile line this scheduler emits
+// must keep matching it — run that script's OWN grep (pattern read out of the script) over the real lines.
+describe('B-1171: adoption log lines keep matching switch-daemon-profile.sh\'s corroboration grep', () => {
+  const script = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'container', 'gke', 'switch-daemon-profile.sh'), 'utf8');
+  const pattern = /grep -qiE '([^']+)'/.exec(script)?.[1];
+
+  const corroborates = (logs: string[], cid: string): boolean => {
+    const r = spawnSync(
+      'bash',
+      ['-c', `printf '%s\\n' "$LOGS" | grep -F -- "$CID" | grep -qiE '${pattern}'`],
+      { env: { ...process.env, LOGS: logs.join('\n'), CID: cid } },
+    );
+    return r.status === 0;
+  };
+
+  it('reads the pattern out of the script (guards the test itself)', () => {
+    expect(pattern).toBe('adopt|took over|reconcil|re-attach|settle|reap');
+    expect(corroborates(['conduction cond-1: took over stale lease from x — reaped'], 'cond-1')).toBe(true);
+    expect(corroborates(['conduction cond-1: nothing relevant here'], 'cond-1')).toBe(false); // negative control
+    expect(corroborates(['conduction cond-2: took over stale lease'], 'cond-1')).toBe(false);
+  });
+
+  const dead = { lease_holder: 'this-host:1:dead0000', last_heartbeat_at: iso(T0 - 1_000) };
+  const awake = { 'task-1': pausedTask({ awaiting_human_input: false }) };
+
+  it('cleanly-released adoption', async () => {
+    const h = makeHarness({ conductions: [conduction({ ...dead, clean_shutdown_at: iso(T0 - 500) })], tasks: awake });
+    await h.pass();
+    expect(corroborates(h.logs, 'cond-1')).toBe(true);
+  });
+
+  it('stale-window takeover', async () => {
+    const h = makeHarness({ conductions: [conduction({ ...dead })], tasks: awake });
+    h.setNow(T0 + config.staleMs + 1_000);
+    await h.pass();
+    expect(corroborates(h.logs, 'cond-1')).toBe(true);
+  });
+
+  it('mid-leg reconcile (re-attach to a live worker)', async () => {
+    const h = makeHarness({
+      conductions: [conduction({ ...dead, leg_started_at: iso(T0 - 500) })],
+      tasks: awake,
+      config: reconcilableConfig,
+      probeDefaultExitCode: 0,
+    });
+    h.setNow(T0 + config.staleMs + 1_000);
+    await h.pass();
+    expect(h.logs.some((l) => /re-attached/.test(l))).toBe(true);
+    expect(corroborates(h.logs, 'cond-1')).toBe(true);
+  });
+
+  it('mid-leg reconcile that finds no live worker, reaping defensively', async () => {
+    const h = makeHarness({
+      conductions: [conduction({ ...dead, leg_started_at: iso(T0 - 500) })],
+      tasks: awake,
+      config: reconcilableConfig,
+      probeDefaultExitCode: 1,
+    });
+    h.setNow(T0 + config.staleMs + 1_000);
+    await h.pass();
+    expect(h.logs.some((l) => /reconciliation probe found no live worker/.test(l))).toBe(true);
+    // the reconcile line alone must corroborate, not only the later takeover line
+    expect(corroborates(h.logs.filter((l) => /reconciliation probe/.test(l)), 'cond-1')).toBe(true);
+    expect(corroborates(h.logs, 'cond-1')).toBe(true);
+  });
+
+  it('the leg_backend adoption and refusal lines', async () => {
+    for (const backend of ['cloud', 'mystery']) {
+      const h = makeHarness({
+        conductions: [conduction({ ...dead, leg_started_at: iso(T0 - 500) })],
+        tasks: awake,
+        config: reconcilableConfig,
+      });
+      h.deps.legBackend = {
+        tag: 'gke',
+        resolveTemplates: (t) => (t === 'cloud' ? { reap: 'reap-cloud {conduction_id}', probe: 'probe-cloud {conduction_id}' } : null),
+        read: async () => ({ absent: false, backend }),
+        write: async () => 'ok',
+      };
+      h.setNow(T0 + config.staleMs + 1_000);
+      await h.pass();
+      const lines = h.logs.filter((l) => /adopting/.test(l));
+      expect(lines).toHaveLength(1);
+      expect(corroborates(lines, 'cond-1')).toBe(true);
+    }
   });
 });

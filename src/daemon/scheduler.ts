@@ -971,7 +971,7 @@ export async function runSchedulerPass(
       if (tracked && row.lease_holder !== deps.leaseHolder) {
         runtime.running.delete(row.id);
         deps.log(
-          `conduction ${row.id}: lease lost to another daemon while a launch was tracked — ` +
+          `conduction ${row.id}: lease lost to another conductor while a launch was tracked — ` +
             `abandoning (no clobber)`,
         );
       }
@@ -1028,7 +1028,7 @@ async function writeIfHeld(
 ): Promise<boolean> {
   const updated = await deps.updateConductionIfHeld(row.id, deps.leaseHolder, patch);
   if (updated !== null) return true;
-  deps.log(`conduction ${row.id}: lease lost to another daemon — abandoning this run`);
+  deps.log(`conduction ${row.id}: lease lost to another conductor — abandoning this run`);
   keeper.stop(row.id);
   state.delete(row.id);
   return false;
@@ -1280,7 +1280,7 @@ async function handleHeldConduction(
       state.set(row.id, captureBaseline(current));
       return;
     }
-    deps.log(`${label(row, current, deps.projectKey)}: fast-track recording not taken by the daemon (${outcome.reason}) — queuing the ordinary leg`);
+    deps.log(`${label(row, current, deps.projectKey)}: fast-track recording not taken by the conductor (${outcome.reason}) — queuing the ordinary leg`);
   }
 
   // B-717 item 1: QUEUE rather than fire — the fire phase (fireReadyCandidates) decides WHEN,

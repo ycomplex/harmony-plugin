@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # B-754: Cloud Run job-execution LAUNCH wrapper.
 #
-# This is the "cloud" launch profile's launch template target. It exists so the daemon's
+# This is the "cloud" launch profile's launch template target. It exists so the conductor's
 # scheduler/classify code (src/daemon/scheduler.ts, src/daemon/classify.ts) NEVER changes and NEVER
-# parses stdout: the daemon still just runs a shell command to completion and reads its exit code.
+# parses stdout: the conductor still just runs a shell command to completion and reads its exit code.
 # All Cloud Run CLI ambiguity is absorbed HERE.
 #
 # B-717 item 6 (accepted design c4c975bd, plan-gate correction 1): this wrapper is now spawned as a
-# TRACKED CHILD PROCESS by the daemon's fire-and-track scheduler — it is itself the `TrackedLaunch`
+# TRACKED CHILD PROCESS by the conductor's fire-and-track scheduler — it is itself the `TrackedLaunch`
 # handle src/daemon/scheduler.ts's `running` map holds, so N of these can run fully in parallel. The
 # `update`+`execute` pair below mutates ONE SHARED Cloud Run job definition non-atomically (see the
 # comments at those call sites) — safe only inside a mutual-exclusion window, so this wrapper now
@@ -36,21 +36,21 @@ CONDUCTION_ID="${1:?usage: cloud-worker-launch.sh <conduction_id> <ticket> [run_
 TICKET="${2:?usage: cloud-worker-launch.sh <conduction_id> <ticket> [run_config_json] [model]}"
 # B-718: the conduction row's run_config seam value (src/daemon/scheduler.ts's templateVars ->
 # {run_config_json}), forwarded here as a THIRD positional arg — replacing the hardcoded '{}' the
-# mint invocation below used before this ticket. B-743: the daemon-driven value is now
+# mint invocation below used before this ticket. B-743: the conductor-driven value is now
 # base64-encoded (scheduler.ts's runConfigJsonFor encodes UPSTREAM of this shell boundary, so a
 # free-text run_config.note can never break this script's own single-quoted call site); this
 # DEFAULT_RUN_CONFIG fallback stays raw JSON — the mint script's own --run-config handling
 # (scripts/mint-installation-token.mjs's normalizeRunConfigJson) accepts either shape. Optional/
-# absent (a manual invocation, or an older daemon build that doesn't render this template arg)
+# absent (a manual invocation, or an older conductor build that doesn't render this template arg)
 # falls back to '{}' byte-for-byte, same as today.
 DEFAULT_RUN_CONFIG='{}'
 RUN_CONFIG_JSON="${3:-$DEFAULT_RUN_CONFIG}"
 
-# B-772: the daemon's resolved per-leg model (src/daemon/scheduler.ts's templateVars ->
+# B-772: the conductor's resolved per-leg model (src/daemon/scheduler.ts's templateVars ->
 # modelFor), forwarded here as a FOURTH positional arg — same "replaces a hardcoded default,
 # optional/absent falls back cleanly" shape as RUN_CONFIG_JSON above. Unlike RUN_CONFIG_JSON,
 # there is no non-empty default: an empty MODEL is itself a valid "nothing resolved" state
-# (a manual invocation, or an older daemon build that doesn't render this template arg) — the
+# (a manual invocation, or an older conductor build that doesn't render this template arg) — the
 # mint invocation below and write_exec_env_file() forward it conditionally, only when non-empty.
 MODEL="${4:-}"
 
@@ -62,7 +62,7 @@ MODEL="${4:-}"
 CODEX_RUN=0
 CODEX_AUTH_CONTAINER_PATH="/home/worker/.codex-auth-src/auth.json"   # provision.sh copies it into ~/.codex
 CODEX_SECRET_MOUNT_DIR="/home/worker/.codex-auth-src"
-# run_config arrives as base64 JSON from the daemon (or raw JSON from a manual invocation): accept both.
+# run_config arrives as base64 JSON from the conductor (or raw JSON from a manual invocation): accept both.
 ADAPTER_PROBE="$(node -e 'let s=process.argv[1];try{JSON.parse(s)}catch{try{s=Buffer.from(s,"base64").toString("utf8")}catch{}}try{const a=JSON.parse(s).agent;process.stdout.write(a&&typeof a.adapter==="string"?a.adapter:"")}catch{}' "$RUN_CONFIG_JSON" 2>/dev/null || true)"
 if [ "$ADAPTER_PROBE" = "codex" ]; then CODEX_RUN=1; fi
 if [ "$CODEX_RUN" = "1" ]; then
@@ -79,7 +79,7 @@ fi
 # --- Config knobs (B-711 "config not constants") ----------------------------------------------
 # Every value below is an env var with an EXAMPLE default matching the harmony-conductor GCP
 # project's already-completed one-time founder setup (accepted design pt.7). Override on the
-# daemon host if your project/region/job/identity differ — never hardcode a live value here.
+# conductor host if your project/region/job/identity differ — never hardcode a live value here.
 # B-800 AC4: profiles.cloud.gcloud_project in a per-deployment config, when present, is this
 # deployment's default GCP project — read via `harmony config get` (best-effort; a missing
 # HARMONY_PLUGIN_DIR or deployment config falls straight through to the "harmony-conductor"
@@ -169,7 +169,7 @@ if [ "$CODEX_RUN" = "1" ]; then
 fi
 
 # B-717 item 6 / plan-gate correction 3: the lock directory is SHARED across every concurrent
-# wrapper invocation on THIS daemon host (it narrows the update+execute race against the one shared
+# wrapper invocation on THIS conductor host (it narrows the update+execute race against the one shared
 # Cloud Run job definition, not a per-conduction resource) — deliberately NOT under RUN_DIR. A fresh
 # TMPDIR per host is fine; override HARMONY_CLOUD_LAUNCH_LOCK_DIR if the host needs a different path.
 : "${HARMONY_CLOUD_LAUNCH_LOCK_DIR:=${TMPDIR:-/tmp}/harmony-cloud-worker-launch.lock}"
@@ -211,7 +211,7 @@ acquire_lock() {
       continue
     fi
     if [ "$waited" -ge "$LOCK_WAIT_TIMEOUT_S" ]; then
-      # BOUNDED wait, fails LOUD: the daemon's own retry ladder (dirty-exit, exponential backoff —
+      # BOUNDED wait, fails LOUD: the conductor's own retry ladder (dirty-exit, exponential backoff —
       # src/daemon/scheduler.ts) owns recovery from here; this script adds no new recovery logic.
       echo "cloud-worker-launch: timed out after ${LOCK_WAIT_TIMEOUT_S}s waiting for the launch lock — treating as a dirty exit" >&2
       exit 1
@@ -242,8 +242,8 @@ EXEC_ENV_FILE="$RUN_DIR/exec-env-vars.yaml"  # per-EXECUTE-call file, deleted ri
 #    flag actually lives on this host, same as the docker profile.
 # B-772 hotfix: the expansion below uses `${ARR[@]+"${ARR[@]}"}`, NOT a bare `"${ARR[@]}"`.
 # On bash 4.4+ expanding an EMPTY array under `set -u` is legal; on bash 3.2 — which macOS still
-# ships, and which the daemon host runs — it trips nounset with "MINT_MODEL_FLAG[@]: unbound
-# variable" and kills the launch before the worker ever starts. This script runs on the DAEMON
+# ships, and which the conductor host runs — it trips nounset with "MINT_MODEL_FLAG[@]: unbound
+# variable" and kills the launch before the worker ever starts. This script runs on the CONDUCTOR
 # HOST (unlike provision.sh, which runs inside the Linux container), so it must be bash-3.2 safe.
 # Regression: 2026-08-27, first launch after B-772 merged parked B-773 with no work done.
 # B-772: --model is appended ONLY when MODEL is non-empty — mirrors the mint script's own
@@ -295,7 +295,7 @@ GIT_TOKEN_EXPIRES_AT="$(grep -m1 '^GIT_TOKEN_EXPIRES_AT=' "$ENV_FILE" | cut -d= 
 
 # B-1020: leg seam — HARMONY_LEG is written into the SAME minted $ENV_FILE as GIT_TOKEN/
 # HARMONY_PLUGIN_POSTURE/HARMONY_RUN_CONFIG_JSON/HARMONY_MODEL above (the mint script resolves it
-# from its own inherited HARMONY_LEG env var — set by the daemon's fireLaunch as a per-call `env`
+# from its own inherited HARMONY_LEG env var — set by the conductor's fireLaunch as a per-call `env`
 # option on the exec() that ultimately runs this script, per src/daemon/scheduler.ts). This wrapper
 # itself never computes a leg number; it only forwards what the mint script already wrote. Read the
 # same grep+cut way, no non-empty check (mirrors HARMONY_MODEL's own convention): an absent value
@@ -331,7 +331,7 @@ write_exec_env_file() {
   #
   # CONFIRMED (2026-08-03, live smoke probe): the minted token still lands in the job/execution spec
   # metadata either way — inline or file form. The file-based route's real benefit was never keeping
-  # the token out of the spec; it keeps the token off THIS daemon host's argv/process list (`ps`,
+  # the token out of the spec; it keeps the token off THIS conductor host's argv/process list (`ps`,
   # shell history), which it still does.
   local file="$1"
   ( umask 077
@@ -353,7 +353,7 @@ write_exec_env_file() {
       # guard B-726 itself added, now re-keyed onto this one var). This is now a local shell
       # variable populated from the minted env-file above (via `mint-installation-token.mjs --base
       # "$HOME/.harmony-container.env"`), NOT inherited from this wrapper's own invoking
-      # environment (the daemon host process) — forward it only when set — an unset posture must
+      # environment (the conductor host process) — forward it only when set — an unset posture must
       # still fail closed exactly as provision.sh intends (defaulting to "main", unacknowledged), so
       # this is deliberately conditional, never unconditional.
       if [ -n "${HARMONY_PLUGIN_POSTURE:-}" ]; then
@@ -457,7 +457,7 @@ acquire_lock
 # B-717 (accepted design c4c975bd pt.6, plan-gate correction 1 — RESOLVED): `update --env-vars-file`
 # mutates (replaces) the Cloud Run JOB DEFINITION itself before the `execute` call immediately below
 # reads that same job definition to launch the execution — TWO non-atomic gcloud calls against one
-# shared job definition. B-717 resolves the race this created (once the daemon stopped being
+# shared job definition. B-717 resolves the race this created (once the conductor stopped being
 # strictly serial) with the mkdir-based lock acquired immediately above: both calls, and the
 # execution-id resolve after them, run inside its critical section — see acquire_lock/release_lock.
 #
@@ -564,7 +564,7 @@ fi
 
 # 4. Poll for a terminal state — this wrapper used to rely on `execute --wait` to block here; B-717
 #    narrows the lock to the update+execute+resolve section above, so this wrapper now does its own
-#    UNLOCKED poll loop instead (the daemon's own per-launch deadline — src/daemon/scheduler.ts —
+#    UNLOCKED poll loop instead (the conductor's own per-launch deadline — src/daemon/scheduler.ts —
 #    bounds the OVERALL wait from the caller's side; this loop just watches for completion).
 #
 # SMOKE-TEST GAP (accepted design cf579f0f pt.1) — CONFIRMED via live observation (2026-08-03):
@@ -574,7 +574,7 @@ fi
 #   succeeded: conditions[type=Completed].status=="True", succeededCount:1
 #   failed:    conditions[type=Completed].status=="False", reason:"NonZeroExitCode", failedCount:1
 # A reaped/cancelled execution is INDISTINGUISHABLE from a failed one by this exit code, and this must
-# remain so: the daemon's own in-process `timedOut` flag (src/daemon/scheduler.ts) owns worker-timeout
+# remain so: the conductor's own in-process `timedOut` flag (src/daemon/scheduler.ts) owns worker-timeout
 # classification, per classify.ts's never-key-on-the-code rule — do not special-case cancellation here.
 # All 4 ACs on B-754 stay unchecked regardless: they require a live Cloud Run job to check against,
 # and code-only evidence satisfies none of them (human's explicit deferral, 2026-08-03).
@@ -609,7 +609,7 @@ elif [ "$FAILED" -ge 1 ] 2>/dev/null; then
   exit 1
 else
   # Neither succeededCount nor failedCount set ⇒ still reconciling. Never hang, never guess
-  # success: treat as dirty so the daemon's classifier parks/retries it, exactly like any other
+  # success: treat as dirty so the conductor's classifier parks/retries it, exactly like any other
   # dirty exit (src/daemon/classify.ts branch 6).
   echo "cloud-worker-launch: execution $EXECUTION_NAME has neither succeededCount nor failedCount set (completionTime='${COMPLETION:-}') — treating as dirty" >&2
   exit 1

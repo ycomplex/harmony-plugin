@@ -62,7 +62,7 @@ export function renderLeg(e) {
     apiVersion: 'batch/v1', kind: 'Job',
     metadata: { name: e.JOB_NAME, labels: legLabels },
     spec: {
-      backoffLimit: 0, // the daemon's retry ladder owns retries
+      backoffLimit: 0, // the conductor's retry ladder owns retries
       activeDeadlineSeconds: Number(e.DEADLINE),
       ttlSecondsAfterFinished: Number(e.JOB_TTL_S),
       template: {
