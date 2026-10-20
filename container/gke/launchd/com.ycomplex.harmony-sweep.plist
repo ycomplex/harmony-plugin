@@ -1,5 +1,18 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- ==========================================================================================================
+     DEPRECATED (B-1173). The ticket-disk sweep now runs in-cluster as the `harmony-sweep` CronJob
+     (container/conductor/k8s/cronjob-sweep.yaml, every 6 hours, namespace harmony-conductor). Do NOT install this
+     file on a new host.
+
+     REMOVAL IS A FOUNDER STEP, AND ONLY AFTER THE CronJob HAS RUN ONCE SUCCESSFULLY:
+         trigger the CronJob once by hand (the exact command is in container/conductor/k8s/cronjob-sweep.yaml,
+         under RETIREMENT ORDER) and read the Job's log: expect a "sweep summary:" line and a Complete Job.
+         (A plist comment cannot contain a double hyphen, so the command is not repeated here.)
+     Then, on the Mac mini:  launchctl bootout gui/$UID/com.ycomplex.harmony-sweep  and delete this plist from
+     ~/Library/LaunchAgents/. Until the first successful CronJob run both exist; the sweep is idempotent, so the
+     overlap is harmless. This file stays in the repo until that has happened.
+     ========================================================================================================== -->
 <!-- B-1164: launchd schedule for the GKE ticket-disk sweep (container/gke/sweep-ticket-disks.sh).
 
      Runs every 6 hours (StartInterval 21600 seconds) on the conductor host. It deletes the per-ticket disk

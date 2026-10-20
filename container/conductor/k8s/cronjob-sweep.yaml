@@ -1,0 +1,88 @@
+# B-1173: the ticket-disk sweep (container/gke/sweep-ticket-disks.sh) as a CronJob in the conductor's namespace,
+# replacing the launchd job on the Mac mini (container/gke/launchd/com.ycomplex.harmony-sweep.plist, DEPRECATED).
+#
+# Same image and the same service account as the conductor. It needs no extra rights: list/delete of
+# PersistentVolumeClaims and list of pods are already in the harmony-legs Role (rbac-legs.yaml), and the API token
+# for the ticket-state reads is resolved at start by the entrypoint's --with-secrets mode (Secret Manager, by the
+# name in the host file) — never stored here. The sweep reads the in-cluster kubectl credentials; there is no
+# kubeconfig.
+#
+# RETIREMENT ORDER (founder): remove the launchd sweep ONLY AFTER this CronJob has run once successfully
+# (`kubectl -n harmony-conductor create job --from=cronjob/harmony-sweep sweep-first-run`, then read its log for
+# "sweep summary:"). Until then both exist; they are idempotent, so overlap is harmless.
+#
+# The image tag is the same placeholder as the Deployment's (see deployment.yaml for the sed that fills it).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: harmony-sweep
+  namespace: harmony-conductor
+  labels:
+    app.kubernetes.io/name: harmony-sweep
+    app.kubernetes.io/part-of: harmony-conductor
+spec:
+  schedule: '0 */6 * * *'
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 1500
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: harmony-sweep
+            app.kubernetes.io/part-of: harmony-conductor
+        spec:
+          serviceAccountName: harmony-conductor
+          restartPolicy: Never
+          nodeSelector:
+            cloud.google.com/gke-nodepool: default-pool
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            fsGroup: 1000
+          containers:
+            - name: sweep
+              image: us-central1-docker.pkg.dev/harmony-conductor/harmony-workers/harmony-conductor:__CONDUCTOR_VERSION__
+              imagePullPolicy: IfNotPresent
+              workingDir: /opt/harmony-plugin
+              args:
+                - --with-secrets
+                - bash
+                - container/gke/sweep-ticket-disks.sh
+                - --namespace
+                - harmony-legs
+                - --env-file
+                - none
+              env:
+                - name: HARMONY_CONDUCTOR_REMOTE
+                  value: '1'
+                - name: HARMONY_HOME
+                  value: /var/harmony
+                - name: HARMONY_CONDUCTOR_HOST_FILE
+                  value: /etc/harmony/conductor-host.json
+                - name: CLOUDSDK_CORE_ACCOUNT
+                  value: harmony-conductor@harmony-conductor.iam.gserviceaccount.com
+                - name: CLOUDSDK_CORE_PROJECT
+                  value: harmony-conductor
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  memory: 256Mi
+              volumeMounts:
+                - name: config
+                  mountPath: /etc/harmony
+                  readOnly: true
+                - name: state
+                  mountPath: /var/harmony
+          volumes:
+            - name: config
+              configMap:
+                name: harmony-conductor-config
+            - name: state
+              emptyDir: {}

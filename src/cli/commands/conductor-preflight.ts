@@ -13,6 +13,7 @@ import {
   type ConductorConfig,
   type ConductorPaths,
 } from '../../config/conductor-config.js';
+import { resolveConductorSecrets } from '../../config/conductor-secrets.js';
 import { loadLegacyDeploymentConfig } from '../../config/deployment-config.js';
 import type { BoardRow } from '../../daemon/conductor-board.js';
 import { runDoctor } from './conductor-config.js';
@@ -30,6 +31,8 @@ export interface ConductorSettings {
   /** The conductor env file that was loaded (conductor.env, else the legacy daemon.env), or null. */
   envFile: { path: string; legacy: boolean } | null;
   envFileError?: string;
+  /** B-1173: reading the host file's named secrets failed (names only, never values). */
+  secretsError?: string;
   merged: ConductorConfig | null;
   configIssues: string[];
   pluginDir: string;
@@ -77,6 +80,24 @@ export async function loadSettings(deps: LifecycleDeps, opts: SettingsOptions = 
 
   // The config files are evaluated against the same environment the conductor would see.
   const evalEnv: Env = { ...deps.env, ...fileEnv };
+  // B-1173: a host whose secrets block names the token / App key needs no env file of values: resolve them here,
+  // in memory, so the pre-flight can read the board. The child conductor resolves for itself. An env var that is
+  // already set wins and costs no call.
+  let secretsError: string | undefined;
+  try {
+    await resolveConductorSecrets({
+      env: evalEnv as Record<string, string | undefined>,
+      target: evalEnv,
+      exec: async (file, args) => {
+        const r = await deps.exec(file, args, { env: evalEnv });
+        return { code: r.code, stdout: r.stdout };
+      },
+      readFile: deps.readFileSync,
+    });
+  } catch (err) {
+    secretsError = err instanceof Error ? err.message : String(err);
+  }
+
   let merged: ConductorConfig | null = null;
   const configIssues: string[] = [];
   try {
@@ -96,12 +117,13 @@ export async function loadSettings(deps: LifecycleDeps, opts: SettingsOptions = 
   }
 
   const launchEnv = merged && configIssues.length === 0 ? launchEnvFromMerged(merged) : {};
-  const env: Env = { ...launchEnv, ...deps.env, ...fileEnv };
+  const env: Env = { ...launchEnv, ...evalEnv };
   return {
     env,
     paths,
     envFile,
     envFileError,
+    secretsError,
     merged,
     configIssues,
     pluginDir: env.HARMONY_PLUGIN_DIR || deps.cliPluginDir,
@@ -148,6 +170,7 @@ export async function runPreflight(deps: LifecycleDeps, s: ConductorSettings, op
   if (s.envFileError) add('env-file', false, s.envFileError, `repair ${s.envFile?.path}`);
   else if (s.envFile) add('env-file', true, `loaded ${s.envFile.path} (values not shown)${s.envFile.legacy ? ' — legacy name, rename it to conductor.env' : ''}`);
   else add('env-file', true, 'no conductor.env: using this shell\'s environment only');
+  if (s.secretsError) add('secrets', false, s.secretsError, 'check the host file\'s secrets block, gcloud, and Secret Manager access');
   const doctor = runDoctor(
     { env: s.env as NodeJS.ProcessEnv, existsSync: deps.existsSync, readFileSync: deps.readFileSync },
     { config: s.deploymentConfig },
@@ -168,7 +191,7 @@ export async function runPreflight(deps: LifecycleDeps, s: ConductorSettings, op
 
   // --- credentials, by NAME only
   const tokenOk = has(s.env.HARMONY_API_TOKEN);
-  add('cred:HARMONY_API_TOKEN', tokenOk, tokenOk ? 'present' : 'not set', 'put HARMONY_API_TOKEN in ~/.harmony/conductor.env');
+  add('cred:HARMONY_API_TOKEN', tokenOk, tokenOk ? 'present' : 'not set', 'name its secret in conductor-host.json ("secrets": { "api_token": "<secret-name>" }) or export HARMONY_API_TOKEN');
   let board: BoardRow[] | null = null;
   if (tokenOk) {
     try {

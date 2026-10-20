@@ -57,6 +57,20 @@ describe('github-pr-state (B-1073)', () => {
     expect(urls.filter((u) => u.includes('/pulls/42'))).toHaveLength(2);
   });
 
+  it('B-1173: reads with an App identity whose key is INLINE (no key file in the pod)', async () => {
+    const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+    const pem = privateKey.export({ type: 'pkcs8', format: 'pem' }) as string;
+    const fetchImpl = vi.fn(async (url: string) =>
+      url.includes('/access_tokens') ? json({ token: 'inst-tok', expires_at: new Date(Date.now() + 3600_000).toISOString() }) : json({ merged: true, state: 'closed' }),
+    );
+    const read = createGithubPrMergeStateReader({
+      env: { HARMONY_APP_ID: '7', HARMONY_APP_INSTALLATION_ID: '99', HARMONY_APP_PRIVATE_KEY: pem },
+      fetchImpl: fetchImpl as any,
+      readFile: () => { throw new Error('must not read a key file'); },
+    })!;
+    expect(await read(PR)).toBe('merged');
+  });
+
   it('every failure is unknown, never a throw', async () => {
     const bad = createGithubPrMergeStateReader({ env: { GH_TOKEN: 't' }, fetchImpl: (async () => json({}, false)) as any })!;
     expect(await bad(PR)).toBe('unknown');
