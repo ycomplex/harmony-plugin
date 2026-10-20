@@ -588,6 +588,49 @@ function makeClient(
 const okDoc = { decide: 'x', recommend: { text: 'y' }, items: [{ kind: 'decision', text: 'Pick', recommendation: 'A' }] };
 
 describe('composeBrief', () => {
+  it('refuses the original release act-string specimen before rendering or writing', async () => {
+    const client = makeClient([{ data: { field_values: {} } }, { data: null }]);
+    await expect(composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'release-decision-pending',
+      doc: { ...okDoc, frame: { kind: 'release', act: 'merge', landing: {}, unproven: [], evidence_status: '6/6' } } as any,
+    })).rejects.toThrow('doc.frame.act');
+    expect(client.insert).not.toHaveBeenCalled();
+    expect(client.update).not.toHaveBeenCalled();
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it.each(['claude-code', 'codex'])('rejects malformed %s-authored frames before any write, then permits a correction', async () => {
+    const malformed = { kind: 'clarify', solving: 'x', in_scope: [], not_solving: ['excluded'] };
+    const client = makeClient([{ data: null }]);
+    await expect(composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: { ...okDoc, frame: malformed } as any,
+    })).rejects.toThrow('doc.frame.not_solving[0]');
+    expect(client.insert).not.toHaveBeenCalled();
+    expect(client.update).not.toHaveBeenCalled();
+    expect(client.rpc).not.toHaveBeenCalled();
+    const corrected = makeClient([{ data: null }, { data: { id: 'new-brief' } }, { data: null }]);
+    await expect(composeBrief(corrected, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft',
+      doc: { ...okDoc, frame: { ...malformed, not_solving: [{ item: 'excluded', lands: 'elsewhere' }] } } as any,
+    })).resolves.toHaveProperty('lint.ok', true);
+    expect(corrected.insert).toHaveBeenCalled();
+  });
+
+  it('validates an inherited malformed frame before revising, and permits explicit clearing', async () => {
+    const prior = { ...okDoc, frame: { kind: 'clarify', not_solving: ['bad'] } };
+    const row = { id: 'old-brief', iteration: 1, doc: prior };
+    const client = makeClient([{ data: row }]);
+    await expect(composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+    })).rejects.toThrow('doc.frame');
+    expect(client.update).not.toHaveBeenCalled();
+    expect(client.rpc).not.toHaveBeenCalled();
+    const cleared = makeClient([{ data: row }, { data: { ...row, iteration: 2 } }, { data: null }]);
+    await expect(composeBrief(cleared, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: { ...okDoc, frame: null } as any,
+    })).resolves.toHaveProperty('lint.ok', true);
+  });
+
   const briefRow = { id: 'brief-1', task_id: 'task-1', reason: 'clarification-draft', content: 'rendered', status: 'active', iteration: 1 };
 
   it('renders + lints, validates pending_activity, inserts, then sets awaiting_human_input', async () => {

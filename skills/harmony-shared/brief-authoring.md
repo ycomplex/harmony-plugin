@@ -5,6 +5,22 @@ read. Gate skills point here from their compose steps; `compose_brief`'s tool de
 carries only the essence. Never copy this contract into a skill — pointers only, so the
 contract cannot drift.
 
+## Supplied frame structure (B-1158)
+
+Both Claude and Codex authors use the same gate frame contract. `compose_brief` validates a
+supplied frame after merging a revision, before deriving scope or rendering. A wrong type,
+missing required structural key, or gate-kind mismatch is refused with a `doc.frame` field path;
+correct that field and retry. The prior revision is preserved on refusal. An omitted optional
+frame remains compatible; content-quality warnings stay warnings. A revision inherits an omitted
+frame, so correct or explicitly clear an inherited malformed frame.
+
+Use the gate's typed object, including nested objects: release uses `act` with `repos`,
+`pr_count`, `lands_in`, `atomicity` and `irreversible` (not a string or a `landing` alias).
+Clarify exclusions are `{ item, lands }` objects, never strings. Release `act.prs` is optional
+and, when present, is a list of `{ repo, number, url }` objects. Optional fields stay optional;
+unknown additive fields are preserved. The complete structural schemas live in
+`src/tools/brief-frame-schema.ts`; the gate-specific content requirements below still apply.
+
 Vocabulary: states run Proposed → Clarified → Decomposed → Designed → Planned → Built →
 Deployed → Verified; gate names stay clarify / decompose / design / plan / release / verify.
 

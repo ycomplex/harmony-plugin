@@ -4,6 +4,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveTaskId } from './resolve-task-id.js';
+import { validateBriefFrame } from './brief-frame-schema.js';
 import { detectRiskClasses } from './risk-class.js';
 import type { AcceptanceEventPayloadItem } from './acceptance-events.js';
 import { slugRef } from './payload-refs.js';
@@ -66,11 +67,8 @@ export interface BriefAlternative {
 // 14-brief-per-gate corpus: docs/2026-07-31-gate-brief-reader-needs.md §3).
 //
 // `frame` is ONE optional, `kind`-discriminated field emitting ONE extra block, positioned per gate.
-// Two invariants make it deployable warn-only:
-//   1. A doc with NO frame renders exactly today's bytes — nothing in flight changes.
-//   2. Every frame lint rule added here is a WARNING. `compose_brief` gains no new way to refuse, so
-//      an unattended daemon leg can never hard-stop on a frame defect (§4.4 blast radius).
-// The error flip is deliberately a LATER ticket, one gate at a time (§5 step 5).
+// A doc with NO frame keeps its existing rendering. B-1158 validates supplied frame STRUCTURE
+// before derivation; content-quality frame lint remains warn-only (apart from existing safeguards).
 
 /** plan.carried_unproven ≡ release.unproven — one shape, authored predictively, rendered at both gates. */
 export interface Unproven { item: string; reason: string }
@@ -113,6 +111,8 @@ export interface LandingShape {
   ordering?: string;
   /** `[]` is a meaningful, renderable answer ("nothing"). */
   irreversible: string[];
+  /** B-890 compatibility: additive PR links may land before or after the structural guard. */
+  prs?: Array<{ repo: string; number: number; url: string }>;
 }
 
 /** One row of verify's criteria ledger — the gate whose whole contract is "confirm reality against these
@@ -2759,6 +2759,8 @@ export async function composeBrief(
   // never losing prose silently, and a loud refusal loses nothing.
   const priorDoc: BriefDoc | null = existingRow?.doc ?? null;
   const mergedDoc = mergeBriefDoc(priorDoc, args.doc);
+  // B-1158: refuse malformed supplied/inherited frames before any derivation can render or persist them.
+  validateBriefFrame(mergedDoc.frame, FRAME_KIND_FOR_REASON[args.reason]);
   // The prior round's diff-derived classes, and ONLY on the revision path — `undefined` on a first
   // compose, which is what keeps "no diff ⇒ []" true for round 1. See `withDiffDerivedRiskClasses`.
   const priorRiskClasses: string[] | undefined =
