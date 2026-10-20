@@ -1,5 +1,6 @@
 // B-1173: the BOOT-TIME SECRETS RESOLVER of a remote conductor.
 //
+// (Runs in every mode since the B-1173 acceptance change: see resolveConductorSecrets.)
 // A pod has no ~/.harmony/conductor.env and no key file. What it has is a Workload Identity that may read the
 // project's Secret Manager secrets, and the host file's `secrets` block, which holds secret NAMES only. When
 // HARMONY_CONDUCTOR_REMOTE=1 the daemon calls this BEFORE anything reads HARMONY_API_TOKEN, and the values land in
@@ -63,10 +64,13 @@ function projectOf(host: { gcp?: { project?: string } }, env: Env): string | und
   return host.gcp?.project || env.HARMONY_GCP_PROJECT || env.CLOUDSDK_CORE_PROJECT || env.GOOGLE_CLOUD_PROJECT || undefined;
 }
 
-/** No-op unless HARMONY_CONDUCTOR_REMOTE=1. Throws ConductorSecretsError (naming secret NAMES only) on any problem. */
+/** Resolves whichever of the two names the host file's secrets block carries and the env does not already set. Strict in remote mode (HARMONY_CONDUCTOR_REMOTE=1: missing file/entry is an error); lenient locally (nothing to do => no-op). Throws ConductorSecretsError (naming secret NAMES only) on any problem. */
 export async function resolveConductorSecrets(deps: ResolveSecretsDeps): Promise<ResolveSecretsResult> {
   const result: ResolveSecretsResult = { resolved: [], skipped: [] };
-  if (!isRemoteConductor(deps.env)) return result;
+  const remote = isRemoteConductor(deps.env);
+  // Mode-independent (B-1173 AC): a LOCAL host that names `api_token` / `github_app_private_key` in its secrets
+  // block resolves them too, so it needs no conductor.env of secret values. A local host whose host file is
+  // absent, unreadable, invalid or names neither key is left byte-unchanged: no call, no new failure.
 
   const hostPath = resolveConductorPaths(deps.env as NodeJS.ProcessEnv).hostFile;
   const read = deps.readFile ?? ((p: string) => readFileSync(p, 'utf8'));
@@ -74,16 +78,19 @@ export async function resolveConductorSecrets(deps: ResolveSecretsDeps): Promise
   try {
     text = read(hostPath);
   } catch {
-    throw new ConductorSecretsError(`the host file ${hostPath} could not be read; a remote conductor takes its secret names from its "secrets" block`);
+    if (!remote) return result;
+    throw new ConductorSecretsError(`the host file ${hostPath} could not be read; a conductor with a secrets block takes its secret names from its "secrets" block`);
   }
   let json: unknown;
   try {
     json = JSON.parse(text);
   } catch {
+    if (!remote) return result;
     throw new ConductorSecretsError(`the host file ${hostPath} is not valid JSON`);
   }
   const parsed = HostFileSchema.safeParse(json);
   if (!parsed.success) {
+    if (!remote) return result;
     // zod messages name keys, never values (the secrets block is names-only and a value-looking name is refused by key).
     const first = parsed.error.issues[0];
     throw new ConductorSecretsError(`the host file ${hostPath} is invalid: ${first ? `${first.path.join('.') || '(root)'}: ${first.message}` : 'unknown problem'}`);
@@ -99,7 +106,7 @@ export async function resolveConductorSecrets(deps: ResolveSecretsDeps): Promise
     }
     if (!name) {
       // api_token is required to run at all; the App key may instead come from a file path or be absent (cloud profile).
-      if (key === SECRET_KEYS.apiToken) throw new ConductorSecretsError(`HARMONY_API_TOKEN is not set and the host file's secrets block has no "${key}" entry naming its secret`);
+      if (remote && key === SECRET_KEYS.apiToken) throw new ConductorSecretsError(`HARMONY_API_TOKEN is not set and the host file's secrets block has no "${key}" entry naming its secret`);
       continue;
     }
     if (!project) {

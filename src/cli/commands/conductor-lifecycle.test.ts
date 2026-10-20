@@ -868,3 +868,63 @@ describe('local restart: --no-pull and --request', () => {
     expect(r.lines.join('\n')).toContain('unknown (fetch failed)');
   });
 });
+
+// ---------------------------------------------------------------------------------------------------
+// B-1173 acceptance: no conductor.env / daemon.env of secret values
+// ---------------------------------------------------------------------------------------------------
+
+import { loadSettings, runPreflight } from './conductor-preflight.js';
+
+describe('pre-flight with secrets resolved from Secret Manager (no env file)', () => {
+  const secretsHost = {
+    version: 1, plugin_dir: PLUGIN, gcp: { project: 'proj' },
+    github_app: { app_id: '1', installation_id: '2' },
+    secrets: { api_token: 'harmony-api-token', github_app_private_key: 'harmony-app-key' },
+  };
+  const gcloudSecrets = (file: string, args: string[]): ExecResult | undefined =>
+    file === 'gcloud' && args[0] === 'secrets' && args[1] === 'versions' && args[2] === 'access' && args[3] === 'latest' && args.slice(4).every((a) => a.startsWith('--secret=') || a.startsWith('--project='))
+      ? { code: 0, stdout: `value-of-${args[4]}\n`, stderr: '' }
+      : undefined;
+
+  it('with no env file and no token in the shell, the token and App key come from the named secrets', async () => {
+    const m = makeWorld({ noToken: true, failExec: gcloudSecrets });
+    m.vfs.set(`${HOME}/.harmony/conductor-host.json`, JSON.stringify(secretsHost));
+    expect(m.vfs.has(`${HOME}/.harmony/conductor.env`) || m.vfs.has(`${HOME}/.harmony/daemon.env`)).toBe(false);
+    const s = await loadSettings(m.deps, {});
+    expect(s.secretsError).toBeUndefined();
+    expect(s.envFile).toBeNull();
+    expect(s.env.HARMONY_API_TOKEN).toBe('value-of---secret=harmony-api-token');
+    const pre = await runPreflight(m.deps, s, {});
+    const byName = Object.fromEntries(pre.checks.map((c) => [c.name, c]));
+    expect(byName['cred:HARMONY_API_TOKEN'].ok).toBe(true);
+    expect(byName['cred:github-app-key'].ok).toBe(true);
+    expect(JSON.stringify(pre.checks)).not.toContain('value-of');
+  });
+
+  it('an env token already set wins: only the key secret is fetched', async () => {
+    const m = makeWorld({ failExec: gcloudSecrets });
+    m.vfs.set(`${HOME}/.harmony/conductor-host.json`, JSON.stringify(secretsHost));
+    const s = await loadSettings(m.deps, {});
+    expect(s.env.HARMONY_API_TOKEN).toBe('tok-s3cret');
+    expect(m.calls.filter((c) => c.file === 'gcloud').map((c) => c.args[4])).toEqual(['--secret=harmony-app-key']);
+  });
+
+  it('a host file without the names is unchanged: no gcloud call', async () => {
+    const m = makeWorld({ noToken: true, failExec: gcloudSecrets });
+    const s = await loadSettings(m.deps, {});
+    expect(m.calls.filter((c) => c.file === 'gcloud')).toEqual([]);
+    expect(s.secretsError).toBeUndefined();
+    expect(s.env.HARMONY_API_TOKEN).toBeUndefined();
+  });
+
+  it('a failing secret read fails the pre-flight naming only the secret name', async () => {
+    const m = makeWorld({ noToken: true, failExec: (f) => (f === 'gcloud' ? { code: 1, stdout: '', stderr: 'boom' } : undefined) });
+    m.vfs.set(`${HOME}/.harmony/conductor-host.json`, JSON.stringify(secretsHost));
+    const s = await loadSettings(m.deps, {});
+    const pre = await runPreflight(m.deps, s, {});
+    const c = pre.checks.find((x) => x.name === 'secrets')!;
+    expect(c.ok).toBe(false);
+    expect(c.detail).toContain('"harmony-api-token"');
+    expect(c.detail).not.toContain('boom');
+  });
+});

@@ -52,10 +52,16 @@ describe('conductor-boot', () => {
     expect(t.err.join('\n')).toContain('harmony-conductor-api-token');
   });
 
-  it('exec outside remote mode just runs the command', async () => {
-    const t = deps({ env: {} });
+  it('exec outside remote mode with a host file naming no secrets just runs the command (no call)', async () => {
+    const t = deps({ env: {}, readFile: () => '{"version":1}' });
     expect(await runConductorBoot(['exec', '--', 'true'], t.d)).toBe(7);
     expect(t.calls).toHaveLength(0);
+  });
+
+  it('exec outside remote mode resolves the named secrets too (B-1173: the resolver is mode-independent)', async () => {
+    const t = deps({ env: {} });
+    expect(await runConductorBoot(['exec', '--', 'true'], t.d)).toBe(7);
+    expect(t.calls.length).toBeGreaterThan(0);
   });
 
   it('check-host prints secret NAMES for a valid file and fails on an invalid one', async () => {

@@ -265,7 +265,7 @@ not read those back as legacy knobs.
 
 ## What stays an environment variable
 
-**On a local conductor `HARMONY_API_TOKEN` stays an environment variable of the service.** The host file's
+**`HARMONY_API_TOKEN` may stay an environment variable of the service, or be named in `secrets.api_token` (below).** The host file's
 `secrets` block records Secret Manager secret **names only**; secret **values** never appear in either file, in
 `migrate` output, or in `doctor` output (`migrate` lists them under `DROPPED` by name and reason).
 `HARMONY_APP_PRIVATE_KEY` (inline key contents) is likewise never copied; use `github_app.private_key_path`.
@@ -276,14 +276,13 @@ not read those back as legacy knobs.
 |---|---|---|
 | `base` | the gke profile's base worker env | the leg launch scripts (by name) |
 | `codex_auth` | the Codex `auth.json` | the leg launch scripts (by name) |
-| `api_token` | `HARMONY_API_TOKEN` | a **remote** conductor, at boot |
-| `github_app_private_key` | the harmony-daemon App private key (PEM contents) | a **remote** conductor, at boot |
+| `api_token` | `HARMONY_API_TOKEN` | the conductor, at boot |
+| `github_app_private_key` | the harmony-daemon App private key (PEM contents) | the conductor, at boot |
 
-With `HARMONY_CONDUCTOR_REMOTE=1` (set by the pod spec) the conductor runs, before anything else,
+**In every mode** (local and remote), whenever the host file's `secrets` block names `api_token` and/or `github_app_private_key`, the conductor runs, before anything else,
 `gcloud secrets versions access latest --secret=<name> --project=<project>` for `api_token` and
 `github_app_private_key` using the pod's Workload Identity, and places the values in its process environment as
 `HARMONY_API_TOKEN` and `HARMONY_APP_PRIVATE_KEY`. The project is the host file's `gcp.project`, else
 `HARMONY_GCP_PROJECT` / `CLOUDSDK_CORE_PROJECT`. The name is the only thing in argv; the value is never logged or
-written to a file; a failure names the secret **name** only. A variable that is already set in the environment is
-left alone (no call). Because the key arrives inline, `github_app.private_key_path` is optional in the host file
-(one of the two is still required). Local conductors never read the secrets block.
+written to a file; a failure names the secret **name** only. A variable that is already set and non-empty in the environment wins and its secret is **not fetched** (no call). A local host whose host file names neither key behaves exactly as before. So a local conductor needs **no `conductor.env` / `daemon.env`**: one project file plus one host file of secret names. `harmony conductor start|restart` pre-flight resolves them in memory too; the conductor child resolves for itself. A missing `gcloud` or an unreadable secret fails with the secret **name** only. In a pod (`HARMONY_CONDUCTOR_REMOTE=1`) the same resolver is strict: the host file and an `api_token` entry are required. Because the key arrives inline, `github_app.private_key_path` is optional in the host file
+(one of the two is still required). 

@@ -47,13 +47,57 @@ const files = (h: unknown) => (p: string) => {
 const REMOTE = { HARMONY_CONDUCTOR_REMOTE: '1', HARMONY_CONDUCTOR_HOST_FILE: HOST };
 
 describe('resolveConductorSecrets', () => {
-  it('is a no-op (no file read, no call) unless HARMONY_CONDUCTOR_REMOTE=1', async () => {
+  it('LOCAL mode: an unreadable or invalid host file is a silent no-op (unchanged behaviour, no call)', async () => {
+    const g = gcloudStub();
+    for (const readFile of [() => { throw new Error('ENOENT'); }, () => 'not json', () => '{"version":2}']) {
+      const target: Record<string, string | undefined> = {};
+      const r = await resolveConductorSecrets({ env: { HARMONY_CONDUCTOR_HOST_FILE: HOST }, target, exec: g.exec, readFile });
+      expect(r).toEqual({ resolved: [], skipped: [] });
+      expect(target).toEqual({});
+    }
+    expect(g.calls).toEqual([]);
+  });
+
+  it('LOCAL mode: a secrets block without the two names makes no call and no failure', async () => {
+    const g = gcloudStub();
+    const r = await resolveConductorSecrets({ env: { HARMONY_CONDUCTOR_HOST_FILE: HOST }, target: {}, exec: g.exec, readFile: files(host({ secrets: { base: 'b', codex_auth: 'c' } })) });
+    expect(r.resolved).toEqual([]);
+    const none = await resolveConductorSecrets({ env: { HARMONY_CONDUCTOR_HOST_FILE: HOST }, target: {}, exec: g.exec, readFile: files({ version: 1 }) });
+    expect(none.resolved).toEqual([]);
+    expect(g.calls).toEqual([]);
+  });
+
+  it('LOCAL mode with no conductor.env/daemon.env: resolves the named secrets from Secret Manager', async () => {
     const g = gcloudStub();
     const target: Record<string, string | undefined> = {};
-    const r = await resolveConductorSecrets({ env: { HARMONY_CONDUCTOR_HOST_FILE: HOST }, target, exec: g.exec, readFile: () => { throw new Error('must not read'); } });
-    expect(r).toEqual({ resolved: [], skipped: [] });
+    const r = await resolveConductorSecrets({ env: { HARMONY_CONDUCTOR_HOST_FILE: HOST, HARMONY_HOME: '/nonexistent' }, target, exec: g.exec, readFile: files(host()) });
+    expect(r.resolved).toEqual(['HARMONY_API_TOKEN', 'HARMONY_APP_PRIVATE_KEY']);
+    expect(target.HARMONY_API_TOKEN).toBe('tok-VALUE-1234');
+  });
+
+  it('LOCAL mode: only the named key is fetched; a set (or empty-string-unset) env var wins without a call', async () => {
+    const g = gcloudStub();
+    const target: Record<string, string | undefined> = { HARMONY_API_TOKEN: 'from-env' };
+    await resolveConductorSecrets({ env: { HARMONY_CONDUCTOR_HOST_FILE: HOST }, target, exec: g.exec, readFile: files(host({ secrets: { api_token: 'harmony-api-token', github_app_private_key: 'harmony-app-key' } })) });
+    expect(g.calls.map((c) => c.args[4])).toEqual(['--secret=harmony-app-key']);
+    const g2 = gcloudStub();
+    const t2: Record<string, string | undefined> = { HARMONY_API_TOKEN: '' };
+    await resolveConductorSecrets({ env: { HARMONY_CONDUCTOR_HOST_FILE: HOST }, target: t2, exec: g2.exec, readFile: files(host({ secrets: { api_token: 'harmony-api-token' } })) });
+    expect(t2.HARMONY_API_TOKEN).toBe('tok-VALUE-1234');
+  });
+
+  it('LOCAL mode: a failing read or missing gcloud names only the secret NAME', async () => {
+    const env = { HARMONY_CONDUCTOR_HOST_FILE: HOST };
+    const a = await resolveConductorSecrets({ env, target: {}, exec: gcloudStub({ fail: new Set(['harmony-api-token']) }).exec, readFile: files(host()) }).catch((e: unknown) => e);
+    expect((a as Error).message).toContain('"harmony-api-token"');
+    await expect(resolveConductorSecrets({ env, target: {}, exec: async () => ({ code: 127, stdout: '' }), readFile: files(host()) })).rejects.toThrow(/gcloud is not installed/);
+  });
+
+  it('is a no-op in remote-less mode when the target already has everything', async () => {
+    const g = gcloudStub();
+    const r = await resolveConductorSecrets({ env: { HARMONY_CONDUCTOR_HOST_FILE: HOST }, target: { HARMONY_API_TOKEN: 'a', HARMONY_APP_PRIVATE_KEY: 'b' }, exec: g.exec, readFile: files(host()) });
+    expect(r.skipped).toEqual(['HARMONY_API_TOKEN', 'HARMONY_APP_PRIVATE_KEY']);
     expect(g.calls).toEqual([]);
-    expect(target).toEqual({});
   });
 
   it('places the token and the App key in the target env, with names (not values) in argv', async () => {
