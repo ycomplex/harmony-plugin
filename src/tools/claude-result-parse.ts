@@ -217,15 +217,21 @@ export interface CodexPricing {
 }
 
 /** Rates read from OpenAI's published pricing page, https://developers.openai.com/api/docs/pricing,
- *  fetched 2026-10-17. Tier used: Standard, context <= 272K tokens; USD per 1M tokens. NOT modelled: the
- *  > 272K-context Standard rates (gpt-6.1-sol: $4.00 / $0.20 / $15.00) and the Fast / Batch / Flex tiers,
- *  so a derived cost is the Standard-tier (<= 272K) EQUIVALENT estimate. One row per model, so the
- *  <= 272K rates are used. A model the page did not list has NO row (never a from-memory rate): it stays
- *  UNPRICED (cost 'unknown'). Keyed by the EXACT model id (an optional `codex:` catalog prefix is
- *  stripped, case-insensitive) — never a substring match, so an unlisted sibling is not priced at
- *  another model's rate. */
+ *  fetched 2026-10-17 (gpt-6.1-sol and the gpt-5 rows) and 2026-10-19 (gpt-6-luna and gpt-6-astra,
+ *  B-1175). Tier used: Standard, context <= 272K tokens; USD per 1M tokens. NOT modelled: the
+ *  > 272K-context (long-context) rates — every GPT-6 model has one, e.g. gpt-6.1-sol: $4.00 / $0.20 /
+ *  $15.00 — and the Fast / Batch / Flex tiers, so a derived cost is the Standard-tier (<= 272K)
+ *  EQUIVALENT estimate and a leg whose context crossed the threshold is a known under-estimate
+ *  (tracked as B-1176). One row per model, so the <= 272K rates are used. A model the page did not
+ *  list has NO row (never a from-memory rate): it stays UNPRICED (cost 'unknown'). Keyed by the EXACT
+ *  model id (an optional `codex:` catalog prefix is stripped, case-insensitive) — never a substring
+ *  match, so an unlisted sibling is not priced at another model's rate. */
 export const CODEX_PRICING: Readonly<Record<string, CodexPricing>> = {
   'gpt-6.1-sol': { input_per_mtok: 2.0, cached_input_per_mtok: 0.1, output_per_mtok: 10 },
+  // B-1175: the two GPT-6 siblings the catalog now offers beside Sol (Luna: "most efficient";
+  // Astra: "most capable"). Same Standard tier, same dated source.
+  'gpt-6-luna': { input_per_mtok: 0.1, cached_input_per_mtok: 0.01, output_per_mtok: 0.5 },
+  'gpt-6-astra': { input_per_mtok: 10, cached_input_per_mtok: 1, output_per_mtok: 50 },
   'gpt-5': { input_per_mtok: 1.25, cached_input_per_mtok: 0.125, output_per_mtok: 10 },
   'gpt-5.1': { input_per_mtok: 1.25, cached_input_per_mtok: 0.125, output_per_mtok: 10 },
   'gpt-5.3-codex': { input_per_mtok: 1.75, cached_input_per_mtok: 0.175, output_per_mtok: 14 },

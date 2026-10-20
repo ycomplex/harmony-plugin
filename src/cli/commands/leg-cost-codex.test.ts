@@ -139,6 +139,16 @@ describe('harmony leg-cost record — a Codex capture', () => {
     expect(row.cost_source).toBe('derived');
   });
 
+  it('B-1175: a gpt-6-luna leg is priced at the Standard tier (non-null, derived)', async () => {
+    setEnv({ ...CODEX_ENV, HARMONY_RUN_CONFIG_JSON: CODEX_RC, HARMONY_RUN_CONFIG_PATH: undefined, CLAUDE_CODE_OAUTH_TOKEN: undefined, OPENAI_API_KEY: undefined, CODEX_API_KEY: undefined, CODEX_ACCESS_TOKEN: undefined, HARMONY_TEST_FORCE_REFUSAL: undefined });
+    await record(['--file', FIXTURE, '--gate', 'clarify', '--leg-key', 'leg-7', '--conduction-id', 'cond-7', '--model', 'gpt-6-luna']);
+    const row = (recordLegCost.mock.calls[0] as unknown[])[1] as Record<string, unknown>;
+    // (5400 − 4100) × 0.10 + 4100 × 0.01 + 610 × 0.50 = 130 + 41 + 305 = 476 per million = 0.000476
+    expect(row.total_cost_usd).toBeCloseTo(0.000476, 10);
+    expect(row.total_cost_usd).not.toBeNull();
+    expect(row.cost_source).toBe('derived');
+  });
+
   it('B-1149: an unpriced model (a removed -mini id) stays not captured', async () => {
     setEnv({ ...CODEX_ENV, HARMONY_RUN_CONFIG_JSON: CODEX_RC, HARMONY_RUN_CONFIG_PATH: undefined, CLAUDE_CODE_OAUTH_TOKEN: undefined, OPENAI_API_KEY: undefined, CODEX_API_KEY: undefined, CODEX_ACCESS_TOKEN: undefined, HARMONY_TEST_FORCE_REFUSAL: undefined });
     await record(['--file', FIXTURE, '--gate', 'build', '--leg-key', 'leg-6', '--conduction-id', 'cond-6', '--model', 'gpt-5-codex-mini']);

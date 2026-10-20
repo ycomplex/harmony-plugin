@@ -43061,6 +43061,10 @@ function deriveCostUsd(parsed, pricing) {
 }
 var CODEX_PRICING = {
   "gpt-6.1-sol": { input_per_mtok: 2, cached_input_per_mtok: 0.1, output_per_mtok: 10 },
+  // B-1175: the two GPT-6 siblings the catalog now offers beside Sol (Luna: "most efficient";
+  // Astra: "most capable"). Same Standard tier, same dated source.
+  "gpt-6-luna": { input_per_mtok: 0.1, cached_input_per_mtok: 0.01, output_per_mtok: 0.5 },
+  "gpt-6-astra": { input_per_mtok: 10, cached_input_per_mtok: 1, output_per_mtok: 50 },
   "gpt-5": { input_per_mtok: 1.25, cached_input_per_mtok: 0.125, output_per_mtok: 10 },
   "gpt-5.1": { input_per_mtok: 1.25, cached_input_per_mtok: 0.125, output_per_mtok: 10 },
   "gpt-5.3-codex": { input_per_mtok: 1.75, cached_input_per_mtok: 0.175, output_per_mtok: 14 }
