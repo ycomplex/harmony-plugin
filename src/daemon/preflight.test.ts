@@ -176,6 +176,26 @@ describe('runBootPreflight — hard env-contract check (check 2)', () => {
     ).resolves.toBeUndefined();
   });
 
+  it('B-1173: an inline HARMONY_APP_PRIVATE_KEY satisfies the key requirement (no key file path in a pod)', async () => {
+    const { HARMONY_APP_PRIVATE_KEY_PATH: _drop, ...rest } = ALL_VARS;
+    await expect(
+      runBootPreflight(fakeConfig(), baseProfile({ requires_app_mint: true, required_tools: undefined }), {
+        runCommand: fakeRunCommand(),
+        env: { ...rest, HARMONY_APP_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----' },
+        profileName: 'gke',
+        log: vi.fn(),
+      }),
+    ).resolves.toBeUndefined();
+    await expect(
+      runBootPreflight(fakeConfig(), baseProfile({ requires_app_mint: true, required_tools: undefined }), {
+        runCommand: fakeRunCommand(),
+        env: rest,
+        profileName: 'gke',
+        log: vi.fn(),
+      }),
+    ).rejects.toThrow(/HARMONY_APP_PRIVATE_KEY_PATH.*inline HARMONY_APP_PRIVATE_KEY/);
+  });
+
   it('still throws when neither env nor the deployment config resolve a var', async () => {
     const deploymentConfig: DeploymentConfig = { launcher: { plugin_dir: '/from/config/plugin' } };
     await expect(

@@ -10,6 +10,8 @@
   "gcloud": { "account": "harmony-daemon@my-gcp-project.iam.gserviceaccount.com" },
   "secrets": {
     "base": "harmony-worker-base-env",
-    "codex_auth": "harmony-codex-auth"
+    "codex_auth": "harmony-codex-auth",
+    "api_token": "harmony-conductor-api-token",
+    "github_app_private_key": "harmony-daemon-app-private-key"
   }
 }

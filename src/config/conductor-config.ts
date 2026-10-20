@@ -146,6 +146,20 @@ export function looksLikeSecretValue(v: string): boolean {
   return /^(ghp_|gho_|ghs_|github_pat_|sk-|eyJ)/.test(v) || v.includes('-----BEGIN') || /^\S{40,}$/.test(v);
 }
 
+/** The documented keys of the host file's `secrets` block (B-1173). The block stays an open record (older
+ *  hosts carry other logical names), but these four are the ones the conductor reads:
+ *   base                    -> the gke profile's base worker env secret (HARMONY_GKE_BASE_SECRET)
+ *   codex_auth              -> the Codex auth.json secret
+ *   api_token               -> HARMONY_API_TOKEN, resolved at boot by a REMOTE conductor
+ *   github_app_private_key  -> HARMONY_APP_PRIVATE_KEY (the App key contents), resolved at boot by a REMOTE conductor
+ *  Values are NAMES of Secret Manager secrets, never credentials. */
+export const SECRET_KEYS = {
+  base: 'base',
+  codexAuth: 'codex_auth',
+  apiToken: 'api_token',
+  githubAppPrivateKey: 'github_app_private_key',
+} as const;
+
 const SecretNameSchema = z
   .string()
   .min(1)
@@ -158,7 +172,10 @@ const HostGithubAppSchema = z
   .object({
     app_id: z.string().min(1),
     installation_id: z.string().min(1),
-    private_key_path: z.string().min(1),
+    /** Optional since B-1173: a remote conductor has no key FILE; its key arrives inline as
+     *  HARMONY_APP_PRIVATE_KEY (resolved from the `github_app_private_key` secret at boot). validateMerged
+     *  still requires one of the two. */
+    private_key_path: z.string().min(1).optional(),
   })
   .strict();
 
@@ -734,7 +751,7 @@ export function validateMerged(merged: ConductorConfig, env: NodeJS.ProcessEnv =
       }
     }
     if (!app?.private_key_path && !env.HARMONY_APP_PRIVATE_KEY) {
-      need(HOST_FILE_LABEL, 'github_app.private_key_path', 'the GitHub App private key location is missing', 'add "github_app": { "private_key_path": "/path/to/key.pem" } to ~/.harmony/conductor-host.json');
+      need(HOST_FILE_LABEL, 'github_app.private_key_path', 'the GitHub App private key location is missing', 'add "github_app": { "private_key_path": "/path/to/key.pem" } to ~/.harmony/conductor-host.json (a remote conductor instead names the key\'s Secret Manager secret as "secrets": { "github_app_private_key": "<secret-name>" })');
     }
   }
   return issues;

@@ -265,8 +265,25 @@ not read those back as legacy knobs.
 
 ## What stays an environment variable
 
-**`HARMONY_API_TOKEN` stays an environment variable of the service** until a Secret Manager reader exists
-(B-1173). The host file's `secrets` block records Secret Manager secret **names only**; secret **values**
-never appear in either file, in `migrate` output, or in `doctor` output (`migrate` lists them under
-`DROPPED` by name and reason). `HARMONY_APP_PRIVATE_KEY` (inline key contents) is likewise never copied; use
-`github_app.private_key_path`.
+**On a local conductor `HARMONY_API_TOKEN` stays an environment variable of the service.** The host file's
+`secrets` block records Secret Manager secret **names only**; secret **values** never appear in either file, in
+`migrate` output, or in `doctor` output (`migrate` lists them under `DROPPED` by name and reason).
+`HARMONY_APP_PRIVATE_KEY` (inline key contents) is likewise never copied; use `github_app.private_key_path`.
+
+### The secrets block and the remote conductor (B-1173)
+
+| `secrets` key | Secret Manager secret holds | Read by |
+|---|---|---|
+| `base` | the gke profile's base worker env | the leg launch scripts (by name) |
+| `codex_auth` | the Codex `auth.json` | the leg launch scripts (by name) |
+| `api_token` | `HARMONY_API_TOKEN` | a **remote** conductor, at boot |
+| `github_app_private_key` | the harmony-daemon App private key (PEM contents) | a **remote** conductor, at boot |
+
+With `HARMONY_CONDUCTOR_REMOTE=1` (set by the pod spec) the conductor runs, before anything else,
+`gcloud secrets versions access latest --secret=<name> --project=<project>` for `api_token` and
+`github_app_private_key` using the pod's Workload Identity, and places the values in its process environment as
+`HARMONY_API_TOKEN` and `HARMONY_APP_PRIVATE_KEY`. The project is the host file's `gcp.project`, else
+`HARMONY_GCP_PROJECT` / `CLOUDSDK_CORE_PROJECT`. The name is the only thing in argv; the value is never logged or
+written to a file; a failure names the secret **name** only. A variable that is already set in the environment is
+left alone (no call). Because the key arrives inline, `github_app.private_key_path` is optional in the host file
+(one of the two is still required). Local conductors never read the secrets block.

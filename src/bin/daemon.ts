@@ -74,6 +74,7 @@ import { createHeartbeatKeeper } from '../daemon/heartbeat.js';
 import { formatDaemonError } from '../daemon/error-format.js';
 import { loadDaemonConfig, selectNamedProfile } from '../daemon/config.js';
 import { detectSupervisor, shutdownLine, shouldInspectWorkerImage } from '../daemon/supervisor.js';
+import { execFileSecretExec, resolveConductorSecrets } from '../config/conductor-secrets.js';
 import { createDaemonLogger } from '../daemon/conductor-logger.js';
 // B-1172: the conductor registry — one registered conductor per project, visible from anywhere.
 import { buildLogUrl, createRegistryClient, rpcFromClient } from '../daemon/conductor-registry.js';
@@ -208,6 +209,18 @@ async function closeHintsBounded(
 }
 
 async function main(): Promise<void> {
+  // B-1173: a REMOTE conductor (a pod) has no env file: HARMONY_API_TOKEN and the GitHub App key are read from
+  // Secret Manager, by the names in the host file's `secrets` block, before anything below looks at the env.
+  // No-op unless HARMONY_CONDUCTOR_REMOTE=1. Names only in every message; values only ever in process.env.
+  try {
+    const secrets = await resolveConductorSecrets({ env: process.env, target: process.env, exec: execFileSecretExec });
+    if (secrets.resolved.length > 0) {
+      process.stdout.write(`${new Date().toISOString()} secrets: resolved ${secrets.resolved.join(', ')} from Secret Manager\n`);
+    }
+  } catch (err) {
+    process.stderr.write(`conductor failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(1);
+  }
   const token = process.env.HARMONY_API_TOKEN;
   if (!token) {
     process.stderr.write(

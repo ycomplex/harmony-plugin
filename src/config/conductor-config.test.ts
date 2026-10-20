@@ -304,6 +304,22 @@ describe('semantic requirements after merge', () => {
   });
 });
 
+describe('a remote conductor has no key file (B-1173)', () => {
+  const noPath = { version: 1, plugin_dir: '/p', github_app: { app_id: '1', installation_id: '2' } };
+  it('a github_app block without private_key_path validates when HARMONY_APP_PRIVATE_KEY is set', () => {
+    expect(HostFileSchema.safeParse(noPath).success).toBe(true);
+    const r = load({ [P.snap]: snapshot(cloudProject), [P.host]: noPath }, { HARMONY_APP_PRIVATE_KEY: 'x', HARMONY_CONDUCTOR_REMOTE: '1' });
+    expect(r).not.toBeNull();
+    expect(r!.merged.github_app).toEqual({ app_id: '1', installation_id: '2' });
+    expect(launchEnvFromMerged(r!.merged)).not.toHaveProperty('HARMONY_APP_PRIVATE_KEY_PATH');
+  });
+  it('without the inline key it still fails, and the fix names the secrets entry', () => {
+    const e = errorOf(() => load({ [P.snap]: snapshot(cloudProject), [P.host]: noPath }));
+    expect(e.issues.map((i) => i.key)).toEqual(['github_app.private_key_path']);
+    expect(e.issues[0].fix).toContain('github_app_private_key');
+  });
+});
+
 describe('legacy layer', () => {
   const dep = legacyDep({
     worker_image: 'ghcr.io/x/img:1',
