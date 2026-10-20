@@ -57,7 +57,7 @@ at boot (a change is logged as `restart needed`).
 | `concurrency.max_workers` | integer >= 0 | `2` (the built-in profile's cap) | project | **hot** |
 | `model_policy.default` | string (model alias) | none | project | **hot** |
 | `model_policy.per_gate` | map gate -> model alias | none | project | **hot** |
-| `log_shipping` | boolean | unset = ship when `gcp.project` is named | project | **hot** (recorded; consumed by the log-shipping work) |
+| `log_shipping` | boolean | unset = ship when `gcp.project` is named | project | **hot** (read live by the log shipper, see [Conductor logs](#conductor-logs-b-1174)) |
 | `agents` | non-empty list of strings | `["claude-code","codex"]` | project | restart |
 | `config_repo` | `"owner/name"` | none (no default repo) | host | start |
 | `config_ref` | string | `main` | host | start |
@@ -179,6 +179,54 @@ knob) with which one wins, and every legacy source still supplying a value with 
 conflict with a legacy env knob carries the note *environment wins at launch (deprecated) — unset it or
 remove it from daemon.env*. Exit **1** when there is any issue; conflicts and legacy use are warnings (exit
 0). To check what the daemon sees, load its environment first: `set -a; . <daemon.env>; set +a`.
+
+## Conductor logs (B-1174)
+
+The daemon writes **two outputs from one logger**:
+
+- **stdout** keeps its text lines, `<ISO timestamp> <line>` (also appended to `HARMONY_DAEMON_LOG` when set).
+  Only a remote conductor (`HARMONY_CONDUCTOR_REMOTE=1`, set by its pod spec; `KUBERNETES_SERVICE_HOST` is
+  deliberately not used) prints JSON lines on stdout instead.
+- **`~/.harmony/logs/conductor.log`** (`HARMONY_CONDUCTOR_LOG` overrides; `HARMONY_HOME` is honoured) is the
+  structured record: one JSON object per line `{ts, level, event, message, ticket?, conduction?, leg?, project?}`,
+  rotated at 10 MB keeping 5 files (`conductor.log.1` .. `.5`). It is written first and never loses an entry
+  because shipping is down, slow or off. Values of known secret env vars (`HARMONY_API_TOKEN`, `GIT_TOKEN`,
+  `GH_TOKEN`, `GITHUB_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, ... and any `*_TOKEN`/`*_SECRET`/`*_PASSWORD`) are
+  replaced by their names before either output.
+
+**Shipping to Cloud Logging** is on when the merged config names `gcp.project` and `log_shipping` is not
+`false`; it is re-checked on every flush, so editing either in `.harmony/conductor.json` takes effect within
+one config refresh plus one flush, no restart. With neither, the shipper is fully off (no gcloud spawn, no
+token fetch, no network). Entries go in batches (every 5 s or 500 entries) to log name `harmony-conductor`,
+labelled `harmony_project=<key>`, authenticated with `gcloud auth print-access-token` for the host's gcloud
+account (`CLOUDSDK_CORE_ACCOUNT`, from the host file's `gcloud.account`). The in-memory queue holds 10,000
+entries; when it overflows the oldest are dropped and, once Cloud Logging is reachable again, ONE warning
+entry says how many were dropped and over what window (the local file still has them). A permission error
+is logged once naming `roles/logging.logWriter` and retried every 5 minutes.
+
+**One-time setup on the conductor host:** install `gcloud`, make sure its active (or configured) account is
+the conductor's, and grant that account the writer role on the logging project:
+
+```
+gcloud projects add-iam-policy-binding <PROJECT> --member=serviceAccount:<ACCOUNT> --role=roles/logging.logWriter
+# (use --member=user:<ACCOUNT> for a user account)
+```
+
+**Reading logs.** From the host (or anywhere with the file): 
+
+```
+harmony conductor logs --since 1h [--source local|cloud] [--limit 200] [--project <id>]
+```
+
+`--source` defaults to `local` when the file exists, else Cloud Logging. From anywhere with `gcloud` and
+`roles/logging.viewer` (what an orchestrator runs):
+
+```
+gcloud logging read 'logName="projects/<PROJECT>/logs/harmony-conductor" AND timestamp>="2026-10-20T10:00:00Z"' \
+  --project=<PROJECT> --format=json --order=desc --limit=200
+# narrow by ticket / conduction / severity:
+#   ... AND jsonPayload.ticket="B-123"   ... AND jsonPayload.conduction="<id>"   ... AND severity>=WARNING
+```
 
 ## Adoption runbook (operator)
 
