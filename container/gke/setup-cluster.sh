@@ -92,7 +92,7 @@ Options (defaults in brackets):
   --no-codex              skip the Codex file Secret entirely
   --no-conductor          skip steps 18-26 (the remote conductor pod's namespace, account, grants and RBAC)
   --conductor-gsa-name <n> Google service account the conductor pod acts as [harmony-conductor]
-  --sm-conductor-api-token <name>  Secret Manager secret the pod reads HARMONY_API_TOKEN from [harmony-conductor-api-token]
+  --sm-conductor-api-token <name>  Secret Manager secret the pod reads HARMONY_API_TOKEN from [HARMONY_API_TOKEN]
   --sm-conductor-app-key <name>    Secret Manager secret holding the GitHub App private key [harmony-daemon-app-private-key]
   --cloud-run-runtime-sa <email>   the Cloud Run leg job's runtime account; the pod may act as it (step 22). Omit to skip
   --artifact-repo <name>  Artifact Registry repository with the conductor image [harmony-workers]
@@ -132,7 +132,7 @@ NO_CONDUCTOR=0
 CONDUCTOR_NS="harmony-conductor"
 CONDUCTOR_KSA="harmony-conductor"
 CONDUCTOR_GSA_NAME="harmony-conductor"
-SM_CONDUCTOR_API_TOKEN="harmony-conductor-api-token"
+SM_CONDUCTOR_API_TOKEN="HARMONY_API_TOKEN"
 SM_CONDUCTOR_APP_KEY="harmony-daemon-app-private-key"
 CLOUD_RUN_RUNTIME_SA=""
 ARTIFACT_REPO="harmony-workers"

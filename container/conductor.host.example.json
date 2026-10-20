@@ -11,7 +11,7 @@
   "secrets": {
     "base": "harmony-worker-base-env",
     "codex_auth": "harmony-codex-auth",
-    "api_token": "harmony-conductor-api-token",
+    "api_token": "HARMONY_API_TOKEN",
     "github_app_private_key": "harmony-daemon-app-private-key"
   }
 }
