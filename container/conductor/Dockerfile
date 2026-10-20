@@ -24,10 +24,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/harmony-plugin
-# Only what runs: the built bundle, the manifest (version), the launch scripts and the skills the daemon reads.
+# Only what runs: the built bundle, the manifest (version), the launch scripts, the node helpers they call
+# (scripts/: the per-leg token mint and resume discovery) and the skills the daemon reads.
 COPY .claude-plugin ./.claude-plugin
 COPY dist ./dist
 COPY container ./container
+COPY scripts ./scripts
 COPY skills ./skills
 COPY package.json ./package.json
 
