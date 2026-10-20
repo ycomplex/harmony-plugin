@@ -736,7 +736,13 @@ mcp__harmony__compose_brief({
       // cannot say "to production?" while the act is a merge to `main`.
       act: { repos: ["<repo>"], pr_count: 1, lands_in: "staging", atomicity: "single",
              // ordering: "<REQUIRED when atomicity is 'ordered'>",
-             irreversible: [] },   // [] renders as "nothing — every step is revertable"
+             irreversible: [],     // [] renders as "nothing — every step is revertable"
+             // B-890 — typed PR references, optional. Read DEFENSIVELY from field_values.prerequisite_pr
+             // (first) then field_values.build_pr (+ build_pr_plugin / build_pr.web_pr / .plugin_pr):
+             // { repo, number: pr_number, url: pr_url }. Name what you can read, omit what you cannot,
+             // skip non-PR keys like work_branch, never fail the compose. Finish-work § "The release
+             // frame" is the full rule.
+             prs: [{ repo: "<owner/repo>", number: <pr_number>, url: "<pr_url>" }] },
       // The SAME residue as the `why` bullet below, as a closed enumeration. [] = nothing.
       unproven: [{ item: "<what is unproven>", reason: "<why the build did not prove it>" }],
       // Executed-aware counts behind `ev` — an unexecuted test is ZERO evidence, not weak evidence.
@@ -757,7 +763,8 @@ mcp__harmony__compose_brief({
       "CI: run <id> — <conclusion>. <Earlier run <id> failed <conclusion> before this commit went green. | No earlier run on this branch failed.>",
     ],
     context: [
-      "PR: <pr_url> (branch <branch>, head <head_sha>)",
+      // No "PR: ..." line here (B-890): the PR references ride frame.act.prs. compose_brief warns if the
+      // task records a pushed PR and the brief names none.
       // BOT-AUTHORED ONLY — omit this line for a founder-authored PR:
       "⚠ This PR is authored by <author.login> and needs your approval on GitHub before it can merge: <pr_url>. Current reviewDecision: <reviewDecision>. Accepting here is your go-ahead; the merge runs once the approval lands.",
     ],
