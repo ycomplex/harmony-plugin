@@ -16,6 +16,7 @@
 // behaviour is testable against temp dirs with an injected fetch. Only `registerConductorCommands`
 // touches console/process.
 
+import { execFile } from 'node:child_process';
 import { chmodSync, existsSync as fsExistsSync, mkdirSync, readFileSync as fsReadFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { Command } from 'commander';
@@ -37,12 +38,16 @@ import {
   type ConductorConfigIssue,
   type HostFile,
 } from '../../config/conductor-config.js';
-import { buildMigration } from '../../config/conductor-migrate.js';
+import { buildMigration, DEFAULT_SECRET_NAMES, nonSecretDrops, type SecretNameOverrides } from '../../config/conductor-migrate.js';
 import { readSnapshot, refreshProjectFile, type RefreshOutcome } from '../../config/conductor-project-source.js';
 import { loadLegacyDeploymentConfig, resolveDeploymentConfigPath } from '../../config/deployment-config.js';
 import { createGithubTokenProvider } from '../../config/github-app-token.js';
 import { formatOutput } from '../formatter.js';
 import { registerConductorLifecycleCommands } from './conductor-lifecycle.js';
+
+/** B-1183: whether a Secret Manager secret NAME exists. `unchecked` = gcloud missing or failing for a reason
+ *  other than "not found" — never reported as missing, so migrate does not tell the founder to re-create it. */
+export type SecretCheck = 'exists' | 'missing' | 'unchecked';
 
 export interface ConductorCliDeps {
   env: NodeJS.ProcessEnv;
@@ -50,13 +55,26 @@ export interface ConductorCliDeps {
   readFileSync: (path: string) => string;
   fetchImpl?: typeof fetch;
   now?: () => number;
+  /** `migrate` only: METADATA existence check of a secret name. Absent = the check is skipped. */
+  secretExists?: (name: string, ctx: { project?: string; account?: string }) => Promise<SecretCheck>;
 }
+
+/** `gcloud secrets describe <name>` reads metadata only — never the secret's value (`versions access` does). */
+export const gcloudSecretExists: NonNullable<ConductorCliDeps['secretExists']> = (name, ctx) =>
+  new Promise((resolveCheck) => {
+    const args = ['secrets', 'describe', name, '--format=value(name)', ...(ctx.project ? [`--project=${ctx.project}`] : []), ...(ctx.account ? [`--account=${ctx.account}`] : [])];
+    execFile('gcloud', args, { timeout: 30_000 }, (err, _stdout, stderr) => {
+      if (!err) return resolveCheck('exists');
+      resolveCheck(/NOT_FOUND|not found/i.test(String(stderr)) ? 'missing' : 'unchecked');
+    });
+  });
 
 export function defaultCliDeps(): ConductorCliDeps {
   return {
     env: process.env,
     existsSync: fsExistsSync,
     readFileSync: (p) => fsReadFileSync(p, 'utf8'),
+    secretExists: gcloudSecretExists,
   };
 }
 
@@ -180,11 +198,15 @@ export interface MigrateOptions {
   outProject?: string;
   outHost?: string;
   force?: boolean;
+  /** B-1183: Secret Manager secret NAMES written to the host file's `secrets` block (defaults: DEFAULT_SECRET_NAMES). */
+  secretApiToken?: string;
+  secretGithubAppKey?: string;
+  secretClaudeOauthToken?: string;
 }
 
 const pretty = (v: unknown): string => `${JSON.stringify(v, null, 2)}\n`;
 
-export function runMigrate(deps: ConductorCliDeps, opts: MigrateOptions): CliResult {
+export async function runMigrate(deps: ConductorCliDeps, opts: MigrateOptions): Promise<CliResult> {
   const legacyPath = resolveDeploymentConfigPath({ configPath: opts.config, env: deps.env });
   let migration;
   try {
@@ -194,10 +216,39 @@ export function runMigrate(deps: ConductorCliDeps, opts: MigrateOptions): CliRes
       existsSync: deps.existsSync,
       readFileSync: deps.readFileSync,
     });
-    migration = buildMigration({ legacyDeployment: legacy, env: deps.env, profileName: opts.profile });
+    const secretNames: SecretNameOverrides = {
+      api_token: opts.secretApiToken,
+      github_app_private_key: opts.secretGithubAppKey,
+      claude_oauth_token: opts.secretClaudeOauthToken,
+    };
+    migration = buildMigration({ legacyDeployment: legacy, env: deps.env, profileName: opts.profile, secretNames });
   } catch (err) {
     if (err instanceof ConductorConfigError) return fail(`${err.message}`, { issues: err.issues });
     return fail(err instanceof Error ? err.message : String(err));
+  }
+
+  // B-1183: do the named secrets exist? Metadata only — migrate never reads, copies or writes a secret VALUE.
+  const secretProject = migration.projectFile.gcp?.project;
+  const secretChecks: { key: string; name: string; state: SecretCheck }[] = [];
+  if (deps.secretExists) {
+    for (const [key, name] of Object.entries(migration.hostFile.secrets ?? {})) {
+      const state = await deps.secretExists(name, { project: secretProject, account: migration.hostFile.gcloud?.account });
+      secretChecks.push({ key, name, state });
+      if (state === 'missing') {
+        migration.warnings.push(
+          `secret ${name} (secrets.${key}) does not exist in ${secretProject ?? 'the GCP project'}. Create it (the value comes on stdin, from you): ` +
+            `gcloud secrets create ${name} --project=${secretProject ?? '<gcp-project>'} --replication-policy=automatic --data-file=-`,
+        );
+      } else if (state === 'unchecked') {
+        migration.warnings.push(`could not check whether secret ${name} (secrets.${key}) exists: gcloud is unavailable or refused. Check with: gcloud secrets describe ${name} --project=${secretProject ?? '<gcp-project>'}`);
+      }
+    }
+  }
+  const stillNeeded = nonSecretDrops(migration.dropped);
+  if (opts.write && stillNeeded.length > 0) {
+    migration.warnings.push(
+      `deployment.json is STILL NEEDED: ${stillNeeded.length} non-secret item(s) have no home in the new files (${stillNeeded.map((d) => d.item.replace(/^deployment\.json › /, '')).join(', ')}). Do not delete it yet.`,
+    );
   }
 
   const paths = resolveConductorPaths(deps.env);
@@ -260,6 +311,8 @@ export function runMigrate(deps: ConductorCliDeps, opts: MigrateOptions): CliRes
       project_file: migration.projectFile,
       host_file: migration.hostFile,
       dropped: migration.dropped,
+      secret_checks: secretChecks,
+      deployment_json_still_needed: stillNeeded.map((d) => d.item),
       warnings: migration.warnings,
       written,
       legacy_untouched: true,
@@ -498,8 +551,11 @@ export function registerConductorCommands(program: Command, makeDeps: () => Cond
     .option('--out-project <path>', 'Where to write the project file (no default)')
     .option('--out-host <path>', 'Where to write the host file (default: the resolved host-file path)')
     .option('--force', 'Overwrite an existing output file', false)
-    .action((opts: { profile?: string; config?: string; write?: boolean; outProject?: string; outHost?: string; force?: boolean }) =>
-      emit(program, runMigrate(makeDeps(), opts)),
+    .option('--secret-api-token <name>', `Secret Manager secret NAME for HARMONY_API_TOKEN (default ${DEFAULT_SECRET_NAMES.api_token})`)
+    .option('--secret-github-app-key <name>', `Secret Manager secret NAME for the GitHub App private key (default ${DEFAULT_SECRET_NAMES.github_app_private_key})`)
+    .option('--secret-claude-oauth-token <name>', `Secret Manager secret NAME for the Claude OAuth token, a record for preflight/docs the conductor never reads (default ${DEFAULT_SECRET_NAMES.claude_oauth_token})`)
+    .action(async (opts: MigrateOptions) =>
+      emit(program, await runMigrate(makeDeps(), opts)),
     );
 
   config

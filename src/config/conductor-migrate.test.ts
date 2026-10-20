@@ -1,9 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { BUILTIN_PROFILES, ConductorConfigError, HostFileSchema, ProjectFileSchema } from './conductor-config.js';
-import { buildMigration } from './conductor-migrate.js';
+import { buildMigration, nonSecretDrops, SECRET_REASON } from './conductor-migrate.js';
 import type { DeploymentConfig } from './deployment-config.js';
-
-const SECRET_REASON = 'secret value: stays in Secret Manager / the service environment';
 
 const dep: DeploymentConfig = {
   worker_image: 'ghcr.io/x/img:1',
@@ -43,6 +41,8 @@ describe('buildMigration', () => {
       gcp: { project: 'proj' },
       concurrency: { max_workers: 4 },
       agents: ['claude-code', 'codex'],
+      repos: [{ url: 'u', path: '/p' }],
+      profiles: { cloud: {} },
       gke: undefined,
     } as any);
     expect(m.hostFile).toEqual({
@@ -52,6 +52,7 @@ describe('buildMigration', () => {
       gcloud: { account: 'a@x' },
       gke: { context: 'ctx' },
       config_repo: 'o/cfg',
+      secrets: { api_token: 'HARMONY_API_TOKEN', github_app_private_key: 'harmony-daemon-app-private-key', claude_oauth_token: 'CLAUDE_CODE_OAUTH_TOKEN' },
     });
     expect(ProjectFileSchema.safeParse(m.projectFile).success).toBe(true);
     expect(HostFileSchema.safeParse(m.hostFile).success).toBe(true);
@@ -88,7 +89,6 @@ describe('buildMigration', () => {
     expect(items).toEqual(
       expect.arrayContaining([
         'deployment.json › env.WEB_REF',
-        'deployment.json › repos',
         'deployment.json › launcher.supabase.url',
         'deployment.json › launcher.supabase_refs',
         'deployment.json › profiles.local',
@@ -97,14 +97,14 @@ describe('buildMigration', () => {
     expect(m.dropped.every((d) => d.reason.length > 0)).toBe(true);
   });
 
-  it('flags a custom launch template and a required_tools override', () => {
+  it('flags a custom launch template (a required_tools override moves into profiles.<name>.required_tools)', () => {
     const m = buildMigration({
       legacyDeployment: { ...dep, profiles: { cloud: { ...BUILTIN_PROFILES.cloud, launch: 'custom', required_tools: { launch: ['x'] } } } },
       env: {},
     });
-    expect(m.dropped.map((d) => d.item)).toEqual(
-      expect.arrayContaining([expect.stringContaining('custom launch/reap/probe template'), expect.stringContaining('required_tools override')]),
-    );
+    expect(m.dropped.map((d) => d.item)).toEqual(expect.arrayContaining([expect.stringContaining('custom launch/reap/probe template')]));
+    expect(m.dropped.map((d) => d.item).join()).not.toContain('required_tools');
+    expect(m.projectFile.profiles).toEqual({ cloud: { required_tools: { launch: ['x'] } } });
   });
 
   it('an ambiguous profile asks for --profile', () => {
@@ -132,5 +132,91 @@ describe('buildMigration', () => {
     expect(m.projectFile).toMatchObject({ channel: 'staging', profile: 'gke', gcp: { project: 'p' }, gke: { namespace: 'n', poll_s: 5 } });
     expect(m.hostFile.plugin_dir).toBe('/pd');
     expect(m.warnings.some((w) => w.includes('channel defaults to "staging"'))).toBe(true);
+  });
+});
+
+// B-1183: the Mac mini's deployment.json, before: migrate DROPPED env.HARMONY_TARGET, repos[],
+// env.CLAUDE_HEADLESS_FLAGS and profiles.cloud, and wrote no secrets block.
+describe('B-1183 buildMigration: the four keys, every built-in profile and the secrets block', () => {
+  const mini: DeploymentConfig = {
+    worker_image: 'harmony-build-env',
+    env: {
+      HARMONY_PLUGIN_POSTURE: 'ack:staging',
+      HARMONY_TARGET: 'prod',
+      CLAUDE_HEADLESS_FLAGS: '--output-format stream-json',
+      HARMONY_API_TOKEN: 'tok-secret-value',
+      CLAUDE_CODE_OAUTH_TOKEN: 'oauth-secret-value',
+      GIT_TOKEN: 'ghp_secretsecretsecret',
+    },
+    repos: [
+      { url: 'https://github.com/o/w.git', path: '/workspace/w', meta_repo_role: true },
+      { url: 'https://github.com/o/p.git', path: '/workspace/w/p', is_plugin: true },
+    ],
+    profiles: {
+      gke: { ...BUILTIN_PROFILES.gke, maxConcurrentWorkers: 3 },
+      cloud: { ...BUILTIN_PROFILES.cloud, gcloud_project: 'proj', maxConcurrentWorkers: 5, agents: ['claude-code'] },
+    },
+    launcher: { plugin_dir: '/plug', github_app: { app_id: '1', installation_id: '2', private_key_path: '/k.pem' } },
+  };
+
+  it('fills target, repos, agent_flags and every built-in profile, and drops only secret values', () => {
+    const m = buildMigration({ legacyDeployment: mini, env: {}, profileName: 'gke' });
+    expect(m.projectFile).toMatchObject({
+      profile: 'gke',
+      target: 'prod',
+      repos: mini.repos,
+      agent_flags: { 'claude-code': '--output-format stream-json' },
+      concurrency: { max_workers: 3 },
+      profiles: { gke: {}, cloud: { max_workers: 5, agents: ['claude-code'] } },
+      gcp: { project: 'proj' },
+    });
+    expect(ProjectFileSchema.safeParse(m.projectFile).success).toBe(true);
+    expect(nonSecretDrops(m.dropped)).toEqual([]);
+    expect(m.dropped.every((d) => d.reason === SECRET_REASON)).toBe(true);
+  });
+
+  it('puts supabase_url in the project file for target custom, and keeps it dropped otherwise', () => {
+    const custom = buildMigration({ legacyDeployment: { ...mini, env: { ...mini.env, HARMONY_TARGET: 'custom', HARMONY_SUPABASE_URL: 'https://x.supabase.co' } }, env: {}, profileName: 'gke' });
+    expect(custom.projectFile).toMatchObject({ target: 'custom', supabase_url: 'https://x.supabase.co' });
+    expect(ProjectFileSchema.safeParse(custom.projectFile).success).toBe(true);
+    const prod = buildMigration({ legacyDeployment: { ...mini, env: { ...mini.env, HARMONY_SUPABASE_URL: 'https://x.supabase.co' } }, env: {}, profileName: 'gke' });
+    expect(prod.projectFile.supabase_url).toBeUndefined();
+    expect(nonSecretDrops(prod.dropped).map((d) => d.item)).toEqual(['deployment.json › env.HARMONY_SUPABASE_URL']);
+  });
+
+  it('writes the default secret NAMES, overridable per name, and never a value', () => {
+    const d = buildMigration({ legacyDeployment: mini, env: {}, profileName: 'gke' });
+    expect(d.hostFile.secrets).toEqual({
+      api_token: 'HARMONY_API_TOKEN',
+      github_app_private_key: 'harmony-daemon-app-private-key',
+      claude_oauth_token: 'CLAUDE_CODE_OAUTH_TOKEN',
+    });
+    const o = buildMigration({ legacyDeployment: mini, env: {}, profileName: 'gke', secretNames: { api_token: 'my-token', claude_oauth_token: 'my-oauth' } });
+    expect(o.hostFile.secrets).toEqual({ api_token: 'my-token', github_app_private_key: 'harmony-daemon-app-private-key', claude_oauth_token: 'my-oauth' });
+    expect(HostFileSchema.safeParse(o.hostFile).success).toBe(true);
+    const blob = JSON.stringify([o.projectFile, o.hostFile]);
+    for (const v of ['tok-secret-value', 'oauth-secret-value', 'ghp_secretsecretsecret']) expect(blob).not.toContain(v);
+  });
+
+  it('leaves non-secret items in dropped when something still has no home (custom template, docker_host, refs)', () => {
+    const m = buildMigration({
+      legacyDeployment: {
+        ...mini,
+        env: { ...mini.env, WEB_REF: 'main', WORKSPACE_REF: 'main' },
+        profiles: { gke: { ...BUILTIN_PROFILES.gke, launch: 'custom', docker_host: { ssh_target: 'h' } } },
+        launcher: { ...mini.launcher, supabase_refs: { abc: 'prod' } },
+      },
+      env: {},
+      profileName: 'gke',
+    });
+    expect(nonSecretDrops(m.dropped).map((d) => d.item)).toEqual(
+      expect.arrayContaining([
+        'deployment.json › env.WEB_REF',
+        'deployment.json › env.WORKSPACE_REF',
+        'deployment.json › launcher.supabase_refs',
+        'deployment.json › profiles.gke custom launch/reap/probe template',
+        'deployment.json › profiles.gke.docker_host',
+      ]),
+    );
   });
 });
