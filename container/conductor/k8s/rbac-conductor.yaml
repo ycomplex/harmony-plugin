@@ -1,0 +1,39 @@
+# B-1173: what the conductor pod may do in its OWN namespace — enough for the restarter it spawns on a claimed
+# restart/update (`kubectl get`, `set image`, `rollout restart|status|undo` on the ONE Deployment), nothing else.
+#   deployments  get/list/watch/patch, only the named Deployment (list/watch by resourceName work because
+#                `rollout status` filters on metadata.name)
+#   replicasets, pods  get/list/watch: `rollout status` and `rollout undo` read the Deployment's ReplicaSets and pods.
+#                Their names are dynamic, so these are not limited by resourceNames; read-only, one namespace.
+# deployments/scale is deliberately NOT granted: `harmony conductor start|stop --remote` scale the Deployment from
+# an OPERATOR's machine with the operator's own kubectl credentials (src/cli/commands/conductor-kube.ts), never
+# from inside the pod.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: harmony-conductor-self
+  namespace: harmony-conductor
+rules:
+  - apiGroups: ['apps']
+    resources: ['deployments']
+    resourceNames: ['harmony-conductor']
+    verbs: ['get', 'list', 'watch', 'patch']
+  - apiGroups: ['apps']
+    resources: ['replicasets']
+    verbs: ['get', 'list', 'watch']
+  - apiGroups: ['']
+    resources: ['pods']
+    verbs: ['get', 'list', 'watch']
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: harmony-conductor-self
+  namespace: harmony-conductor
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: harmony-conductor-self
+subjects:
+  - kind: ServiceAccount
+    name: harmony-conductor
+    namespace: harmony-conductor

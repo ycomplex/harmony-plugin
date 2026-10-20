@@ -17391,7 +17391,7 @@ var require_dist = __commonJS({
 });
 
 // src/bin/daemon.ts
-import { existsSync as existsSync3, readFileSync as readFileSync5 } from "node:fs";
+import { existsSync as existsSync3, readFileSync as readFileSync6, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "node:fs";
 import { exec, spawn } from "node:child_process";
 import { hostname } from "node:os";
 import { dirname as dirname4, join as join5 } from "node:path";
@@ -29836,13 +29836,22 @@ var ProjectFileSchema = external_exports.object({
 function looksLikeSecretValue(v) {
   return /^(ghp_|gho_|ghs_|github_pat_|sk-|eyJ)/.test(v) || v.includes("-----BEGIN") || /^\S{40,}$/.test(v);
 }
+var SECRET_KEYS = {
+  base: "base",
+  codexAuth: "codex_auth",
+  apiToken: "api_token",
+  githubAppPrivateKey: "github_app_private_key"
+};
 var SecretNameSchema = external_exports.string().min(1).refine((v) => !looksLikeSecretValue(v), {
   message: "looks like a secret VALUE, not a Secret Manager secret NAME (the secrets block holds names only)"
 });
 var HostGithubAppSchema = external_exports.object({
   app_id: external_exports.string().min(1),
   installation_id: external_exports.string().min(1),
-  private_key_path: external_exports.string().min(1)
+  /** Optional since B-1173: a remote conductor has no key FILE; its key arrives inline as
+   *  HARMONY_APP_PRIVATE_KEY (resolved from the `github_app_private_key` secret at boot). validateMerged
+   *  still requires one of the two. */
+  private_key_path: external_exports.string().min(1).optional()
 }).strict();
 var hostOnlyShape = {
   /** 'owner/name' of the repo whose `main` holds `.harmony/conductor.json`. */
@@ -30278,7 +30287,7 @@ function validateMerged(merged, env = {}) {
       }
     }
     if (!app?.private_key_path && !env.HARMONY_APP_PRIVATE_KEY) {
-      need(HOST_FILE_LABEL, "github_app.private_key_path", "the GitHub App private key location is missing", 'add "github_app": { "private_key_path": "/path/to/key.pem" } to ~/.harmony/conductor-host.json');
+      need(HOST_FILE_LABEL, "github_app.private_key_path", "the GitHub App private key location is missing", `add "github_app": { "private_key_path": "/path/to/key.pem" } to ~/.harmony/conductor-host.json (a remote conductor instead names the key's Secret Manager secret as "secrets": { "github_app_private_key": "<secret-name>" })`);
     }
   }
   return issues;
@@ -32204,10 +32213,10 @@ function validateSteps(file, extensionPoint, steps, projectRoot, existsSync4) {
 }
 function loadProjectManifest(projectRoot, deps = {}) {
   const existsSync4 = deps.existsSync ?? nodeExistsSync2;
-  const readFileSync6 = deps.readFileSync ?? ((p) => nodeReadFileSync2(p, "utf8"));
+  const readFileSync7 = deps.readFileSync ?? ((p) => nodeReadFileSync2(p, "utf8"));
   const file = nodeJoin(projectRoot, PROJECT_MANIFEST_RELATIVE_PATH);
   if (!existsSync4(file)) return { kind: "absent" };
-  const raw = readFileSync6(file);
+  const raw = readFileSync7(file);
   let parsed;
   try {
     parsed = (0, import_yaml.parse)(raw);
@@ -35173,9 +35182,9 @@ function buildAttestation(args, userId) {
 }
 var GH_RELEASE_INFO_TIMEOUT_MS = 5e3;
 async function runGhForReleaseInfo(args) {
-  const { execFile: execFile2 } = await import("node:child_process");
+  const { execFile: execFile3 } = await import("node:child_process");
   return await new Promise((resolve, reject) => {
-    execFile2("gh", args, { timeout: GH_RELEASE_INFO_TIMEOUT_MS, maxBuffer: 1024 * 1024 }, (err, stdout) => {
+    execFile3("gh", args, { timeout: GH_RELEASE_INFO_TIMEOUT_MS, maxBuffer: 1024 * 1024 }, (err, stdout) => {
       if (err) reject(err);
       else resolve(String(stdout));
     });
@@ -36994,13 +37003,165 @@ function shouldInspectWorkerImage(profile) {
   return /\bdocker\b/.test(profile.launch ?? "");
 }
 
+// src/config/conductor-secrets.ts
+import { execFile } from "node:child_process";
+import { readFileSync as readFileSync4 } from "node:fs";
+
+// src/daemon/conductor-remote.ts
+var REMOTE_ENV = "HARMONY_CONDUCTOR_REMOTE";
+var READY_FILE_ENV = "HARMONY_READY_FILE";
+var DEFAULT_READY_FILE = "/tmp/harmony-ready";
+var STANDBY_RETRY_MS = 1e4;
+var isRemoteConductor = (env) => env[REMOTE_ENV] === "1";
+var readyFilePath = (env) => env[READY_FILE_ENV] || DEFAULT_READY_FILE;
+function channelFromPosture(posture) {
+  if (posture === "prod") return "prod";
+  return posture === "ack:staging" || posture === "staging" ? "staging" : null;
+}
+function createReadiness(deps) {
+  return {
+    markReady() {
+      try {
+        deps.writeFile(deps.path, "ready\n");
+        deps.log(`readiness: wrote ${deps.path}`);
+      } catch (err) {
+        deps.log(`readiness: could not write ${deps.path} (${err instanceof Error ? err.message : String(err)}); the pod stays NotReady`);
+      }
+    },
+    clear() {
+      try {
+        deps.removeFile(deps.path);
+      } catch {
+      }
+    }
+  };
+}
+async function bootRemoteRegistry(keeper, io) {
+  let decision = await keeper.boot();
+  if (decision.proceed) return "acquired";
+  io.log(`standby: ${decision.message}; staying alive without launching and retrying every ${Math.round(io.retryMs / 1e3)}s until the lease is free`);
+  io.onStandby?.();
+  while (!io.isStopped()) {
+    await io.sleep(io.retryMs);
+    if (io.isStopped()) break;
+    decision = await keeper.boot();
+    if (decision.proceed) {
+      io.log("standby: the lease is free; acquired it, booting normally");
+      return "acquired";
+    }
+  }
+  return "stopped";
+}
+var REASON_MAX = 500;
+function createCarriedRequestCompleter(deps) {
+  return async ({ request, previousPluginVersion }) => {
+    if (request.state !== "claimed") {
+      deps.log(`registry: carried-over request ${request.id} is ${request.state}, not claimed; leaving it alone`);
+      return;
+    }
+    const before = previousPluginVersion ?? "unknown";
+    const after = deps.pluginVersion ?? "unknown";
+    let result;
+    let reason;
+    if (request.action !== "restart" && request.action !== "update") {
+      result = "failed";
+      reason = `unrecognised request action "${request.action}"; plugin ${before} -> ${after}`;
+    } else {
+      result = "done";
+      reason = `${request.action} completed by the new conductor pod: plugin ${before === after ? `${after} (unchanged)` : `${before} -> ${after}`}`;
+    }
+    const r = await deps.client.completeRequest(deps.holderId, {
+      requestId: request.id,
+      result,
+      reason: reason.slice(0, REASON_MAX),
+      versionBefore: previousPluginVersion,
+      versionAfter: deps.pluginVersion
+    });
+    const note = r.kind === "ok" ? "ok" : r.kind === "refused" ? `refused (${r.reason ?? "no reason"})` : `${r.kind} (${r.detail})`;
+    deps.log(`registry: completed carried-over request ${request.id} as ${result}: ${note} \u2014 ${reason}`);
+  };
+}
+
+// src/config/conductor-secrets.ts
+var SECRET_ENV_TARGETS = [
+  { key: SECRET_KEYS.apiToken, envVar: "HARMONY_API_TOKEN" },
+  { key: SECRET_KEYS.githubAppPrivateKey, envVar: "HARMONY_APP_PRIVATE_KEY" }
+];
+var ConductorSecretsError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "ConductorSecretsError";
+  }
+};
+function projectOf(host, env) {
+  return host.gcp?.project || env.HARMONY_GCP_PROJECT || env.CLOUDSDK_CORE_PROJECT || env.GOOGLE_CLOUD_PROJECT || void 0;
+}
+async function resolveConductorSecrets(deps) {
+  const result = { resolved: [], skipped: [] };
+  const remote = isRemoteConductor(deps.env);
+  const hostPath = resolveConductorPaths(deps.env).hostFile;
+  const read = deps.readFile ?? ((p) => readFileSync4(p, "utf8"));
+  let text;
+  try {
+    text = read(hostPath);
+  } catch {
+    if (!remote) return result;
+    throw new ConductorSecretsError(`the host file ${hostPath} could not be read; a conductor with a secrets block takes its secret names from its "secrets" block`);
+  }
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    if (!remote) return result;
+    throw new ConductorSecretsError(`the host file ${hostPath} is not valid JSON`);
+  }
+  const parsed = HostFileSchema.safeParse(json);
+  if (!parsed.success) {
+    if (!remote) return result;
+    const first = parsed.error.issues[0];
+    throw new ConductorSecretsError(`the host file ${hostPath} is invalid: ${first ? `${first.path.join(".") || "(root)"}: ${first.message}` : "unknown problem"}`);
+  }
+  const secrets = parsed.data.secrets ?? {};
+  const project = projectOf(parsed.data, deps.env);
+  for (const { key, envVar } of SECRET_ENV_TARGETS) {
+    const name = secrets[key];
+    if (deps.target[envVar]) {
+      result.skipped.push(envVar);
+      continue;
+    }
+    if (!name) {
+      if (remote && key === SECRET_KEYS.apiToken) throw new ConductorSecretsError(`HARMONY_API_TOKEN is not set and the host file's secrets block has no "${key}" entry naming its secret`);
+      continue;
+    }
+    if (!project) {
+      throw new ConductorSecretsError(`cannot read secret "${name}": no GCP project (set gcp.project in the host file, or HARMONY_GCP_PROJECT)`);
+    }
+    const r = await deps.exec("gcloud", ["secrets", "versions", "access", "latest", `--secret=${name}`, `--project=${project}`]);
+    if (r.code !== 0) {
+      throw new ConductorSecretsError(`could not read secret "${name}" (for ${envVar}) from Secret Manager: gcloud exited ${r.code}${r.code === 127 ? " (gcloud is not installed)" : ""}`);
+    }
+    const value = r.stdout.replace(/\r?\n$/, "");
+    if (value.length === 0) throw new ConductorSecretsError(`secret "${name}" (for ${envVar}) is empty`);
+    deps.target[envVar] = value;
+    result.resolved.push(envVar);
+  }
+  return result;
+}
+var execFileSecretExec = (file, args) => new Promise((resolve) => {
+  execFile(file, args, { maxBuffer: 1024 * 1024, timeout: 3e4 }, (err, stdout) => {
+    if (!err) return resolve({ code: 0, stdout: String(stdout) });
+    const code = err.code;
+    resolve({ code: code === "ENOENT" ? 127 : typeof code === "number" ? code : 1, stdout: "" });
+  });
+});
+
 // src/daemon/conductor-logger.ts
 import { appendFileSync, existsSync as existsSync2, mkdirSync, renameSync, statSync, unlinkSync } from "node:fs";
 import { homedir as homedir3 } from "node:os";
 import { dirname as dirname2, join as join4 } from "node:path";
 
 // src/daemon/log-shipper.ts
-import { execFile } from "node:child_process";
+import { execFile as execFile2 } from "node:child_process";
 var LOG_NAME = "harmony-conductor";
 var FLUSH_INTERVAL_MS = 5e3;
 var FLUSH_BATCH = 500;
@@ -37013,7 +37174,7 @@ var TOKEN_TIMEOUT_MS = 15e3;
 function gcloudAccessToken(account) {
   return new Promise((resolve, reject) => {
     const env = account ? { ...process.env, CLOUDSDK_CORE_ACCOUNT: account } : process.env;
-    execFile("gcloud", ["auth", "print-access-token"], { env, timeout: TOKEN_TIMEOUT_MS }, (err, stdout) => {
+    execFile2("gcloud", ["auth", "print-access-token"], { env, timeout: TOKEN_TIMEOUT_MS }, (err, stdout) => {
       const token = String(stdout ?? "").trim();
       if (err || !token) reject(new Error(err ? `gcloud auth print-access-token failed (${err.message.split("\n")[0]})` : "gcloud returned no token"));
       else resolve(token);
@@ -37613,7 +37774,18 @@ function createRegistryKeeper(deps) {
     outage = false;
     const prev = r.previousHolderId ? ` (previous holder ${r.previousHolderId}${r.previousHost ? ` on ${r.previousHost}` : ""}${r.reason ? `, ${r.reason}` : ""})` : "";
     log(`registry: ${r.kind === "taken_over" ? "took over" : "acquired"} the conductor row${how}${prev}`);
-    if (r.request) log(`registry: request ${r.request.id} (${r.request.action}) is ${r.request.state}; the restarter completes it`);
+    if (r.request) {
+      log(`registry: request ${r.request.id} (${r.request.action}) is ${r.request.state}; ${deps.onCarriedRequest ? "this conductor completes it" : "the restarter completes it"}`);
+      if (deps.onCarriedRequest) {
+        const info = { request: r.request, previousHolderId: r.previousHolderId, previousPluginVersion: r.previousPluginVersion };
+        const failed = (err) => log(`registry: handling carried-over request ${info.request.id} failed (${err instanceof Error ? err.message : String(err)})`);
+        try {
+          void Promise.resolve(deps.onCarriedRequest(info)).catch(failed);
+        } catch (err) {
+          failed(err);
+        }
+      }
+    }
   };
   const acquireOnce = async () => {
     let r = await deps.client.acquire(identity);
@@ -37825,7 +37997,7 @@ import { existsSync as fsExistsSync2, readFileSync as fsReadFileSync2 } from "no
 
 // src/config/conductor-project-source.ts
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync as mkdirSync2, readFileSync as readFileSync4, renameSync as renameSync2, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync as mkdirSync2, readFileSync as readFileSync5, renameSync as renameSync2, rmSync, writeFileSync } from "node:fs";
 import { dirname as dirname3 } from "node:path";
 var REQUEST_TIMEOUT_MS4 = 1e4;
 function gitBlobSha(text) {
@@ -37882,7 +38054,7 @@ async function fetchProjectFile(input) {
 }
 function readSnapshot(path2) {
   try {
-    return parseSnapshotText(readFileSync4(path2, "utf8"));
+    return parseSnapshotText(readFileSync5(path2, "utf8"));
   } catch {
     return null;
   }
@@ -38205,10 +38377,11 @@ ${LAUNCHD_PATH_HINT}`
   }
   if (profile.requires_app_mint) {
     for (const varName of APP_MINT_VARS) {
-      const value = resolveLauncherVar(varName, opts.env, opts.deploymentConfig);
+      let value = resolveLauncherVar(varName, opts.env, opts.deploymentConfig);
+      if (value === void 0 && varName === "HARMONY_APP_PRIVATE_KEY_PATH") value = resolvedEnv(opts.env, "HARMONY_APP_PRIVATE_KEY");
       if (value === void 0) {
         throw new Error(
-          `Missing required launcher-host config "${varName}" \u2014 see container/README.md \xA7 The credential envelopes.`
+          `Missing required launcher-host config "${varName}"${varName === "HARMONY_APP_PRIVATE_KEY_PATH" ? " (or an inline HARMONY_APP_PRIVATE_KEY)" : ""} \u2014 see container/README.md \xA7 The credential envelopes.`
         );
       }
     }
@@ -39787,6 +39960,17 @@ async function closeHintsBounded(hints, logFn, timeoutMs) {
   }
 }
 async function main() {
+  try {
+    const secrets = await resolveConductorSecrets({ env: process.env, target: process.env, exec: execFileSecretExec });
+    if (secrets.resolved.length > 0) {
+      process.stdout.write(`${(/* @__PURE__ */ new Date()).toISOString()} secrets: resolved ${secrets.resolved.join(", ")} from Secret Manager
+`);
+    }
+  } catch (err) {
+    process.stderr.write(`conductor failed: ${err instanceof Error ? err.message : String(err)}
+`);
+    process.exit(1);
+  }
   const token = process.env.HARMONY_API_TOKEN;
   if (!token) {
     process.stderr.write(
@@ -39829,7 +40013,7 @@ async function main() {
     }
     config = loadDaemonConfig(
       process.env,
-      (p) => readFileSync5(p, "utf8"),
+      (p) => readFileSync6(p, "utf8"),
       namedProfile ? { profileOverride: namedProfile } : {}
     );
   } catch (err) {
@@ -39964,6 +40148,13 @@ ${err instanceof Error ? err.message : String(err)}
     forceRefresh: () => auth.forceRefresh(),
     sleep
   });
+  const remoteMode = isRemoteConductor(process.env);
+  const readiness = createReadiness({
+    path: readyFilePath(process.env),
+    writeFile: (path2, text) => writeFileSync2(path2, text),
+    removeFile: (path2) => rmSync2(path2, { force: true }),
+    log
+  });
   const registryPluginVersion = await resolveEnvironment(process.env, import.meta.url).then((e) => e.plugin_version).catch(() => null);
   const postureChannel = process.env.HARMONY_PLUGIN_POSTURE;
   const gcpProject = conductorRuntime?.getGcpProject();
@@ -39972,10 +40163,9 @@ ${err instanceof Error ? err.message : String(err)}
     identity: {
       holderId: leaseHolder,
       host: hostname(),
-      location: "local",
-      // remote conductors arrive with B-1173
+      location: remoteMode ? "remote" : "local",
       profile: preflightProfileName,
-      channel: postureChannel === "prod" ? "prod" : postureChannel === "ack:staging" || postureChannel === "staging" ? "staging" : null,
+      channel: channelFromPosture(postureChannel),
       pluginVersion: registryPluginVersion,
       logUrl: gcpProject && conductorRuntime?.getLogShipping() !== false ? buildLogUrl(gcpProject, LOG_NAME) : null
     },
@@ -40000,6 +40190,9 @@ ${err instanceof Error ? err.message : String(err)}
       registryLost = true;
       void shutdown("registry-lost");
     },
+    // B-1173: a remote conductor completes the request its predecessor pod claimed (the rollout it triggered is
+    // what brought this pod up). A local conductor never sets this: its restarter completes the request.
+    onCarriedRequest: remoteMode ? createCarriedRequestCompleter({ client: registryClient, holderId: leaseHolder, pluginVersion: registryPluginVersion, log }) : void 0,
     onRequest: createRequestHandler({
       client: registryClient,
       holderId: leaseHolder,
@@ -40024,7 +40217,31 @@ ${err instanceof Error ? err.message : String(err)}
       log
     })
   });
-  if (!await bootRegistry(registryKeeper, {
+  if (remoteMode) {
+    let standbyStopped = false;
+    const onStandbySignal = (signal) => () => {
+      standbyStopped = true;
+      readiness.clear();
+      log(`standby: ${signal} received; exiting`);
+      conductorLogger.stop();
+      process.exit(0);
+    };
+    const onTerm = onStandbySignal("SIGTERM");
+    const onInt = onStandbySignal("SIGINT");
+    process.on("SIGTERM", onTerm);
+    process.on("SIGINT", onInt);
+    const booted = await bootRemoteRegistry(registryKeeper, {
+      log,
+      sleep,
+      retryMs: Math.min(config.heartbeatMs, STANDBY_RETRY_MS),
+      isStopped: () => standbyStopped,
+      onStandby: () => readiness.markReady()
+    });
+    process.off("SIGTERM", onTerm);
+    process.off("SIGINT", onInt);
+    if (booted === "stopped") return;
+    readiness.markReady();
+  } else if (!await bootRegistry(registryKeeper, {
     writeStderr: (text) => void process.stderr.write(text),
     log,
     exit: (code) => {
@@ -40055,7 +40272,7 @@ ${err instanceof Error ? err.message : String(err)}
   }) : null;
   const prMergeStateReader = createGithubPrMergeStateReader({ env: process.env });
   log(
-    prMergeStateReader ? "fast-track post-merge recording: conductor-filed (GitHub credential found for PR merge-state reads)" : "fast-track post-merge recording: NOT conductor-filed \u2014 no GitHub credential in the conductor env (set HARMONY_APP_ID/HARMONY_APP_INSTALLATION_ID/HARMONY_APP_PRIVATE_KEY_PATH, or GH_TOKEN); fast-track accepts fall back to a worker leg"
+    prMergeStateReader ? "fast-track post-merge recording: conductor-filed (GitHub credential found for PR merge-state reads)" : "fast-track post-merge recording: NOT conductor-filed \u2014 no GitHub credential in the conductor env (set HARMONY_APP_ID/HARMONY_APP_INSTALLATION_ID/HARMONY_APP_PRIVATE_KEY_PATH or HARMONY_APP_PRIVATE_KEY, or GH_TOKEN); fast-track accepts fall back to a worker leg"
   );
   const deps = {
     now: Date.now,
@@ -40163,6 +40380,7 @@ ${err instanceof Error ? err.message : String(err)}
   });
   const stop = async (signal) => {
     conductorRuntime?.stop();
+    if (remoteMode) readiness.clear();
     keeper.stopAll();
     registryKeeper.stop();
     if (hints) await closeHintsBounded(hints, log, HINT_CLOSE_TIMEOUT_MS);

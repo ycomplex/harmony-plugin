@@ -32,6 +32,25 @@
 #  17. creates StorageClass harmony-ticket-disk (pd-balanced, Immediate binding, pinned to the zone) for
 #      ticket disks, so a disk is made while the leg node boots; create-only, drift reported.
 #  Every one of 10-16 reads first and changes only what differs, so a re-run is a no-op.
+#  And, for the remote conductor pod (B-1173 — the daemon as a Deployment in its OWN namespace,
+#  harmony-conductor; skipped entirely by --no-conductor). Steps 18-26 also read first and change only
+#  what differs:
+#  18. creates the namespace harmony-conductor;
+#  19. creates the Google service account the conductor pod acts as (default harmony-conductor);
+#  20. grants it roles/secretmanager.secretAccessor on the TWO NAMED secrets it reads at boot (the API token
+#      and the GitHub App key) — per secret, never project-level;
+#  21. grants it the project roles the Cloud Run launcher and the log shipper use: roles/run.developer and
+#      roles/logging.logWriter;
+#  22. grants it roles/iam.serviceAccountUser on the Cloud Run leg runtime account ONLY (needs
+#      --cloud-run-runtime-sa; without it the step says so and does nothing);
+#  23. grants it roles/artifactregistry.reader on the repository holding the conductor image (tag listing for
+#      `harmony conductor update`, and the pod's image pull);
+#  24. lets the harmony-conductor/harmony-conductor Kubernetes service account impersonate it
+#      (roles/iam.workloadIdentityUser);
+#  25. creates that Kubernetes service account and annotates it with the Google one;
+#  26. applies the two namespaced RBAC manifests (container/conductor/k8s/rbac-legs.yaml, rbac-conductor.yaml).
+#  It does NOT apply the ConfigMap, Deployment or CronJob: those carry an image version and the App
+#  identifiers, so they are applied by hand (see the comments in container/conductor/k8s/).
 #
 # Guarantees:
 #   * It works in a TEMPORARY kubeconfig (removed on exit); the operator's own kubeconfig is never read
@@ -71,6 +90,14 @@ Options (defaults in brackets):
   --leg-ksa <name>        Kubernetes service account the leg pods run as [harmony-leg]
   --transcript-bucket <b> existing GCS bucket holding session transcripts; never created [harmony-conductor-transcripts]
   --no-codex              skip the Codex file Secret entirely
+  --no-conductor          skip steps 18-26 (the remote conductor pod's namespace, account, grants and RBAC)
+  --conductor-gsa-name <n> Google service account the conductor pod acts as [harmony-conductor]
+  --sm-conductor-api-token <name>  Secret Manager secret the pod reads HARMONY_API_TOKEN from [harmony-conductor-api-token]
+  --sm-conductor-app-key <name>    Secret Manager secret holding the GitHub App private key [harmony-daemon-app-private-key]
+  --cloud-run-runtime-sa <email>   the Cloud Run leg job's runtime account; the pod may act as it (step 22). Omit to skip
+  --artifact-repo <name>  Artifact Registry repository with the conductor image [harmony-workers]
+  --artifact-location <l> its location [the region of --zone]
+  --artifact-project <id> its project [--project]
   --skip-quota-check      do not read the SSD_TOTAL_GB quota
   --dry-run               print every command instead of running it (no gcloud/kubectl needed)
   -h, --help              this text
@@ -101,6 +128,16 @@ LEG_KSA="harmony-leg"
 TRANSCRIPT_BUCKET="harmony-conductor-transcripts"
 TICKET_SC="harmony-ticket-disk"
 NO_CODEX=0
+NO_CONDUCTOR=0
+CONDUCTOR_NS="harmony-conductor"
+CONDUCTOR_KSA="harmony-conductor"
+CONDUCTOR_GSA_NAME="harmony-conductor"
+SM_CONDUCTOR_API_TOKEN="harmony-conductor-api-token"
+SM_CONDUCTOR_APP_KEY="harmony-daemon-app-private-key"
+CLOUD_RUN_RUNTIME_SA=""
+ARTIFACT_REPO="harmony-workers"
+ARTIFACT_LOCATION=""
+ARTIFACT_PROJECT=""
 SKIP_QUOTA=0
 DRY_RUN=0
 
@@ -124,6 +161,14 @@ while [ $# -gt 0 ]; do
     --leg-ksa) need_value "$@"; LEG_KSA="$2"; shift 2 ;;
     --transcript-bucket) need_value "$@"; TRANSCRIPT_BUCKET="$2"; shift 2 ;;
     --no-codex) NO_CODEX=1; shift ;;
+    --no-conductor) NO_CONDUCTOR=1; shift ;;
+    --conductor-gsa-name) need_value "$@"; CONDUCTOR_GSA_NAME="$2"; shift 2 ;;
+    --sm-conductor-api-token) need_value "$@"; SM_CONDUCTOR_API_TOKEN="$2"; shift 2 ;;
+    --sm-conductor-app-key) need_value "$@"; SM_CONDUCTOR_APP_KEY="$2"; shift 2 ;;
+    --cloud-run-runtime-sa) need_value "$@"; CLOUD_RUN_RUNTIME_SA="$2"; shift 2 ;;
+    --artifact-repo) need_value "$@"; ARTIFACT_REPO="$2"; shift 2 ;;
+    --artifact-location) need_value "$@"; ARTIFACT_LOCATION="$2"; shift 2 ;;
+    --artifact-project) need_value "$@"; ARTIFACT_PROJECT="$2"; shift 2 ;;
     --skip-quota-check) SKIP_QUOTA=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h | --help) usage; exit 0 ;;
@@ -146,6 +191,16 @@ esac
 
 REGION="${ZONE%-*}"
 LEG_GSA_EMAIL="${LEG_GSA_NAME}@${PROJECT}.iam.gserviceaccount.com"
+CONDUCTOR_GSA_EMAIL="${CONDUCTOR_GSA_NAME}@${PROJECT}.iam.gserviceaccount.com"
+[ -n "$ARTIFACT_LOCATION" ] || ARTIFACT_LOCATION="$REGION"
+[ -n "$ARTIFACT_PROJECT" ] || ARTIFACT_PROJECT="$PROJECT"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MANIFEST_DIR="$HERE/../conductor/k8s"
+# The shipped RBAC manifests name the default leg namespace (harmony-legs) and the default leg ServiceAccount;
+# a different one would bind rights in the wrong place, so stop before anything is created.
+if [ "$NO_CONDUCTOR" -eq 0 ] && { [ "$NAMESPACE" != "harmony-legs" ] || [ "$LEG_KSA" != "harmony-leg" ]; }; then
+  die_usage "steps 18-26 apply manifests written for namespace harmony-legs and service account harmony-leg; pass --no-conductor to use other names here"
+fi
 
 step() { echo; echo "=== $* ==="; }
 
@@ -193,6 +248,7 @@ fi
 step "2. Preflight: Secret Manager sources exist"
 SOURCES=("$SM_API_TOKEN" "$SM_CLAUDE_TOKEN")
 [ "$NO_CODEX" -eq 1 ] || SOURCES+=("$SM_CODEX")
+[ "$NO_CONDUCTOR" -eq 1 ] || SOURCES+=("$SM_CONDUCTOR_API_TOKEN" "$SM_CONDUCTOR_APP_KEY")
 missing=()
 for s in "${SOURCES[@]}"; do
   if [ "$DRY_RUN" -eq 1 ]; then
@@ -506,6 +562,128 @@ SC
   fi
 fi
 
+# --- B-1173: the remote conductor pod. Every step reads first and changes only what differs. IAM policies are
+# read as plain JSON (--format=json) and the binding picked out in node: `get-iam-policy` flag support differs
+# by resource type (storage buckets reject --flatten/--filter, see step 14), and JSON is accepted by all of them.
+# A failed or unparseable read STOPS the run; guessing "not held" would re-bind on every rerun and hide a real error.
+policy_has() {  # stdin: IAM policy JSON; $1 role, $2 member. Prints "yes" when held; exit 2 when unparseable.
+  node -e '
+let s = "";
+process.stdin.on("data", (d) => (s += d));
+process.stdin.on("end", () => {
+  let p;
+  try { p = JSON.parse(s); } catch { process.exit(2); }
+  if (!p || typeof p !== "object") process.exit(2);
+  const [role, member] = process.argv.slice(1);
+  const hit = (Array.isArray(p.bindings) ? p.bindings : []).some((b) => b && b.role === role && Array.isArray(b.members) && b.members.includes(member));
+  process.stdout.write(hit ? "yes" : "");
+});' "$1" "$2"
+}
+# ensure_binding <what> <role> <member> -- <read command...> -- <write command...>
+ensure_binding() {
+  local what="$1" role="$2" member="$3"; shift 3
+  local read_cmd=() write_cmd=() part=read
+  shift # the first --
+  for a in "$@"; do
+    if [ "$a" = "--" ] && [ "$part" = read ]; then part=write; continue; fi
+    if [ "$part" = read ]; then read_cmd+=("$a"); else write_cmd+=("$a"); fi
+  done
+  local pj held=""
+  if pj="$(capture "${read_cmd[@]}")"; then
+    if ! held="$(printf '%s' "$pj" | policy_has "$role" "$member")"; then
+      echo "setup-cluster: could not parse the IAM policy of $what — changing nothing." >&2
+      exit 1
+    fi
+  elif [ "$DRY_RUN" -eq 0 ]; then
+    echo "setup-cluster: could not read the IAM policy of $what — changing nothing." >&2
+    exit 1
+  fi
+  if [ -n "$held" ]; then
+    echo "$member already holds $role on $what"
+  else
+    run "${write_cmd[@]}"
+  fi
+}
+
+if [ "$NO_CONDUCTOR" -eq 1 ]; then
+  echo
+  echo "steps 18-26 (remote conductor pod): skipped (--no-conductor)"
+else
+  CONDUCTOR_MEMBER="serviceAccount:$CONDUCTOR_GSA_EMAIL"
+
+  step "18. Namespace $CONDUCTOR_NS"
+  if probe kubectl get namespace "$CONDUCTOR_NS"; then
+    echo "namespace $CONDUCTOR_NS: exists"
+  else
+    run kubectl create namespace "$CONDUCTOR_NS"
+  fi
+
+  step "19. Google service account $CONDUCTOR_GSA_EMAIL"
+  if probe gcloud iam service-accounts describe "$CONDUCTOR_GSA_EMAIL" --project "$PROJECT"; then
+    echo "service account $CONDUCTOR_GSA_EMAIL: exists"
+  else
+    run gcloud iam service-accounts create "$CONDUCTOR_GSA_NAME" --project "$PROJECT" --display-name "Harmony conductor (remote pod)"
+  fi
+
+  step "20. IAM: $CONDUCTOR_GSA_EMAIL -> roles/secretmanager.secretAccessor on its two named secrets"
+  for sm in "$SM_CONDUCTOR_API_TOKEN" "$SM_CONDUCTOR_APP_KEY"; do
+    ensure_binding "secret $sm" roles/secretmanager.secretAccessor "$CONDUCTOR_MEMBER" -- \
+      gcloud secrets get-iam-policy "$sm" --project "$PROJECT" --format=json -- \
+      gcloud secrets add-iam-policy-binding "$sm" --project "$PROJECT" "--member=$CONDUCTOR_MEMBER" --role=roles/secretmanager.secretAccessor
+  done
+
+  step "21. IAM: $CONDUCTOR_GSA_EMAIL -> Cloud Run launch and log writing (project roles)"
+  for role in roles/run.developer roles/logging.logWriter; do
+    ensure_binding "project $PROJECT" "$role" "$CONDUCTOR_MEMBER" -- \
+      gcloud projects get-iam-policy "$PROJECT" --format=json -- \
+      gcloud projects add-iam-policy-binding "$PROJECT" "--member=$CONDUCTOR_MEMBER" "--role=$role" --condition=None
+  done
+
+  step "22. IAM: $CONDUCTOR_GSA_EMAIL -> roles/iam.serviceAccountUser on the Cloud Run leg runtime account"
+  if [ -z "$CLOUD_RUN_RUNTIME_SA" ]; then
+    echo "skipped: --cloud-run-runtime-sa was not given. The pod launches Cloud Run legs only if it may act as that job's"
+    echo "runtime account; rerun with --cloud-run-runtime-sa <email> before using the cloud profile from the pod."
+  else
+    ensure_binding "service account $CLOUD_RUN_RUNTIME_SA" roles/iam.serviceAccountUser "$CONDUCTOR_MEMBER" -- \
+      gcloud iam service-accounts get-iam-policy "$CLOUD_RUN_RUNTIME_SA" --project "$PROJECT" --format=json -- \
+      gcloud iam service-accounts add-iam-policy-binding "$CLOUD_RUN_RUNTIME_SA" --project "$PROJECT" "--member=$CONDUCTOR_MEMBER" --role=roles/iam.serviceAccountUser
+  fi
+
+  step "23. IAM: $CONDUCTOR_GSA_EMAIL -> roles/artifactregistry.reader on repository $ARTIFACT_REPO"
+  ensure_binding "repository $ARTIFACT_REPO" roles/artifactregistry.reader "$CONDUCTOR_MEMBER" -- \
+    gcloud artifacts repositories get-iam-policy "$ARTIFACT_REPO" --location "$ARTIFACT_LOCATION" --project "$ARTIFACT_PROJECT" --format=json -- \
+    gcloud artifacts repositories add-iam-policy-binding "$ARTIFACT_REPO" --location "$ARTIFACT_LOCATION" --project "$ARTIFACT_PROJECT" "--member=$CONDUCTOR_MEMBER" --role=roles/artifactregistry.reader
+
+  CONDUCTOR_WI_MEMBER="serviceAccount:$PROJECT.svc.id.goog[$CONDUCTOR_NS/$CONDUCTOR_KSA]"
+  step "24. IAM: $CONDUCTOR_NS/$CONDUCTOR_KSA may impersonate $CONDUCTOR_GSA_EMAIL (Workload Identity)"
+  ensure_binding "service account $CONDUCTOR_GSA_EMAIL" roles/iam.workloadIdentityUser "$CONDUCTOR_WI_MEMBER" -- \
+    gcloud iam service-accounts get-iam-policy "$CONDUCTOR_GSA_EMAIL" --project "$PROJECT" --format=json -- \
+    gcloud iam service-accounts add-iam-policy-binding "$CONDUCTOR_GSA_EMAIL" --project "$PROJECT" --role=roles/iam.workloadIdentityUser "--member=$CONDUCTOR_WI_MEMBER"
+
+  step "25. Kubernetes service account $CONDUCTOR_NS/$CONDUCTOR_KSA"
+  if probe kubectl -n "$CONDUCTOR_NS" get serviceaccount "$CONDUCTOR_KSA"; then
+    echo "service account $CONDUCTOR_KSA: exists"
+  else
+    run kubectl -n "$CONDUCTOR_NS" create serviceaccount "$CONDUCTOR_KSA"
+  fi
+  have_annot="$(capture kubectl -n "$CONDUCTOR_NS" get serviceaccount "$CONDUCTOR_KSA" -o 'jsonpath={.metadata.annotations.iam\.gke\.io/gcp-service-account}' || true)"
+  if [ "$have_annot" = "$CONDUCTOR_GSA_EMAIL" ]; then
+    echo "service account $CONDUCTOR_KSA: already annotated for $CONDUCTOR_GSA_EMAIL"
+  else
+    run kubectl -n "$CONDUCTOR_NS" annotate serviceaccount "$CONDUCTOR_KSA" "iam.gke.io/gcp-service-account=$CONDUCTOR_GSA_EMAIL" --overwrite
+  fi
+
+  step "26. RBAC for the conductor pod (namespaced Roles only)"
+  for f in rbac-legs.yaml rbac-conductor.yaml; do
+    if [ ! -f "$MANIFEST_DIR/$f" ]; then
+      echo "setup-cluster: manifest $MANIFEST_DIR/$f not found" >&2
+      exit 1
+    fi
+    # apply is create-or-update and a no-op when nothing differs.
+    run kubectl apply -f "$MANIFEST_DIR/$f"
+  done
+fi
+
 step "Done. Values for the deployment config"
 echo "project:        $PROJECT"
 echo "zone:           $ZONE"
@@ -521,6 +699,11 @@ if [ "$NO_CODEX" -eq 1 ]; then
 else
   echo "file Secret:    $CODEX_SECRET (key: auth.json)"
 fi
+if [ "$NO_CONDUCTOR" -eq 0 ]; then
+  echo "conductor GSA:  $CONDUCTOR_GSA_EMAIL"
+  echo "conductor KSA:  $CONDUCTOR_NS/$CONDUCTOR_KSA"
+  echo "conductor secrets (names): $SM_CONDUCTOR_API_TOKEN, $SM_CONDUCTOR_APP_KEY"
+fi
 echo
 echo "Next steps:"
 if [ "$QUOTA_WARNED" -eq 1 ]; then
@@ -529,4 +712,11 @@ fi
 echo "  - on the conductor host (with kubectl and gke-gcloud-auth-plugin installed), as the conductor service account:"
 echo "      CLOUDSDK_CORE_ACCOUNT=$DAEMON_SA gcloud container clusters get-credentials $CLUSTER --zone $ZONE --project $PROJECT"
 echo "  - if you changed the defaults, tell the launcher: HARMONY_GKE_TRANSCRIPT_BUCKET=$TRANSCRIPT_BUCKET HARMONY_GKE_SERVICE_ACCOUNT=$LEG_KSA"
-echo "  - schedule container/gke/sweep-ticket-disks.sh on the conductor host (cron / launchd)."
+echo "  - schedule container/gke/sweep-ticket-disks.sh on the conductor host (cron / launchd) — or, for the remote conductor, let its CronJob do it."
+if [ "$NO_CONDUCTOR" -eq 0 ]; then
+  echo "  - remote conductor: edit and apply container/conductor/k8s/configmap.yaml, deployment.yaml and cronjob-sweep.yaml (fill the image version"
+  echo "    and the App identifiers; each file's header says how). Nothing here starts a conductor."
+  if [ -z "$CLOUD_RUN_RUNTIME_SA" ]; then
+    echo "  - step 22 was skipped: rerun with --cloud-run-runtime-sa <email> before the pod launches Cloud Run legs."
+  fi
+fi

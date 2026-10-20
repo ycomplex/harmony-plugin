@@ -1,0 +1,67 @@
+# B-1173: the conductor's two config files (docs/conductor-config.md), mounted read-only at /etc/harmony.
+#   conductor-host.json     the host file: where the plugin lives, which GitHub App, which Google account, and the
+#                           secrets block. NAMES ONLY: each value is the name of a Secret Manager secret, which the pod
+#                           reads at boot with its Workload Identity. No credential, no key, no token is in this file.
+#   conductor-project.json  a SEED copy of the project file (normally .harmony/conductor.json in the config repo, which
+#                           the conductor fetches and snapshots itself). Not used unless HARMONY_CONDUCTOR_PROJECT_FILE
+#                           points at it (see the Deployment); kept here so a pod can run with no config repo reachable.
+# Fill the REPLACE-WITH-* placeholders (App id and installation id are identifiers, not secrets) and config_repo
+# before applying. `harmony conductor config doctor` checks a filled copy; the image smoke checks the example host
+# file with the same schema.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: harmony-conductor-config
+  namespace: harmony-conductor
+data:
+  conductor-host.json: |
+    {
+      "version": 1,
+      "config_repo": "REPLACE-OWNER/REPLACE-CONFIG-REPO",
+      "plugin_dir": "/opt/harmony-plugin",
+      "github_app": {
+        "app_id": "REPLACE-WITH-APP-ID",
+        "installation_id": "REPLACE-WITH-INSTALLATION-ID"
+      },
+      "gcloud": {
+        "account": "harmony-conductor@harmony-conductor.iam.gserviceaccount.com"
+      },
+      "gcp": {
+        "project": "harmony-conductor",
+        "region": "us-central1"
+      },
+      "secrets": {
+        "base": "harmony-worker-base-env",
+        "codex_auth": "harmony-codex-auth",
+        "api_token": "harmony-conductor-api-token",
+        "github_app_private_key": "harmony-daemon-app-private-key"
+      }
+    }
+  conductor-project.json: |
+    {
+      "version": 1,
+      "channel": "staging",
+      "profile": "gke",
+      "gcp": {
+        "project": "harmony-conductor",
+        "region": "us-central1"
+      },
+      "gke": {
+        "cluster": "harmony-legs",
+        "location": "us-central1-a",
+        "namespace": "harmony-legs",
+        "registry": "us-central1-docker.pkg.dev/harmony-conductor/harmony-workers",
+        "ticket_disk": "20Gi",
+        "storage_class": "harmony-ticket-disk"
+      },
+      "images": {
+        "worker": "harmony-build-env"
+      },
+      "concurrency": {
+        "max_workers": 2
+      },
+      "model_policy": {
+        "default": "claude-sonnet-5-5"
+      },
+      "log_shipping": true
+    }

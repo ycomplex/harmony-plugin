@@ -4109,7 +4109,10 @@ var SecretNameSchema = external_exports.string().min(1).refine((v) => !looksLike
 var HostGithubAppSchema = external_exports.object({
   app_id: external_exports.string().min(1),
   installation_id: external_exports.string().min(1),
-  private_key_path: external_exports.string().min(1)
+  /** Optional since B-1173: a remote conductor has no key FILE; its key arrives inline as
+   *  HARMONY_APP_PRIVATE_KEY (resolved from the `github_app_private_key` secret at boot). validateMerged
+   *  still requires one of the two. */
+  private_key_path: external_exports.string().min(1).optional()
 }).strict();
 var hostOnlyShape = {
   /** 'owner/name' of the repo whose `main` holds `.harmony/conductor.json`. */

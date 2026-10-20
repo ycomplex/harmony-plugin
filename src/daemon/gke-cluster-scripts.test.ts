@@ -11,7 +11,7 @@
 //
 // (This file lives under src/ only because vitest.config.ts includes src/**/*.test.ts.)
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -40,6 +40,66 @@ const CAPABLE = TOOLS.every((t) => RESOLVED[t]);
 const SENTINEL = 'SENTINEL-SECRET-VALUE-must-not-leak-9f8e7d6c';
 const SA = 'daemon@proj-x.iam.gserviceaccount.com';
 
+
+// B-1173: the stubs REJECT UNKNOWN FLAGS. Every invocation is checked against an allowlist of the flags the REAL
+// gcloud / kubectl accept for that subcommand (plus their global flags). Step 14 once shipped a `--filter` that
+// real gcloud rejects, and the stubs hid it by accepting anything; a rejected call is now logged to rejected.log
+// (and exits 2) so it fails the test even when the script swallows the error (`|| true`, probe, capture).
+// Add a subcommand or flag here ONLY after checking it against the CLI's documented reference.
+const GCLOUD_GLOBAL = ['--format', '--project', '--quiet', '--verbosity', '--account', '--help'];
+const GCLOUD_ALLOWED: Record<string, string[]> = {
+  'config get-value': [],
+  'secrets describe': [],
+  'secrets versions access': ['--secret'],
+  'secrets get-iam-policy': [],
+  'secrets add-iam-policy-binding': ['--member', '--role'],
+  'storage buckets describe': [],
+  'storage buckets get-iam-policy': [],
+  'storage buckets add-iam-policy-binding': ['--member', '--role'],
+  // `compute regions describe` takes no --filter / --flatten (they belong to list commands).
+  'compute regions describe': [],
+  'container clusters describe': ['--zone'],
+  'container clusters create': ['--zone', '--num-nodes', '--machine-type', '--disk-type', '--enable-image-streaming'],
+  'container clusters update': ['--zone', '--workload-pool', '--update-addons'],
+  'container clusters get-credentials': ['--zone'],
+  'container node-pools describe': ['--cluster', '--zone', '--flatten'],
+  'container node-pools create': [
+    '--cluster', '--zone', '--machine-type', '--disk-type', '--disk-size', '--image-type', '--enable-image-streaming',
+    '--enable-autoscaling', '--min-nodes', '--max-nodes', '--num-nodes', '--node-taints', '--node-labels',
+  ],
+  'container node-pools update': ['--cluster', '--zone', '--workload-metadata'],
+  'projects get-iam-policy': ['--flatten', '--filter'],
+  'projects add-iam-policy-binding': ['--member', '--role', '--condition'],
+  'iam service-accounts describe': [],
+  'iam service-accounts create': ['--display-name'],
+  'iam service-accounts get-iam-policy': ['--flatten', '--filter'],
+  'iam service-accounts add-iam-policy-binding': ['--member', '--role'],
+  'artifacts repositories get-iam-policy': ['--location'],
+  'artifacts repositories add-iam-policy-binding': ['--location', '--member', '--role'],
+};
+const KUBECTL_VALUE_GLOBALS = ['-n', '--namespace', '--context', '--kubeconfig'];
+const KUBECTL_ALLOWED: Record<string, string[]> = {
+  'get namespace': [],
+  'get storageclass': ['-o'],
+  'get serviceaccount': ['-o'],
+  'get jobs': ['-l', '-o'],
+  'get pvc': ['-o'],
+  'get pods': ['--field-selector', '-o'],
+  'create namespace': [],
+  'create serviceaccount': [],
+  'create secret generic': ['--from-file', '--dry-run', '-o'],
+  'annotate serviceaccount': ['--overwrite'],
+  'apply': ['-f'],
+  'delete pvc': ['--wait'],
+};
+// One line per subcommand: tool|subcommand|space-separated allowed flags ("*" = the tool's global flags).
+const ALLOW_TABLE = [
+  `gcloud|*|${GCLOUD_GLOBAL.join(' ')}`,
+  ...Object.entries(GCLOUD_ALLOWED).map(([k, f]) => `gcloud|${k}|${f.join(' ')}`),
+  `kubectl|*|${KUBECTL_VALUE_GLOBALS.join(' ')}`,
+  ...Object.entries(KUBECTL_ALLOWED).map(([k, f]) => `kubectl|${k}|${f.join(' ')}`),
+].join('\n');
+
 interface World {
   dir: string;
   bin: string;
@@ -47,10 +107,53 @@ interface World {
   logs: string;
 }
 
+const worldsThisTest: World[] = [];
+// A call the real CLI would reject fails the test that made it, even when the script swallowed the error.
+afterEach(() => {
+  const bad = worldsThisTest.splice(0).flatMap((w) => {
+    const f = join(w.logs, 'rejected.log');
+    return existsSync(f) ? readFileSync(f, 'utf8').split('\n').filter(Boolean) : [];
+  });
+  expect(bad, `stub rejected calls the real CLI would reject:\n${bad.join('\n')}`).toEqual([]);
+});
+
+const STUB_FUNCS = `
+policy_json() { printf '{"bindings":['; awk -F'|' -v r="$1" 'BEGIN{n=0} $1==r { if (n++) printf ","; printf "{\\"role\\":\\"%s\\",\\"members\\":[\\"%s\\"]}", $2, $3 }' "$STUB_STATE/bindings" 2>/dev/null; printf ']}'; }
+validate_flags() {
+  local tool="$1" a words=() args=() skip=0 n k flags globals line
+  shift
+  for a in "$@"; do
+    if [ "$skip" = 1 ]; then skip=0; continue; fi
+    if [ "$tool" = kubectl ]; then case "$a" in -n|--namespace|--context|--kubeconfig) skip=1; continue ;; esac; fi
+    args+=("$a")
+  done
+  for a in "\${args[@]}"; do case "$a" in -*) break ;; esac; words+=("$a"); done
+  for ((n=\${#words[@]}; n>0; n--)); do
+    k="\${words[*]:0:n}"
+    if line="$(awk -F'|' -v t="$tool" -v k="$k" '$1==t && $2==k { print $3; f=1 } END { exit !f }' "$(dirname "$0")/_allow.txt")"; then flags="$line"; break; fi
+  done
+  if [ -z "\${n:-}" ] || [ "$n" = 0 ]; then echo "stub-$tool: UNKNOWN SUBCOMMAND (not in the allowlist): \${words[*]}"; return 2; fi
+  globals="$(awk -F'|' -v t="$tool" '$1==t && $2=="*" { print $3 }' "$(dirname "$0")/_allow.txt")"
+  for a in "\${args[@]:n}"; do
+    case "$a" in -|-[!-]*|--*) ;; *) continue ;; esac
+    [ "$a" = "-" ] && continue
+    case "$a" in --*) name="\${a%%=*}" ;; *) name="\${a:0:2}" ;; esac
+    case " $flags $globals " in *" $name "*) ;; *) echo "stub-$tool: UNKNOWN FLAG $name for \\"\${words[*]:0:n}\\" (real $tool would reject it): $*"; return 2 ;; esac
+  done
+  return 0
+}
+bind_add() { local r=""; local m=""; local a; for a in "\${@:2}"; do case "$a" in --role=*) r="\${a#*=}" ;; --member=*) m="\${a#*=}" ;; esac; done; printf '%s|%s|%s\\n' "$1" "$r" "$m" >> "$STUB_STATE/bindings"; }
+`;
+
 function makeWorld(): World {
   const dir = mkdtempSync(join(tmpdir(), 'b1163-gke-'));
   const world: World = { dir, bin: join(dir, 'bin'), state: join(dir, 'state'), logs: join(dir, 'logs') };
   for (const d of [world.bin, world.state, world.logs]) mkdirSync(d, { recursive: true });
+  worldsThisTest.push(world);
+  writeFileSync(join(world.bin, '_funcs.sh'), STUB_FUNCS);
+  writeFileSync(join(world.bin, '_allow.txt'), ALLOW_TABLE + '\n');
+  const validate = (tool: string) =>
+    `. "$(dirname "$0")/_funcs.sh"; msg="$(validate_flags ${tool} "$@")" || { echo "$msg" >&2; printf '%s\\n' "$msg" >> "$STUB_LOGS/rejected.log"; exit 2; }`;
   const stub = (name: string, lines: string[]) =>
     writeFileSync(join(world.bin, name), ['#!/usr/bin/env bash', ...lines, ''].join('\n'), { mode: 0o755 });
   // ONE printf = ONE append: the script runs `kubectl create secret ... | kubectl apply -f -`, two stubs
@@ -59,6 +162,7 @@ function makeWorld(): World {
   const record = (name: string) => `printf '%s\\n' "$@" '--END--' >> "$STUB_LOGS/${name}.log"`;
 
   stub('gcloud', [
+    validate('gcloud'),
     record('gcloud'),
     'case " $* " in',
     '  *" container clusters describe "*)',
@@ -85,10 +189,18 @@ function makeWorld(): World {
     '    else printf \'{"bindings":[{"members":["user:someone@example.com"],"role":"roles/storage.admin"}]}\'; fi',
     '    exit 0 ;;',
     '  *" storage buckets add-iam-policy-binding "*) touch "$STUB_STATE/bucket-iam"; exit 0 ;;',
-    '  *" iam service-accounts describe "*) [ -f "$STUB_STATE/gsa" ] || { echo "ERROR: not found" >&2; exit 1; }; exit 0 ;;',
-    '  *" iam service-accounts create "*) touch "$STUB_STATE/gsa"; exit 0 ;;',
+    // B-1173: generic, stateful IAM policies (a bindings file of RESOURCE|ROLE|MEMBER lines) for the conductor steps.
+    '  *" secrets get-iam-policy "*) policy_json "$3"; exit 0 ;;',
+    '  *" secrets add-iam-policy-binding "*) bind_add "$3" "$@"; exit 0 ;;',
+    '  *" artifacts repositories get-iam-policy "*) policy_json "$4"; exit 0 ;;',
+    '  *" artifacts repositories add-iam-policy-binding "*) bind_add "$4" "$@"; exit 0 ;;',
+    '  *" projects get-iam-policy "*--format=json*) policy_json "project:$3"; exit 0 ;;',
+    '  *" projects add-iam-policy-binding "*) bind_add "project:$3" "$@"; touch "$STUB_STATE/iam"; exit 0 ;;',
+    '  *" iam service-accounts get-iam-policy "*--format=json*) policy_json "$4"; exit 0 ;;',
+    '  *" iam service-accounts add-iam-policy-binding "*) bind_add "$4" "$@"; touch "$STUB_STATE/wiu"; exit 0 ;;',
+    '  *" iam service-accounts describe "*) [ -f "$STUB_STATE/gsa-${4%%@*}" ] || { echo "ERROR: not found" >&2; exit 1; }; exit 0 ;;',
+    '  *" iam service-accounts create "*) touch "$STUB_STATE/gsa-$4"; exit 0 ;;',
     '  *" iam service-accounts get-iam-policy "*) [ -f "$STUB_STATE/wiu" ] && echo roles/iam.workloadIdentityUser; exit 0 ;;',
-    '  *" iam service-accounts add-iam-policy-binding "*) touch "$STUB_STATE/wiu"; exit 0 ;;',
     '  *" container clusters get-credentials "*) exit 0 ;;',
     '  *" container node-pools describe "*)',
     '    [ -f "$STUB_STATE/pool" ] || { echo "ERROR: not found" >&2; exit 1; }',
@@ -110,7 +222,6 @@ function makeWorld(): World {
     '  *" secrets describe "*) case " ${STUB_MISSING_SECRETS:-} " in *" $3 "*) echo "NOT_FOUND" >&2; exit 1 ;; esac; echo "$3"; exit 0 ;;',
     `  *" secrets versions access "*) printf '%s' '${SENTINEL}'; exit 0 ;;`,
     '  *" projects get-iam-policy "*) [ -f "$STUB_STATE/iam" ] && echo roles/container.developer; exit 0 ;;',
-    '  *" projects add-iam-policy-binding "*) touch "$STUB_STATE/iam"; exit 0 ;;',
     '  *" config get-value project "*) echo "${STUB_CONFIG_PROJECT:-}"; exit 0 ;;',
     'esac',
     'exit 0',
@@ -121,23 +232,27 @@ function makeWorld(): World {
     // stdin FIRST, so this process records only after its upstream has exited (and recorded). That makes the
     // two records strictly ordered instead of racing to append to the same log.
     // A StorageClass apply (step 17) is kept for inspection; a Secret's stdin is never written anywhere.
+    validate('kubectl'),
+    'NSARG=""; prev=""; for a in "$@"; do [ "$prev" = "-n" ] && NSARG="$a"; prev="$a"; done',
+    'SFX=""; [ -n "$NSARG" ] && [ "$NSARG" != harmony-legs ] && SFX="-$NSARG"',
     'case " $* " in *" apply "*) in="$(cat)"; case "$in" in *"kind: StorageClass"*) printf \'%s\' "$in" > "$STUB_STATE/sc-applied"; touch "$STUB_STATE/sc" ;; esac ;; esac',
     record('kubectl'),
     'echo "${KUBECONFIG:-}" >> "$STUB_LOGS/kubeconfig.log"',
     'if [ -n "${KUBECONFIG:-}" ] && [ -f "$KUBECONFIG" ]; then echo yes >> "$STUB_LOGS/kubeconfig-existed.log"; fi',
     'case " $* " in',
-    '  *" get namespace "*) [ -f "$STUB_STATE/ns" ] || exit 1; exit 0 ;;',
+    '  *" get namespace "*) [ -f "$STUB_STATE/ns-$3" ] || exit 1; exit 0 ;;',
     '  *" get storageclass "*)',
     '    [ -f "$STUB_STATE/sc" ] || exit 1',
     '    case " $* " in *jsonpath*) printf \'%s\' "${STUB_SC_LINE:-$(printf \'Immediate\\tpd-balanced\\tus-central1-a\')}" ;; esac; exit 0 ;;',
-    '  *" create namespace "*) touch "$STUB_STATE/ns"; exit 0 ;;',
+    '  *" create namespace "*) touch "$STUB_STATE/ns-$3"; exit 0 ;;',
     '  *" get jobs "*) printf \'%s\' "${STUB_JOBS_ACTIVE:-}"; exit 0 ;;',
+    // The KSA state is per namespace: harmony-legs keeps the original file names, any other namespace gets a suffix.
     '  *" get serviceaccount "*)',
-    '    [ -f "$STUB_STATE/ksa" ] || exit 1',
-    '    case " $* " in *jsonpath*) [ -f "$STUB_STATE/ksa-annotation" ] && cat "$STUB_STATE/ksa-annotation" ;; esac; exit 0 ;;',
-    '  *" create serviceaccount "*) touch "$STUB_STATE/ksa"; exit 0 ;;',
+    '    [ -f "$STUB_STATE/ksa$SFX" ] || exit 1',
+    '    case " $* " in *jsonpath*) [ -f "$STUB_STATE/ksa-annotation$SFX" ] && cat "$STUB_STATE/ksa-annotation$SFX" ;; esac; exit 0 ;;',
+    '  *" create serviceaccount "*) touch "$STUB_STATE/ksa$SFX"; exit 0 ;;',
     '  *" annotate serviceaccount "*)',
-    '    for a in "$@"; do case "$a" in iam.gke.io/gcp-service-account=*) printf \'%s\' "${a#*=}" > "$STUB_STATE/ksa-annotation" ;; esac; done; exit 0 ;;',
+    '    for a in "$@"; do case "$a" in iam.gke.io/gcp-service-account=*) printf \'%s\' "${a#*=}" > "$STUB_STATE/ksa-annotation$SFX" ;; esac; done; exit 0 ;;',
     '  *" create secret generic "*) echo "kind: Secret"; exit 0 ;;',
     '  *" apply "*) exit 0 ;;',
     '  *" get pvc "*) printf \'%s\\n\' "${STUB_PVCS:-}"; exit 0 ;;',
@@ -187,7 +302,12 @@ function exec(world: World, script: string, args: string[], env: Record<string, 
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
 
+// The pre-B-1173 tests exercise steps 1-17 and keep their exact expectations: they run with --no-conductor, and
+// the B-1173 steps 18-26 have their own describe block below (which uses setupAll).
 function setup(world: World, extra: string[] = [], env: Record<string, string> = {}, path?: string): RunResult {
+  return exec(world, setupPath, ['--project', 'proj-x', '--daemon-sa', SA, '--no-conductor', ...extra], env, path);
+}
+function setupAll(world: World, extra: string[] = [], env: Record<string, string> = {}, path?: string): RunResult {
   return exec(world, setupPath, ['--project', 'proj-x', '--daemon-sa', SA, ...extra], env, path);
 }
 
@@ -657,6 +777,212 @@ describe.skipIf(!CAPABLE)('setup-cluster.sh step 17 — the ticket-disk StorageC
   });
 });
 
+describe.skipIf(!CAPABLE)('the stubs reject flags the real CLIs reject (so a bad flag cannot hide behind a lenient stub)', () => {
+  const run = (world: World, tool: string, args: string[]) =>
+    spawnSync(join(world.bin, tool), args, { encoding: 'utf8', env: { PATH: `${world.bin}:${process.env.PATH}`, STUB_LOGS: world.logs, STUB_STATE: world.state } });
+  const clearRejected = (world: World) => writeFileSync(join(world.logs, 'rejected.log'), '');
+
+  it.each([
+    ['gcloud', ['compute', 'regions', 'describe', 'us-central1', '--filter=x'], 'UNKNOWN FLAG --filter'],
+    ['gcloud', ['storage', 'buckets', 'get-iam-policy', 'gs://b', '--flatten=bindings[]'], 'UNKNOWN FLAG --flatten'],
+    ['gcloud', ['secrets', 'describe', 's', '--bogus'], 'UNKNOWN FLAG --bogus'],
+    ['gcloud', ['frobnicate', 'things'], 'UNKNOWN SUBCOMMAND'],
+    ['kubectl', ['get', 'pvc', '--made-up'], 'UNKNOWN FLAG --made-up'],
+    ['kubectl', ['-n', 'ns', 'create', 'widget'], 'UNKNOWN SUBCOMMAND'],
+  ])('%s %j is refused (exit 2) and logged', (tool, args, why) => {
+    const world = makeWorld();
+    const r = run(world, tool, args);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain(why);
+    expect(readFileSync(join(world.logs, 'rejected.log'), 'utf8')).toContain(why);
+    clearRejected(world); // asserted above; the afterEach guard must not fail this test
+  });
+
+  it('a real flag on a real subcommand is accepted', () => {
+    const world = makeWorld();
+    expect(run(world, 'gcloud', ['projects', 'get-iam-policy', 'p', '--flatten=bindings[].members', '--filter=x', '--format=value(bindings.role)']).status).toBe(0);
+    expect(run(world, 'kubectl', ['-n', 'ns', 'delete', 'pvc', 'x', '--wait=false']).status).toBe(0);
+    expect(existsSync(join(world.logs, 'rejected.log'))).toBe(false);
+  });
+});
+
+describe.skipIf(!CAPABLE)('setup-cluster.sh steps 18-26 — the remote conductor pod (B-1173)', () => {
+  const g = (world: World) => calls(world, 'gcloud');
+  const k = (world: World) => calls(world, 'kubectl');
+  const CGSA = 'harmony-conductor@proj-x.iam.gserviceaccount.com';
+  const CWI = 'serviceAccount:proj-x.svc.id.goog[harmony-conductor/harmony-conductor]';
+  const RUNTIME = 'harmony-runner@proj-x.iam.gserviceaccount.com';
+  const bindings = (world: World) => g(world).filter((c) => c.some((a) => a === 'add-iam-policy-binding'));
+
+  it('a fresh run creates the namespace, the Google account, scoped grants, the Workload Identity binding, the KSA and the RBAC', () => {
+    const world = makeWorld();
+    const r = setupAll(world, ['--cloud-run-runtime-sa', RUNTIME]);
+    expect(r.status).toBe(0);
+    for (const n of ['18.', '19.', '20.', '21.', '22.', '23.', '24.', '25.', '26.']) expect(r.stdout).toContain(`=== ${n} `);
+
+    expect(findCall(k(world), 'create', 'namespace', 'harmony-conductor')).toBeDefined();
+    const gsa = g(world).find((c) => has(c, 'iam', 'service-accounts', 'create') && c.includes('harmony-conductor'))!;
+    expect(gsa).toBeDefined();
+
+    // secret accessor: on each NAMED secret, never project-level
+    const sm = bindings(world).filter((c) => has(c, 'secrets'));
+    expect(sm.map((c) => c[c.indexOf('add-iam-policy-binding') + 1]).sort()).toEqual(['harmony-conductor-api-token', 'harmony-daemon-app-private-key']);
+    for (const c of sm) {
+      expect(c).toContain(`--member=serviceAccount:${CGSA}`);
+      expect(c).toContain('--role=roles/secretmanager.secretAccessor');
+    }
+    const projectLevel = bindings(world).filter((c) => has(c, 'projects'));
+    expect(projectLevel.map((c) => c.find((a) => a.startsWith('--role='))).sort()).toEqual([
+      '--role=roles/container.developer', '--role=roles/logging.logWriter', '--role=roles/run.developer',
+    ]);
+    expect(projectLevel.some((c) => c.includes('--role=roles/secretmanager.secretAccessor'))).toBe(false);
+    expect(projectLevel.some((c) => c.includes('--role=roles/iam.serviceAccountUser'))).toBe(false);
+
+    // actAs on the leg runtime account only
+    const actAs = bindings(world).filter((c) => c.includes('--role=roles/iam.serviceAccountUser'));
+    expect(actAs).toHaveLength(1);
+    expect(actAs[0]).toContain(RUNTIME);
+    expect(actAs[0]).toContain(`--member=serviceAccount:${CGSA}`);
+
+    const ar = findCall(bindings(world), 'artifacts', 'repositories')!;
+    expect(ar).toContain('harmony-workers');
+    expect(ar).toContain('--role=roles/artifactregistry.reader');
+    expect(ar[ar.indexOf('--location') + 1]).toBe('us-central1');
+
+    const wi = bindings(world).find((c) => c.includes('--role=roles/iam.workloadIdentityUser') && c.includes(CGSA))!;
+    expect(wi).toContain(`--member=${CWI}`);
+
+    expect(findCall(k(world), '-n', 'harmony-conductor', 'create', 'serviceaccount', 'harmony-conductor')).toBeDefined();
+    const annotate = findCall(k(world), '-n', 'harmony-conductor', 'annotate', 'serviceaccount')!;
+    expect(annotate).toContain(`iam.gke.io/gcp-service-account=${CGSA}`);
+
+    const applied = k(world).filter((c) => has(c, 'apply', '-f') && c.some((a) => /rbac-(legs|conductor)\.yaml$/.test(a)));
+    expect(applied.map((c) => c[c.indexOf('-f') + 1].split('/').pop()).sort()).toEqual(['rbac-conductor.yaml', 'rbac-legs.yaml']);
+    for (const c of applied) expect(existsSync(c[c.indexOf('-f') + 1])).toBe(true);
+    // never cluster-wide
+    expect(k(world).some((c) => c.some((a) => /clusterrole/i.test(a)))).toBe(false);
+    // the leg namespace and the conductor namespace are different
+    expect(findCall(k(world), 'create', 'namespace', 'harmony-legs')).toBeDefined();
+    expect(r.stdout).toContain('conductor GSA:  ' + CGSA);
+  });
+
+  it('a rerun against the same state changes nothing among steps 18-26 (reads, then no binding / create / annotate)', () => {
+    const world = makeWorld();
+    expect(setupAll(world, ['--cloud-run-runtime-sa', RUNTIME]).status).toBe(0);
+    resetLogs(world);
+    const second = setupAll(world, ['--cloud-run-runtime-sa', RUNTIME]);
+    expect(second.status).toBe(0);
+    expect(g(world).some((c) => has(c, 'add-iam-policy-binding') || has(c, 'create') || has(c, 'update'))).toBe(false);
+    expect(k(world).some((c) => has(c, 'create', 'namespace') || has(c, 'create', 'serviceaccount') || has(c, 'annotate'))).toBe(false);
+    // it READ the policies before deciding
+    expect(findCall(g(world), 'secrets', 'get-iam-policy', 'harmony-conductor-api-token')).toBeDefined();
+    expect(findCall(g(world), 'artifacts', 'repositories', 'get-iam-policy')).toBeDefined();
+    expect(second.stdout).toContain('already holds roles/secretmanager.secretAccessor on secret harmony-conductor-api-token');
+  });
+
+  it('reads IAM policies as plain JSON (no --filter/--flatten) in the new steps', () => {
+    const world = makeWorld();
+    expect(setupAll(world, ['--cloud-run-runtime-sa', RUNTIME]).status).toBe(0);
+    const reads = g(world).filter((c) => has(c, 'get-iam-policy') && (has(c, 'secrets') || has(c, 'artifacts') || c.includes(CGSA) || c.includes(RUNTIME) || (has(c, 'projects') && c.includes('--format=json'))));
+    expect(reads.length).toBeGreaterThanOrEqual(7);
+    for (const c of reads) {
+      expect(c).toContain('--format=json');
+      expect(c.some((a) => a.startsWith('--filter') || a.startsWith('--flatten'))).toBe(false);
+    }
+  });
+
+  it('only changes what differs: with one secret grant already held, only the other is bound', () => {
+    const world = makeWorld();
+    writeFileSync(join(world.state, 'bindings'), `harmony-conductor-api-token|roles/secretmanager.secretAccessor|serviceAccount:${CGSA}\n`);
+    expect(setupAll(world).status).toBe(0);
+    const sm = bindings(world).filter((c) => has(c, 'secrets'));
+    expect(sm).toHaveLength(1);
+    expect(sm[0]).toContain('harmony-daemon-app-private-key');
+  });
+
+  it('step 22 is skipped, loudly, without --cloud-run-runtime-sa: no serviceAccountUser grant at all', () => {
+    const world = makeWorld();
+    const r = setupAll(world);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('skipped: --cloud-run-runtime-sa was not given');
+    expect(r.stdout).toContain('step 22 was skipped');
+    expect(bindings(world).some((c) => c.includes('--role=roles/iam.serviceAccountUser'))).toBe(false);
+  });
+
+  it('fails closed when a policy cannot be parsed: exit 1, no conductor grant attempted past it', () => {
+    const world = makeWorld();
+    // A stub returning garbage for the secret policy read
+    const original = readFileSync(join(world.bin, 'gcloud'), 'utf8');
+    writeFileSync(join(world.bin, 'gcloud'), original.replace('policy_json "$3"; exit 0 ;;', 'echo "not json"; exit 0 ;;'), { mode: 0o755 });
+    const r = setupAll(world);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('could not parse the IAM policy of secret harmony-conductor-api-token');
+    expect(bindings(world).some((c) => has(c, 'secrets'))).toBe(false);
+  });
+
+  it('honours --conductor-gsa-name, --sm-conductor-api-token, --sm-conductor-app-key, --artifact-repo and --artifact-location', () => {
+    const world = makeWorld();
+    const r = setupAll(world, [
+      '--conductor-gsa-name', 'my-conductor', '--sm-conductor-api-token', 'tok', '--sm-conductor-app-key', 'appkey',
+      '--artifact-repo', 'repo-x', '--artifact-location', 'europe-west1', '--artifact-project', 'other-proj',
+    ]);
+    expect(r.status).toBe(0);
+    const sm = bindings(world).filter((c) => has(c, 'secrets'));
+    expect(sm.map((c) => c[c.indexOf('add-iam-policy-binding') + 1]).sort()).toEqual(['appkey', 'tok']);
+    expect(sm[0]).toContain('--member=serviceAccount:my-conductor@proj-x.iam.gserviceaccount.com');
+    const ar = findCall(bindings(world), 'artifacts', 'repositories')!;
+    expect(ar).toContain('repo-x');
+    expect(ar[ar.indexOf('--location') + 1]).toBe('europe-west1');
+    expect(ar[ar.indexOf('--project') + 1]).toBe('other-proj');
+  });
+
+  it('the conductor secrets are checked in the preflight: a missing one fails before anything is created', () => {
+    const world = makeWorld();
+    const r = setupAll(world, [], { STUB_MISSING_SECRETS: 'harmony-conductor-api-token' });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('harmony-conductor-api-token');
+    expect(mutating(world)).toEqual([]);
+  });
+
+  it('--no-conductor skips steps 18-26 entirely', () => {
+    const world = makeWorld();
+    const r = setupAll(world, ['--no-conductor']);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('skipped (--no-conductor)');
+    expect(r.stdout).not.toContain('=== 18.');
+    expect(findCall(k(world), 'create', 'namespace', 'harmony-conductor')).toBeUndefined();
+    expect(g(world).some((c) => has(c, 'secrets', 'get-iam-policy'))).toBe(false);
+  });
+
+  it('a non-default leg namespace is refused up front (the shipped RBAC names harmony-legs), before any call', () => {
+    const world = makeWorld();
+    const r = setupAll(world, ['--namespace', 'other-legs']);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('--no-conductor');
+    expect(calls(world, 'gcloud')).toEqual([]);
+  });
+
+  it('--dry-run runs no stub and prints every step 18-26 command; no secret value is involved', () => {
+    const world = makeWorld();
+    resetLogs(world);
+    const r = setupAll(world, ['--dry-run', '--cloud-run-runtime-sa', RUNTIME]);
+    expect(r.status).toBe(0);
+    expect(log(world, 'gcloud')).toBe('');
+    expect(log(world, 'kubectl')).toBe('');
+    for (const n of ['18.', '19.', '20.', '21.', '22.', '23.', '24.', '25.', '26.']) expect(r.stdout).toContain(`=== ${n} `);
+    for (const needle of [
+      'kubectl create namespace harmony-conductor',
+      'gcloud secrets add-iam-policy-binding harmony-conductor-api-token',
+      '--role=roles/secretmanager.secretAccessor',
+      '--role=roles/run.developer',
+      'gcloud artifacts repositories add-iam-policy-binding harmony-workers',
+      'kubectl -n harmony-conductor create serviceaccount harmony-conductor',
+      'rbac-legs.yaml',
+      'rbac-conductor.yaml',
+    ]) expect(r.stdout).toContain(needle);
+  });
+});
+
 describe.skipIf(!CAPABLE)('container/gke/sweep-ticket-disks.sh (EXECUTED against stub kubectl / harmony)', () => {
   const task = (workflow_state: string, archived = false) => JSON.stringify({ workflow_state, archived });
   const PVCS = [
@@ -714,6 +1040,19 @@ describe.skipIf(!CAPABLE)('container/gke/sweep-ticket-disks.sh (EXECUTED against
     expect(r.status).toBe(0);
     expect(deletes(world)).toEqual([]);
     expect(r.stdout).toContain('[dry-run] kubectl -n harmony-legs delete pvc ticket-b-1001 --wait=false');
+  });
+
+  it('B-1173: runs in-cluster as the CronJob does — no kubeconfig, no env file, token already in the environment', () => {
+    const world = makeWorld();
+    const r = sweep(world, ['ticket-b-1001'], ['--namespace', 'harmony-legs', '--env-file', 'none'], { HARMONY_API_TOKEN: 'present-in-env', HARMONY_HOME: '/var/harmony-x' });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('delete ticket-b-1001');
+    for (const c of calls(world, 'kubectl')) {
+      expect(c.slice(0, 2)).toEqual(['-n', 'harmony-legs']);
+      expect(c).not.toContain('--context');
+      expect(c).not.toContain('--kubeconfig');
+    }
+    expect(r.stdout).not.toContain('loaded env file');
   });
 
   it('honours --namespace and $HARMONY_GKE_NAMESPACE', () => {

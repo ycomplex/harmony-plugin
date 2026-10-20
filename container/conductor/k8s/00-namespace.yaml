@@ -1,0 +1,9 @@
+# B-1173: the conductor's OWN namespace. Deliberately not harmony-legs: legs run untrusted-ish agent code with a
+# per-leg Secret, and nothing in that namespace should be able to reach the conductor's service account, its
+# config or its Deployment. setup-cluster.sh step 18 creates this namespace (create-only).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: harmony-conductor
+  labels:
+    app.kubernetes.io/part-of: harmony-conductor

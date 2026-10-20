@@ -42,3 +42,13 @@ describe('container/gke/launchd/com.ycomplex.harmony-sweep.plist', () => {
     expect(String(value('StandardOutPath'))).toContain('REPLACE-ME');
   });
 });
+
+describe('B-1173: the launchd sweep is DEPRECATED but not deleted', () => {
+  it('carries a prominent deprecation header that makes removal a founder step after the first CronJob run', () => {
+    const head = xml.slice(0, xml.indexOf('<plist version'));
+    expect(head).toContain('DEPRECATED (B-1173)');
+    expect(head).toContain('REMOVAL IS A FOUNDER STEP');
+    expect(head).toContain('AFTER THE CronJob HAS RUN ONCE SUCCESSFULLY');
+    expect(head).toContain('harmony-sweep');
+  });
+});

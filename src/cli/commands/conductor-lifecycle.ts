@@ -9,6 +9,9 @@
 //   update   = restart onto the channel's latest version: pull the configured channel (fast-forward only),
 //              then restart. Every restart path does this first.
 //
+// B-1173: `start --remote` / `stop --remote` scale the conductor's Kubernetes Deployment (conductor-kube.ts), and a
+// restart request claimed by a REMOTE conductor patches that Deployment instead of pulling and signalling.
+//
 // "Conductor" is the user-facing name of the long-running process (internally src/bin/daemon.ts, bundled as
 // dist/bin/daemon.js); internal paths and names keep "daemon".
 //
@@ -45,6 +48,10 @@ import {
 } from '../../daemon/supervisor-control.js';
 import { formatOutput } from '../formatter.js';
 import type { CliResult } from './conductor-config.js';
+import { EXIT, Out } from './conductor-out.js';
+import { ageText, completeRequest, openRegistry, pluginVersion, REGISTRY_ABSENT } from './conductor-registry-cli.js';
+import { isRemoteConductor } from '../../daemon/conductor-remote.js';
+import { runKubeRestart, runStartRemote, runStopRemote } from './conductor-kube.js';
 import { defaultLifecycleDeps, type LifecycleDeps } from './conductor-lifecycle-deps.js';
 import {
   failedNames,
@@ -55,12 +62,11 @@ import {
   type Env,
 } from './conductor-preflight.js';
 
-export const EXIT = { ok: 0, failure: 1, usage: 2, inFlight: 3, notAdopted: 4 } as const;
+export { EXIT };
 
 /** B-1172: a remote restart waits this long for the request to finish and a new holder to heartbeat. */
 export const REMOTE_RESTART_BUDGET_MS = 90_000;
 export const REMOTE_RESTART_POLL_MS = 2_000;
-const REGISTRY_ABSENT = 'registry not deployed on this project';
 
 const LAUNCHD_TEMPLATE = 'container/launchd/com.ycomplex.harmony-conductor.plist.template';
 const SYSTEMD_TEMPLATE = 'container/systemd/harmony-conductor.service.template';
@@ -68,23 +74,6 @@ const SYSTEMD_TEMPLATE = 'container/systemd/harmony-conductor.service.template';
 // ---------------------------------------------------------------------------------------------------
 // plumbing
 // ---------------------------------------------------------------------------------------------------
-
-/** Collects output; `onLine` streams it as it happens (a restart takes minutes). */
-class Out {
-  readonly lines: string[] = [];
-  readonly errLines: string[] = [];
-  constructor(private readonly onLine?: (line: string) => void) {}
-  line(s = ''): void {
-    this.lines.push(s);
-    this.onLine?.(s);
-  }
-  err(s: string): void {
-    this.errLines.push(s);
-  }
-  result(exitCode: number, data: Record<string, unknown>): CliResult {
-    return { exitCode, lines: this.lines, errLines: this.errLines, data: { ok: exitCode === 0, exit_code: exitCode, ...data } };
-  }
-}
 
 interface Timing {
   timeoutMs: number;
@@ -117,15 +106,6 @@ async function findConductors(deps: LifecycleDeps, s: ConductorSettings): Promis
     if (cwd) cwdByPid.set(pid, cwd);
   }
   return matchConductors(procs, { pluginDir: s.pluginDir, configPath: s.deploymentConfig, cwdByPid });
-}
-
-function pluginVersion(deps: LifecycleDeps, pluginDir: string): string {
-  try {
-    const v = (JSON.parse(deps.readFileSync(join(pluginDir, '.claude-plugin', 'plugin.json'))) as { version?: string }).version;
-    return v || 'unknown';
-  } catch {
-    return 'unknown';
-  }
 }
 
 async function waitForExit(deps: LifecycleDeps, pids: number[], timeoutMs: number): Promise<number[]> {
@@ -173,22 +153,9 @@ async function safeBoard(deps: LifecycleDeps, s: ConductorSettings): Promise<{ r
 // registry (B-1172)
 // ---------------------------------------------------------------------------------------------------
 
-type RegistryHandle = { client: RegistryClient } | { error: string };
-
-async function openRegistry(deps: LifecycleDeps, s: ConductorSettings): Promise<RegistryHandle> {
-  if (!s.env.HARMONY_API_TOKEN) return { error: 'HARMONY_API_TOKEN is not set' };
-  try {
-    return { client: await deps.registryClient(s.env) };
-  } catch (err) {
-    return { error: err instanceof Error ? err.message : String(err) };
-  }
-}
-
-const ageText = (sec: number | null): string => (sec === null ? 'unknown' : `${Math.round(sec)}s ago`);
-
 function registryLines(st: RegistryStatus): string[] {
   if (st.state === 'not_running') return ['Registry: no conductor is registered for this project.'];
-  const lines = [st.state === 'running' ? 'Registry: a conductor is running elsewhere' : 'Registry: a conductor is registered but its heartbeat is STALE (it may have died)'];
+  const lines = [st.state === 'running' ? (st.location === 'remote' ? 'Registry: the conductor is running remotely, in the cluster (a Kubernetes pod)' : 'Registry: a conductor is running elsewhere') : 'Registry: a conductor is registered but its heartbeat is STALE (it may have died)'];
   lines.push(`  host:            ${st.host ?? '(hidden: only the project owner sees the host)'}`);
   lines.push(`  location:        ${st.location ?? 'unknown'}`);
   lines.push(`  profile:         ${st.profile ?? 'unknown'}`);
@@ -320,9 +287,12 @@ export async function runStatus(deps: LifecycleDeps, opts: StatusOptions = {}, o
 
 export interface StopOptions {
   config?: string;
+  /** B-1173: scale the conductor Deployment to 0 with this machine's kubectl credentials. */
+  remote?: boolean;
 }
 
 export async function runStop(deps: LifecycleDeps, opts: StopOptions = {}, onLine?: (l: string) => void): Promise<CliResult> {
+  if (opts.remote) return runStopRemote(deps, { config: opts.config }, onLine);
   const out = new Out(onLine);
   const s = await loadSettings(deps, { config: opts.config });
   const timing = timingFromEnv(s.env);
@@ -386,10 +356,7 @@ export async function runStart(deps: LifecycleDeps, opts: StartOptions = {}, onL
     out.err('--local, --at-boot and --remote are mutually exclusive');
     return out.result(EXIT.usage, { error: out.errLines[0] });
   }
-  if (opts.remote) {
-    out.err('--remote is not available yet: starting a conductor on another machine arrives with B-1173. Nothing was started.');
-    return out.result(EXIT.usage, { error: out.errLines[0], started: false });
-  }
+  if (opts.remote) return runStartRemote(deps, { config: opts.config }, onLine);
   const mode: 'local' | 'at-boot' = opts.atBoot ? 'at-boot' : 'local';
   if (mode === 'at-boot' && deps.platform !== 'darwin') {
     out.err('--at-boot is macOS only (a LaunchDaemon). On Linux use --local and enable lingering: sudo loginctl enable-linger $USER');
@@ -552,6 +519,9 @@ async function legsInFlight(deps: LifecycleDeps, s: ConductorSettings, backend: 
  *  restartLocal guarantees a failed pull/version check leaves the OLD conductor running with its leases, and the
  *  request is then completed 'failed' with the reason. */
 export async function runRestart(deps: LifecycleDeps, opts: RestartOptions = {}, onLine?: (l: string) => void): Promise<CliResult> {
+  // B-1173: in a remote conductor's pod the claimed request patches the Deployment; there is no checkout to pull
+  // and no local process to signal. The local path below is unchanged.
+  if (opts.request && isRemoteConductor(deps.env)) return runKubeRestart(deps, opts, onLine);
   const ctx: { settings?: ConductorSettings } = {};
   const requestId = opts.request;
   let result: CliResult;
@@ -570,31 +540,6 @@ export async function runRestart(deps: LifecycleDeps, opts: RestartOptions = {},
     result.data.request = { id: requestId, result: ok ? 'done' : 'failed', completion: note };
   }
   return result;
-}
-
-async function completeRequest(
-  deps: LifecycleDeps,
-  s: ConductorSettings | undefined,
-  requestId: string,
-  result: 'done' | 'failed',
-  reason: string | null,
-  data: Record<string, unknown>,
-): Promise<{ note: string; line: string }> {
-  let note: string;
-  try {
-    const client = await deps.registryClient(s?.env ?? deps.env);
-    const r = await client.completeRequest(`restart-cli@${deps.hostname()}`, {
-      requestId,
-      result,
-      reason: reason ? reason.slice(0, 500) : null,
-      versionBefore: typeof data.plugin_version_before === 'string' ? data.plugin_version_before : null,
-      versionAfter: typeof data.plugin_version_after === 'string' ? data.plugin_version_after : null,
-    });
-    note = r.kind === 'ok' ? 'ok' : r.kind === 'refused' ? `refused (${r.reason ?? 'no reason'})` : `${r.kind} (${r.detail})`;
-  } catch (err) {
-    note = `error (${err instanceof Error ? err.message : String(err)})`;
-  }
-  return { note, line: `Registry request ${requestId} completed as ${result}: ${note}` };
 }
 
 /** B-1172: no conductor process here — ask the registry to restart the one elsewhere and wait for a new holder. */
@@ -871,7 +816,7 @@ export function registerConductorLifecycleCommands(program: Command, conductor: 
     .description('Start this project\'s conductor on this machine and keep it running (refuses if one already runs here)')
     .option('--local', 'Install and load a supervisor job that survives reboot (LaunchAgent on macOS, systemd user unit on Linux) [default]', false)
     .option('--at-boot', 'macOS only: install a LaunchDaemon (needs sudo once) that starts at boot as this user', false)
-    .option('--remote', 'Start on another machine (not available yet)', false)
+    .option('--remote', 'Start the conductor in the GKE cluster: scale the harmony-conductor Deployment to 1 with your own kubectl credentials (context from HARMONY_GKE_CONTEXT), then wait for it to register', false)
     .option('--profile <name>', 'Launch profile to pass to the conductor (default: the config files\')')
     .option('--config <path>', 'Explicit deployment.json path to pass to the conductor')
     .action((o: { local?: boolean; atBoot?: boolean; remote?: boolean; profile?: string; config?: string }) =>
@@ -881,8 +826,9 @@ export function registerConductorLifecycleCommands(program: Command, conductor: 
   conductor
     .command('stop')
     .description('Stop new launches. Running legs keep running as their own jobs; the next start adopts them')
+    .option('--remote', 'Stop the conductor in the GKE cluster: scale the harmony-conductor Deployment to 0 with your own kubectl credentials. Running legs carry on', false)
     .option('--config <path>', 'Explicit deployment.json path the conductor was started with')
-    .action((o: { config?: string }) => emitLive(program, (on) => runStop(makeDeps(), o, on)));
+    .action((o: StopOptions) => emitLive(program, (on) => runStop(makeDeps(), o, on)));
 
   conductor
     .command('restart')
@@ -897,7 +843,7 @@ export function registerConductorLifecycleCommands(program: Command, conductor: 
 
   conductor
     .command('status')
-    .description('Where the conductor runs, its profile, plugin version, last heartbeat, running legs and supervisor')
+    .description('Where the conductor runs (here, elsewhere, or remotely in the cluster), its profile, plugin version, last heartbeat, running legs and supervisor')
     .option('--config <path>', 'Explicit deployment.json path the conductor was started with')
     .action((o: StatusOptions) => emitLive(program, (on) => runStatus(makeDeps(), o, on)));
 }

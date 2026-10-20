@@ -7276,8 +7276,8 @@ var require_RealtimeChannel = __commonJS({
       }
       /** @internal */
       _notThisChannelEvent(event, ref) {
-        const { close, error, leave, join: join11 } = constants_1.CHANNEL_EVENTS;
-        const events2 = [close, error, leave, join11];
+        const { close, error, leave, join: join12 } = constants_1.CHANNEL_EVENTS;
+        const events2 = [close, error, leave, join12];
         return ref && events2.includes(event) && ref !== this.joinPush.ref;
       }
       /** @internal */
@@ -35441,13 +35441,22 @@ var ProjectFileSchema = external_exports.object({
 function looksLikeSecretValue(v) {
   return /^(ghp_|gho_|ghs_|github_pat_|sk-|eyJ)/.test(v) || v.includes("-----BEGIN") || /^\S{40,}$/.test(v);
 }
+var SECRET_KEYS = {
+  base: "base",
+  codexAuth: "codex_auth",
+  apiToken: "api_token",
+  githubAppPrivateKey: "github_app_private_key"
+};
 var SecretNameSchema = external_exports.string().min(1).refine((v) => !looksLikeSecretValue(v), {
   message: "looks like a secret VALUE, not a Secret Manager secret NAME (the secrets block holds names only)"
 });
 var HostGithubAppSchema = external_exports.object({
   app_id: external_exports.string().min(1),
   installation_id: external_exports.string().min(1),
-  private_key_path: external_exports.string().min(1)
+  /** Optional since B-1173: a remote conductor has no key FILE; its key arrives inline as
+   *  HARMONY_APP_PRIVATE_KEY (resolved from the `github_app_private_key` secret at boot). validateMerged
+   *  still requires one of the two. */
+  private_key_path: external_exports.string().min(1).optional()
 }).strict();
 var hostOnlyShape = {
   /** 'owner/name' of the repo whose `main` holds `.harmony/conductor.json`. */
@@ -35614,24 +35623,24 @@ function parseJsonText(file, text) {
     return { ok: true, value: JSON.parse(text) };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    let where = "";
+    let where2 = "";
     if (!/line \d+ column \d+/.test(msg)) {
       const m = /position (\d+)/.exec(msg);
       if (m) {
         const { line, col } = lineColOf(text, Number(m[1]));
-        where = ` (line ${line}, column ${col})`;
+        where2 = ` (line ${line}, column ${col})`;
       } else {
         const snip = /\.\.\."?([\s\S]*?)"? is not valid JSON/.exec(msg)?.[1] ?? /"([\s\S]*?)" is not valid JSON/.exec(msg)?.[1];
         const at = snip ? text.indexOf(snip) : -1;
         if (at >= 0) {
           const { line, col } = lineColOf(text, at + Math.max(0, snip.length - 1));
-          where = ` (near line ${line}, column ${col})`;
+          where2 = ` (near line ${line}, column ${col})`;
         }
       }
     }
     return {
       ok: false,
-      issue: { file, key: "(file)", problem: `invalid JSON: ${msg}${where}`, fix: "correct the JSON" }
+      issue: { file, key: "(file)", problem: `invalid JSON: ${msg}${where2}`, fix: "correct the JSON" }
     };
   }
 }
@@ -35778,17 +35787,17 @@ var LEGACY_ENV_KNOBS = [
 ];
 var deprecation = (old, newKey, file) => `deprecated: ${old} is read as a legacy fallback; set ${newKey} in ${file} instead`;
 function legacyToConductor(input) {
-  const { deployment, env: env2 } = input;
+  const { deployment: deployment2, env: env2 } = input;
   const layer = {};
   const warnings = [];
   const envKnobs = [];
   const DJ = "deployment.json";
-  if (deployment) {
-    if (deployment.worker_image && deployment.worker_image !== WORKER_IMAGE_DEFAULT) {
-      setPath(layer, ["images", "worker"], deployment.worker_image);
+  if (deployment2) {
+    if (deployment2.worker_image && deployment2.worker_image !== WORKER_IMAGE_DEFAULT) {
+      setPath(layer, ["images", "worker"], deployment2.worker_image);
       warnings.push(deprecation(`${DJ} \u203A worker_image`, "images.worker", ".harmony/conductor.json"));
     }
-    const prof = input.profileName ? deployment.profiles?.[input.profileName] : void 0;
+    const prof = input.profileName ? deployment2.profiles?.[input.profileName] : void 0;
     if (prof) {
       if (prof.gcloud_project) {
         setPath(layer, ["gcp", "project"], prof.gcloud_project);
@@ -35803,15 +35812,15 @@ function legacyToConductor(input) {
         warnings.push(deprecation(`${DJ} \u203A profiles.${input.profileName}.agents`, "agents", ".harmony/conductor.json"));
       }
     }
-    if (deployment.launcher?.plugin_dir) {
-      setPath(layer, ["plugin_dir"], deployment.launcher.plugin_dir);
+    if (deployment2.launcher?.plugin_dir) {
+      setPath(layer, ["plugin_dir"], deployment2.launcher.plugin_dir);
       warnings.push(deprecation(`${DJ} \u203A launcher.plugin_dir`, "plugin_dir", "~/.harmony/conductor-host.json"));
     }
-    if (deployment.launcher?.github_app) {
-      setPath(layer, ["github_app"], { ...deployment.launcher.github_app });
+    if (deployment2.launcher?.github_app) {
+      setPath(layer, ["github_app"], { ...deployment2.launcher.github_app });
       warnings.push(deprecation(`${DJ} \u203A launcher.github_app`, "github_app", "~/.harmony/conductor-host.json"));
     }
-    const posture = deployment.env?.HARMONY_PLUGIN_POSTURE;
+    const posture = deployment2.env?.HARMONY_PLUGIN_POSTURE;
     if (posture) {
       const channel = posture === "prod" ? "prod" : posture === "ack:staging" || posture === "staging" ? "staging" : void 0;
       if (channel) {
@@ -35839,7 +35848,7 @@ function legacyToConductor(input) {
     envKnobs.push(knob.name);
     warnings.push(deprecation(`env ${knob.name}`, knob.path.join("."), home));
   }
-  return { layer, warnings, used: deployment !== null || envKnobs.length > 0, hasDeployment: deployment !== null, envKnobs };
+  return { layer, warnings, used: deployment2 !== null || envKnobs.length > 0, hasDeployment: deployment2 !== null, envKnobs };
 }
 var PROJECT_FILE_LABEL = "conductor.json";
 var HOST_FILE_LABEL = "conductor-host.json";
@@ -35875,7 +35884,7 @@ function validateMerged(merged, env2 = {}) {
       }
     }
     if (!app?.private_key_path && !env2.HARMONY_APP_PRIVATE_KEY) {
-      need(HOST_FILE_LABEL, "github_app.private_key_path", "the GitHub App private key location is missing", 'add "github_app": { "private_key_path": "/path/to/key.pem" } to ~/.harmony/conductor-host.json');
+      need(HOST_FILE_LABEL, "github_app.private_key_path", "the GitHub App private key location is missing", `add "github_app": { "private_key_path": "/path/to/key.pem" } to ~/.harmony/conductor-host.json (a remote conductor instead names the key's Secret Manager secret as "secrets": { "github_app_private_key": "<secret-name>" })`);
     }
   }
   return issues;
@@ -36056,14 +36065,14 @@ function evaluateConductorConfig(opts = {}) {
   const envL = envLayer(env2);
   issues.push(...envL.issues);
   if (envL.vars.length) sources.push(`env: ${envL.vars.join(", ")} (test overrides)`);
-  const deployment = opts.loadLegacy ? opts.loadLegacy() : null;
+  const deployment2 = opts.loadLegacy ? opts.loadLegacy() : null;
   const nonLegacy = mergeLayers(projectLayer, hostLayer, envL.layer);
   let profileName = nonLegacy.profile;
-  if (!profileName && deployment?.profiles) {
-    const builtin = Object.keys(deployment.profiles).filter((n) => n in BUILTIN_PROFILES);
+  if (!profileName && deployment2?.profiles) {
+    const builtin = Object.keys(deployment2.profiles).filter((n) => n in BUILTIN_PROFILES);
     if (builtin.length === 1) profileName = builtin[0];
   }
-  const legacy = legacyToConductor({ deployment, env: env2, profileName, ignoreEnvKeys: opts.appliedEnvKeys });
+  const legacy = legacyToConductor({ deployment: deployment2, env: env2, profileName, ignoreEnvKeys: opts.appliedEnvKeys });
   if (legacy.used) {
     const parts = [legacy.hasDeployment ? "deployment.json" : "", legacy.envKnobs.length ? `env ${legacy.envKnobs.join(", ")}` : ""].filter(Boolean);
     sources.push(`legacy (deprecated): ${parts.join("; ")}`);
@@ -36090,7 +36099,7 @@ function evaluateConductorConfig(opts = {}) {
   const uniqueWarnings = [...new Set(warnings)];
   let deploymentConfig = null;
   if (issues.length === 0) {
-    deploymentConfig = projectToDeploymentConfig(merged, deployment, uniqueWarnings);
+    deploymentConfig = projectToDeploymentConfig(merged, deployment2, uniqueWarnings);
   }
   const warnFn = opts.warn ?? ((m) => console.error(`[conductor-config] ${m}`));
   for (const w of uniqueWarnings) {
@@ -38228,10 +38237,10 @@ function validateSteps(file, extensionPoint, steps, projectRoot, existsSync5) {
 }
 function loadProjectManifest(projectRoot, deps = {}) {
   const existsSync5 = deps.existsSync ?? nodeExistsSync2;
-  const readFileSync12 = deps.readFileSync ?? ((p) => nodeReadFileSync2(p, "utf8"));
+  const readFileSync13 = deps.readFileSync ?? ((p) => nodeReadFileSync2(p, "utf8"));
   const file = nodeJoin2(projectRoot, PROJECT_MANIFEST_RELATIVE_PATH);
   if (!existsSync5(file)) return { kind: "absent" };
-  const raw = readFileSync12(file);
+  const raw = readFileSync13(file);
   let parsed;
   try {
     parsed = (0, import_yaml.parse)(raw);
@@ -44144,16 +44153,16 @@ async function fetchProjectFile(input) {
   const path3 = input.path ?? CONDUCTOR_PROJECT_PATH;
   const fetchImpl = input.fetchImpl ?? fetch;
   const apiBase = (input.apiBase ?? GITHUB_API_DEFAULT).replace(/\/+$/, "");
-  const where = `${input.repo}:${path3}@${ref}`;
+  const where2 = `${input.repo}:${path3}@${ref}`;
   try {
     let token;
     try {
       token = await input.tokenProvider();
     } catch (err) {
-      return { status: "error", code: "no-token", message: `could not obtain a GitHub token to read ${where}: ${err instanceof Error ? err.message : String(err)}` };
+      return { status: "error", code: "no-token", message: `could not obtain a GitHub token to read ${where2}: ${err instanceof Error ? err.message : String(err)}` };
     }
     if (!token) {
-      return { status: "error", code: "no-token", message: `no GitHub token available to read ${where} (the harmony-daemon App token could not be minted)` };
+      return { status: "error", code: "no-token", message: `no GitHub token available to read ${where2} (the harmony-daemon App token could not be minted)` };
     }
     const headers = {
       Authorization: `Bearer ${token}`,
@@ -44171,19 +44180,19 @@ async function fetchProjectFile(input) {
       return {
         status: "error",
         code,
-        message: `${res.status} reading ${where}: ${res.status === 404 ? "the file or repo was not found" : "access was refused"}. The harmony-daemon App installation may not include ${input.repo} (add the repo to the installation), or the file does not exist on ${ref}`
+        message: `${res.status} reading ${where2}: ${res.status === 404 ? "the file or repo was not found" : "access was refused"}. The harmony-daemon App installation may not include ${input.repo} (add the repo to the installation), or the file does not exist on ${ref}`
       };
     }
     if (res.status === 401) {
-      return { status: "error", code: "unauthorized", message: `401 reading ${where}: the GitHub token was rejected` };
+      return { status: "error", code: "unauthorized", message: `401 reading ${where2}: the GitHub token was rejected` };
     }
     if (!res.ok) {
-      return { status: "error", code: `http-${res.status}`, message: `HTTP ${res.status} reading ${where}` };
+      return { status: "error", code: `http-${res.status}`, message: `HTTP ${res.status} reading ${where2}` };
     }
     const text = await res.text();
     return { status: "ok", text, etag: res.headers?.get?.("etag") ?? null, sha: gitBlobSha(text) };
   } catch (err) {
-    return { status: "error", code: "network", message: `network error reading ${where}: ${err instanceof Error ? err.message : String(err)}` };
+    return { status: "error", code: "network", message: `network error reading ${where2}: ${err instanceof Error ? err.message : String(err)}` };
   }
 }
 function readSnapshot(path3) {
@@ -44259,7 +44268,7 @@ ${new ConductorConfigError(v.issues).message}`);
 }
 
 // src/cli/commands/conductor-lifecycle.ts
-import { dirname as dirname4, join as join7 } from "node:path";
+import { dirname as dirname4, join as join8 } from "node:path";
 
 // src/daemon/conductor-board.ts
 var holderPrefix = (host, pid) => `${host}:${pid}:`;
@@ -44485,9 +44494,526 @@ function renderSystemdUnit(template, o) {
   });
 }
 
+// src/cli/commands/conductor-out.ts
+var Out = class {
+  constructor(onLine) {
+    this.onLine = onLine;
+  }
+  onLine;
+  lines = [];
+  errLines = [];
+  line(s = "") {
+    this.lines.push(s);
+    this.onLine?.(s);
+  }
+  err(s) {
+    this.errLines.push(s);
+  }
+  result(exitCode, data) {
+    return { exitCode, lines: this.lines, errLines: this.errLines, data: { ok: exitCode === 0, exit_code: exitCode, ...data } };
+  }
+};
+var EXIT = { ok: 0, failure: 1, usage: 2, inFlight: 3, notAdopted: 4 };
+
+// src/cli/commands/conductor-registry-cli.ts
+import { join as join6 } from "node:path";
+var REGISTRY_ABSENT = "registry not deployed on this project";
+function pluginVersion(deps, pluginDir) {
+  try {
+    const v = JSON.parse(deps.readFileSync(join6(pluginDir, ".claude-plugin", "plugin.json"))).version;
+    return v || "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+async function openRegistry(deps, s) {
+  if (!s.env.HARMONY_API_TOKEN) return { error: "HARMONY_API_TOKEN is not set" };
+  try {
+    return { client: await deps.registryClient(s.env) };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+}
+var ageText = (sec) => sec === null ? "unknown" : `${Math.round(sec)}s ago`;
+async function completeRequest(deps, s, requestId, result, reason, data) {
+  let note;
+  try {
+    const client = await deps.registryClient(s?.env ?? deps.env);
+    const r = await client.completeRequest(`restart-cli@${deps.hostname()}`, {
+      requestId,
+      result,
+      reason: reason ? reason.slice(0, 500) : null,
+      versionBefore: typeof data.plugin_version_before === "string" ? data.plugin_version_before : null,
+      versionAfter: typeof data.plugin_version_after === "string" ? data.plugin_version_after : null
+    });
+    note = r.kind === "ok" ? "ok" : r.kind === "refused" ? `refused (${r.reason ?? "no reason"})` : `${r.kind} (${r.detail})`;
+  } catch (err) {
+    note = `error (${err instanceof Error ? err.message : String(err)})`;
+  }
+  return { note, line: `Registry request ${requestId} completed as ${result}: ${note}` };
+}
+
+// src/daemon/conductor-remote.ts
+var REMOTE_ENV = "HARMONY_CONDUCTOR_REMOTE";
+var isRemoteConductor = (env2) => env2[REMOTE_ENV] === "1";
+function channelFromPosture(posture) {
+  if (posture === "prod") return "prod";
+  return posture === "ack:staging" || posture === "staging" ? "staging" : null;
+}
+
+// src/cli/commands/conductor-preflight.ts
+import { join as join7 } from "node:path";
+
+// src/config/conductor-secrets.ts
+import { readFileSync as readFileSync5 } from "node:fs";
+var SECRET_ENV_TARGETS = [
+  { key: SECRET_KEYS.apiToken, envVar: "HARMONY_API_TOKEN" },
+  { key: SECRET_KEYS.githubAppPrivateKey, envVar: "HARMONY_APP_PRIVATE_KEY" }
+];
+var ConductorSecretsError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "ConductorSecretsError";
+  }
+};
+function projectOf(host, env2) {
+  return host.gcp?.project || env2.HARMONY_GCP_PROJECT || env2.CLOUDSDK_CORE_PROJECT || env2.GOOGLE_CLOUD_PROJECT || void 0;
+}
+async function resolveConductorSecrets(deps) {
+  const result = { resolved: [], skipped: [] };
+  const remote = isRemoteConductor(deps.env);
+  const hostPath = resolveConductorPaths(deps.env).hostFile;
+  const read = deps.readFile ?? ((p) => readFileSync5(p, "utf8"));
+  let text;
+  try {
+    text = read(hostPath);
+  } catch {
+    if (!remote) return result;
+    throw new ConductorSecretsError(`the host file ${hostPath} could not be read; a conductor with a secrets block takes its secret names from its "secrets" block`);
+  }
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    if (!remote) return result;
+    throw new ConductorSecretsError(`the host file ${hostPath} is not valid JSON`);
+  }
+  const parsed = HostFileSchema.safeParse(json);
+  if (!parsed.success) {
+    if (!remote) return result;
+    const first = parsed.error.issues[0];
+    throw new ConductorSecretsError(`the host file ${hostPath} is invalid: ${first ? `${first.path.join(".") || "(root)"}: ${first.message}` : "unknown problem"}`);
+  }
+  const secrets = parsed.data.secrets ?? {};
+  const project = projectOf(parsed.data, deps.env);
+  for (const { key, envVar } of SECRET_ENV_TARGETS) {
+    const name = secrets[key];
+    if (deps.target[envVar]) {
+      result.skipped.push(envVar);
+      continue;
+    }
+    if (!name) {
+      if (remote && key === SECRET_KEYS.apiToken) throw new ConductorSecretsError(`HARMONY_API_TOKEN is not set and the host file's secrets block has no "${key}" entry naming its secret`);
+      continue;
+    }
+    if (!project) {
+      throw new ConductorSecretsError(`cannot read secret "${name}": no GCP project (set gcp.project in the host file, or HARMONY_GCP_PROJECT)`);
+    }
+    const r = await deps.exec("gcloud", ["secrets", "versions", "access", "latest", `--secret=${name}`, `--project=${project}`]);
+    if (r.code !== 0) {
+      throw new ConductorSecretsError(`could not read secret "${name}" (for ${envVar}) from Secret Manager: gcloud exited ${r.code}${r.code === 127 ? " (gcloud is not installed)" : ""}`);
+    }
+    const value = r.stdout.replace(/\r?\n$/, "");
+    if (value.length === 0) throw new ConductorSecretsError(`secret "${name}" (for ${envVar}) is empty`);
+    deps.target[envVar] = value;
+    result.resolved.push(envVar);
+  }
+  return result;
+}
+
+// src/cli/commands/conductor-preflight.ts
+var SHELL_NOISE = /* @__PURE__ */ new Set(["_", "SHLVL", "PWD", "OLDPWD"]);
+async function sourceEnvFile(deps, file) {
+  const script = `set -a; . "$1" >/dev/null 2>&1 || exit 97; exec node -e 'process.stdout.write(JSON.stringify(process.env))'`;
+  const r = await deps.exec("bash", ["-c", script, "_", file]);
+  if (r.code !== 0) return { error: `env file could not be loaded: ${file}` };
+  try {
+    return { env: JSON.parse(r.stdout) };
+  } catch {
+    return { error: `env file could not be loaded: ${file}` };
+  }
+}
+async function loadSettings(deps, opts = {}) {
+  const paths = resolveConductorPaths(deps.env);
+  const envPath = join7(paths.home, "conductor.env");
+  const legacyPath = join7(paths.home, "daemon.env");
+  let envFile = null;
+  const fileEnv = {};
+  let envFileError;
+  const chosen = deps.existsSync(envPath) ? { path: envPath, legacy: false } : deps.existsSync(legacyPath) ? { path: legacyPath, legacy: true } : null;
+  if (chosen) {
+    const r = await sourceEnvFile(deps, chosen.path);
+    envFile = chosen;
+    if ("env" in r) {
+      for (const [k, v] of Object.entries(r.env)) if (deps.env[k] !== v && !SHELL_NOISE.has(k)) fileEnv[k] = v;
+    } else envFileError = r.error;
+  }
+  const evalEnv = { ...deps.env, ...fileEnv };
+  let secretsError;
+  try {
+    await resolveConductorSecrets({
+      env: evalEnv,
+      target: evalEnv,
+      exec: async (file, args) => {
+        const r = await deps.exec(file, args, { env: evalEnv });
+        return { code: r.code, stdout: r.stdout };
+      },
+      readFile: deps.readFileSync
+    });
+  } catch (err) {
+    secretsError = err instanceof Error ? err.message : String(err);
+  }
+  let merged = null;
+  const configIssues = [];
+  try {
+    const ev = evaluateConductorConfig({
+      env: evalEnv,
+      existsSync: deps.existsSync,
+      readFileSync: deps.readFileSync,
+      warn: () => {
+      },
+      loadLegacy: () => loadLegacyDeploymentConfig({ configPath: opts.config, env: evalEnv, existsSync: deps.existsSync, readFileSync: deps.readFileSync })
+    });
+    if (ev) {
+      merged = ev.merged;
+      for (const i of ev.issues) configIssues.push(`${i.file} \u203A ${i.key}: ${i.problem}`);
+    }
+  } catch (err) {
+    configIssues.push(err instanceof Error ? err.message : String(err));
+  }
+  const launchEnv = merged && configIssues.length === 0 ? launchEnvFromMerged(merged) : {};
+  const env2 = { ...launchEnv, ...evalEnv };
+  return {
+    env: env2,
+    paths,
+    envFile,
+    envFileError,
+    secretsError,
+    merged,
+    configIssues,
+    pluginDir: env2.HARMONY_PLUGIN_DIR || deps.cliPluginDir,
+    channel: merged?.channel,
+    profile: opts.profile ?? merged?.profile,
+    deploymentConfig: opts.config
+  };
+}
+var has = (v) => v !== void 0 && v !== "";
+async function haveTool(deps, tool) {
+  return (await deps.exec("sh", ["-c", 'command -v "$1"', "_", tool])).code === 0;
+}
+async function runPreflight(deps, s, opts = {}) {
+  const checks = [];
+  const warnings = [];
+  const add = (name, ok, detail, fix) => checks.push({ name, ok, detail, fix });
+  if (s.envFileError) add("env-file", false, s.envFileError, `repair ${s.envFile?.path}`);
+  else if (s.envFile) add("env-file", true, `loaded ${s.envFile.path} (values not shown)${s.envFile.legacy ? " \u2014 legacy name, rename it to conductor.env" : ""}`);
+  else add("env-file", true, "no conductor.env: using this shell's environment only");
+  if (s.secretsError) add("secrets", false, s.secretsError, "check the host file's secrets block, gcloud, and Secret Manager access");
+  const doctor = runDoctor(
+    { env: s.env, existsSync: deps.existsSync, readFileSync: deps.readFileSync },
+    { config: s.deploymentConfig }
+  );
+  const issueLines = doctor.data.issues.map((i) => i.text);
+  add("config", doctor.exitCode === 0, doctor.exitCode === 0 ? "harmony conductor config doctor: ok" : `${issueLines.length} issue(s): ${issueLines.slice(0, 3).join(" | ")}`, "run `harmony conductor config doctor` and fix what it lists");
+  const tools = ["git", "node"];
+  if (s.profile === "gke") tools.push("kubectl");
+  else if (s.profile === "cloud") tools.push("gcloud");
+  else if (s.profile) tools.push("kubectl", "gcloud");
+  for (const t of tools) {
+    const ok = await haveTool(deps, t);
+    add(`tool:${t}`, ok, ok ? `${t} found on PATH` : `${t} is not on PATH`, `install ${t} or fix PATH`);
+  }
+  if (!s.profile) add("profile", true, "profile not determined (no config file names one and none was passed): only generic tools were checked");
+  const tokenOk = has(s.env.HARMONY_API_TOKEN);
+  add("cred:HARMONY_API_TOKEN", tokenOk, tokenOk ? "present" : "not set", 'name its secret in conductor-host.json ("secrets": { "api_token": "<secret-name>" }) or export HARMONY_API_TOKEN');
+  let board = null;
+  if (tokenOk) {
+    try {
+      board = await deps.readBoard(s.env);
+      add("cred:board", true, "the board is readable with HARMONY_API_TOKEN");
+    } catch (err) {
+      add("cred:board", false, `the board could not be read: ${err instanceof Error ? err.message : String(err)}`, "check HARMONY_API_TOKEN and the network");
+    }
+  } else add("cred:board", false, "not attempted: HARMONY_API_TOKEN is not set");
+  const keyPath = s.env.HARMONY_APP_PRIVATE_KEY_PATH;
+  if (has(s.env.HARMONY_APP_PRIVATE_KEY)) add("cred:github-app-key", true, "HARMONY_APP_PRIVATE_KEY present");
+  else if (has(keyPath)) {
+    const readable = (() => {
+      try {
+        deps.readFileSync(keyPath);
+        return true;
+      } catch {
+        return false;
+      }
+    })();
+    add("cred:github-app-key", readable, readable ? "HARMONY_APP_PRIVATE_KEY_PATH points at a readable file" : "HARMONY_APP_PRIVATE_KEY_PATH names a file that is missing or unreadable", "fix github_app.private_key_path in conductor-host.json");
+  } else add("cred:github-app-key", false, "neither HARMONY_APP_PRIVATE_KEY_PATH nor HARMONY_APP_PRIVATE_KEY is set", "set github_app.private_key_path in conductor-host.json");
+  if (s.profile === "gke") {
+    const ns = s.env.HARMONY_GKE_NAMESPACE || "harmony-legs";
+    const secret = s.env.HARMONY_GKE_BASE_SECRET || "harmony-worker-secrets";
+    const args = ["-n", ns, ...has(s.env.HARMONY_GKE_CONTEXT) ? ["--context", s.env.HARMONY_GKE_CONTEXT] : [], "get", "secret", secret];
+    const r = await deps.exec("kubectl", args, { env: s.env });
+    add("reach:gke-base-secret", r.code === 0, r.code === 0 ? `base Secret ${ns}/${secret} exists` : `kubectl cannot read base Secret ${ns}/${secret}`, "check the kubeconfig context, or run container/gke/setup-cluster.sh");
+  } else if (s.profile === "cloud") {
+    const job = s.env.HARMONY_CLOUD_RUN_JOB;
+    const region = s.env.HARMONY_CLOUD_RUN_REGION;
+    const project = s.env.CLOUDSDK_CORE_PROJECT || "harmony-conductor";
+    if (!has(job) || !has(region)) {
+      add("reach:cloud-run-job", false, `${[!has(job) ? "HARMONY_CLOUD_RUN_JOB" : "", !has(region) ? "HARMONY_CLOUD_RUN_REGION" : ""].filter(Boolean).join(", ")} not set`, "set cloud_run.job and gcp.region in the config files");
+    } else {
+      const r = await deps.exec("gcloud", ["run", "jobs", "describe", job, `--region=${region}`, `--project=${project}`, "--format=value(name)"], { env: s.env });
+      add("reach:cloud-run-job", r.code === 0, r.code === 0 ? `Cloud Run job ${job} exists` : `Cloud Run job ${job} (region ${region}, project ${project}) does not exist or is unreadable`, "check gcloud auth and the job name");
+    }
+  }
+  if (opts.pull && s.channel) {
+    const r = await deps.exec("git", ["-C", s.pluginDir, "rev-parse", "--abbrev-ref", "HEAD"]);
+    const branch = r.stdout.trim();
+    const ok = r.code === 0 && branch === s.channel;
+    add("channel-branch", ok, ok ? `${s.pluginDir} is on ${s.channel}` : r.code === 0 ? `${s.pluginDir} is on branch '${branch}', the config names channel '${s.channel}'` : `${s.pluginDir} is not a git checkout`, `git -C ${s.pluginDir} checkout ${s.channel}`);
+  }
+  if (opts.supervise === "local") {
+    if (deps.platform === "darwin") {
+      const r = await deps.exec("defaults", ["read", "/Library/Preferences/com.apple.loginwindow", "autoLoginUser"]);
+      if (r.code !== 0) warnings.push("macOS automatic login is off: a LaunchAgent starts at LOGIN, so after a reboot the conductor will not run until someone logs in. Turn on automatic login, or use `harmony conductor start --at-boot`.");
+    } else if (deps.platform === "linux") {
+      const r = await deps.exec("loginctl", ["show-user", deps.username, "-p", "Linger"]);
+      if (/Linger=no/.test(r.stdout)) warnings.push(`lingering is off for ${deps.username}: a systemd user unit starts at login, so after a reboot the conductor will not run until you log in. Run \`sudo loginctl enable-linger ${deps.username}\`.`);
+    }
+  }
+  return { checks, warnings, board, ok: checks.every((c) => c.ok) };
+}
+function formatChecks(checks) {
+  return checks.map((c) => `  [${c.ok ? "ok  " : "FAIL"}] ${c.name}: ${c.detail}${!c.ok && c.fix ? `. Fix: ${c.fix}` : ""}`);
+}
+var failedNames = (checks) => checks.filter((c) => !c.ok).map((c) => c.name);
+
+// src/cli/commands/conductor-kube.ts
+var KUBE_NAMESPACE = "harmony-conductor";
+var KUBE_DEPLOYMENT = "harmony-conductor";
+var KUBE_CONTAINER = "conductor";
+var ROLLOUT_TIMEOUT = "300s";
+var REMOTE_START_BUDGET_MS = 18e4;
+var REMOTE_START_POLL_MS = 5e3;
+var REMOTE_STOP_BUDGET_MS = 6e4;
+var firstLine = (s) => s.trim().split("\n")[0] ?? "";
+var VERSION_TAG = /^v?(\d+)\.(\d+)\.(\d+)$/;
+function compareVersionTags(a, b) {
+  const pa = VERSION_TAG.exec(a);
+  const pb = VERSION_TAG.exec(b);
+  if (!pa || !pb) return 0;
+  for (let i = 1; i <= 3; i++) {
+    const d = Number(pa[i]) - Number(pb[i]);
+    if (d !== 0) return d;
+  }
+  return 0;
+}
+function newestVersionTag(listJson, channel) {
+  let list;
+  try {
+    list = JSON.parse(listJson);
+  } catch {
+    throw new Error("the Artifact Registry tag listing was not valid JSON");
+  }
+  if (!Array.isArray(list)) throw new Error("the Artifact Registry tag listing was not a list");
+  const last = (v) => String(v ?? "").split("/").pop() ?? "";
+  const entries = list.map((e) => {
+    const o = e ?? {};
+    return { tag: last(o.tag ?? o.name), digest: last(o.version ?? o.digest) };
+  });
+  const channelEntry = entries.find((e) => e.tag === channel);
+  if (!channelEntry) throw new Error(`the channel tag "${channel}" does not exist on the conductor image`);
+  if (!channelEntry.digest) throw new Error(`the channel tag "${channel}" has no image digest in the listing`);
+  const versions = entries.filter((e) => e.digest === channelEntry.digest && VERSION_TAG.test(e.tag)).map((e) => e.tag);
+  if (versions.length === 0) {
+    throw new Error(`the image behind the channel tag "${channel}" carries no plugin version tag; refusing to deploy a moving tag`);
+  }
+  return versions.sort(compareVersionTags).at(-1);
+}
+function kubectl(deps, t, verb, extra = []) {
+  return deps.exec("kubectl", [...verb, ...extra, "-n", KUBE_NAMESPACE, ...t.context ? ["--context", t.context] : []], { env: t.env });
+}
+var deployment = `deployment/${KUBE_DEPLOYMENT}`;
+async function runKubeRestart(deps, opts, onLine) {
+  const out = new Out(onLine);
+  const requestId = opts.request;
+  const action = opts.noPull ? "restart" : "update";
+  const target = { env: deps.env };
+  const container = deps.env.HARMONY_CONDUCTOR_CONTAINER || KUBE_CONTAINER;
+  const versionBefore = pluginVersion(deps, deps.env.HARMONY_PLUGIN_DIR || deps.cliPluginDir);
+  const base = { remote_kube: true, action, plugin_version_before: versionBefore };
+  const fail2 = async (reason2, data2 = {}) => {
+    out.err(reason2);
+    const { line: line2, note: note2 } = await completeRequest(deps, void 0, requestId, "failed", reason2, { ...base, ...data2 });
+    out.line(line2);
+    return out.result(EXIT.failure, { ...base, ...data2, error: reason2, request: { id: requestId, result: "failed", completion: note2 } });
+  };
+  out.line(`Remote conductor: ${action} request ${requestId} \u2014 patching deployment ${KUBE_DEPLOYMENT} in namespace ${KUBE_NAMESPACE} (no git pull, no local restart).`);
+  const got = await kubectl(deps, target, ["get", deployment], ["-o", "json"]);
+  if (got.code === 127) return fail2("kubectl is not installed in this container; the Deployment was not changed");
+  if (got.code !== 0) return fail2(`could not read the Deployment: ${firstLine(got.stderr || got.stdout)}. The running conductor was left untouched.`);
+  let currentImage;
+  try {
+    const containers = JSON.parse(got.stdout).spec?.template?.spec?.containers ?? [];
+    currentImage = (containers.find((c) => c.name === container) ?? (containers.length === 1 ? containers[0] : void 0))?.image;
+  } catch {
+  }
+  if (!currentImage) return fail2(`the Deployment has no container named "${container}" (set HARMONY_CONDUCTOR_CONTAINER); it was not changed`);
+  out.line(`  current image: ${currentImage}`);
+  let newImage = null;
+  let versionAfter = versionBefore;
+  if (action === "update") {
+    const image = deps.env.HARMONY_CONDUCTOR_IMAGE;
+    const channel = channelFromPosture(deps.env.HARMONY_PLUGIN_POSTURE);
+    if (!image) return fail2("HARMONY_CONDUCTOR_IMAGE is not set (the Artifact Registry path of the conductor image); the Deployment was not changed");
+    if (!channel) return fail2(`cannot tell the update channel: HARMONY_PLUGIN_POSTURE is ${deps.env.HARMONY_PLUGIN_POSTURE ? `"${deps.env.HARMONY_PLUGIN_POSTURE}"` : "not set"}; the Deployment was not changed`);
+    const tags = await deps.exec("gcloud", ["artifacts", "docker", "tags", "list", image, "--format=json"], { env: deps.env });
+    if (tags.code !== 0) return fail2(`could not list the image tags of ${image}: ${tags.code === 127 ? "gcloud is not installed" : firstLine(tags.stderr || tags.stdout)}. The Deployment was not changed.`);
+    let version4;
+    try {
+      version4 = newestVersionTag(tags.stdout, channel);
+    } catch (err) {
+      return fail2(`${err instanceof Error ? err.message : String(err)}. The Deployment was not changed.`);
+    }
+    newImage = `${image}:${version4}`;
+    versionAfter = version4.replace(/^v/, "");
+    out.line(`  channel ${channel}: newest plugin version ${version4} -> ${newImage}`);
+  }
+  const data = { ...base, plugin_version_after: versionAfter, image: newImage ?? currentImage };
+  if (opts.dryRun) {
+    out.line("Dry run: nothing changed. A real run would:");
+    out.line(newImage ? `  - kubectl set image ${deployment} ${container}=${newImage} -n ${KUBE_NAMESPACE}` : `  - kubectl rollout restart ${deployment} -n ${KUBE_NAMESPACE}`);
+    out.line(`  - kubectl rollout status ${deployment} -n ${KUBE_NAMESPACE} --timeout=${ROLLOUT_TIMEOUT}`);
+    return out.result(EXIT.ok, { ...data, dry_run: true });
+  }
+  if (newImage && newImage === currentImage) {
+    out.line(`  the Deployment already runs ${newImage}; nothing to roll out.`);
+    const reason2 = `update: already at the channel's latest (plugin ${versionAfter}); nothing to roll out`;
+    const { line: line2, note: note2 } = await completeRequest(deps, void 0, requestId, "done", reason2, data);
+    out.line(line2);
+    return out.result(EXIT.ok, { ...data, restarted: false, request: { id: requestId, result: "done", completion: note2 } });
+  }
+  const patch = newImage ? await kubectl(deps, target, ["set", "image", deployment, `${container}=${newImage}`]) : await kubectl(deps, target, ["rollout", "restart", deployment]);
+  if (patch.code !== 0) return fail2(`${newImage ? "kubectl set image" : "kubectl rollout restart"} failed: ${firstLine(patch.stderr || patch.stdout)}. The running conductor was left untouched.`, data);
+  out.line(newImage ? `  set image ${container}=${newImage}` : "  rollout restart issued");
+  out.line(`  waiting for the rollout (up to ${ROLLOUT_TIMEOUT})`);
+  const status = await kubectl(deps, target, ["rollout", "status", deployment], [`--timeout=${ROLLOUT_TIMEOUT}`]);
+  if (status.code === 0) {
+    out.line("Rollout complete. The new pod completes the request once it holds the registry row.");
+    return out.result(EXIT.ok, { ...data, restarted: true, request: { id: requestId, result: "pending-new-pod" } });
+  }
+  out.line(`  rollout did not finish: ${firstLine(status.stderr || status.stdout)}`);
+  const undo = await kubectl(deps, target, ["rollout", "undo", deployment]);
+  let rollback;
+  if (undo.code !== 0) rollback = `rollback FAILED (${firstLine(undo.stderr || undo.stdout)}) \u2014 check the Deployment by hand`;
+  else {
+    const settled = await kubectl(deps, target, ["rollout", "status", deployment], [`--timeout=${ROLLOUT_TIMEOUT}`]);
+    rollback = settled.code === 0 ? "rolled back to the previous revision" : "rollback issued but has not settled yet";
+  }
+  out.line(`  ${rollback}`);
+  const reason = `${action} did not complete: the rollout missed its ${ROLLOUT_TIMEOUT} progress deadline (${firstLine(status.stderr || status.stdout) || `kubectl exit ${status.code}`}); ${rollback}`;
+  out.err(reason);
+  const { line, note } = await completeRequest(deps, void 0, requestId, "failed", reason, data);
+  out.line(line);
+  return out.result(EXIT.failure, { ...data, restarted: false, rolled_back: undo.code === 0, error: reason, request: { id: requestId, result: "failed", completion: note } });
+}
+var KUBECTL_MISSING = "kubectl is not installed on this machine";
+async function scale(deps, t, replicas) {
+  return kubectl(deps, t, ["scale", deployment], [`--replicas=${replicas}`]);
+}
+var timing = (env2) => {
+  const n = (k, d) => {
+    const v = Number(env2[k]);
+    return Number.isFinite(v) && v > 0 ? v : d;
+  };
+  return { budgetMs: n("HARMONY_SWITCH_TIMEOUT_S", REMOTE_START_BUDGET_MS / 1e3) * 1e3, pollMs: n("HARMONY_SWITCH_POLL_S", REMOTE_START_POLL_MS / 1e3) * 1e3, stopMs: n("HARMONY_SWITCH_STOP_TIMEOUT_S", REMOTE_STOP_BUDGET_MS / 1e3) * 1e3 };
+};
+var where = (context) => context ? `context ${context}` : "the current kubectl context";
+async function runStartRemote(deps, opts = {}, onLine) {
+  const out = new Out(onLine);
+  const s = await loadSettings(deps, { config: opts.config });
+  const target = { context: s.env.HARMONY_GKE_CONTEXT || void 0, env: s.env };
+  const t = timing(s.env);
+  const h = await openRegistry(deps, s);
+  if ("error" in h) {
+    out.err(`start --remote needs the registry to confirm the conductor: ${h.error}. Nothing was started.`);
+    return out.result(EXIT.failure, { error: out.errLines[0], started: false, remote: true });
+  }
+  const before = await h.client.status();
+  if (before.kind === "unavailable") {
+    out.err(`start --remote needs the conductor registry, and ${REGISTRY_ABSENT}. Nothing was started.`);
+    return out.result(EXIT.failure, { error: out.errLines[0], started: false, remote: true, registry: "unavailable" });
+  }
+  if (before.kind === "status" && before.status.state === "running" && before.status.location !== "remote") {
+    out.err(`a conductor is already running for this project (location ${before.status.location ?? "unknown"}${before.status.host ? `, host ${before.status.host}` : ""}); a remote conductor would only stand by. Stop it first (\`harmony conductor stop\`). Nothing was started.`);
+    return out.result(EXIT.failure, { error: out.errLines[0], started: false, remote: true, location: before.status.location });
+  }
+  out.line(`Scaling deployment ${KUBE_DEPLOYMENT} in namespace ${KUBE_NAMESPACE} to 1 replica (${where(target.context)}).`);
+  const r = await scale(deps, target, 1);
+  if (r.code !== 0) {
+    out.err(`${r.code === 127 ? KUBECTL_MISSING : `kubectl scale failed: ${firstLine(r.stderr || r.stdout)}`}. Nothing was started.${r.code === 127 ? "" : " If the Deployment does not exist yet, apply its manifest first."}`);
+    return out.result(EXIT.failure, { error: out.errLines[0], started: false, remote: true });
+  }
+  out.line(`Waiting up to ${t.budgetMs / 1e3}s for the conductor to register from the cluster.`);
+  const deadline = deps.now() + t.budgetMs;
+  let last;
+  for (; ; ) {
+    const st = await h.client.status();
+    if (st.kind === "status") {
+      const reg = st.status;
+      last = `registry ${reg.state}, location ${reg.location ?? "unknown"}`;
+      if (reg.state === "running" && reg.location === "remote") {
+        out.line("");
+        out.line(`Conductor started in the cluster: ${reg.host ?? "pod"}, plugin ${reg.plugin_version ?? "unknown"}, heartbeat ${ageText(reg.heartbeat_age_seconds)}.`);
+        return out.result(EXIT.ok, { started: true, remote: true, host: reg.host, plugin_version: reg.plugin_version, holder_id: reg.holder_id });
+      }
+    } else last = `status read failed (${st.detail})`;
+    if (deps.now() >= deadline) break;
+    await deps.sleep(t.pollMs);
+  }
+  out.err(`the remote conductor was NOT confirmed within ${t.budgetMs / 1e3}s (${last}). The Deployment is scaled to 1; see \`kubectl -n ${KUBE_NAMESPACE} get pods\` and \`harmony conductor logs --source cloud\`.`);
+  return out.result(EXIT.notAdopted, { error: out.errLines[0], started: false, remote: true });
+}
+async function runStopRemote(deps, opts = {}, onLine) {
+  const out = new Out(onLine);
+  const s = await loadSettings(deps, { config: opts.config });
+  const target = { context: s.env.HARMONY_GKE_CONTEXT || void 0, env: s.env };
+  const t = timing(s.env);
+  out.line(`Scaling deployment ${KUBE_DEPLOYMENT} in namespace ${KUBE_NAMESPACE} to 0 replicas (${where(target.context)}).`);
+  const r = await scale(deps, target, 0);
+  if (r.code !== 0) {
+    out.err(r.code === 127 ? `${KUBECTL_MISSING}. Nothing was stopped.` : `kubectl scale failed: ${firstLine(r.stderr || r.stdout)}. Nothing was stopped.`);
+    return out.result(EXIT.failure, { error: out.errLines[0], stopped: false, remote: true });
+  }
+  out.line("Running legs keep running as their own jobs; the next start adopts them.");
+  const h = await openRegistry(deps, s);
+  let released = null;
+  if (!("error" in h)) {
+    const deadline = deps.now() + t.stopMs;
+    for (; ; ) {
+      const st = await h.client.status();
+      if (st.kind !== "status") break;
+      released = !(st.status.state === "running" && st.status.location === "remote");
+      if (released || deps.now() >= deadline) break;
+      await deps.sleep(Math.min(t.pollMs, 2e3));
+    }
+  }
+  out.line(released === true ? "Conductor stopped: the registry row is released." : released === false ? `The pod was told to stop, but the registry still shows it within ${t.stopMs / 1e3}s; it releases the row as it terminates (\`harmony conductor status\`).` : "Conductor scaled to 0.");
+  return out.result(EXIT.ok, { stopped: true, remote: true, registry_released: released });
+}
+
 // src/cli/commands/conductor-lifecycle-deps.ts
 import { spawn } from "node:child_process";
-import { chmodSync as chmodSync2, closeSync, existsSync as existsSync2, mkdirSync as mkdirSync2, openSync, readFileSync as readFileSync5, readlinkSync, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "node:fs";
+import { chmodSync as chmodSync2, closeSync, existsSync as existsSync2, mkdirSync as mkdirSync2, openSync, readFileSync as readFileSync6, readlinkSync, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "node:fs";
 import { homedir as homedir3, hostname, userInfo } from "node:os";
 import { dirname as dirname3, resolve as resolve2 } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
@@ -44985,7 +45511,7 @@ function defaultLifecycleDeps() {
       }
     },
     existsSync: existsSync2,
-    readFileSync: (p) => readFileSync5(p, "utf8"),
+    readFileSync: (p) => readFileSync6(p, "utf8"),
     writeFileSync: (p, text, mode) => {
       writeFileSync2(p, text, { mode });
       chmodSync2(p, mode);
@@ -45020,182 +45546,11 @@ function defaultLifecycleDeps() {
   };
 }
 
-// src/cli/commands/conductor-preflight.ts
-import { join as join6 } from "node:path";
-var SHELL_NOISE = /* @__PURE__ */ new Set(["_", "SHLVL", "PWD", "OLDPWD"]);
-async function sourceEnvFile(deps, file) {
-  const script = `set -a; . "$1" >/dev/null 2>&1 || exit 97; exec node -e 'process.stdout.write(JSON.stringify(process.env))'`;
-  const r = await deps.exec("bash", ["-c", script, "_", file]);
-  if (r.code !== 0) return { error: `env file could not be loaded: ${file}` };
-  try {
-    return { env: JSON.parse(r.stdout) };
-  } catch {
-    return { error: `env file could not be loaded: ${file}` };
-  }
-}
-async function loadSettings(deps, opts = {}) {
-  const paths = resolveConductorPaths(deps.env);
-  const envPath = join6(paths.home, "conductor.env");
-  const legacyPath = join6(paths.home, "daemon.env");
-  let envFile = null;
-  const fileEnv = {};
-  let envFileError;
-  const chosen = deps.existsSync(envPath) ? { path: envPath, legacy: false } : deps.existsSync(legacyPath) ? { path: legacyPath, legacy: true } : null;
-  if (chosen) {
-    const r = await sourceEnvFile(deps, chosen.path);
-    envFile = chosen;
-    if ("env" in r) {
-      for (const [k, v] of Object.entries(r.env)) if (deps.env[k] !== v && !SHELL_NOISE.has(k)) fileEnv[k] = v;
-    } else envFileError = r.error;
-  }
-  const evalEnv = { ...deps.env, ...fileEnv };
-  let merged = null;
-  const configIssues = [];
-  try {
-    const ev = evaluateConductorConfig({
-      env: evalEnv,
-      existsSync: deps.existsSync,
-      readFileSync: deps.readFileSync,
-      warn: () => {
-      },
-      loadLegacy: () => loadLegacyDeploymentConfig({ configPath: opts.config, env: evalEnv, existsSync: deps.existsSync, readFileSync: deps.readFileSync })
-    });
-    if (ev) {
-      merged = ev.merged;
-      for (const i of ev.issues) configIssues.push(`${i.file} \u203A ${i.key}: ${i.problem}`);
-    }
-  } catch (err) {
-    configIssues.push(err instanceof Error ? err.message : String(err));
-  }
-  const launchEnv = merged && configIssues.length === 0 ? launchEnvFromMerged(merged) : {};
-  const env2 = { ...launchEnv, ...deps.env, ...fileEnv };
-  return {
-    env: env2,
-    paths,
-    envFile,
-    envFileError,
-    merged,
-    configIssues,
-    pluginDir: env2.HARMONY_PLUGIN_DIR || deps.cliPluginDir,
-    channel: merged?.channel,
-    profile: opts.profile ?? merged?.profile,
-    deploymentConfig: opts.config
-  };
-}
-var has = (v) => v !== void 0 && v !== "";
-async function haveTool(deps, tool) {
-  return (await deps.exec("sh", ["-c", 'command -v "$1"', "_", tool])).code === 0;
-}
-async function runPreflight(deps, s, opts = {}) {
-  const checks = [];
-  const warnings = [];
-  const add = (name, ok, detail, fix) => checks.push({ name, ok, detail, fix });
-  if (s.envFileError) add("env-file", false, s.envFileError, `repair ${s.envFile?.path}`);
-  else if (s.envFile) add("env-file", true, `loaded ${s.envFile.path} (values not shown)${s.envFile.legacy ? " \u2014 legacy name, rename it to conductor.env" : ""}`);
-  else add("env-file", true, "no conductor.env: using this shell's environment only");
-  const doctor = runDoctor(
-    { env: s.env, existsSync: deps.existsSync, readFileSync: deps.readFileSync },
-    { config: s.deploymentConfig }
-  );
-  const issueLines = doctor.data.issues.map((i) => i.text);
-  add("config", doctor.exitCode === 0, doctor.exitCode === 0 ? "harmony conductor config doctor: ok" : `${issueLines.length} issue(s): ${issueLines.slice(0, 3).join(" | ")}`, "run `harmony conductor config doctor` and fix what it lists");
-  const tools = ["git", "node"];
-  if (s.profile === "gke") tools.push("kubectl");
-  else if (s.profile === "cloud") tools.push("gcloud");
-  else if (s.profile) tools.push("kubectl", "gcloud");
-  for (const t of tools) {
-    const ok = await haveTool(deps, t);
-    add(`tool:${t}`, ok, ok ? `${t} found on PATH` : `${t} is not on PATH`, `install ${t} or fix PATH`);
-  }
-  if (!s.profile) add("profile", true, "profile not determined (no config file names one and none was passed): only generic tools were checked");
-  const tokenOk = has(s.env.HARMONY_API_TOKEN);
-  add("cred:HARMONY_API_TOKEN", tokenOk, tokenOk ? "present" : "not set", "put HARMONY_API_TOKEN in ~/.harmony/conductor.env");
-  let board = null;
-  if (tokenOk) {
-    try {
-      board = await deps.readBoard(s.env);
-      add("cred:board", true, "the board is readable with HARMONY_API_TOKEN");
-    } catch (err) {
-      add("cred:board", false, `the board could not be read: ${err instanceof Error ? err.message : String(err)}`, "check HARMONY_API_TOKEN and the network");
-    }
-  } else add("cred:board", false, "not attempted: HARMONY_API_TOKEN is not set");
-  const keyPath = s.env.HARMONY_APP_PRIVATE_KEY_PATH;
-  if (has(s.env.HARMONY_APP_PRIVATE_KEY)) add("cred:github-app-key", true, "HARMONY_APP_PRIVATE_KEY present");
-  else if (has(keyPath)) {
-    const readable = (() => {
-      try {
-        deps.readFileSync(keyPath);
-        return true;
-      } catch {
-        return false;
-      }
-    })();
-    add("cred:github-app-key", readable, readable ? "HARMONY_APP_PRIVATE_KEY_PATH points at a readable file" : "HARMONY_APP_PRIVATE_KEY_PATH names a file that is missing or unreadable", "fix github_app.private_key_path in conductor-host.json");
-  } else add("cred:github-app-key", false, "neither HARMONY_APP_PRIVATE_KEY_PATH nor HARMONY_APP_PRIVATE_KEY is set", "set github_app.private_key_path in conductor-host.json");
-  if (s.profile === "gke") {
-    const ns = s.env.HARMONY_GKE_NAMESPACE || "harmony-legs";
-    const secret = s.env.HARMONY_GKE_BASE_SECRET || "harmony-worker-secrets";
-    const args = ["-n", ns, ...has(s.env.HARMONY_GKE_CONTEXT) ? ["--context", s.env.HARMONY_GKE_CONTEXT] : [], "get", "secret", secret];
-    const r = await deps.exec("kubectl", args, { env: s.env });
-    add("reach:gke-base-secret", r.code === 0, r.code === 0 ? `base Secret ${ns}/${secret} exists` : `kubectl cannot read base Secret ${ns}/${secret}`, "check the kubeconfig context, or run container/gke/setup-cluster.sh");
-  } else if (s.profile === "cloud") {
-    const job = s.env.HARMONY_CLOUD_RUN_JOB;
-    const region = s.env.HARMONY_CLOUD_RUN_REGION;
-    const project = s.env.CLOUDSDK_CORE_PROJECT || "harmony-conductor";
-    if (!has(job) || !has(region)) {
-      add("reach:cloud-run-job", false, `${[!has(job) ? "HARMONY_CLOUD_RUN_JOB" : "", !has(region) ? "HARMONY_CLOUD_RUN_REGION" : ""].filter(Boolean).join(", ")} not set`, "set cloud_run.job and gcp.region in the config files");
-    } else {
-      const r = await deps.exec("gcloud", ["run", "jobs", "describe", job, `--region=${region}`, `--project=${project}`, "--format=value(name)"], { env: s.env });
-      add("reach:cloud-run-job", r.code === 0, r.code === 0 ? `Cloud Run job ${job} exists` : `Cloud Run job ${job} (region ${region}, project ${project}) does not exist or is unreadable`, "check gcloud auth and the job name");
-    }
-  }
-  if (opts.pull && s.channel) {
-    const r = await deps.exec("git", ["-C", s.pluginDir, "rev-parse", "--abbrev-ref", "HEAD"]);
-    const branch = r.stdout.trim();
-    const ok = r.code === 0 && branch === s.channel;
-    add("channel-branch", ok, ok ? `${s.pluginDir} is on ${s.channel}` : r.code === 0 ? `${s.pluginDir} is on branch '${branch}', the config names channel '${s.channel}'` : `${s.pluginDir} is not a git checkout`, `git -C ${s.pluginDir} checkout ${s.channel}`);
-  }
-  if (opts.supervise === "local") {
-    if (deps.platform === "darwin") {
-      const r = await deps.exec("defaults", ["read", "/Library/Preferences/com.apple.loginwindow", "autoLoginUser"]);
-      if (r.code !== 0) warnings.push("macOS automatic login is off: a LaunchAgent starts at LOGIN, so after a reboot the conductor will not run until someone logs in. Turn on automatic login, or use `harmony conductor start --at-boot`.");
-    } else if (deps.platform === "linux") {
-      const r = await deps.exec("loginctl", ["show-user", deps.username, "-p", "Linger"]);
-      if (/Linger=no/.test(r.stdout)) warnings.push(`lingering is off for ${deps.username}: a systemd user unit starts at login, so after a reboot the conductor will not run until you log in. Run \`sudo loginctl enable-linger ${deps.username}\`.`);
-    }
-  }
-  return { checks, warnings, board, ok: checks.every((c) => c.ok) };
-}
-function formatChecks(checks) {
-  return checks.map((c) => `  [${c.ok ? "ok  " : "FAIL"}] ${c.name}: ${c.detail}${!c.ok && c.fix ? `. Fix: ${c.fix}` : ""}`);
-}
-var failedNames = (checks) => checks.filter((c) => !c.ok).map((c) => c.name);
-
 // src/cli/commands/conductor-lifecycle.ts
-var EXIT = { ok: 0, failure: 1, usage: 2, inFlight: 3, notAdopted: 4 };
 var REMOTE_RESTART_BUDGET_MS = 9e4;
 var REMOTE_RESTART_POLL_MS = 2e3;
-var REGISTRY_ABSENT = "registry not deployed on this project";
 var LAUNCHD_TEMPLATE = "container/launchd/com.ycomplex.harmony-conductor.plist.template";
 var SYSTEMD_TEMPLATE = "container/systemd/harmony-conductor.service.template";
-var Out = class {
-  constructor(onLine) {
-    this.onLine = onLine;
-  }
-  onLine;
-  lines = [];
-  errLines = [];
-  line(s = "") {
-    this.lines.push(s);
-    this.onLine?.(s);
-  }
-  err(s) {
-    this.errLines.push(s);
-  }
-  result(exitCode, data) {
-    return { exitCode, lines: this.lines, errLines: this.errLines, data: { ok: exitCode === 0, exit_code: exitCode, ...data } };
-  }
-};
 function timingFromEnv(env2) {
   const n = (k, d) => {
     const v = Number(env2[k]);
@@ -45208,7 +45563,7 @@ function timingFromEnv(env2) {
     freshMs: n("HARMONY_SWITCH_FRESH_S", 120) * 1e3
   };
 }
-var logPathOf = (s) => join7(s.paths.home, "conductor.out.log");
+var logPathOf = (s) => join8(s.paths.home, "conductor.out.log");
 async function findConductors(deps, s) {
   const procs = await deps.listProcesses();
   const cwdByPid = /* @__PURE__ */ new Map();
@@ -45217,14 +45572,6 @@ async function findConductors(deps, s) {
     if (cwd) cwdByPid.set(pid, cwd);
   }
   return matchConductors(procs, { pluginDir: s.pluginDir, configPath: s.deploymentConfig, cwdByPid });
-}
-function pluginVersion(deps, pluginDir) {
-  try {
-    const v = JSON.parse(deps.readFileSync(join7(pluginDir, ".claude-plugin", "plugin.json"))).version;
-    return v || "unknown";
-  } catch {
-    return "unknown";
-  }
 }
 async function waitForExit(deps, pids, timeoutMs) {
   const deadline = deps.now() + timeoutMs;
@@ -45259,18 +45606,9 @@ async function safeBoard(deps, s) {
     return { rows: null, error: err instanceof Error ? err.message : String(err) };
   }
 }
-async function openRegistry(deps, s) {
-  if (!s.env.HARMONY_API_TOKEN) return { error: "HARMONY_API_TOKEN is not set" };
-  try {
-    return { client: await deps.registryClient(s.env) };
-  } catch (err) {
-    return { error: err instanceof Error ? err.message : String(err) };
-  }
-}
-var ageText = (sec) => sec === null ? "unknown" : `${Math.round(sec)}s ago`;
 function registryLines(st) {
   if (st.state === "not_running") return ["Registry: no conductor is registered for this project."];
-  const lines = [st.state === "running" ? "Registry: a conductor is running elsewhere" : "Registry: a conductor is registered but its heartbeat is STALE (it may have died)"];
+  const lines = [st.state === "running" ? st.location === "remote" ? "Registry: the conductor is running remotely, in the cluster (a Kubernetes pod)" : "Registry: a conductor is running elsewhere" : "Registry: a conductor is registered but its heartbeat is STALE (it may have died)"];
   lines.push(`  host:            ${st.host ?? "(hidden: only the project owner sees the host)"}`);
   lines.push(`  location:        ${st.location ?? "unknown"}`);
   lines.push(`  profile:         ${st.profile ?? "unknown"}`);
@@ -45290,7 +45628,7 @@ async function remoteStatus(deps, s) {
 async function runStatus(deps, opts = {}, onLine) {
   const out = new Out(onLine);
   const s = await loadSettings(deps, { config: opts.config });
-  const timing = timingFromEnv(s.env);
+  const timing2 = timingFromEnv(s.env);
   const host = deps.hostname();
   const procs = await findConductors(deps, s);
   const sup = await detectSupervisorState({ platform: deps.platform, uid: deps.uid, home: deps.home, exec: (f, a) => deps.exec(f, a), existsSync: deps.existsSync });
@@ -45311,7 +45649,7 @@ async function runStatus(deps, opts = {}, onLine) {
     }
     const remoteState = "available" in registryData && registryData.available === true ? registryData.state : null;
     if (sup.kind !== "none" && sup.active) out.line(`A supervisor job is loaded (${describeSupervisor(sup)}) but no conductor process is running; it may be starting or crash-looping.`);
-    const orphans = board.rows ? classifyLeases(board.rows, host, null, timing.freshMs, nowMs).filter((l) => l.owner === "previous-process") : [];
+    const orphans = board.rows ? classifyLeases(board.rows, host, null, timing2.freshMs, nowMs).filter((l) => l.owner === "previous-process") : [];
     if (orphans.length > 0) {
       out.line("");
       out.line(`Conductor stopped; ${orphans.length} leg(s) still running as their own jobs (the next \`harmony conductor start\` adopts them):`);
@@ -45332,7 +45670,7 @@ async function runStatus(deps, opts = {}, onLine) {
   const primary = procs[0];
   const version4 = pluginVersion(deps, s.pluginDir);
   const profile = primary.profile ?? s.profile ?? "unknown (the config file names none)";
-  const leases = board.rows ? classifyLeases(board.rows, host, primary.pid, timing.freshMs, nowMs) : [];
+  const leases = board.rows ? classifyLeases(board.rows, host, primary.pid, timing2.freshMs, nowMs) : [];
   const mine = leases.filter((l) => l.owner === "this-conductor");
   const earlier = leases.filter((l) => l.owner === "previous-process");
   const stale = mine.filter((l) => !l.fresh);
@@ -45382,9 +45720,10 @@ async function runStatus(deps, opts = {}, onLine) {
   });
 }
 async function runStop(deps, opts = {}, onLine) {
+  if (opts.remote) return runStopRemote(deps, { config: opts.config }, onLine);
   const out = new Out(onLine);
   const s = await loadSettings(deps, { config: opts.config });
-  const timing = timingFromEnv(s.env);
+  const timing2 = timingFromEnv(s.env);
   const procs = await findConductors(deps, s);
   const sup = await detectSupervisorState({ platform: deps.platform, uid: deps.uid, home: deps.home, exec: (f, a) => deps.exec(f, a), existsSync: deps.existsSync });
   if (procs.length === 0 && !sup.active) {
@@ -45402,14 +45741,14 @@ async function runStop(deps, opts = {}, onLine) {
   } else if (!await runSupervisorCommands(deps, stopCommands(sup.kind, deps.uid), out)) {
     return out.result(EXIT.failure, { state: "unknown", error: out.errLines[0], supervisor: sup.kind });
   }
-  const left = await waitForExit(deps, pids, timing.stopTimeoutMs);
+  const left = await waitForExit(deps, pids, timing2.stopTimeoutMs);
   if (left.length > 0) {
-    out.err(`conductor pid ${left.join(", ")} did not exit within ${timing.stopTimeoutMs / 1e3}s after the stop \u2014 it is still running`);
+    out.err(`conductor pid ${left.join(", ")} did not exit within ${timing2.stopTimeoutMs / 1e3}s after the stop \u2014 it is still running`);
     return out.result(EXIT.failure, { state: "running", still_running: left, supervisor: sup.kind });
   }
   out.line("Conductor stopped.");
   const board = await safeBoard(deps, s);
-  const legs = board.rows ? classifyLeases(board.rows, deps.hostname(), null, timing.freshMs, deps.now()).filter((l) => l.owner === "previous-process") : [];
+  const legs = board.rows ? classifyLeases(board.rows, deps.hostname(), null, timing2.freshMs, deps.now()).filter((l) => l.owner === "previous-process") : [];
   if (legs.length > 0) {
     out.line(`${legs.length} leg(s) still running as their own jobs; the next \`harmony conductor start\` adopts them:`);
     for (const l of legs) out.line(`  - ${l.ticket}  conduction ${l.id}`);
@@ -45429,10 +45768,7 @@ async function runStart(deps, opts = {}, onLine) {
     out.err("--local, --at-boot and --remote are mutually exclusive");
     return out.result(EXIT.usage, { error: out.errLines[0] });
   }
-  if (opts.remote) {
-    out.err("--remote is not available yet: starting a conductor on another machine arrives with B-1173. Nothing was started.");
-    return out.result(EXIT.usage, { error: out.errLines[0], started: false });
-  }
+  if (opts.remote) return runStartRemote(deps, { config: opts.config }, onLine);
   const mode = opts.atBoot ? "at-boot" : "local";
   if (mode === "at-boot" && deps.platform !== "darwin") {
     out.err("--at-boot is macOS only (a LaunchDaemon). On Linux use --local and enable lingering: sudo loginctl enable-linger $USER");
@@ -45471,11 +45807,11 @@ async function runStart(deps, opts = {}, onLine) {
   try {
     deps.mkdirSync(dirname4(logPath));
     if (deps.platform === "darwin") {
-      const template = deps.readFileSync(join7(s.pluginDir, LAUNCHD_TEMPLATE));
+      const template = deps.readFileSync(join8(s.pluginDir, LAUNCHD_TEMPLATE));
       if (mode === "at-boot") {
         kind = "launchd-daemon";
         unitPath = daemonPlistPath();
-        const staged = join7(s.paths.home, "conductor-launchd.plist.staged");
+        const staged = join8(s.paths.home, "conductor-launchd.plist.staged");
         deps.writeFileSync(staged, renderLaunchdPlist(template, { ...renderOpts, userName: deps.username }), 420);
         cmds = installCommands(kind, deps.uid, { agentPlist: unitPath, staged });
         out.line(`Installing a LaunchDaemon (${unitPath}) that starts at boot as ${deps.username}; sudo will ask for your password once.`);
@@ -45488,7 +45824,7 @@ async function runStart(deps, opts = {}, onLine) {
         out.line(`Installed the LaunchAgent ${unitPath}.`);
       }
     } else {
-      const template = deps.readFileSync(join7(s.pluginDir, SYSTEMD_TEMPLATE));
+      const template = deps.readFileSync(join8(s.pluginDir, SYSTEMD_TEMPLATE));
       kind = "systemd-user";
       unitPath = systemdUnitPath(deps.home);
       deps.mkdirSync(dirname4(unitPath));
@@ -45503,7 +45839,7 @@ async function runStart(deps, opts = {}, onLine) {
   if (!await runSupervisorCommands(deps, cmds, out)) {
     return out.result(EXIT.failure, { error: out.errLines[0], started: false, supervisor: kind });
   }
-  if (mode === "at-boot") deps.rmSync(join7(s.paths.home, "conductor-launchd.plist.staged"));
+  if (mode === "at-boot") deps.rmSync(join8(s.paths.home, "conductor-launchd.plist.staged"));
   const deadline = deps.now() + 3e4;
   let started = [];
   while (deps.now() < deadline) {
@@ -45555,6 +45891,7 @@ async function legsInFlight(deps, s, backend, board) {
   }
 }
 async function runRestart(deps, opts = {}, onLine) {
+  if (opts.request && isRemoteConductor(deps.env)) return runKubeRestart(deps, opts, onLine);
   const ctx = {};
   const requestId = opts.request;
   let result;
@@ -45573,23 +45910,6 @@ async function runRestart(deps, opts = {}, onLine) {
     result.data.request = { id: requestId, result: ok ? "done" : "failed", completion: note };
   }
   return result;
-}
-async function completeRequest(deps, s, requestId, result, reason, data) {
-  let note;
-  try {
-    const client = await deps.registryClient(s?.env ?? deps.env);
-    const r = await client.completeRequest(`restart-cli@${deps.hostname()}`, {
-      requestId,
-      result,
-      reason: reason ? reason.slice(0, 500) : null,
-      versionBefore: typeof data.plugin_version_before === "string" ? data.plugin_version_before : null,
-      versionAfter: typeof data.plugin_version_after === "string" ? data.plugin_version_after : null
-    });
-    note = r.kind === "ok" ? "ok" : r.kind === "refused" ? `refused (${r.reason ?? "no reason"})` : `${r.kind} (${r.detail})`;
-  } catch (err) {
-    note = `error (${err instanceof Error ? err.message : String(err)})`;
-  }
-  return { note, line: `Registry request ${requestId} completed as ${result}: ${note}` };
 }
 async function restartRemote(deps, s, opts, out) {
   const action = opts.noPull ? "restart" : "update";
@@ -45654,7 +45974,7 @@ async function restartLocal(deps, opts, onLine, ctx) {
   const out = new Out(onLine);
   const s = await loadSettings(deps, { profile: opts.profile, config: opts.config });
   ctx.settings = s;
-  const timing = timingFromEnv(s.env);
+  const timing2 = timingFromEnv(s.env);
   const host = deps.hostname();
   const procs = await findConductors(deps, s);
   const sup = await detectSupervisorState({ platform: deps.platform, uid: deps.uid, home: deps.home, exec: (f, a) => deps.exec(f, a), existsSync: deps.existsSync });
@@ -45714,8 +46034,8 @@ async function restartLocal(deps, opts, onLine, ctx) {
     out.line("Dry run: nothing changed. A real run would:");
     out.line(s.channel && !opts.noPull ? `  - pull channel '${s.channel}' (git -C ${s.pluginDir} pull --ff-only origin ${s.channel}); plugin is ${versionBefore} now` : opts.noPull ? "  - skip the pull (--no-pull)" : "  - skip the pull (no channel is configured)");
     if (supervised) for (const c of cmds) out.line(`  - ${c.file} ${c.args.join(" ")}`);
-    else out.line(`  - SIGTERM pid ${old?.pid}, wait up to ${timing.stopTimeoutMs / 1e3}s, then nohup bash ${launcherPath(s.pluginDir)} ${launchArgs.join(" ")}`.trimEnd());
-    out.line(`  - confirm from the board within ${timing.timeoutMs / 1e3}s that every held conduction is leased by the new conductor with a heartbeat under ${timing.freshMs / 1e3}s old`);
+    else out.line(`  - SIGTERM pid ${old?.pid}, wait up to ${timing2.stopTimeoutMs / 1e3}s, then nohup bash ${launcherPath(s.pluginDir)} ${launchArgs.join(" ")}`.trimEnd());
+    out.line(`  - confirm from the board within ${timing2.timeoutMs / 1e3}s that every held conduction is leased by the new conductor with a heartbeat under ${timing2.freshMs / 1e3}s old`);
     return out.result(EXIT.ok, { dry_run: true, held: held.map((h) => ({ ticket: h.ticket, conduction: h.id })), plugin_version: versionBefore, signalled: false });
   }
   out.line("3. Update the plugin checkout");
@@ -45728,8 +46048,8 @@ async function restartLocal(deps, opts, onLine, ctx) {
       return out.result(EXIT.failure, { error: out.errLines[0], signalled: false, plugin_version_before: versionBefore });
     }
     versionAfter = pluginVersion(deps, s.pluginDir);
-    if (!deps.existsSync(join7(s.pluginDir, "dist", "bin", "daemon.js"))) {
-      out.err(`after the pull ${join7(s.pluginDir, "dist", "bin", "daemon.js")} does not exist \u2014 the channel branch carries no built bundle. The running conductor was left untouched.`);
+    if (!deps.existsSync(join8(s.pluginDir, "dist", "bin", "daemon.js"))) {
+      out.err(`after the pull ${join8(s.pluginDir, "dist", "bin", "daemon.js")} does not exist \u2014 the channel branch carries no built bundle. The running conductor was left untouched.`);
       return out.result(EXIT.failure, { error: out.errLines[0], signalled: false, plugin_version_before: versionBefore });
     }
     out.line(versionAfter === versionBefore ? `  plugin ${versionBefore} (already the channel's latest)` : `  plugin ${versionBefore} -> ${versionAfter}`);
@@ -45749,9 +46069,9 @@ async function restartLocal(deps, opts, onLine, ctx) {
         return out.result(EXIT.failure, { error: out.errLines[0], signalled: false });
       }
     }
-    const left = await waitForExit(deps, oldPids, timing.stopTimeoutMs);
+    const left = await waitForExit(deps, oldPids, timing2.stopTimeoutMs);
     if (left.length > 0) {
-      out.err(`conductor pid ${left.join(", ")} did not exit within ${timing.stopTimeoutMs / 1e3}s after SIGTERM \u2014 it was NOT restarted; it is still running`);
+      out.err(`conductor pid ${left.join(", ")} did not exit within ${timing2.stopTimeoutMs / 1e3}s after SIGTERM \u2014 it was NOT restarted; it is still running`);
       return out.result(EXIT.failure, { error: out.errLines[0], signalled: true });
     }
     out.line("  old conductor exited");
@@ -45759,21 +46079,21 @@ async function restartLocal(deps, opts, onLine, ctx) {
     out.line(`  started conductor pid ${startedPid} (log ${logPathOf(s)})`);
   }
   let newPid = startedPid;
-  const findDeadline = deps.now() + timing.timeoutMs;
+  const findDeadline = deps.now() + timing2.timeoutMs;
   while (newPid === null) {
     const now = (await findConductors(deps, s)).filter((p) => !oldPids.includes(p.pid));
     if (now.length > 0) newPid = now[0].pid;
     else if (deps.now() >= findDeadline) break;
-    else await deps.sleep(Math.min(timing.pollMs, 1e3));
+    else await deps.sleep(Math.min(timing2.pollMs, 1e3));
   }
   if (newPid === null) {
-    out.err(`no new conductor process appeared within ${timing.timeoutMs / 1e3}s \u2014 see ${logPathOf(s)}`);
+    out.err(`no new conductor process appeared within ${timing2.timeoutMs / 1e3}s \u2014 see ${logPathOf(s)}`);
     return out.result(EXIT.notAdopted, { error: out.errLines[0], plugin_version_before: versionBefore, plugin_version_after: versionAfter });
   }
   out.line(`  new conductor pid ${newPid}`);
-  out.line(`5. Confirm adoption (board, up to ${timing.timeoutMs / 1e3}s)`);
+  out.line(`5. Confirm adoption (board, up to ${timing2.timeoutMs / 1e3}s)`);
   const newPrefix = holderPrefix(host, newPid);
-  const deadline = deps.now() + timing.timeoutMs;
+  const deadline = deps.now() + timing2.timeoutMs;
   let pending = held.map((h) => h.id);
   const labelOf = (id) => held.find((h) => h.id === id)?.ticket ?? "?";
   const adopted = [];
@@ -45787,7 +46107,7 @@ async function restartLocal(deps, opts, onLine, ctx) {
       const rows = await deps.readBoard(s.env).catch(() => null);
       const stillPending = [];
       for (const id of pending) {
-        const st = rows ? adoptionState(rows, id, newPrefix, timing.freshMs, deps.now()) : { state: "wait", why: "board unreadable" };
+        const st = rows ? adoptionState(rows, id, newPrefix, timing2.freshMs, deps.now()) : { state: "wait", why: "board unreadable" };
         if (st.state === "ok") {
           adopted.push(id);
           out.line(`  adopted: ${labelOf(id)}  conduction ${id}`);
@@ -45801,12 +46121,12 @@ async function restartLocal(deps, opts, onLine, ctx) {
     }
     if (pending.length === 0) break;
     if (deps.now() >= deadline) {
-      out.err(`adoption NOT confirmed within ${timing.timeoutMs / 1e3}s for:`);
+      out.err(`adoption NOT confirmed within ${timing2.timeoutMs / 1e3}s for:`);
       for (const r of reasons) out.err(r);
       out.err(`New conductor pid ${newPid}, log ${logPathOf(s)}.`);
       return out.result(EXIT.notAdopted, { error: "adoption not confirmed", new_pid: newPid, pending, plugin_version_before: versionBefore, plugin_version_after: versionAfter });
     }
-    await deps.sleep(timing.pollMs);
+    await deps.sleep(timing2.pollMs);
   }
   out.line("");
   out.line(`Restarted: conductor pid ${newPid}; plugin ${versionBefore === versionAfter ? versionAfter : `${versionBefore} -> ${versionAfter}`}; ${held.length === 0 ? "it held no conductions" : "all held conductions confirmed on the board"}.`);
@@ -45825,12 +46145,12 @@ async function emitLive(program3, run) {
   if (result.exitCode !== 0) process.exit(result.exitCode);
 }
 function registerConductorLifecycleCommands(program3, conductor, makeDeps = defaultLifecycleDeps) {
-  conductor.command("start").description("Start this project's conductor on this machine and keep it running (refuses if one already runs here)").option("--local", "Install and load a supervisor job that survives reboot (LaunchAgent on macOS, systemd user unit on Linux) [default]", false).option("--at-boot", "macOS only: install a LaunchDaemon (needs sudo once) that starts at boot as this user", false).option("--remote", "Start on another machine (not available yet)", false).option("--profile <name>", "Launch profile to pass to the conductor (default: the config files')").option("--config <path>", "Explicit deployment.json path to pass to the conductor").action(
+  conductor.command("start").description("Start this project's conductor on this machine and keep it running (refuses if one already runs here)").option("--local", "Install and load a supervisor job that survives reboot (LaunchAgent on macOS, systemd user unit on Linux) [default]", false).option("--at-boot", "macOS only: install a LaunchDaemon (needs sudo once) that starts at boot as this user", false).option("--remote", "Start the conductor in the GKE cluster: scale the harmony-conductor Deployment to 1 with your own kubectl credentials (context from HARMONY_GKE_CONTEXT), then wait for it to register", false).option("--profile <name>", "Launch profile to pass to the conductor (default: the config files')").option("--config <path>", "Explicit deployment.json path to pass to the conductor").action(
     (o) => emitLive(program3, (on) => runStart(makeDeps(), o, on))
   );
-  conductor.command("stop").description("Stop new launches. Running legs keep running as their own jobs; the next start adopts them").option("--config <path>", "Explicit deployment.json path the conductor was started with").action((o) => emitLive(program3, (on) => runStop(makeDeps(), o, on)));
+  conductor.command("stop").description("Stop new launches. Running legs keep running as their own jobs; the next start adopts them").option("--remote", "Stop the conductor in the GKE cluster: scale the harmony-conductor Deployment to 0 with your own kubectl credentials. Running legs carry on", false).option("--config <path>", "Explicit deployment.json path the conductor was started with").action((o) => emitLive(program3, (on) => runStop(makeDeps(), o, on)));
   conductor.command("restart").description("Update and restart: pull the configured channel (fast-forward only), stop, start, and confirm adoption from the board. With no conductor on this machine, asks the registry to restart the one elsewhere").option("--profile <name>", "Launch profile to restart under (unsupervised conductors only; a supervised one follows the config files)").option("--config <path>", "Explicit deployment.json path").option("--dry-run", "Run pre-flight and the in-flight guard, print the plan, change nothing", false).option("--force", "Skip the in-flight guard. LAST RESORT: a leg may end up running twice", false).option("--no-pull", "Restart onto the version already on disk; do not pull the channel (a remote request is then a plain restart)").option("--request <id>", "Registry request id (used by a conductor that spawned this restart): completed done/failed when the restart ends").action((o) => emitLive(program3, (on) => runRestart(makeDeps(), { ...o, noPull: o.pull === false }, on)));
-  conductor.command("status").description("Where the conductor runs, its profile, plugin version, last heartbeat, running legs and supervisor").option("--config <path>", "Explicit deployment.json path the conductor was started with").action((o) => emitLive(program3, (on) => runStatus(makeDeps(), o, on)));
+  conductor.command("status").description("Where the conductor runs (here, elsewhere, or remotely in the cluster), its profile, plugin version, last heartbeat, running legs and supervisor").option("--config <path>", "Explicit deployment.json path the conductor was started with").action((o) => emitLive(program3, (on) => runStatus(makeDeps(), o, on)));
 }
 
 // src/cli/commands/conductor-config.ts
@@ -45900,13 +46220,13 @@ async function runSync(deps) {
     now: deps.now
   });
   const snap = readSnapshot(paths.snapshotFile);
-  const where = `${target.repo}@${target.ref}`;
+  const where2 = `${target.repo}@${target.ref}`;
   const lines = [];
   const outcomeLine = {
-    updated: `updated: snapshot ${paths.snapshotFile} now holds ${where} (sha ${snap?.sha ?? "unknown"})`,
-    unchanged: `unchanged: ${where} matches the snapshot ${paths.snapshotFile}`,
-    "kept-last-good": `kept-last-good: ${where} is invalid, the previous snapshot stays in force`,
-    unreachable: `unreachable: could not read ${where}`
+    updated: `updated: snapshot ${paths.snapshotFile} now holds ${where2} (sha ${snap?.sha ?? "unknown"})`,
+    unchanged: `unchanged: ${where2} matches the snapshot ${paths.snapshotFile}`,
+    "kept-last-good": `kept-last-good: ${where2} is invalid, the previous snapshot stays in force`,
+    unreachable: `unreachable: could not read ${where2}`
   };
   lines.push(outcomeLine[r.outcome]);
   for (const w of r.warnings) lines.push(`warning: ${w}`);
@@ -45918,7 +46238,7 @@ async function runSync(deps) {
     lines.push(`WARNING: the project file was NOT refreshed; the conductor keeps running on the last-good snapshot (fetched ${snap.fetched_at}).`);
   } else if (degraded) {
     exitCode = 1;
-    errLines.push(`no snapshot exists and ${where} could not be read, so there is no project configuration yet`);
+    errLines.push(`no snapshot exists and ${where2} could not be read, so there is no project configuration yet`);
   }
   return {
     exitCode,
@@ -46185,7 +46505,7 @@ import { execFile } from "node:child_process";
 
 // src/daemon/conductor-logger.ts
 import { homedir as homedir4 } from "node:os";
-import { dirname as dirname6, join as join8 } from "node:path";
+import { dirname as dirname6, join as join9 } from "node:path";
 
 // src/daemon/log-shipper.ts
 var PERMISSION_RETRY_MS = 5 * 6e4;
@@ -46195,7 +46515,7 @@ var TOKEN_TTL_MS = 50 * 6e4;
 var ROTATE_BYTES = 10 * 1024 * 1024;
 var ROTATE_KEEP = 5;
 function resolveConductorLogPath(env2) {
-  return env2.HARMONY_CONDUCTOR_LOG || join8(env2.HARMONY_HOME || join8(homedir4(), ".harmony"), "logs", "conductor.log");
+  return env2.HARMONY_CONDUCTOR_LOG || join9(env2.HARMONY_HOME || join9(homedir4(), ".harmony"), "logs", "conductor.log");
 }
 
 // src/cli/commands/conductor-logs.ts
@@ -46473,7 +46793,7 @@ function encodeNulArgv(argv) {
 }
 
 // src/cli/commands/agent.ts
-import { existsSync as existsSync4, mkdirSync as mkdirSync5, readFileSync as readFileSync7, renameSync as renameSync2, writeFileSync as writeFileSync5 } from "node:fs";
+import { existsSync as existsSync4, mkdirSync as mkdirSync5, readFileSync as readFileSync8, renameSync as renameSync2, writeFileSync as writeFileSync5 } from "node:fs";
 
 // src/agents/codex-provision.ts
 import {
@@ -46484,7 +46804,7 @@ import {
   existsSync as existsSync3,
   lstatSync,
   mkdirSync as mkdirSync4,
-  readFileSync as readFileSync6,
+  readFileSync as readFileSync7,
   readdirSync,
   readlinkSync as readlinkSync2,
   statSync,
@@ -46493,7 +46813,7 @@ import {
   writeFileSync as writeFileSync4,
   appendFileSync
 } from "node:fs";
-import { join as join9, resolve as resolve4 } from "node:path";
+import { join as join10, resolve as resolve4 } from "node:path";
 
 // src/agents/hooks.ts
 var HARMONY_HOOKS = {
@@ -46596,31 +46916,31 @@ function collectInstructionSources(input) {
   const ws = resolve4(input.workspaceDir);
   const plugin = resolve4(input.pluginDir);
   const candidates = [
-    { label: "workspace/CLAUDE.md", path: join9(ws, "CLAUDE.md") },
-    { label: "plugin/CLAUDE.md", path: join9(plugin, "CLAUDE.md") },
-    { label: "web/CLAUDE.md", path: join9(ws, "web", "CLAUDE.md") }
+    { label: "workspace/CLAUDE.md", path: join10(ws, "CLAUDE.md") },
+    { label: "plugin/CLAUDE.md", path: join10(plugin, "CLAUDE.md") },
+    { label: "web/CLAUDE.md", path: join10(ws, "web", "CLAUDE.md") }
   ];
   for (const p of input.extraRepoPaths ?? []) {
     const abs = resolve4(p);
-    candidates.push({ label: `${abs.replace(/^\/+/, "")}/CLAUDE.md`, path: join9(abs, "CLAUDE.md") });
+    candidates.push({ label: `${abs.replace(/^\/+/, "")}/CLAUDE.md`, path: join10(abs, "CLAUDE.md") });
   }
   const seen = /* @__PURE__ */ new Set();
   const out = [];
   for (const c of candidates) {
     if (seen.has(c.path) || !isFile(c.path)) continue;
     seen.add(c.path);
-    out.push({ label: c.label, content: readFileSync6(c.path, "utf8") });
+    out.push({ label: c.label, content: readFileSync7(c.path, "utf8") });
   }
   return out;
 }
 function collectSkillCapabilities(pluginDir) {
-  const root = join9(resolve4(pluginDir), "skills");
+  const root = join10(resolve4(pluginDir), "skills");
   if (!existsSync3(root)) return [];
   const out = [];
   for (const name of readdirSync(root).sort()) {
-    const file = join9(root, name, "SKILL.md");
+    const file = join10(root, name, "SKILL.md");
     if (!isFile(file)) continue;
-    const value = capabilitiesFromSkillMd(readFileSync6(file, "utf8"));
+    const value = capabilitiesFromSkillMd(readFileSync7(file, "utf8"));
     if (value === void 0) continue;
     const parsed = parseCapabilities(value);
     if (!parsed.ok) throw new Error(`skills/${name}/SKILL.md capabilities: ${parsed.problems.join("; ")}`);
@@ -46635,21 +46955,21 @@ function codexOverlayFor(pluginDir) {
 ${rules}` : CODEX_WORKER_OVERLAY;
 }
 function excludeFromGit(workspaceDir, entries) {
-  const gitDir = join9(workspaceDir, ".git");
+  const gitDir = join10(workspaceDir, ".git");
   if (!existsSync3(gitDir)) return;
-  const infoDir = join9(gitDir, "info");
+  const infoDir = join10(gitDir, "info");
   mkdirSync4(infoDir, { recursive: true });
-  const excludePath = join9(infoDir, "exclude");
-  const current = existsSync3(excludePath) ? readFileSync6(excludePath, "utf8") : "";
+  const excludePath = join10(infoDir, "exclude");
+  const current = existsSync3(excludePath) ? readFileSync7(excludePath, "utf8") : "";
   const have = new Set(current.split("\n"));
   const missing = entries.filter((e) => !have.has(e));
   if (missing.length) appendFileSync(excludePath, (current === "" || current.endsWith("\n") ? "" : "\n") + missing.join("\n") + "\n");
 }
 function linkSkills(workspaceDir, pluginDir) {
-  const link = join9(workspaceDir, CODEX_SKILLS_LINK);
-  const target = join9(resolve4(pluginDir), "skills");
+  const link = join10(workspaceDir, CODEX_SKILLS_LINK);
+  const target = join10(resolve4(pluginDir), "skills");
   if (!existsSync3(target)) throw new Error(`skills directory not found at ${target}`);
-  mkdirSync4(join9(workspaceDir, ".agents"), { recursive: true });
+  mkdirSync4(join10(workspaceDir, ".agents"), { recursive: true });
   let st;
   try {
     st = lstatSync(link);
@@ -46668,7 +46988,7 @@ function installAuth(authFile, codexHome) {
   if (!isFile(authFile)) {
     throw new Error(`the Codex login-cache file is missing at ${authFile} (HARMONY_CODEX_AUTH_FILE) \u2014 mount it, see container/README.md "Codex credential runbook"`);
   }
-  const dest = join9(codexHome, CODEX_AUTH_FILE_NAME);
+  const dest = join10(codexHome, CODEX_AUTH_FILE_NAME);
   if (resolve4(authFile) !== resolve4(dest)) {
     copyFileSync(authFile, dest);
   }
@@ -46707,17 +47027,17 @@ function provisionCodex(input) {
   const agentsMd = renderCodexAgentsMd(sources, codexOverlayFor(input.pluginDir));
   const problems = verifyCodexAgentsMd(agentsMd, sources);
   if (problems.length) throw new Error(`AGENTS.md preflight failed: ${problems.join("; ")}`);
-  const agentsMdPath = join9(workspaceDir, "AGENTS.md");
-  if (existsSync3(agentsMdPath) && !readFileSync6(agentsMdPath, "utf8").startsWith(GENERATED_AGENTS_HEADER)) {
+  const agentsMdPath = join10(workspaceDir, "AGENTS.md");
+  if (existsSync3(agentsMdPath) && !readFileSync7(agentsMdPath, "utf8").startsWith(GENERATED_AGENTS_HEADER)) {
     throw new Error(`${agentsMdPath} exists and is not a generated file \u2014 refusing to overwrite a repository's own AGENTS.md`);
   }
   preflightHookScripts(resolve4(input.pluginDir));
   mkdirSync4(codexHome, { recursive: true });
   const config = renderCodexConfig(HARMONY_MCP_CONNECTION, { pluginRoot: resolve4(input.pluginDir) });
-  const configPath = join9(codexHome, config.fileName);
+  const configPath = join10(codexHome, config.fileName);
   writeFileSync4(configPath, config.content, { mode: 420 });
   const hooks = renderCodexHooks(resolve4(input.pluginDir));
-  const hooksPath = join9(codexHome, hooks.fileName);
+  const hooksPath = join10(codexHome, hooks.fileName);
   writeFileSync4(hooksPath, hooks.content, { mode: 420 });
   writeFileSync4(agentsMdPath, agentsMd);
   const skillsLink = linkSkills(workspaceDir, input.pluginDir);
@@ -46736,7 +47056,7 @@ function provisionCodex(input) {
 
 // src/cli/commands/agent.ts
 import { homedir as homedir5 } from "node:os";
-import { join as join10 } from "node:path";
+import { join as join11 } from "node:path";
 function launchRunConfig() {
   try {
     return getRunConfig();
@@ -46818,7 +47138,7 @@ function registerAgentCommands(program3) {
       const r = provisionCodex({
         pluginDir: opts.pluginDir,
         workspaceDir: opts.workspace,
-        codexHome: opts.codexHome || process.env.CODEX_HOME || join10(homedir5(), ".codex"),
+        codexHome: opts.codexHome || process.env.CODEX_HOME || join11(homedir5(), ".codex"),
         authFile,
         extraRepoPaths: opts.extraRepo
       });
@@ -46848,7 +47168,7 @@ function registerAgentCommands(program3) {
   ).argument("<stdout-file>").action((file) => {
     let text = "";
     try {
-      text = readFileSync7(file, "utf8");
+      text = readFileSync8(file, "utf8");
     } catch {
       process.exit(1);
     }
@@ -46862,7 +47182,7 @@ function registerAgentCommands(program3) {
   ).requiredOption("--dir <dir>", "The conduction's Codex sessions folder").requiredOption("--stdout-file <file>", "The codex invocation's stdout capture").option("--model <model>", "The model the invocation ran on").action((opts) => {
     let text = "";
     try {
-      text = readFileSync7(opts.stdoutFile, "utf8");
+      text = readFileSync8(opts.stdoutFile, "utf8");
     } catch {
       process.exit(1);
     }
@@ -46870,7 +47190,7 @@ function registerAgentCommands(program3) {
     if (!id) process.exit(1);
     try {
       mkdirSync5(opts.dir, { recursive: true });
-      const target = join10(opts.dir, CODEX_THREAD_FILE_NAME);
+      const target = join11(opts.dir, CODEX_THREAD_FILE_NAME);
       const tmp = `${target}.tmp-${process.pid}`;
       writeFileSync5(tmp, `${JSON.stringify(buildCodexThreadRecord(id, opts.model))}
 `);
@@ -46888,7 +47208,7 @@ function registerAgentCommands(program3) {
     if (!existsSync4(file)) process.exit(1);
     let text = "";
     try {
-      text = readFileSync7(file, "utf8");
+      text = readFileSync8(file, "utf8");
     } catch {
       process.exit(1);
     }
@@ -46900,7 +47220,7 @@ function registerAgentCommands(program3) {
 }
 
 // src/cli/commands/leg-cost.ts
-import { readFileSync as readFileSync8 } from "node:fs";
+import { readFileSync as readFileSync9 } from "node:fs";
 
 // src/tools/leg-cost-record.ts
 var LEG_COST_COLS = "id, conduction_id, task_id, leg_key, gate, model, invocation_index, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_creation_1h_input_tokens, cache_creation_5m_input_tokens, thinking_tokens, total_cost_usd, cost_source, num_turns, duration_ms, duration_api_ms, session_id, is_error, service_tier, created_at";
@@ -47142,7 +47462,7 @@ function registerLegCostCommands(program3) {
       }
       let captured;
       try {
-        captured = readFileSync8(opts.file, "utf8");
+        captured = readFileSync9(opts.file, "utf8");
       } catch (err) {
         console.error(
           `harmony leg-cost record: WARNING \u2014 could not read the capture file ${opts.file} (${err?.message ?? String(err)}); nothing recorded`
@@ -47207,7 +47527,7 @@ function registerLegCostCommands(program3) {
 }
 
 // src/cli/commands/leg-output.ts
-import { readFileSync as readFileSync9 } from "node:fs";
+import { readFileSync as readFileSync10 } from "node:fs";
 
 // src/tools/leg-output-record.ts
 var LEG_OUTPUT_TAIL_BYTES = 64 * 1024;
@@ -47293,7 +47613,7 @@ async function getClient2() {
 var SOURCES = ["worker", "launcher"];
 function readCapture(path3) {
   try {
-    return readFileSync9(path3, "utf8");
+    return readFileSync10(path3, "utf8");
   } catch (err) {
     console.error(
       `harmony leg-output record: WARNING \u2014 could not read the capture file ${path3} (${err?.message ?? String(err)}); it contributes nothing to this row`
@@ -47348,7 +47668,7 @@ function registerLegOutputCommands(program3) {
 
 // src/cli/commands/gates.ts
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync as mkdirSync6, readFileSync as readFileSync10, renameSync as renameSync3, writeFileSync as writeFileSync6 } from "node:fs";
+import { mkdirSync as mkdirSync6, readFileSync as readFileSync11, renameSync as renameSync3, writeFileSync as writeFileSync6 } from "node:fs";
 import { dirname as dirname7 } from "node:path";
 
 // src/config/notify-sync.ts
@@ -47662,7 +47982,7 @@ function productionNotifySyncIO() {
     },
     readCache: (path3) => {
       try {
-        return readFileSync10(path3, "utf8");
+        return readFileSync11(path3, "utf8");
       } catch {
         return null;
       }
@@ -47677,7 +47997,7 @@ function productionNotifySyncIO() {
 }
 
 // src/cli/commands/notify.ts
-import { readFileSync as readFileSync11 } from "node:fs";
+import { readFileSync as readFileSync12 } from "node:fs";
 function errorMessage(err) {
   const message = err?.message;
   return message && message.trim() ? message.trim() : String(err);
@@ -47768,7 +48088,7 @@ function productionDeps() {
 }
 function readSecretFromStdin() {
   try {
-    return readFileSync11(0, "utf8");
+    return readFileSync12(0, "utf8");
   } catch {
     return "";
   }

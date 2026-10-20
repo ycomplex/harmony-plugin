@@ -434,3 +434,46 @@ describe('release on shutdown', () => {
     expect(h.logs.join('\n')).toContain('release failed');
   });
 });
+
+describe('carried-over request (B-1173)', () => {
+  const withRequest = (kind: 'acquired' | 'taken_over'): AcquireOutcome => ({
+    ...ACQUIRED,
+    kind,
+    previousHolderId: 'pod-old:1:aaaa0000',
+    previousPluginVersion: '0.15.64',
+    request: { id: 'req-1', action: 'update', state: 'claimed' },
+  });
+
+  it('hands the claimed request and the previous version to onCarriedRequest on acquire', async () => {
+    const { client } = scripted({ acquire: [withRequest('acquired')] });
+    const got: unknown[] = [];
+    const h = harness(client, { onCarriedRequest: (i) => void got.push(i) });
+    await h.keeper.boot();
+    expect(got).toEqual([{ request: { id: 'req-1', action: 'update', state: 'claimed' }, previousHolderId: 'pod-old:1:aaaa0000', previousPluginVersion: '0.15.64' }]);
+    expect(h.logs.join('\n')).toContain('this conductor completes it');
+  });
+
+  it('also fires on a takeover found by the re-probe tick', async () => {
+    const { client } = scripted({ acquire: [{ kind: 'unknown', detail: 'down' }, withRequest('taken_over')] });
+    const got: unknown[] = [];
+    const h = harness(client, { onCarriedRequest: (i) => void got.push(i), reprobeMs: 1 });
+    await h.keeper.boot();
+    await h.keeper.tick();
+    expect(got).toHaveLength(1);
+  });
+
+  it('a throwing or rejecting handler is logged, never propagated', async () => {
+    const { client } = scripted({ acquire: [withRequest('acquired')] });
+    const h = harness(client, { onCarriedRequest: () => Promise.reject(new Error('boom')) });
+    await expect(h.keeper.boot()).resolves.toEqual({ proceed: true });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(h.logs.join('\n')).toContain('handling carried-over request req-1 failed (boom)');
+  });
+
+  it('without the hook the log still says the restarter completes it (local behaviour unchanged)', async () => {
+    const { client } = scripted({ acquire: [withRequest('acquired')] });
+    const h = harness(client);
+    await h.keeper.boot();
+    expect(h.logs.join('\n')).toContain('the restarter completes it');
+  });
+});

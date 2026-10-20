@@ -51,14 +51,23 @@ machine. Otherwise runs the pre-flight and installs a supervisor job so the cond
   $USER`).
 - `--at-boot` (macOS only, needs `sudo` once): installs a **LaunchDaemon** in `/Library/LaunchDaemons` with a
   `UserName` key, so it starts at boot as that user with that user's `HOME`, no login needed.
-- `--remote`: exits non-zero ("not available yet"); starting a conductor on another machine arrives with
-  B-1173. Nothing is started locally.
+- `--remote` (B-1173): starts the conductor **in the project's GKE cluster**. It scales the Deployment
+  `harmony-conductor` in namespace `harmony-conductor` to 1 replica with **your own kubectl credentials**
+  (`--context` from `HARMONY_GKE_CONTEXT`, which the config files derive from `gke.cluster`/`gke.location`;
+  else your current context), then polls the registry until the row shows `location: remote`, `state: running`
+  (exit 0; exit 4 if not confirmed in `HARMONY_SWITCH_TIMEOUT_S`, default 180s). It refuses, changing nothing, if
+  a conductor already runs somewhere else (stop that one first) or the registry is not deployed. Nothing is
+  installed on this machine. Mutually exclusive with `--local` and `--at-boot`.
 
 Both supervisor jobs run `container/conductor-launch.sh`, which loads `~/.harmony/conductor.env` and `exec`s
 `node <plugin>/dist/bin/daemon.js`. The job is rendered from `container/launchd/*.plist.template` or
 `container/systemd/*.service.template`; it carries no credential.
 
-### `harmony conductor stop`
+### `harmony conductor stop [--remote]`
+
+`--remote` (B-1173) scales the cluster Deployment to 0 with your own kubectl credentials and reports when the pod
+has released the registry row. Running legs are their own Jobs and carry on; the next start adopts them.
+Without `--remote` it stops the conductor on this machine, as below.
 
 Stops the conductor as the supervisor requires, so it is not brought back:
 
@@ -211,3 +220,28 @@ the conductor before anyone logs in uses `harmony conductor start --at-boot` ins
 `harmony conductor start` and `restart` send the conductor's raw stdout to `~/.harmony/conductor.out.log`. That is a
 different file from the structured JSON-lines log `~/.harmony/logs/conductor.log` that `harmony conductor logs`
 reads (B-1174; see [`conductor-config.md`](conductor-config.md#conductor-logs-b-1174)).
+
+
+## The remote conductor (B-1173)
+
+The remote conductor is the same daemon in one pod of the Deployment `harmony-conductor` (namespace
+`harmony-conductor`, rolling update `maxSurge: 1`, `maxUnavailable: 0`), run with `HARMONY_CONDUCTOR_REMOTE=1`:
+
+- **Identity:** the registry row says `location: remote`; logs are JSON lines on stdout (Cloud Logging).
+- **Secrets:** `HARMONY_API_TOKEN` and the GitHub App key are read from Secret Manager at boot, by the names in
+  the host file's `secrets` block (see [`conductor-config.md`](conductor-config.md#the-secrets-block-and-the-remote-conductor-b-1173)).
+- **Readiness:** the file `HARMONY_READY_FILE` (default `/tmp/harmony-ready`) is written once pre-flight passed and
+  the pod is either conducting or standing by; the pod's readinessProbe checks it. It is removed on shutdown.
+- **Standby:** a rolling update surges a second pod while the first still holds the registry lease. A refused
+  acquire does **not** exit in remote mode: the new pod logs once, launches nothing, keeps the process alive and
+  retries (every 10s at most) until the old pod releases, then boots normally. Local conductors still exit on a
+  refusal.
+- **Restart / update request:** the claiming pod's restarter does not `git pull` or signal anything. It patches
+  the Deployment through the pod's service account: *update* resolves the channel tag's newest plugin version tag
+  in Artifact Registry (`HARMONY_CONDUCTOR_IMAGE`, channel from `HARMONY_PLUGIN_POSTURE`) and runs
+  `kubectl set image` to the **pinned** `<image>:<version>` (never a moving tag); *restart* runs
+  `kubectl rollout restart`. Then `kubectl rollout status --timeout=300s`. On success it does nothing more: the old
+  pod is stopped by Kubernetes and releases cleanly, and the **new** pod completes the carried-over request as done
+  with the plugin version before and after in the reason. On a missed deadline it runs `kubectl rollout undo` and
+  completes the request **failed** with the reason (shown by `harmony conductor status`); the old conductor then
+  resumes launching.

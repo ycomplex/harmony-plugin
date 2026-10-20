@@ -70,4 +70,17 @@ describe('createGithubTokenProvider (B-1170)', () => {
     })!;
     expect(await get()).toBeNull();
   });
+
+  it('B-1173: a host-file App identity with NO private_key_path mints from the inline HARMONY_APP_PRIVATE_KEY (escaped newlines too)', async () => {
+    const bodies: string[] = [];
+    const get = createGithubTokenProvider({
+      env: { HARMONY_APP_PRIVATE_KEY: pem.replace(/\n/g, '\\n') },
+      appOverride: { app_id: '7', installation_id: '99' },
+      fetchImpl: (async (url: string) => { bodies.push(url); return tokenRes('inline-tok'); }) as any,
+      readFile: () => { throw new Error('must not read a key file'); },
+    })!;
+    expect(get).toBeDefined();
+    expect(await get()).toBe('inline-tok');
+    expect(bodies[0]).toContain('/app/installations/99/access_tokens');
+  });
 });

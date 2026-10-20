@@ -29833,7 +29833,10 @@ var SecretNameSchema = external_exports.string().min(1).refine((v) => !looksLike
 var HostGithubAppSchema = external_exports.object({
   app_id: external_exports.string().min(1),
   installation_id: external_exports.string().min(1),
-  private_key_path: external_exports.string().min(1)
+  /** Optional since B-1173: a remote conductor has no key FILE; its key arrives inline as
+   *  HARMONY_APP_PRIVATE_KEY (resolved from the `github_app_private_key` secret at boot). validateMerged
+   *  still requires one of the two. */
+  private_key_path: external_exports.string().min(1).optional()
 }).strict();
 var hostOnlyShape = {
   /** 'owner/name' of the repo whose `main` holds `.harmony/conductor.json`. */
@@ -30261,7 +30264,7 @@ function validateMerged(merged, env = {}) {
       }
     }
     if (!app?.private_key_path && !env.HARMONY_APP_PRIVATE_KEY) {
-      need(HOST_FILE_LABEL, "github_app.private_key_path", "the GitHub App private key location is missing", 'add "github_app": { "private_key_path": "/path/to/key.pem" } to ~/.harmony/conductor-host.json');
+      need(HOST_FILE_LABEL, "github_app.private_key_path", "the GitHub App private key location is missing", `add "github_app": { "private_key_path": "/path/to/key.pem" } to ~/.harmony/conductor-host.json (a remote conductor instead names the key's Secret Manager secret as "secrets": { "github_app_private_key": "<secret-name>" })`);
     }
   }
   return issues;

@@ -197,10 +197,13 @@ export async function runBootPreflight(
   // 2. Env contract (hard) -------------------------------------------------------------------------
   if (profile.requires_app_mint) {
     for (const varName of APP_MINT_VARS) {
-      const value = resolveLauncherVar(varName, opts.env, opts.deploymentConfig);
+      let value = resolveLauncherVar(varName, opts.env, opts.deploymentConfig);
+      // B-1173: the App key may arrive INLINE (HARMONY_APP_PRIVATE_KEY) instead of as a file path — what a
+      // remote conductor pod has, after the boot-time secrets resolver. Same alternative the mint script takes.
+      if (value === undefined && varName === 'HARMONY_APP_PRIVATE_KEY_PATH') value = resolvedEnv(opts.env, 'HARMONY_APP_PRIVATE_KEY');
       if (value === undefined) {
         throw new Error(
-          `Missing required launcher-host config "${varName}" — see container/README.md ` +
+          `Missing required launcher-host config "${varName}"${varName === 'HARMONY_APP_PRIVATE_KEY_PATH' ? ' (or an inline HARMONY_APP_PRIVATE_KEY)' : ''} — see container/README.md ` +
             '§ The credential envelopes.',
         );
       }

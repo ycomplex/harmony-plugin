@@ -13,6 +13,13 @@
 #   --namespace <ns>   default $HARMONY_GKE_NAMESPACE, else harmony-legs
 #   --dry-run          print the `kubectl delete` it would run instead of running it (reads still run)
 #
+# Where it runs (B-1173): on the conductor HOST (launchd/cron — DEPRECATED, see
+# container/gke/launchd/com.ycomplex.harmony-sweep.plist) or, now, IN-CLUSTER as the `harmony-sweep` CronJob
+# (container/conductor/k8s/cronjob-sweep.yaml). In the pod there is no kubeconfig and no env file: kubectl uses the
+# pod's service account, `--env-file none` skips the file, and HARMONY_API_TOKEN is already in the environment because
+# the image entrypoint's `--with-secrets` mode resolved it from Secret Manager before this script started. Nothing in
+# this script changed for that: it only ever called `kubectl -n <ns>` and read HARMONY_API_TOKEN from the env.
+#
 # Why it never looks INSIDE a disk (B-1164): the "keep a disk whose checkout has unpushed commits" rule
 # is replaced by an invariant. The git checkout lives at /workspace/workspace in the CONTAINER filesystem,
 # which dies with the pod; the ticket disk carries only the engine cache (docker), transcripts and the
