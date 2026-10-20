@@ -225,22 +225,23 @@ export interface DaemonLoggerOptions {
 }
 
 export function createDaemonLogger(opts: DaemonLoggerOptions): ConductorLogger {
-  let logger: ConductorLogger;
+  const ref: { logger?: ConductorLogger } = {};
   let projectKey: string | undefined;
   const shipper = createLogShipper({
     getProject: () => opts.getRuntime()?.getGcpProject?.(),
     getLogShipping: () => opts.getRuntime()?.getLogShipping(),
     getAccount: () => opts.getRuntime()?.getGcloudAccount?.(),
     getProjectKey: () => projectKey,
-    logLocal: (level, event, message) => logger.log(level, event, message),
+    logLocal: (level, event, message) => ref.logger?.log(level, event, message),
   });
-  logger = createConductorLogger({
+  const logger = createConductorLogger({
     env: opts.env,
     writeStdout: (s) => void process.stdout.write(s),
     getTextLogPath: opts.getTextLogPath,
     jsonFile: createRotatingFile(resolveConductorLogPath(opts.env)),
     shipper,
   });
+  ref.logger = logger;
   shipper.start();
   const base = logger;
   return {
