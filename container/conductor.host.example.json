@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "config_repo": "my-org/my-config-repo",
+  "plugin_dir": "/opt/harmony-plugin",
+  "github_app": {
+    "app_id": "123456",
+    "installation_id": "7890123",
+    "private_key_path": "/etc/harmony/harmony-daemon-app.pem"
+  },
+  "gcloud": { "account": "harmony-daemon@my-gcp-project.iam.gserviceaccount.com" },
+  "secrets": {
+    "base": "harmony-worker-base-env",
+    "codex_auth": "harmony-codex-auth"
+  }
+}

@@ -29,6 +29,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
+import { loadConductorConfigSync } from './conductor-config.js';
+import { WORKER_IMAGE_DEFAULT } from './worker-image-default.js';
 
 // --- env: the worker base env (container/env.example) -----------------------------------------
 const DeploymentEnvSchema = z
@@ -187,7 +189,9 @@ const ReposSchema = z
 // (zod materializes it) or imports WORKER_IMAGE_DEFAULT below. Two accepted resolution shapes,
 // documented in container/README.md: a value containing "/" is a fully-qualified image ref used
 // VERBATIM; a bare name is resolved against the deployment's own registry by the cloud launcher.
-export const WORKER_IMAGE_DEFAULT = 'harmony-build-env';
+// B-1170: the constant itself lives in ./worker-image-default.ts so src/config/conductor-config.ts can
+// use it without importing this module (which imports conductor-config — an import cycle otherwise).
+export { WORKER_IMAGE_DEFAULT };
 
 // --- launcher: the launcher-host env contract ----------------------------------------------------
 const GithubAppSchema = z
@@ -253,14 +257,33 @@ export interface LoadDeploymentConfigOptions {
   /** Injectable so this loader is unit-testable without touching the real filesystem. */
   existsSync?: (path: string) => boolean;
   readFileSync?: (path: string) => string;
+  /** B-1170: receives conductor-config deprecation warnings (deduplicated per process). */
+  warn?: (message: string) => void;
 }
 
-/** Load + validate the deployment config from whichever path this instance was launched with.
+/** B-1170: the deployment config as the rest of the system sees it. When ANY conductor-config input
+ *  exists (a `.harmony/conductor.json` snapshot / explicit project file, or ~/.harmony/conductor-host.json)
+ *  the merged result — project < host < env, legacy files lowest — is projected into this same shape, so
+ *  every existing caller (`harmony config get`, loadDaemonConfig, the launch scripts) keeps working.
+ *  With NO such input this is exactly `loadLegacyDeploymentConfig`, byte-for-byte. */
+export function loadDeploymentConfig(opts: LoadDeploymentConfigOptions = {}): DeploymentConfig | null {
+  const conductor = loadConductorConfigSync({
+    env: opts.env,
+    existsSync: opts.existsSync,
+    readFileSync: opts.readFileSync,
+    warn: opts.warn,
+    loadLegacy: () => loadLegacyDeploymentConfig(opts),
+  });
+  if (conductor) return conductor.deploymentConfig;
+  return loadLegacyDeploymentConfig(opts);
+}
+
+/** The pre-B-1170 loader, unchanged: load + validate the deployment config from whichever path this instance was launched with.
  *  Returns null (never throws) when no file exists at the resolved path — most machines won't have
  *  one, and every call site must degrade gracefully. Throws a clear error when the file exists but
  *  is malformed (bad JSON or a schema violation) — that case is a real misconfiguration, not an
  *  absence, and must fail loud rather than silently fall back. */
-export function loadDeploymentConfig(opts: LoadDeploymentConfigOptions = {}): DeploymentConfig | null {
+export function loadLegacyDeploymentConfig(opts: LoadDeploymentConfigOptions = {}): DeploymentConfig | null {
   const env = opts.env ?? process.env;
   const exists = opts.existsSync ?? existsSync;
   const readFile = opts.readFileSync ?? ((p: string) => readFileSync(p, 'utf8'));

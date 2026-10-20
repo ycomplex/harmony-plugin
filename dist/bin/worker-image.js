@@ -4050,6 +4050,138 @@ var coerce = {
 };
 var NEVER = INVALID;
 
+// src/config/worker-image-default.ts
+var WORKER_IMAGE_DEFAULT = "harmony-build-env";
+
+// src/config/conductor-config.ts
+var ChannelSchema = external_exports.enum(["staging", "prod"]);
+var ProfileNameSchema = external_exports.enum(["cloud", "gke"]);
+var ImagesSchema = external_exports.object({
+  /** Bare name (resolved against the deployment's registry) or a ref containing '/' (used verbatim). */
+  worker: external_exports.string().min(1).optional(),
+  codex: external_exports.string().min(1).optional()
+}).strict();
+var GcpSchema = external_exports.object({ project: external_exports.string().min(1).optional(), region: external_exports.string().min(1).optional() }).strict();
+var CloudRunSchema = external_exports.object({ job: external_exports.string().min(1).optional() }).strict();
+var GkeSchema = external_exports.object({
+  cluster: external_exports.string().min(1).optional(),
+  location: external_exports.string().min(1).optional(),
+  namespace: external_exports.string().min(1).optional(),
+  context: external_exports.string().min(1).optional(),
+  registry: external_exports.string().min(1).optional(),
+  base_secret: external_exports.string().min(1).optional(),
+  codex_secret: external_exports.string().min(1).optional(),
+  cpu: external_exports.string().min(1).optional(),
+  memory: external_exports.string().min(1).optional(),
+  ticket_disk: external_exports.string().min(1).optional(),
+  storage_class: external_exports.string().min(1).optional(),
+  deadline_s: external_exports.number().int().optional(),
+  job_ttl_s: external_exports.number().int().optional(),
+  poll_s: external_exports.number().int().optional()
+}).strict();
+var ConcurrencySchema = external_exports.object({ max_workers: external_exports.number().int().min(0).optional() }).strict();
+var ModelPolicySchema = external_exports.object({ default: external_exports.string().min(1).optional(), per_gate: external_exports.record(external_exports.string().min(1)).optional() }).strict();
+var projectShape = {
+  channel: ChannelSchema.optional(),
+  profile: ProfileNameSchema.optional(),
+  images: ImagesSchema.optional(),
+  gcp: GcpSchema.optional(),
+  cloud_run: CloudRunSchema.optional(),
+  gke: GkeSchema.optional(),
+  concurrency: ConcurrencySchema.optional(),
+  model_policy: ModelPolicySchema.optional(),
+  /** Absent means "ship when gcp.project is named"; `false` switches shipping off. */
+  log_shipping: external_exports.boolean().optional(),
+  agents: external_exports.array(external_exports.string().min(1)).min(1).optional()
+};
+var ProjectFileSchema = external_exports.object({
+  version: external_exports.literal(1),
+  ...projectShape,
+  channel: ChannelSchema,
+  profile: ProfileNameSchema
+}).strict();
+function looksLikeSecretValue(v) {
+  return /^(ghp_|gho_|ghs_|github_pat_|sk-|eyJ)/.test(v) || v.includes("-----BEGIN") || /^\S{40,}$/.test(v);
+}
+var SecretNameSchema = external_exports.string().min(1).refine((v) => !looksLikeSecretValue(v), {
+  message: "looks like a secret VALUE, not a Secret Manager secret NAME (the secrets block holds names only)"
+});
+var HostGithubAppSchema = external_exports.object({
+  app_id: external_exports.string().min(1),
+  installation_id: external_exports.string().min(1),
+  private_key_path: external_exports.string().min(1)
+}).strict();
+var hostOnlyShape = {
+  /** 'owner/name' of the repo whose `main` holds `.harmony/conductor.json`. */
+  config_repo: external_exports.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, 'must look like "owner/name"').optional(),
+  config_ref: external_exports.string().min(1).optional(),
+  plugin_dir: external_exports.string().min(1).optional(),
+  github_app: HostGithubAppSchema.optional(),
+  gcloud: external_exports.object({ account: external_exports.string().min(1).optional() }).strict().optional(),
+  /** logical name -> Secret Manager secret NAME. Names only. */
+  secrets: external_exports.record(SecretNameSchema).optional()
+};
+var HostFileSchema = external_exports.object({ version: external_exports.literal(1), ...projectShape, ...hostOnlyShape }).strict();
+var ConductorConfigSchema = external_exports.object({
+  ...projectShape,
+  ...hostOnlyShape,
+  github_app: HostGithubAppSchema.partial().optional()
+});
+var SnapshotSchema = external_exports.object({
+  version: external_exports.literal(1),
+  source: external_exports.object({ repo: external_exports.string(), ref: external_exports.string(), path: external_exports.string() }),
+  etag: external_exports.string().nullable(),
+  sha: external_exports.string().nullable(),
+  fetched_at: external_exports.string(),
+  content: external_exports.string()
+});
+var ENV_LEAVES = [
+  ...["channel", "profile", "plugin_dir", "config_repo", "config_ref"].map((k) => ({ path: [k], type: "string" })),
+  { path: ["images", "worker"], type: "string" },
+  { path: ["images", "codex"], type: "string" },
+  { path: ["gcp", "project"], type: "string" },
+  { path: ["gcp", "region"], type: "string" },
+  { path: ["cloud_run", "job"], type: "string" },
+  ...["cluster", "location", "namespace", "context", "registry", "base_secret", "codex_secret", "cpu", "memory", "ticket_disk", "storage_class"].map(
+    (k) => ({ path: ["gke", k], type: "string" })
+  ),
+  ...["deadline_s", "job_ttl_s", "poll_s"].map((k) => ({ path: ["gke", k], type: "int" })),
+  { path: ["concurrency", "max_workers"], type: "int" },
+  { path: ["model_policy", "default"], type: "string" },
+  { path: ["log_shipping"], type: "boolean" },
+  { path: ["gcloud", "account"], type: "string" },
+  { path: ["github_app", "app_id"], type: "string" },
+  { path: ["github_app", "installation_id"], type: "string" },
+  { path: ["github_app", "private_key_path"], type: "string" }
+];
+var LEGACY_ENV_KNOBS = [
+  ...[
+    ["NAMESPACE", "namespace"],
+    ["CONTEXT", "context"],
+    ["BASE_SECRET", "base_secret"],
+    ["CODEX_SECRET", "codex_secret"],
+    ["REGISTRY", "registry"],
+    ["CPU", "cpu"],
+    ["MEMORY", "memory"],
+    ["TICKET_DISK", "ticket_disk"],
+    ["STORAGE_CLASS", "storage_class"]
+  ].map(([v, k]) => ({ name: `HARMONY_GKE_${v}`, path: ["gke", k], type: "string" })),
+  ...[
+    ["DEADLINE_S", "deadline_s"],
+    ["POLL_S", "poll_s"],
+    ["JOB_TTL_S", "job_ttl_s"]
+  ].map(([v, k]) => ({ name: `HARMONY_GKE_${v}`, path: ["gke", k], type: "int" })),
+  { name: "HARMONY_GKE_IMAGE", path: ["images", "worker"], type: "string" },
+  { name: "HARMONY_CLOUD_RUN_REGION", path: ["gcp", "region"], type: "string" },
+  { name: "HARMONY_CLOUD_RUN_JOB", path: ["cloud_run", "job"], type: "string" },
+  { name: "CLOUDSDK_CORE_PROJECT", path: ["gcp", "project"], type: "string" },
+  { name: "CLOUDSDK_CORE_ACCOUNT", path: ["gcloud", "account"], type: "string" },
+  { name: "HARMONY_PLUGIN_DIR", path: ["plugin_dir"], type: "string" },
+  { name: "HARMONY_APP_ID", path: ["github_app", "app_id"], type: "string" },
+  { name: "HARMONY_APP_INSTALLATION_ID", path: ["github_app", "installation_id"], type: "string" },
+  { name: "HARMONY_APP_PRIVATE_KEY_PATH", path: ["github_app", "private_key_path"], type: "string" }
+];
+
 // src/config/deployment-config.ts
 var DeploymentEnvSchema = external_exports.object({
   HARMONY_TARGET: external_exports.enum(["prod", "staging", "custom"]).optional(),
@@ -4148,7 +4280,6 @@ var ReposSchema = external_exports.array(RepoEntrySchema).refine((repos) => repo
 }).refine((repos) => repos.filter((r) => r.is_plugin).length <= 1, {
   message: "at most one repos[] entry may set is_plugin"
 });
-var WORKER_IMAGE_DEFAULT = "harmony-build-env";
 var GithubAppSchema = external_exports.object({
   app_id: external_exports.string(),
   installation_id: external_exports.string(),

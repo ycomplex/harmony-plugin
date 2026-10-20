@@ -9,3 +9,7 @@ plug in.
 
 `codex-phase0-findings.md` (B-1076) records the Codex Phase-0 spikes: the resolved CLI version, what was run
 (for real, and against a mock model provider), and which spikes are BLOCKED on a live plan login.
+
+`conductor-config.md` (B-1170) is the reference for the two-file conductor config (`.harmony/conductor.json`
+plus the host file): every key, precedence, how the project file is read from `main`, hot vs restart-needed
+keys, the three `harmony conductor config` commands, the adoption runbook and the deprecated list.
