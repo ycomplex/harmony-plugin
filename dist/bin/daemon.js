@@ -3983,8 +3983,8 @@ var require_RealtimeChannel = __commonJS({
       }
       /** @internal */
       _notThisChannelEvent(event, ref) {
-        const { close, error, leave, join: join4 } = constants_1.CHANNEL_EVENTS;
-        const events2 = [close, error, leave, join4];
+        const { close, error, leave, join: join5 } = constants_1.CHANNEL_EVENTS;
+        const events2 = [close, error, leave, join5];
         return ref && events2.includes(event) && ref !== this.joinPush.ref;
       }
       /** @internal */
@@ -17391,7 +17391,7 @@ var require_dist = __commonJS({
 });
 
 // src/bin/daemon.ts
-import { appendFileSync, readFileSync as readFileSync5 } from "node:fs";
+import { readFileSync as readFileSync5 } from "node:fs";
 import { exec } from "node:child_process";
 import { hostname } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -32152,7 +32152,7 @@ function firstToken(command) {
 function looksLikeScriptPath(token) {
   return token.includes("/");
 }
-function validateSteps(file, extensionPoint, steps, projectRoot, existsSync2) {
+function validateSteps(file, extensionPoint, steps, projectRoot, existsSync3) {
   if (!steps) return void 0;
   for (const step of steps) {
     if (isAgentTaskStep(step)) {
@@ -32165,7 +32165,7 @@ function validateSteps(file, extensionPoint, steps, projectRoot, existsSync2) {
     const token = firstToken(step.run);
     if (looksLikeScriptPath(token)) {
       const resolved = nodeResolve(projectRoot, token);
-      if (!existsSync2(resolved)) {
+      if (!existsSync3(resolved)) {
         return {
           file,
           reason: "missing-script",
@@ -32177,10 +32177,10 @@ function validateSteps(file, extensionPoint, steps, projectRoot, existsSync2) {
   return void 0;
 }
 function loadProjectManifest(projectRoot, deps = {}) {
-  const existsSync2 = deps.existsSync ?? nodeExistsSync2;
+  const existsSync3 = deps.existsSync ?? nodeExistsSync2;
   const readFileSync6 = deps.readFileSync ?? ((p) => nodeReadFileSync2(p, "utf8"));
   const file = nodeJoin(projectRoot, PROJECT_MANIFEST_RELATIVE_PATH);
-  if (!existsSync2(file)) return { kind: "absent" };
+  if (!existsSync3(file)) return { kind: "absent" };
   const raw = readFileSync6(file);
   let parsed;
   try {
@@ -32276,17 +32276,17 @@ function loadProjectManifest(projectRoot, deps = {}) {
     };
   }
   const stepErrors = {};
-  const buildErr = validateSteps(file, "build.before_pr", manifest.build?.before_pr, projectRoot, existsSync2);
+  const buildErr = validateSteps(file, "build.before_pr", manifest.build?.before_pr, projectRoot, existsSync3);
   if (buildErr) stepErrors["build.before_pr"] = buildErr;
   const releaseErr = validateSteps(
     file,
     "release.before_merge",
     manifest.release?.before_merge,
     projectRoot,
-    existsSync2
+    existsSync3
   );
   if (releaseErr) stepErrors["release.before_merge"] = releaseErr;
-  const verifyErr = validateSteps(file, "verify.before_ack", manifest.verify?.before_ack, projectRoot, existsSync2);
+  const verifyErr = validateSteps(file, "verify.before_ack", manifest.verify?.before_ack, projectRoot, existsSync3);
   if (verifyErr) stepErrors["verify.before_ack"] = verifyErr;
   return { kind: "ok", file, manifest, stepErrors };
 }
@@ -35147,9 +35147,9 @@ function buildAttestation(args, userId) {
 }
 var GH_RELEASE_INFO_TIMEOUT_MS = 5e3;
 async function runGhForReleaseInfo(args) {
-  const { execFile } = await import("node:child_process");
+  const { execFile: execFile2 } = await import("node:child_process");
   return await new Promise((resolve, reject) => {
-    execFile("gh", args, { timeout: GH_RELEASE_INFO_TIMEOUT_MS, maxBuffer: 1024 * 1024 }, (err, stdout) => {
+    execFile2("gh", args, { timeout: GH_RELEASE_INFO_TIMEOUT_MS, maxBuffer: 1024 * 1024 }, (err, stdout) => {
       if (err) reject(err);
       else resolve(String(stdout));
     });
@@ -36968,14 +36968,331 @@ function shouldInspectWorkerImage(profile) {
   return /\bdocker\b/.test(profile.launch ?? "");
 }
 
+// src/daemon/conductor-logger.ts
+import { appendFileSync, existsSync as existsSync2, mkdirSync, renameSync, statSync, unlinkSync } from "node:fs";
+import { homedir as homedir3 } from "node:os";
+import { dirname as dirname2, join as join4 } from "node:path";
+
+// src/daemon/log-shipper.ts
+import { execFile } from "node:child_process";
+var LOG_NAME = "harmony-conductor";
+var FLUSH_INTERVAL_MS = 5e3;
+var FLUSH_BATCH = 500;
+var QUEUE_CAP = 1e4;
+var PERMISSION_RETRY_MS = 5 * 6e4;
+var TOKEN_TTL_MS = 50 * 6e4;
+var ENTRIES_WRITE_URL = "https://logging.googleapis.com/v2/entries:write";
+var REQUEST_TIMEOUT_MS3 = 1e4;
+var TOKEN_TIMEOUT_MS = 15e3;
+function gcloudAccessToken(account) {
+  return new Promise((resolve, reject) => {
+    const env = account ? { ...process.env, CLOUDSDK_CORE_ACCOUNT: account } : process.env;
+    execFile("gcloud", ["auth", "print-access-token"], { env, timeout: TOKEN_TIMEOUT_MS }, (err, stdout) => {
+      const token = String(stdout ?? "").trim();
+      if (err || !token) reject(new Error(err ? `gcloud auth print-access-token failed (${err.message.split("\n")[0]})` : "gcloud returned no token"));
+      else resolve(token);
+    });
+  });
+}
+var SEVERITY = { debug: "DEBUG", info: "INFO", warn: "WARNING", error: "ERROR" };
+function createLogShipper(deps) {
+  const now = deps.now ?? Date.now;
+  const doFetch = deps.fetchImpl ?? ((...a) => fetch(...a));
+  const getToken = deps.fetchToken ?? gcloudAccessToken;
+  const cap = deps.queueCap ?? QUEUE_CAP;
+  const batchSize = deps.flushBatch ?? FLUSH_BATCH;
+  const permRetry = deps.permissionRetryMs ?? PERMISSION_RETRY_MS;
+  let queue = [];
+  let dropped = 0;
+  let dropFirst = 0;
+  let dropLast = 0;
+  let token = null;
+  let inflight = null;
+  let permWarned = false;
+  let retryAt = 0;
+  let timer;
+  let stopped = false;
+  const enabled = () => {
+    const p = deps.getProject();
+    return p && deps.getLogShipping() !== false ? p : void 0;
+  };
+  const noteDrop = (n) => {
+    if (dropped === 0) dropFirst = now();
+    dropped += n;
+    dropLast = now();
+  };
+  const enqueue = (entry) => {
+    if (stopped || !enabled()) return;
+    queue.push(entry);
+    while (queue.length > cap) {
+      queue.shift();
+      noteDrop(1);
+    }
+    if (queue.length >= batchSize) void flush();
+  };
+  const isPermission = (status, body) => status === 403 || /PERMISSION_DENIED/.test(body);
+  const flushOnce = async () => {
+    const project = enabled();
+    if (!project) {
+      queue = [];
+      return;
+    }
+    if (queue.length === 0 || now() < retryAt) return;
+    const batch = queue.slice(0, batchSize);
+    try {
+      if (!token || now() >= token.expires) {
+        token = { value: await getToken(deps.getAccount?.()), expires: now() + TOKEN_TTL_MS };
+      }
+      const projectKey = deps.getProjectKey?.();
+      const res = await doFetch(ENTRIES_WRITE_URL, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token.value}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          logName: `projects/${project}/logs/${LOG_NAME}`,
+          resource: { type: "global", labels: { project_id: project } },
+          ...projectKey ? { labels: { harmony_project: projectKey } } : {},
+          entries: batch.map((e) => ({
+            timestamp: e.ts,
+            severity: SEVERITY[e.level],
+            jsonPayload: {
+              event: e.event,
+              message: e.message,
+              ...e.ticket ? { ticket: e.ticket } : {},
+              ...e.conduction ? { conduction: e.conduction } : {},
+              ...e.leg ? { leg: e.leg } : {}
+            }
+          }))
+        }),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS3)
+      });
+      if (res.ok) {
+        queue = queue.slice(batch.length);
+        permWarned = false;
+        retryAt = 0;
+        if (dropped > 0) {
+          const n = dropped;
+          const from = new Date(dropFirst).toISOString();
+          const to = new Date(dropLast).toISOString();
+          dropped = 0;
+          deps.logLocal("warn", "log_shipping.dropped", `log shipping dropped ${n} entries between ${from} and ${to} (queue full while Cloud Logging was unreachable); the local log has them`);
+        }
+        return;
+      }
+      const body = await res.text().catch(() => "");
+      if (isPermission(res.status, body)) {
+        retryAt = now() + permRetry;
+        if (!permWarned) {
+          permWarned = true;
+          deps.logLocal(
+            "error",
+            "log_shipping.permission_denied",
+            `Cloud Logging refused the write to project ${project} (HTTP ${res.status}); grant the conductor host's gcloud account roles/logging.logWriter on that project. Retrying every ${Math.round(permRetry / 6e4)} minutes.`
+          );
+        }
+        return;
+      }
+      if (res.status === 401) token = null;
+      if (res.status === 400) {
+        queue = queue.slice(batch.length);
+        noteDrop(batch.length);
+      }
+    } catch {
+    }
+  };
+  const flush = () => {
+    inflight ??= flushOnce().catch(() => void 0).finally(() => {
+      inflight = null;
+    });
+    return inflight;
+  };
+  return {
+    enqueue,
+    flush,
+    start() {
+      if (timer !== void 0) return;
+      const set = deps.setIntervalImpl ?? ((fn, ms) => setInterval(fn, ms));
+      timer = set(() => void flush(), deps.flushIntervalMs ?? FLUSH_INTERVAL_MS);
+      if (typeof timer === "object" && timer !== null) timer.unref?.();
+    },
+    stop() {
+      stopped = true;
+      if (timer !== void 0) (deps.clearIntervalImpl ?? ((h) => clearInterval(h)))(timer);
+      timer = void 0;
+    },
+    stats: () => ({ queued: queue.length, dropped })
+  };
+}
+
+// src/daemon/conductor-logger.ts
+var ROTATE_BYTES = 10 * 1024 * 1024;
+var ROTATE_KEEP = 5;
+var SECRET_NAMES = [
+  "HARMONY_API_TOKEN",
+  "GIT_TOKEN",
+  "GH_TOKEN",
+  "GITHUB_TOKEN",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+  "CLAUDE_API_TOKEN",
+  "CODEX_ACCESS_TOKEN",
+  "HARMONY_SUPABASE_ANON_KEY"
+];
+var SECRET_NAME_PATTERN = /(TOKEN|SECRET|PASSWORD)$/;
+var MIN_SECRET_LENGTH = 8;
+function redact(text, env) {
+  const pairs = [];
+  for (const [name, value] of Object.entries(env)) {
+    if (!value || value.length < MIN_SECRET_LENGTH) continue;
+    if (SECRET_NAMES.includes(name) || SECRET_NAME_PATTERN.test(name)) pairs.push([name, value]);
+  }
+  pairs.sort((a, b) => b[1].length - a[1].length);
+  let out = text;
+  for (const [name, value] of pairs) if (out.includes(value)) out = out.split(value).join(`[${name}]`);
+  return out;
+}
+var realFs = {
+  appendFileSync: (p, d) => appendFileSync(p, d),
+  statSync: (p) => statSync(p),
+  renameSync,
+  unlinkSync,
+  existsSync: existsSync2,
+  mkdirSync: (p) => void mkdirSync(p, { recursive: true })
+};
+function createRotatingFile(path2, opts = {}) {
+  const fs = opts.fs ?? realFs;
+  const maxBytes = opts.maxBytes ?? ROTATE_BYTES;
+  const keep = opts.keep ?? ROTATE_KEEP;
+  let size;
+  const rotate = () => {
+    try {
+      if (fs.existsSync(`${path2}.${keep}`)) fs.unlinkSync(`${path2}.${keep}`);
+      for (let i = keep - 1; i >= 1; i--) if (fs.existsSync(`${path2}.${i}`)) fs.renameSync(`${path2}.${i}`, `${path2}.${i + 1}`);
+      if (fs.existsSync(path2)) fs.renameSync(path2, `${path2}.1`);
+    } catch {
+    }
+    size = 0;
+  };
+  return {
+    append(line) {
+      try {
+        if (size === void 0) {
+          try {
+            fs.mkdirSync(dirname2(path2));
+          } catch {
+          }
+          size = fs.existsSync(path2) ? fs.statSync(path2).size : 0;
+        }
+        const bytes = Buffer.byteLength(line, "utf8");
+        if (size > 0 && size + bytes > maxBytes) rotate();
+        fs.appendFileSync(path2, line);
+        size += bytes;
+      } catch {
+      }
+    }
+  };
+}
+function resolveConductorLogPath(env) {
+  return env.HARMONY_CONDUCTOR_LOG || join4(env.HARMONY_HOME || join4(homedir3(), ".harmony"), "logs", "conductor.log");
+}
+var LEADING_TICKET = /^([A-Za-z][A-Za-z0-9]*-\d+)\b/;
+var CONDUCTION_ID = /\bconduction ([0-9a-f]{8}-[0-9a-f-]{27})/;
+function levelOf(text) {
+  return /\b(fail(ed|ure)?|error|exiting 1|could not|cannot)\b/i.test(text) ? "warn" : "info";
+}
+function createConductorLogger(deps) {
+  const now = deps.now ?? (() => /* @__PURE__ */ new Date());
+  const remote = deps.env.HARMONY_CONDUCTOR_REMOTE === "1";
+  const appendText = deps.appendText ?? ((p, s) => appendFileSync(p, s));
+  let projectKey;
+  const emit = (level, event, rawMessage, ids, textFile) => {
+    const message = redact(rawMessage, deps.env);
+    const ts = now().toISOString();
+    const entry = {
+      ts,
+      level,
+      event,
+      message,
+      ...ids?.ticket ? { ticket: ids.ticket } : {},
+      ...ids?.conduction ? { conduction: ids.conduction } : {},
+      ...ids?.leg ? { leg: ids.leg } : {},
+      ...projectKey ? { project: projectKey } : {}
+    };
+    const json = `${JSON.stringify(entry)}
+`;
+    const stamped = `${ts} ${message}
+`;
+    deps.writeStdout(remote ? json : stamped);
+    if (textFile) {
+      const p = deps.getTextLogPath?.();
+      if (p) {
+        try {
+          appendText(p, stamped);
+        } catch {
+        }
+      }
+    }
+    deps.jsonFile.append(json);
+    try {
+      deps.shipper?.enqueue(entry);
+    } catch {
+    }
+  };
+  const adapt = (text, textFile) => {
+    const ids = {};
+    const t = LEADING_TICKET.exec(text);
+    if (t) ids.ticket = t[1];
+    const c = CONDUCTION_ID.exec(text);
+    if (c) ids.conduction = c[1];
+    emit(levelOf(text), "daemon", text, ids, textFile);
+  };
+  return {
+    log: (level, event, message, ids) => emit(level, event, message, ids, true),
+    line: (text) => adapt(text, true),
+    bootLine: (text) => adapt(text, false),
+    setProjectKey(key) {
+      projectKey = key;
+    },
+    stop() {
+      deps.shipper?.stop();
+    }
+  };
+}
+function createDaemonLogger(opts) {
+  const ref = {};
+  let projectKey;
+  const shipper = createLogShipper({
+    getProject: () => opts.getRuntime()?.getGcpProject?.(),
+    getLogShipping: () => opts.getRuntime()?.getLogShipping(),
+    getAccount: () => opts.getRuntime()?.getGcloudAccount?.(),
+    getProjectKey: () => projectKey,
+    logLocal: (level, event, message) => ref.logger?.log(level, event, message)
+  });
+  const logger = createConductorLogger({
+    env: opts.env,
+    writeStdout: (s) => void process.stdout.write(s),
+    getTextLogPath: opts.getTextLogPath,
+    jsonFile: createRotatingFile(resolveConductorLogPath(opts.env)),
+    shipper
+  });
+  ref.logger = logger;
+  shipper.start();
+  const base = logger;
+  return {
+    ...base,
+    setProjectKey(key) {
+      projectKey = key;
+      base.setProjectKey(key);
+    }
+  };
+}
+
 // src/daemon/conductor-config-runtime.ts
 import { existsSync as fsExistsSync2, readFileSync as fsReadFileSync2 } from "node:fs";
 
 // src/config/conductor-project-source.ts
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync as readFileSync4, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname as dirname2 } from "node:path";
-var REQUEST_TIMEOUT_MS3 = 1e4;
+import { chmodSync, mkdirSync as mkdirSync2, readFileSync as readFileSync4, renameSync as renameSync2, rmSync, writeFileSync } from "node:fs";
+import { dirname as dirname3 } from "node:path";
+var REQUEST_TIMEOUT_MS4 = 1e4;
 function gitBlobSha(text) {
   const body = Buffer.from(text, "utf8");
   return createHash("sha1").update(`blob ${body.length}\0`).update(body).digest("hex");
@@ -37005,7 +37322,7 @@ async function fetchProjectFile(input) {
     if (input.etag) headers["If-None-Match"] = input.etag;
     const res = await fetchImpl(`${apiBase}/repos/${input.repo}/contents/${encodePath(path2)}?ref=${encodeURIComponent(ref)}`, {
       headers,
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS3)
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS4)
     });
     if (res.status === 304) return { status: "not-modified" };
     if (res.status === 404 || res.status === 403) {
@@ -37036,13 +37353,13 @@ function readSnapshot(path2) {
   }
 }
 function writeSnapshot(path2, snap) {
-  mkdirSync(dirname2(path2), { recursive: true });
+  mkdirSync2(dirname3(path2), { recursive: true });
   const tmp = `${path2}.${process.pid}.${Date.now().toString(36)}.tmp`;
   try {
     writeFileSync(tmp, `${JSON.stringify(snap, null, 2)}
 `, { mode: 384 });
     chmodSync(tmp, 384);
-    renameSync(tmp, path2);
+    renameSync2(tmp, path2);
   } catch (err) {
     rmSync(tmp, { force: true });
     throw err;
@@ -37111,7 +37428,9 @@ function inertRuntime() {
     async applyNow() {
     },
     getModelPolicy: () => void 0,
-    getLogShipping: () => void 0
+    getLogShipping: () => void 0,
+    getGcpProject: () => void 0,
+    getGcloudAccount: () => void 0
   };
 }
 var errMessage = (e) => e instanceof Error ? e.message : String(e);
@@ -37180,6 +37499,8 @@ async function startConductorConfigRuntime(deps) {
   let lastRestartLine = "";
   let modelPolicy = policyOf(first.merged);
   let logShipping = first.merged.log_shipping;
+  let gcpProject = first.merged.gcp?.project;
+  let gcloudAccount = first.merged.gcloud?.account;
   const pushLaunchEnv = (merged) => applyLaunchEnv(env, launchEnvFromMerged(merged), applied);
   pushLaunchEnv(first.merged);
   log(`conductor config: sources=[${first.sources.join("; ")}]`);
@@ -37231,6 +37552,8 @@ ${msg}`);
         logShipping = next.merged.log_shipping;
         log(`conductor config: log_shipping ${logShipping === void 0 ? "unset" : String(logShipping)} (recorded)`);
       }
+      gcpProject = next.merged.gcp?.project;
+      gcloudAccount = next.merged.gcloud?.account;
       const changed = pushLaunchEnv(next.merged);
       if (changed.length) log(`conductor config: launch env updated: ${changed.join(", ")}`);
       current = next;
@@ -37259,7 +37582,9 @@ ${msg}`);
     defaultProfile: first.merged.profile,
     applyNow: tick,
     getModelPolicy: () => modelPolicy,
-    getLogShipping: () => logShipping
+    getLogShipping: () => logShipping,
+    getGcpProject: () => gcpProject,
+    getGcloudAccount: () => gcloudAccount
   };
 }
 
@@ -38860,11 +39185,15 @@ async function main() {
   let deploymentConfig = null;
   let namedProfile = null;
   let conductorRuntime;
+  const conductorLogger = createDaemonLogger({
+    env: process.env,
+    getTextLogPath: () => config?.logPath,
+    getRuntime: () => conductorRuntime
+  });
   try {
     conductorRuntime = await startConductorConfigRuntime({
       env: process.env,
-      log: (line) => process.stdout.write(`${(/* @__PURE__ */ new Date()).toISOString()} ${line}
-`),
+      log: (line) => conductorLogger.bootLine(line),
       // `config` (the DaemonConfig) is loaded below; the runtime only touches this after boot.
       config: {
         get maxConcurrentWorkers() {
@@ -38897,17 +39226,7 @@ ${err instanceof Error ? err.message : String(err)}
     );
     process.exit(1);
   }
-  const log = (line) => {
-    const stamped = `${(/* @__PURE__ */ new Date()).toISOString()} ${line}
-`;
-    process.stdout.write(stamped);
-    if (config.logPath) {
-      try {
-        appendFileSync(config.logPath, stamped);
-      } catch {
-      }
-    }
-  };
+  const log = (line) => conductorLogger.line(line);
   const runCommand = (cmd, opts) => new Promise((resolve) => {
     const child = exec(cmd, { env: opts?.env });
     const chunks = [];
@@ -39003,6 +39322,7 @@ ${err instanceof Error ? err.message : String(err)}
   const client = await createAuthenticatedClient(auth);
   const projectId = auth.getProjectId();
   const projectKey = (await getProject(client, projectId)).key;
+  conductorLogger.setProjectKey(projectKey);
   const leaseHolder = `${hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
   let workspaceId = null;
   try {
@@ -39142,6 +39462,7 @@ ${err instanceof Error ? err.message : String(err)}
     if (hints) await closeHintsBounded(hints, log, HINT_CLOSE_TIMEOUT_MS);
     await markCleanShutdownBounded(client, leaseHolder, log, CLEAN_SHUTDOWN_TIMEOUT_MS);
     log(shutdownLine(signal, detectSupervisor(process.env)));
+    conductorLogger.stop();
     process.exit(0);
   };
   process.on("SIGTERM", () => {

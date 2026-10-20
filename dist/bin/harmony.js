@@ -7276,8 +7276,8 @@ var require_RealtimeChannel = __commonJS({
       }
       /** @internal */
       _notThisChannelEvent(event, ref) {
-        const { close, error, leave, join: join6 } = constants_1.CHANNEL_EVENTS;
-        const events2 = [close, error, leave, join6];
+        const { close, error, leave, join: join7 } = constants_1.CHANNEL_EVENTS;
+        const events2 = [close, error, leave, join7];
         return ref && events2.includes(event) && ref !== this.joinPush.ref;
       }
       /** @internal */
@@ -44571,6 +44571,143 @@ function registerConductorCommands(program3, makeDeps = defaultCliDeps) {
   config.command("doctor").description("Explain the conductor config: sources, every issue, conflicts between layers, legacy sources in use. Exits 1 on any issue").option("--config <path>", "Explicit deployment.json path (overrides HARMONY_DEPLOYMENT_CONFIG)").action((opts) => emit(program3, runDoctor(makeDeps(), opts)));
 }
 
+// src/cli/commands/conductor-logs.ts
+import { existsSync as fsExistsSync3, readFileSync as fsReadFileSync3 } from "node:fs";
+import { execFile } from "node:child_process";
+
+// src/daemon/conductor-logger.ts
+import { homedir as homedir3 } from "node:os";
+import { dirname as dirname4, join as join4 } from "node:path";
+
+// src/daemon/log-shipper.ts
+var PERMISSION_RETRY_MS = 5 * 6e4;
+var TOKEN_TTL_MS = 50 * 6e4;
+
+// src/daemon/conductor-logger.ts
+var ROTATE_BYTES = 10 * 1024 * 1024;
+var ROTATE_KEEP = 5;
+function resolveConductorLogPath(env2) {
+  return env2.HARMONY_CONDUCTOR_LOG || join4(env2.HARMONY_HOME || join4(homedir3(), ".harmony"), "logs", "conductor.log");
+}
+
+// src/cli/commands/conductor-logs.ts
+var LOG_NAME = "harmony-conductor";
+var DEFAULT_LIMIT2 = 200;
+function defaultLogsDeps() {
+  return {
+    env: process.env,
+    now: Date.now,
+    existsSync: fsExistsSync3,
+    readFileSync: (p) => fsReadFileSync3(p, "utf8"),
+    runGcloud: (args) => new Promise((resolve3) => {
+      execFile("gcloud", args, { maxBuffer: 64 * 1024 * 1024, timeout: 6e4 }, (err, stdout, stderr) => {
+        const code = err ? typeof err.code === "number" ? err.code : 1 : 0;
+        resolve3({ code, stdout: String(stdout ?? ""), stderr: String(stderr ?? err?.message ?? "") });
+      });
+    }),
+    configuredProject: () => {
+      try {
+        return loadConductorConfigSync({ env: process.env })?.merged.gcp?.project;
+      } catch {
+        return void 0;
+      }
+    }
+  };
+}
+var UNIT_MS = { s: 1e3, m: 6e4, h: 36e5, d: 864e5 };
+function parseDuration(text) {
+  const m = /^(\d+)([smhd])$/.exec(text.trim());
+  if (!m) return null;
+  const ms = Number(m[1]) * UNIT_MS[m[2]];
+  return ms > 0 ? ms : null;
+}
+function cloudFilter(project, sinceIso) {
+  return `logName="projects/${project}/logs/${LOG_NAME}" AND timestamp>="${sinceIso}"`;
+}
+function formatRow(r) {
+  return [r.ts, r.level.toUpperCase().padEnd(7), r.event, r.ticket ?? "-", r.message].join(" ");
+}
+function readLocal(deps, path3, sinceMs) {
+  const rows = [];
+  for (let i = ROTATE_KEEP; i >= 0; i--) {
+    const file = i === 0 ? path3 : `${path3}.${i}`;
+    if (!deps.existsSync(file)) continue;
+    let text;
+    try {
+      text = deps.readFileSync(file);
+    } catch {
+      continue;
+    }
+    for (const raw of text.split("\n")) {
+      if (!raw.trim()) continue;
+      try {
+        const o = JSON.parse(raw);
+        if (typeof o.ts !== "string" || Date.parse(o.ts) < sinceMs) continue;
+        rows.push({ ts: o.ts, level: String(o.level ?? "info"), event: String(o.event ?? ""), ticket: o.ticket, message: String(o.message ?? "") });
+      } catch {
+      }
+    }
+  }
+  return rows;
+}
+async function runConductorLogs(deps, opts) {
+  const spanMs = parseDuration(opts.since);
+  if (spanMs === null) return { exitCode: 2, lines: [], errLines: [`--since must look like 30m, 1h or 2d (got "${opts.since}")`] };
+  const limit = opts.limit ?? DEFAULT_LIMIT2;
+  if (!Number.isInteger(limit) || limit < 1) return { exitCode: 2, lines: [], errLines: ["--limit must be a positive integer"] };
+  const sinceMs = deps.now() - spanMs;
+  const localPath = resolveConductorLogPath(deps.env);
+  const useLocal = opts.source === "local" || opts.source === void 0 && deps.existsSync(localPath);
+  if (useLocal) {
+    if (!deps.existsSync(localPath)) return { exitCode: 1, lines: [], errLines: [`no local conductor log at ${localPath}`] };
+    const rows2 = readLocal(deps, localPath, sinceMs).slice(-limit);
+    return { exitCode: 0, lines: rows2.map(formatRow), errLines: [], source: "local" };
+  }
+  const project = opts.project || deps.env.CLOUDSDK_CORE_PROJECT || deps.configuredProject?.();
+  if (!project) {
+    return { exitCode: 1, lines: [], errLines: ["no GCP project: pass --project, set gcp.project in .harmony/conductor.json, or export CLOUDSDK_CORE_PROJECT"] };
+  }
+  const filter = cloudFilter(project, new Date(sinceMs).toISOString());
+  const r = await deps.runGcloud(["logging", "read", filter, `--project=${project}`, "--format=json", `--limit=${limit}`, "--order=desc"]);
+  if (r.code !== 0) return { exitCode: 1, lines: [], errLines: [`gcloud logging read failed: ${r.stderr.trim().split("\n")[0] || `exit ${r.code}`}`] };
+  let parsed;
+  try {
+    parsed = r.stdout.trim() ? JSON.parse(r.stdout) : [];
+  } catch {
+    return { exitCode: 1, lines: [], errLines: ["gcloud logging read returned output that is not JSON"] };
+  }
+  const rows = (Array.isArray(parsed) ? parsed : []).map((e) => {
+    const p = e.jsonPayload ?? {};
+    return {
+      ts: String(e.timestamp ?? ""),
+      level: String(e.severity ?? "INFO").replace("WARNING", "warn").toLowerCase(),
+      event: String(p.event ?? ""),
+      ticket: typeof p.ticket === "string" ? p.ticket : void 0,
+      message: String(p.message ?? e.textPayload ?? "")
+    };
+  }).reverse();
+  return { exitCode: 0, lines: rows.map(formatRow), errLines: [], source: "cloud" };
+}
+function registerConductorLogsCommand(program3, makeDeps = defaultLogsDeps) {
+  const conductor = program3.commands.find((c) => c.name() === "conductor") ?? program3.command("conductor").description("Conductor operations");
+  conductor.command("logs").description("Read the conductor daemon log (local JSON-lines file, else Cloud Logging via gcloud)").requiredOption("--since <duration>", "How far back: 30m, 1h, 2d").option("--source <source>", "local | cloud (default: local when the file exists)").option("--limit <n>", `Maximum lines (default ${DEFAULT_LIMIT2})`).option("--project <id>", "GCP project for --source cloud (default: gcp.project from the conductor config)").action(async (o) => {
+    if (o.source !== void 0 && o.source !== "local" && o.source !== "cloud") {
+      console.error("--source must be local or cloud");
+      process.exitCode = 2;
+      return;
+    }
+    const res = await runConductorLogs(makeDeps(), {
+      since: o.since,
+      source: o.source,
+      limit: o.limit === void 0 ? void 0 : Number(o.limit),
+      project: o.project
+    });
+    for (const l of res.lines) console.log(l);
+    for (const l of res.errLines) console.error(l);
+    process.exitCode = res.exitCode;
+  });
+}
+
 // src/cli/commands/model.ts
 async function resolveGateRunConfig() {
   const conductionId = getConductionId();
@@ -44748,7 +44885,7 @@ import {
   writeFileSync as writeFileSync3,
   appendFileSync
 } from "node:fs";
-import { join as join4, resolve as resolve2 } from "node:path";
+import { join as join5, resolve as resolve2 } from "node:path";
 
 // src/agents/hooks.ts
 var HARMONY_HOOKS = {
@@ -44851,13 +44988,13 @@ function collectInstructionSources(input) {
   const ws = resolve2(input.workspaceDir);
   const plugin = resolve2(input.pluginDir);
   const candidates = [
-    { label: "workspace/CLAUDE.md", path: join4(ws, "CLAUDE.md") },
-    { label: "plugin/CLAUDE.md", path: join4(plugin, "CLAUDE.md") },
-    { label: "web/CLAUDE.md", path: join4(ws, "web", "CLAUDE.md") }
+    { label: "workspace/CLAUDE.md", path: join5(ws, "CLAUDE.md") },
+    { label: "plugin/CLAUDE.md", path: join5(plugin, "CLAUDE.md") },
+    { label: "web/CLAUDE.md", path: join5(ws, "web", "CLAUDE.md") }
   ];
   for (const p of input.extraRepoPaths ?? []) {
     const abs = resolve2(p);
-    candidates.push({ label: `${abs.replace(/^\/+/, "")}/CLAUDE.md`, path: join4(abs, "CLAUDE.md") });
+    candidates.push({ label: `${abs.replace(/^\/+/, "")}/CLAUDE.md`, path: join5(abs, "CLAUDE.md") });
   }
   const seen = /* @__PURE__ */ new Set();
   const out = [];
@@ -44869,11 +45006,11 @@ function collectInstructionSources(input) {
   return out;
 }
 function collectSkillCapabilities(pluginDir) {
-  const root = join4(resolve2(pluginDir), "skills");
+  const root = join5(resolve2(pluginDir), "skills");
   if (!existsSync2(root)) return [];
   const out = [];
   for (const name of readdirSync(root).sort()) {
-    const file = join4(root, name, "SKILL.md");
+    const file = join5(root, name, "SKILL.md");
     if (!isFile(file)) continue;
     const value = capabilitiesFromSkillMd(readFileSync5(file, "utf8"));
     if (value === void 0) continue;
@@ -44890,21 +45027,21 @@ function codexOverlayFor(pluginDir) {
 ${rules}` : CODEX_WORKER_OVERLAY;
 }
 function excludeFromGit(workspaceDir, entries) {
-  const gitDir = join4(workspaceDir, ".git");
+  const gitDir = join5(workspaceDir, ".git");
   if (!existsSync2(gitDir)) return;
-  const infoDir = join4(gitDir, "info");
+  const infoDir = join5(gitDir, "info");
   mkdirSync3(infoDir, { recursive: true });
-  const excludePath = join4(infoDir, "exclude");
+  const excludePath = join5(infoDir, "exclude");
   const current = existsSync2(excludePath) ? readFileSync5(excludePath, "utf8") : "";
   const have = new Set(current.split("\n"));
   const missing = entries.filter((e) => !have.has(e));
   if (missing.length) appendFileSync(excludePath, (current === "" || current.endsWith("\n") ? "" : "\n") + missing.join("\n") + "\n");
 }
 function linkSkills(workspaceDir, pluginDir) {
-  const link = join4(workspaceDir, CODEX_SKILLS_LINK);
-  const target = join4(resolve2(pluginDir), "skills");
+  const link = join5(workspaceDir, CODEX_SKILLS_LINK);
+  const target = join5(resolve2(pluginDir), "skills");
   if (!existsSync2(target)) throw new Error(`skills directory not found at ${target}`);
-  mkdirSync3(join4(workspaceDir, ".agents"), { recursive: true });
+  mkdirSync3(join5(workspaceDir, ".agents"), { recursive: true });
   let st;
   try {
     st = lstatSync(link);
@@ -44923,7 +45060,7 @@ function installAuth(authFile, codexHome) {
   if (!isFile(authFile)) {
     throw new Error(`the Codex login-cache file is missing at ${authFile} (HARMONY_CODEX_AUTH_FILE) \u2014 mount it, see container/README.md "Codex credential runbook"`);
   }
-  const dest = join4(codexHome, CODEX_AUTH_FILE_NAME);
+  const dest = join5(codexHome, CODEX_AUTH_FILE_NAME);
   if (resolve2(authFile) !== resolve2(dest)) {
     copyFileSync(authFile, dest);
   }
@@ -44962,17 +45099,17 @@ function provisionCodex(input) {
   const agentsMd = renderCodexAgentsMd(sources, codexOverlayFor(input.pluginDir));
   const problems = verifyCodexAgentsMd(agentsMd, sources);
   if (problems.length) throw new Error(`AGENTS.md preflight failed: ${problems.join("; ")}`);
-  const agentsMdPath = join4(workspaceDir, "AGENTS.md");
+  const agentsMdPath = join5(workspaceDir, "AGENTS.md");
   if (existsSync2(agentsMdPath) && !readFileSync5(agentsMdPath, "utf8").startsWith(GENERATED_AGENTS_HEADER)) {
     throw new Error(`${agentsMdPath} exists and is not a generated file \u2014 refusing to overwrite a repository's own AGENTS.md`);
   }
   preflightHookScripts(resolve2(input.pluginDir));
   mkdirSync3(codexHome, { recursive: true });
   const config = renderCodexConfig(HARMONY_MCP_CONNECTION, { pluginRoot: resolve2(input.pluginDir) });
-  const configPath = join4(codexHome, config.fileName);
+  const configPath = join5(codexHome, config.fileName);
   writeFileSync3(configPath, config.content, { mode: 420 });
   const hooks = renderCodexHooks(resolve2(input.pluginDir));
-  const hooksPath = join4(codexHome, hooks.fileName);
+  const hooksPath = join5(codexHome, hooks.fileName);
   writeFileSync3(hooksPath, hooks.content, { mode: 420 });
   writeFileSync3(agentsMdPath, agentsMd);
   const skillsLink = linkSkills(workspaceDir, input.pluginDir);
@@ -44990,8 +45127,8 @@ function provisionCodex(input) {
 }
 
 // src/cli/commands/agent.ts
-import { homedir as homedir3 } from "node:os";
-import { join as join5 } from "node:path";
+import { homedir as homedir4 } from "node:os";
+import { join as join6 } from "node:path";
 function launchRunConfig() {
   try {
     return getRunConfig();
@@ -45073,7 +45210,7 @@ function registerAgentCommands(program3) {
       const r = provisionCodex({
         pluginDir: opts.pluginDir,
         workspaceDir: opts.workspace,
-        codexHome: opts.codexHome || process.env.CODEX_HOME || join5(homedir3(), ".codex"),
+        codexHome: opts.codexHome || process.env.CODEX_HOME || join6(homedir4(), ".codex"),
         authFile,
         extraRepoPaths: opts.extraRepo
       });
@@ -45125,7 +45262,7 @@ function registerAgentCommands(program3) {
     if (!id) process.exit(1);
     try {
       mkdirSync4(opts.dir, { recursive: true });
-      const target = join5(opts.dir, CODEX_THREAD_FILE_NAME);
+      const target = join6(opts.dir, CODEX_THREAD_FILE_NAME);
       const tmp = `${target}.tmp-${process.pid}`;
       writeFileSync4(tmp, `${JSON.stringify(buildCodexThreadRecord(id, opts.model))}
 `);
@@ -45604,7 +45741,7 @@ function registerLegOutputCommands(program3) {
 // src/cli/commands/gates.ts
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync as mkdirSync5, readFileSync as readFileSync9, renameSync as renameSync3, writeFileSync as writeFileSync5 } from "node:fs";
-import { dirname as dirname4 } from "node:path";
+import { dirname as dirname5 } from "node:path";
 
 // src/config/notify-sync.ts
 import { createHash as createHash2 } from "node:crypto";
@@ -45894,7 +46031,7 @@ function registerGatesCommands(program3) {
 }
 function writeGateEvidenceMarker(projectRoot, marker) {
   const filePath = gateEvidenceMarkerPath(projectRoot, marker.extension_point);
-  mkdirSync5(dirname4(filePath), { recursive: true });
+  mkdirSync5(dirname5(filePath), { recursive: true });
   const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   writeFileSync5(tmpPath, `${JSON.stringify(marker, null, 2)}
 `, "utf8");
@@ -45923,7 +46060,7 @@ function productionNotifySyncIO() {
       }
     },
     writeCache: (path3, contents) => {
-      mkdirSync5(dirname4(path3), { recursive: true });
+      mkdirSync5(dirname5(path3), { recursive: true });
       const tmpPath = `${path3}.tmp-${process.pid}-${Date.now()}`;
       writeFileSync5(tmpPath, contents, "utf8");
       renameSync3(tmpPath, path3);
@@ -46347,9 +46484,9 @@ function evaluateEligibility(input) {
 }
 var GITHUB_PR_URL = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?/i;
 async function runGhCommand(args) {
-  const { execFile } = await import("node:child_process");
+  const { execFile: execFile2 } = await import("node:child_process");
   return await new Promise((resolve3, reject) => {
-    execFile("gh", args, { maxBuffer: 10 * 1024 * 1024 }, (err, stdout) => {
+    execFile2("gh", args, { maxBuffer: 10 * 1024 * 1024 }, (err, stdout) => {
       if (err) reject(err);
       else resolve3(stdout);
     });
@@ -46442,9 +46579,9 @@ function buildAttestation(args, userId) {
 }
 var GH_RELEASE_INFO_TIMEOUT_MS = 5e3;
 async function runGhForReleaseInfo(args) {
-  const { execFile } = await import("node:child_process");
+  const { execFile: execFile2 } = await import("node:child_process");
   return await new Promise((resolve3, reject) => {
-    execFile("gh", args, { timeout: GH_RELEASE_INFO_TIMEOUT_MS, maxBuffer: 1024 * 1024 }, (err, stdout) => {
+    execFile2("gh", args, { timeout: GH_RELEASE_INFO_TIMEOUT_MS, maxBuffer: 1024 * 1024 }, (err, stdout) => {
       if (err) reject(err);
       else resolve3(String(stdout));
     });
@@ -47110,6 +47247,7 @@ registerBriefCommands(program2);
 registerConductCommand(program2);
 registerConfigCommands(program2);
 registerConductorCommands(program2);
+registerConductorLogsCommand(program2);
 registerModelCommands(program2);
 registerAgentCommands(program2);
 registerLegCostCommands(program2);

@@ -283,3 +283,18 @@ describe('the refresh timer', () => {
     expect(() => tm.t.fn!()).not.toThrow();
   });
 });
+
+describe('B-1174: gcp.project / gcloud.account getters for the log shipper', () => {
+  it('follow the merged config hot, and are undefined on a legacy-only host', async () => {
+    writeFileSync(hostPath(), host({ gcloud: { account: 'ops@example.com' } }));
+    const s = server(project());
+    const { rt, tm } = await start(s.impl);
+    expect(rt.getGcpProject()).toBe('proj');
+    expect(rt.getGcloudAccount()).toBe('ops@example.com');
+    s.serve.body = project({ gcp: { project: 'proj-2' } });
+    tm.t.fn!();
+    await rt.applyNow();
+    expect(rt.getGcpProject()).toBe('proj-2');
+    expect(rt.getGcloudAccount()).toBe('ops@example.com');
+  });
+});
