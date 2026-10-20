@@ -271,6 +271,9 @@ if probe gcloud container node-pools describe "$POOL" --cluster "$CLUSTER" --zon
     '--format=value(config.machineType,config.diskType,autoscaling.minNodeCount,autoscaling.maxNodeCount)' 2>/dev/null || true)"
   taints="$(gcloud container node-pools describe "$POOL" --cluster "$CLUSTER" --zone "$ZONE" --project "$PROJECT" \
     '--flatten=config.taints[]' '--format=value(config.taints.key,config.taints.value,config.taints.effect)' 2>/dev/null || true)"
+  # value(config.labels) prints k=v pairs joined by ';' (empty when the pool has no labels).
+  labels="$(gcloud container node-pools describe "$POOL" --cluster "$CLUSTER" --zone "$ZONE" --project "$PROJECT" \
+    '--format=value(config.labels)' 2>/dev/null || true)"
   have_mt="$(printf '%s' "$pool_line" | awk -F'\t' '{print $1}')"
   have_dt="$(printf '%s' "$pool_line" | awk -F'\t' '{print $2}')"
   have_min="$(printf '%s' "$pool_line" | awk -F'\t' '{print $3}')"
@@ -285,13 +288,20 @@ if probe gcloud container node-pools describe "$POOL" --cluster "$CLUSTER" --zon
   if ! printf '%s\n' "$taints" | awk -F'\t' '$1 == "harmony-leg" && $2 == "true" && $3 == "NO_SCHEDULE" { f = 1 } END { exit !f }'; then
     echo "DRIFT: pool $POOL is missing the taint harmony-leg=true:NoSchedule"; drift=1
   fi
+  # Legs select harmony-leg=true (gke-render-leg.mjs); without the label they sit Pending and the
+  # autoscaler never scales the pool up. The taint keeps other pods off; the label lets legs on.
+  if ! printf '%s' "$labels" | tr ';' '\n' | grep -qx 'harmony-leg=true'; then
+    echo "DRIFT: pool $POOL is missing the node label harmony-leg=true (legs will never schedule)"
+    echo "  fix: gcloud container node-pools update $POOL --cluster $CLUSTER --zone $ZONE --project $PROJECT --node-labels harmony-leg=true"
+    drift=1
+  fi
   [ "$drift" -eq 0 ] && echo "node pool $POOL: matches the expected settings"
   [ "$drift" -eq 0 ] || echo "(nothing was changed — fix the pool by hand or recreate it if the drift matters)"
 else
   run gcloud container node-pools create "$POOL" --cluster "$CLUSTER" --zone "$ZONE" --project "$PROJECT" \
     --machine-type "$MACHINE_TYPE" --disk-type pd-standard --disk-size 100 --image-type COS_CONTAINERD \
     --enable-image-streaming --enable-autoscaling --min-nodes 0 --max-nodes "$MAX_NODES" --num-nodes 0 \
-    --node-taints harmony-leg=true:NoSchedule
+    --node-taints harmony-leg=true:NoSchedule --node-labels harmony-leg=true
 fi
 
 step "6. Credentials (temporary kubeconfig)"

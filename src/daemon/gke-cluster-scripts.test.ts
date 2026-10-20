@@ -95,6 +95,8 @@ function makeWorld(): World {
     '    case " $* " in',
     '      *workloadMetadataConfig*) [ -f "$STUB_STATE/gkemd" ] && echo "GKE_METADATA" ;;',
     '      *" --flatten=config.taints[] "*) [ -n "${STUB_POOL_NO_TAINT:-}" ] || printf \'harmony-leg\\ttrue\\tNO_SCHEDULE\\n\' ;;',
+    // Real gcloud prints value(config.labels) as k=v pairs joined by ';', and an empty line for none.
+    '      *"--format=value(config.labels)"*) [ -n "${STUB_POOL_NO_LABEL:-}" ] && echo "" || echo "cloud.google.com/x=y;harmony-leg=true" ;;',
     '      *--format=*) printf \'%s\\t%s\\t%s\\t%s\\n\' "${STUB_POOL_MT:-e2-standard-8}" "${STUB_POOL_DT:-pd-standard}" "" "${STUB_POOL_MAX:-2}" ;;',
     '    esac; exit 0 ;;',
     '  *" container node-pools create "*) touch "$STUB_STATE/pool"; exit 0 ;;',
@@ -235,6 +237,7 @@ describe.skipIf(!CAPABLE)('container/gke/setup-cluster.sh (EXECUTED against stub
     expect(pool).toBeDefined();
     expect(flagValue(pool, '--disk-type')).toBe('pd-standard');
     expect(flagValue(pool, '--node-taints')).toBe('harmony-leg=true:NoSchedule');
+    expect(flagValue(pool, '--node-labels')).toBe('harmony-leg=true'); // gke-render-leg.mjs selects on it
     expect(flagValue(pool, '--min-nodes')).toBe('0');
     expect(flagValue(pool, '--max-nodes')).toBe('2');
     expect(flagValue(pool, '--num-nodes')).toBe('0');
@@ -369,7 +372,7 @@ describe.skipIf(!CAPABLE)('container/gke/setup-cluster.sh (EXECUTED against stub
     writeFileSync(join(world.state, 'cluster'), '');
     writeFileSync(join(world.state, 'pool'), '');
     for (const f of ['wi', 'fuse', 'gkemd']) writeFileSync(join(world.state, f), ''); // B-1169 enable-only steps already satisfied
-    const r = setup(world, [], { STUB_POOL_MT: 'n1-standard-4', STUB_POOL_DT: 'pd-ssd', STUB_POOL_MAX: '5', STUB_POOL_NO_TAINT: '1' });
+    const r = setup(world, [], { STUB_POOL_MT: 'n1-standard-4', STUB_POOL_DT: 'pd-ssd', STUB_POOL_MAX: '5', STUB_POOL_NO_TAINT: '1', STUB_POOL_NO_LABEL: '1' });
     expect(r.status).toBe(0);
     const g = calls(world, 'gcloud');
     expect(g.some((c) => c.some((a) => ['create', 'update', 'delete', 'resize', 'upgrade'].includes(a)) && c.includes('container'))).toBe(false);
@@ -378,7 +381,8 @@ describe.skipIf(!CAPABLE)('container/gke/setup-cluster.sh (EXECUTED against stub
     expect(drift.join('\n')).toContain('disk type');
     expect(drift.join('\n')).toContain('max nodes');
     expect(drift.join('\n')).toContain('taint');
-    expect(drift.length).toBe(4);
+    expect(drift.join('\n')).toContain('node label harmony-leg=true');
+    expect(drift.length).toBe(5);
     // and an undrifted pool reports none
     const clean = setup(world);
     expect(clean.status).toBe(0);
@@ -737,6 +741,41 @@ describe.skipIf(!CAPABLE)('container/gke/sweep-ticket-disks.sh (EXECUTED against
       const r = sweep(world, ['ticket-b-1006'], [], { STUB_TASK_B_1006: excluded('In Progress', hoursAgo(500)) });
       expect(deletes(world)).toEqual([]);
       expect(r.stdout).toContain('mounted by a running pod');
+    });
+  });
+
+  describe('the env file (launchd has no login shell, so the ticket-state reads need daemon.env)', () => {
+    // The stub harmony reads STUB_TASK_<KEY>; only the env file defines B-1007's, so its disk is deleted
+    // only when the file was really loaded into the environment the harmony CLI runs in.
+    const envLine = `STUB_TASK_B_1007='${task('Verified')}'\n`;
+
+    it('loads ~/.harmony/daemon.env by default, without printing values', () => {
+      const world = makeWorld();
+      mkdirSync(join(world.dir, 'home', '.harmony'), { recursive: true });
+      writeFileSync(join(world.dir, 'home', '.harmony', 'daemon.env'), envLine);
+      const r = sweep(world, ['ticket-b-1007']);
+      expect(r.status).toBe(0);
+      expect(deletes(world)).toEqual(['ticket-b-1007']);
+      expect(r.stdout).toContain('(values not shown)');
+      expect(r.stdout).not.toContain('Verified\'');
+    });
+
+    it('a missing DEFAULT env file is skipped; a missing --env-file path is an error (exit 2)', () => {
+      const skipped = sweep(makeWorld(), ['ticket-b-1004']);
+      expect(skipped.status).toBe(0);
+      expect(skipped.stdout).not.toContain('loaded env file');
+      const missing = sweep(makeWorld(), ['ticket-b-1004'], ['--env-file', '/nonexistent/daemon.env']);
+      expect(missing.status).toBe(2);
+      expect(missing.stderr).toContain('env file not found');
+    });
+
+    it('--env-file none skips it, so the state read fails closed and the disk is kept (exit 3)', () => {
+      const world = makeWorld();
+      mkdirSync(join(world.dir, 'home', '.harmony'), { recursive: true });
+      writeFileSync(join(world.dir, 'home', '.harmony', 'daemon.env'), envLine);
+      const r = sweep(world, ['ticket-b-1007'], ['--env-file', 'none']);
+      expect(deletes(world)).toEqual([]);
+      expect(r.status).toBe(3);
     });
   });
 
