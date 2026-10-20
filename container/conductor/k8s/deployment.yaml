@@ -14,10 +14,11 @@
 # the moment the old pod is told to stop and releases the lease. progressDeadlineSeconds bounds a rollout that
 # never completes; `harmony conductor restart|update` undoes it past the deadline.
 #
-# FOUNDER CHECK BEFORE FIRST APPLY (not verifiable from the build environment, which cannot read the live node):
-#   kubectl describe node <system-node>      # read "Allocated resources"; confirm the node has room for TWO
-#                                            # pods of 100m CPU / 256Mi memory during a rollout. If it does not,
-#                                            # the surge pod stays Pending and the rollout times out.
+# SIZED FROM THE LIVE NODE (seat, 2026-10-20): harmony-legs' system node (e2-medium) has 940m CPU allocatable with
+#   783m already requested by GKE system pods, leaving ~157m. A rollout runs TWO conductor pods, so each requests
+#   50m (100m together); memory 2x256Mi fits easily (2.8Gi allocatable, 1.6Gi requested). There is no CPU limit,
+#   so the pod still bursts when busy. Re-check with `kubectl describe node <system-node>` ("Allocated resources")
+#   if the system pool changes: a surge pod that cannot schedule stays Pending and the rollout times out.
 # The default pool is e2-medium (1 node) per setup-cluster.sh; its allocatable CPU/memory is shared with the
 # kube-system pods, which is why this check is worth doing once.
 #
@@ -94,7 +95,7 @@ spec:
             failureThreshold: 6
           resources:
             requests:
-              cpu: 100m
+              cpu: 50m
               memory: 256Mi
             limits:
               memory: 512Mi

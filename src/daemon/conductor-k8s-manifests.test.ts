@@ -104,8 +104,8 @@ describe('Deployment harmony-conductor', () => {
     expect(env.HARMONY_READY_FILE).toBe('/tmp/harmony-ready');
   });
 
-  it('requests 100m / 256Mi and limits memory to 512Mi (no CPU limit)', () => {
-    expect(c.resources).toEqual({ requests: { cpu: '100m', memory: '256Mi' }, limits: { memory: '512Mi' } });
+  it('requests 50m / 256Mi and limits memory to 512Mi (no CPU limit) — two fit on the e2-medium system node during a rollout', () => {
+    expect(c.resources).toEqual({ requests: { cpu: '50m', memory: '256Mi' }, limits: { memory: '512Mi' } });
   });
 
   it('sets the remote-mode environment', () => {
