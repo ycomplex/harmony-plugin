@@ -1,0 +1,78 @@
+# B-1173: publishes the remote-conductor image (container/conductor/Dockerfile).
+#
+# Run it from a Cloud Build trigger on the `staging` branch (with _CHANNEL=staging) and one on `prod`
+# (with _CHANNEL=prod): only those branches carry the built dist/ the image copies in (main is source only).
+# It is a SEPARATE file from container/cloudbuild.yaml on purpose — the worker-image build is untouched.
+#
+# Tags: <_IMAGE>:<plugin version>, read from .claude-plugin/plugin.json, and <_IMAGE>:<_CHANNEL>. The Deployment
+# pins the VERSION tag (never the channel tag); `harmony conductor update` resolves the channel tag to the newest
+# version tag behind it. ORDER IS THE GUARANTEE: the image is built as `candidate`, the smoke
+# (container/conductor/smoke.sh) runs against it, and only then does anything get pushed — the version tag first,
+# the channel tag last. A failing smoke therefore leaves the registry, and the channel tag, exactly as they were.
+# The image is labelled harmony.plugin_version (build-arg PLUGIN_VERSION).
+
+substitutions:
+  _IMAGE: us-central1-docker.pkg.dev/harmony-conductor/harmony-workers/harmony-conductor
+  _CHANNEL: staging
+
+steps:
+  - id: read-version
+    name: node:22-bookworm-slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        case '${_CHANNEL}' in staging|prod) ;; *) echo "_CHANNEL must be staging or prod, got '${_CHANNEL}'" >&2; exit 1 ;; esac
+        [ -d dist ] || { echo "dist/ is absent: build the conductor image from the staging or prod branch, not main" >&2; exit 1; }
+        node -e "console.log(require('./.claude-plugin/plugin.json').version)" > /workspace/plugin_version.txt
+        echo "Building conductor image version $(cat /workspace/plugin_version.txt) for channel ${_CHANNEL}"
+
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        docker build \
+          -f container/conductor/Dockerfile \
+          --build-arg PLUGIN_VERSION="$(cat /workspace/plugin_version.txt)" \
+          --build-arg SOURCE_COMMIT='${COMMIT_SHA}' \
+          -t '${_IMAGE}:candidate' .
+
+  # The publish gate. Nothing has been pushed yet.
+  - id: smoke
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        bash container/conductor/smoke.sh '${_IMAGE}:candidate' "$(cat /workspace/plugin_version.txt)"
+
+  - id: push-version
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        docker tag '${_IMAGE}:candidate' "${_IMAGE}:$(cat /workspace/plugin_version.txt)"
+        docker push "${_IMAGE}:$(cat /workspace/plugin_version.txt)"
+
+  # The channel tag moves LAST, only after the smoke passed and the version tag is in the registry.
+  - id: push-channel
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        docker tag '${_IMAGE}:candidate' '${_IMAGE}:${_CHANNEL}'
+        docker push '${_IMAGE}:${_CHANNEL}'
+
+timeout: 1800s
+
+options:
+  logging: CLOUD_LOGGING_ONLY
