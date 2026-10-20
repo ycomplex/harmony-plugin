@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "channel": "staging",
+  "profile": "gke",
+  "gcp": { "project": "my-gcp-project", "region": "us-east1" },
+  "gke": {
+    "cluster": "harmony-legs",
+    "location": "us-east1-b",
+    "namespace": "harmony-legs",
+    "registry": "us-east1-docker.pkg.dev/my-gcp-project/harmony",
+    "ticket_disk": "harmony-ticket-disk"
+  },
+  "images": { "worker": "harmony-build-env" },
+  "concurrency": { "max_workers": 2 },
+  "model_policy": { "default": "claude-sonnet-5-5" },
+  "log_shipping": true
+}

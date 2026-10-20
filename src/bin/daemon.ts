@@ -70,10 +70,13 @@ import { createHeartbeatKeeper } from '../daemon/heartbeat.js';
 import { formatDaemonError } from '../daemon/error-format.js';
 import { loadDaemonConfig, selectNamedProfile } from '../daemon/config.js';
 import { detectSupervisor, shutdownLine, shouldInspectWorkerImage } from '../daemon/supervisor.js';
+// B-1170: the two-file conductor config (project file from the config repo + host file) — all logic in the module.
+import { startConductorConfigRuntime, type ConductorConfigRuntime } from '../daemon/conductor-config-runtime.js';
 import { quietLogLine } from '../daemon/quiet-reap.js';
 import { runBootPreflight, type PreflightProfile } from '../daemon/preflight.js';
 import {
   loadDeploymentConfig,
+  loadLegacyDeploymentConfig,
   resolveDeploymentConfigPath,
   WORKER_IMAGE_DEFAULT,
   type DeploymentConfig,
@@ -194,20 +197,33 @@ async function main(): Promise<void> {
 
   const daemonArgv = parseDaemonArgs(process.argv.slice(2));
 
-  let config;
+  let config: ReturnType<typeof loadDaemonConfig>;
   // B-800: hoisted out of the try block below so the boot preflight (which needs the SAME already-
   // loaded deployment config + resolved named profile) can read them without a second load — no new
   // I/O surface. Both stay null on the legacy HARMONY_DAEMON_PROFILE route.
   let deploymentConfig: DeploymentConfig | null = null;
   let namedProfile: LaunchProfileConfig | null = null;
+  // B-1170: stays inert (null deploymentConfig, no timer, env untouched) on a host with only legacy files.
+  let conductorRuntime: ConductorConfigRuntime | undefined;
   try {
+    conductorRuntime = await startConductorConfigRuntime({
+      env: process.env,
+      log: (line) => process.stdout.write(`${new Date().toISOString()} ${line}\n`),
+      // `config` (the DaemonConfig) is loaded below; the runtime only touches this after boot.
+      config: {
+        get maxConcurrentWorkers() { return config.maxConcurrentWorkers; },
+        set maxConcurrentWorkers(n: number) { config.maxConcurrentWorkers = n; },
+      },
+      loadLegacy: () => loadLegacyDeploymentConfig({ configPath: daemonArgv.config, env: process.env }),
+    });
     // B-800: try the deployment-config-by-name route FIRST — it wins whenever it fully resolves
     // (config present AND --profile names a profile that exists in its "profiles" section). A
     // deployment config that exists but is malformed JSON/schema throws here and is NOT caught
     // below the fallback note — that's a real misconfiguration, not an absence, so it must fail
     // loud (same convention as src/config/deployment-config.ts's own loader).
-    deploymentConfig = loadDeploymentConfig({ configPath: daemonArgv.config, env: process.env });
-    namedProfile = selectNamedProfile(deploymentConfig, daemonArgv.profile);
+    deploymentConfig =
+      conductorRuntime.deploymentConfig ?? loadDeploymentConfig({ configPath: daemonArgv.config, env: process.env });
+    namedProfile = selectNamedProfile(deploymentConfig, daemonArgv.profile ?? conductorRuntime.defaultProfile);
     if (daemonArgv.profile && deploymentConfig && !namedProfile) {
       // Short of a FULL resolution (config present + name given + name found), src/daemon/config.ts
       // falls back to HARMONY_DAEMON_PROFILE unchanged — this note just makes that fallback
@@ -400,7 +416,7 @@ async function main(): Promise<void> {
   // runScheduler, exactly per the accepted design. `gcloud_project` is folded in from the resolved
   // named profile (when the B-800 named route was used) since src/daemon/config.ts's DaemonConfig
   // deliberately doesn't carry it — see src/daemon/preflight.ts's PreflightProfile doc comment.
-  const preflightProfileName = daemonArgv.profile ?? (process.env.HARMONY_DAEMON_PROFILE || 'unnamed');
+  const preflightProfileName = daemonArgv.profile ?? conductorRuntime?.defaultProfile ?? (process.env.HARMONY_DAEMON_PROFILE || 'unnamed');
   const preflightProfile: PreflightProfile = {
     ...config.profile,
     gcloud_project: namedProfile?.gcloud_project,
@@ -557,6 +573,8 @@ async function main(): Promise<void> {
     // machine with no ~/.harmony/deployment.json, which leaves this undefined and lets
     // templateVars fall back to the schema default — never a throw, never a launch blocked.
     workerImage: deploymentConfig?.worker_image,
+    // B-1170: hot-reloaded model_policy, folded into run_config by the scheduler (absent = no change).
+    getModelPolicy: conductorRuntime?.getModelPolicy,
     // B-1062: the recorded-walk drain, ONE request per pass, running the SAME zero-worker-leg
     // gate-walk core `harmony record` uses (src/tools/record-walk.ts) directly in-process. Attributed
     // to this daemon's own authenticated service-account user id — see recorded-walk-drain.ts's own
@@ -607,6 +625,7 @@ async function main(): Promise<void> {
   });
 
   const stop = async (signal: string): Promise<void> => {
+    conductorRuntime?.stop(); // B-1170: no config refresh after shutdown starts
     // B-739: a lease must go quiet the MOMENT this process leaves, so it goes stale on schedule
     // and its run stays recoverable by another daemon's takeover.
     keeper.stopAll();

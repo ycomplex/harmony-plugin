@@ -12,6 +12,7 @@ The `harmony` CLI provides the same functionality as the MCP server for direct t
 - **Config:** `~/.harmony/config.json` (multi-project auth tokens)
 - **Output modes:** Human-readable tables (default) or `--json` for scripting
 - **Help:** `harmony --help`, `harmony <command> --help`
+- **Conductor config (B-1170):** `harmony conductor config <migrate|doctor|sync>` — a project's conductor is configured by `.harmony/conductor.json` in its repo plus `~/.harmony/conductor-host.json`; reference in [`docs/conductor-config.md`](docs/conductor-config.md)
 
 ### Quick start
 
