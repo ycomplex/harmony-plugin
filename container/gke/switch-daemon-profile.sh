@@ -8,7 +8,8 @@
 # The FALLBACK for a switch is the same command pointed back: `--to cloud` undoes `--to gke`.
 #
 # What it does, in order:
-#   0. Load the daemon's environment file (--env-file, default ~/.harmony/daemon.env; `--env-file none` skips
+#   0. Load the daemon's environment file (--env-file, default ~/.harmony/conductor.env, else the legacy
+#      ~/.harmony/daemon.env; `--env-file none` skips
 #      it) with `set -a`, BEFORE anything else, so the in-flight guard, the preflight and the restarted daemon
 #      all see the SAME values (the Cloud Run job name, region, account, the GitHub App settings...). The file
 #      is sourced in this shell and its values are never printed. A missing file is refused, not skipped.
@@ -53,7 +54,7 @@ HERE="$(dirname "${BASH_SOURCE[0]}")"
 TARGET=""
 CONFIG="${HOME:-}/.harmony/deployment.json"
 LOG="${HOME:-}/.harmony/daemon.log"
-ENV_FILE="${HOME:-}/.harmony/daemon.env"
+ENV_FILE=""   # unset: ~/.harmony/conductor.env if it exists, else the legacy ~/.harmony/daemon.env
 DRY_RUN=0
 FORCE=0
 
@@ -65,7 +66,8 @@ Usage: switch-daemon-profile.sh --to gke|cloud [options]
   --config <path>    deployment config holding profiles.<name>   [~/.harmony/deployment.json]
   --log <path>       where the restarted daemon's output goes    [~/.harmony/daemon.log]
   --env-file <path>  the daemon's shell-sourceable KEY=VALUE settings, loaded before the preflight so the
-                     guard, the preflight and the restarted daemon agree. `none` skips it  [~/.harmony/daemon.env]
+                     guard, the preflight and the restarted daemon agree. `none` skips it
+                     [~/.harmony/conductor.env, else the legacy ~/.harmony/daemon.env]
                      A missing file is refused unless `none` is given. Values are never printed.
   --dry-run          preflight, list in-flight legs and held conductions, change nothing
   --force            switch even though legs are in flight on the outgoing backend. LAST RESORT ONLY: the
@@ -103,6 +105,10 @@ case "$TARGET" in
 esac
 
 # --- the daemon's environment file: loaded FIRST, auto-exported, never echoed. -------------------------
+# B-1171: the default is conductor.env (the file container/conductor-launch.sh loads); daemon.env is the fallback.
+if [ -z "$ENV_FILE" ]; then
+  if [ -f "${HOME:-}/.harmony/conductor.env" ]; then ENV_FILE="${HOME:-}/.harmony/conductor.env"; else ENV_FILE="${HOME:-}/.harmony/daemon.env"; fi
+fi
 if [ "$ENV_FILE" = "none" ]; then
   ENV_NOTE="no env file (--env-file none): using the invoking shell's environment only"
 else
