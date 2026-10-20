@@ -273,6 +273,19 @@ Implement, write tests, self-validate against acceptance criteria
 (`mcp__harmony__manage_acceptance_criteria`, `mcp__harmony__manage_test_cases`), and check off each
 checklist step as it lands (`mcp__harmony__manage_checklist_items({ task_id, update: [{ id, completed: true }] })`).
 
+**In a DELEGATED build, YOU tick the checklist — the build subagent cannot.** `harmony-build` (and an
+ad-hoc build subagent) has no MCP tools, so a step it delivers stays unticked unless this session ticks it.
+On 2026-10-20 B-1171 reached Deployed at 0/14 and B-1172 sat at 0/11 mid-build while its two subagents had
+already pushed both halves: the founder watches the checklist for progress and saw none. So:
+
+1. **Read the checklist before you delegate** — `mcp__harmony__list_checklist_items({ task_id })` — and put
+   each step this subagent owns into its prompt as `<id> — <title>`, with the instruction to end its report
+   with one line per step: `STEP <id>: done <commit-sha>` or `STEP <id>: not done — <reason>`.
+2. **Tick on EVERY hand-back, not once at the end** — when a subagent returns (each half of a two-repo
+   build, each CI-fix re-delegation), tick the steps it reports `done` straight away, so the ticket shows
+   progress while the rest of the build runs. A step the report does not mention stays unticked.
+3. **Reconcile before Built** — the evidence step below re-reads the list and accounts for every step.
+
 **Pre-check the plan for a `.github/workflows/**` touch — BEFORE spawning any subagent (B-784).** Scan the checklist steps (`steps` above) and the accepted design/plan for any file path matching `.github/workflows/**`. This constraint holds regardless of `permissionMode` — a bypass-permissions build subagent is NOT exempt (B-757 confirmed the denial fires in both the main session and a fresh subagent alike).
 
 - **`harmony-build` path (container-provisioned)** → no extra injection needed: `container/agents/harmony-build.md` carries its own proactive per-write check for this exact glob and the agent applies it directly.
@@ -597,6 +610,10 @@ the release brief:
 
 1. **Record the test cases** from the build's tests — `mcp__harmony__manage_test_cases({ task_id, add: [...] })`
    (one entry per test/spec the build added or relies on; `type: "integration"` / `"e2e"`).
+   **Then reconcile the checklist** — `mcp__harmony__list_checklist_items({ task_id })`, and for every step
+   still unticked: tick it if the pushed branch delivers it (`manage_checklist_items` `update`
+   `completed: true`), or leave it unticked AND name it, with the reason, in the release brief's context.
+   A Built ticket never carries a silently blank step (B-1171 reached Deployed at 0/14).
 2. **Read the ticket's current acceptance criteria** — `mcp__harmony__list_acceptance_criteria({ task_id })`
    — immediately before ticking any of them, so the tick reflects a freshly-read, current list rather than
    context assembled earlier in the run. A criterion edited or added after the build started is ticked (or
