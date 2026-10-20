@@ -216,6 +216,25 @@ describe('start-work skill contract (evolved)', () => {
     });
   });
 
+  describe('delegated builds tick the checklist from the parent session (2026-10-20, B-1171 at 0/14)', () => {
+    it('says the build subagent cannot tick, and the parent passes step ids into the delegation', () => {
+      expect(skill.body).toContain('In a DELEGATED build, YOU tick the checklist');
+      expect(skill.body).toContain('STEP <id>: done <commit-sha>');
+    });
+    it('ticks on every hand-back, not only at the end', () => {
+      expect(skill.body).toContain('Tick on EVERY hand-back');
+    });
+    it('reconciles the checklist inside the ordered evidence step, before advancing to Built', () => {
+      const land = skill.body.indexOf('LAND the build evidence');
+      const reconcile = skill.body.indexOf('Then reconcile the checklist', land);
+      const advance = skill.body.indexOf('activity: "building" })   // Planned -> Built', land);
+      expect(land).toBeGreaterThan(-1);
+      expect(reconcile).toBeGreaterThan(land);
+      expect(advance).toBeGreaterThan(reconcile);
+      expect(skill.body.slice(reconcile, advance)).toContain('list_checklist_items');
+    });
+  });
+
   describe('B-730: O3 build-evidence tick reads current acceptance criteria first', () => {
     const body = skill.body;
     const o3 = body.indexOf('### O3. Build (Planned');
