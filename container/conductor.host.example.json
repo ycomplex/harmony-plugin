@@ -12,6 +12,7 @@
     "base": "harmony-worker-base-env",
     "codex_auth": "harmony-codex-auth",
     "api_token": "HARMONY_API_TOKEN",
-    "github_app_private_key": "harmony-daemon-app-private-key"
+    "github_app_private_key": "harmony-daemon-app-private-key",
+    "claude_oauth_token": "CLAUDE_CODE_OAUTH_TOKEN"
   }
 }

@@ -60,12 +60,28 @@ at boot (a change is logged as `restart needed`).
 | `model_policy.per_gate` | map gate -> model alias | none | project | **hot** |
 | `log_shipping` | boolean | unset = ship when `gcp.project` is named | project | **hot** (read live by the log shipper, see [Conductor logs](#conductor-logs-b-1174)) |
 | `agents` | non-empty list of strings | `["claude-code","codex"]` | project | restart |
+| `target` | `"prod"` \| `"staging"` \| `"custom"` | unset (the worker's own default) | project | launch env (`HARMONY_TARGET`) |
+| `supabase_url` | string; **only with `target: "custom"`** | unset | project | launch env (`HARMONY_SUPABASE_URL`) |
+| `repos` | list of `{ url, ref?, path, meta_repo_role?, is_plugin? }` (the B-814 entry list, unchanged) | unset (the three-slot default) | project | launch env (`HARMONY_REPOS_JSON`) |
+| `agent_flags` | map adapter id -> flag string; only `claude-code` is wired | unset | project | launch env (`CLAUDE_HEADLESS_FLAGS`) |
+| `profiles.cloud`, `profiles.gke` | `{ max_workers?, agents?, required_tools? }` on top of the built-in template; **no other profile name, no custom template** | none | project | restart |
 | `config_repo` | `"owner/name"` | none (no default repo) | host | start |
 | `config_ref` | string | `main` | host | start |
 | `plugin_dir` | path | required (both profiles launch from the host's plugin checkout) | host | launch env |
 | `github_app.app_id`, `.installation_id`, `.private_key_path` | strings | required | host | launch env |
 | `gcloud.account` | string | unset | host | launch env |
 | `secrets` | map logical name -> Secret Manager secret **name** | none | host | n/a |
+
+`target`, `supabase_url`, `repos` and `agent_flags` replace `env.HARMONY_TARGET`, `env.HARMONY_SUPABASE_URL`,
+`repos[]` and `env.CLAUDE_HEADLESS_FLAGS` of `deployment.json`: the merged config serves them through
+`harmony config get env` / `repos`, which is also what `scripts/mint-installation-token.mjs` reads to compose each
+leg's env file. Every built-in profile listed under `profiles` gets an entry in the merged config (so a host that
+switches profile finds both templates); the top-level `profile` picks the active one, and a top-level
+`concurrency.max_workers` / `agents` still applies to the active profile when its own block does not set one.
+When `config get` is unusable (CLI missing, non-zero exit, timeout, empty output) and `deployment.json` exists,
+the mint script uses that file's `env` and `repos` directly and logs **one** line to stderr; a leg never launches
+with a silently smaller env. On a legacy host (only `deployment.json` + `daemon.env`) the env file is
+byte-identical to what it was before these keys existed.
 
 "launch env" keys are written into the conductor's process environment as the variables the launch scripts
 read (`HARMONY_GKE_*`, `HARMONY_CLOUD_RUN_*`, `CLOUDSDK_CORE_PROJECT`, `CLOUDSDK_CORE_ACCOUNT`,
@@ -163,7 +179,16 @@ $ harmony conductor config migrate --profile gke --write --out-project ./conduct
 ```
 
 Prints the proposed project file, the host file, the `DROPPED` list (each item with a reason; secret values
-are never copied) and the warnings. `--write` requires `--out-project` (no implicit default into the current
+are never copied) and the warnings. It fills `target`, `supabase_url` (target `custom` only), `repos`,
+`agent_flags` and a `profiles` block for every built-in profile `deployment.json` lists, and writes the host
+file's `secrets` block of **names**: `api_token` = `HARMONY_API_TOKEN`, `github_app_private_key` =
+`harmony-daemon-app-private-key`, `claude_oauth_token` = `CLAUDE_CODE_OAUTH_TOKEN` (each overridable with
+`--secret-api-token`, `--secret-github-app-key`, `--secret-claude-oauth-token`; `claude_oauth_token` is a record
+for pre-flight and docs, the conductor never reads it). For each name it runs `gcloud secrets describe <name>`
+(metadata only, never the value); a missing one is a WARNING that prints the exact `gcloud secrets create` command
+for you to run. After migrate, `DROPPED` should hold secret values only; if anything else is left (a custom
+template, `docker_host`, `WEB_REF`/`WORKSPACE_REF`, `launcher.supabase_refs`), `--write` prints a warning that
+`deployment.json` is still needed. `--write` requires `--out-project` (no implicit default into the current
 directory), defaults `--out-host` to the resolved host-file path, refuses to overwrite an existing file
 without `--force`, writes the host file with mode 0600, and **never modifies, renames or deletes a legacy
 file**. It refuses to write over the legacy `deployment.json` even with `--force`.
@@ -240,7 +265,8 @@ gcloud logging read 'logName="projects/<PROJECT>/logs/harmony-conductor" AND tim
    installation includes `config_repo`.
 5. `harmony conductor config sync`, then `harmony conductor config doctor`; fix every issue it prints.
 6. Restart the conductor (restart-only keys are read at boot).
-7. **Prove the new files suffice:** rename the old files away yourself (`deployment.json`, the exports in
+7. Create any secret the migrate warnings listed (`gcloud secrets create ...`; the value comes from you on stdin).
+8. **Prove the new files suffice:** rename the old files away yourself (`deployment.json`, the exports in
    `conductor.env`), restart, and run `doctor` again. No tooling ever does this step for you.
 
 ## Deprecated
@@ -265,7 +291,7 @@ not read those back as legacy knobs.
 
 ## What stays an environment variable
 
-**`HARMONY_API_TOKEN` may stay an environment variable of the service, or be named in `secrets.api_token` (below).** The host file's
+**`HARMONY_API_TOKEN` may stay an environment variable of the service, or be named in `secrets.api_token` (below; the default secret name is `HARMONY_API_TOKEN`, the same in `setup-cluster.sh` and the conductor ConfigMap).** The host file's
 `secrets` block records Secret Manager secret **names only**; secret **values** never appear in either file, in
 `migrate` output, or in `doctor` output (`migrate` lists them under `DROPPED` by name and reason).
 `HARMONY_APP_PRIVATE_KEY` (inline key contents) is likewise never copied; use `github_app.private_key_path`.
@@ -278,10 +304,11 @@ not read those back as legacy knobs.
 | `codex_auth` | the Codex `auth.json` | the leg launch scripts (by name) |
 | `api_token` | `HARMONY_API_TOKEN` | the conductor, at boot |
 | `github_app_private_key` | the harmony-daemon App private key (PEM contents) | the conductor, at boot |
+| `claude_oauth_token` | the Claude OAuth token | nothing: a record for pre-flight and docs (B-1183) |
 
 **In every mode** (local and remote), whenever the host file's `secrets` block names `api_token` and/or `github_app_private_key`, the conductor runs, before anything else,
 `gcloud secrets versions access latest --secret=<name> --project=<project>` for `api_token` and
-`github_app_private_key` using the pod's Workload Identity, and places the values in its process environment as
+`github_app_private_key` using the pod's Workload Identity (or, when the host file names `gcloud.account`, with `--account=<that account>` rather than gcloud's active one), and places the values in its process environment as
 `HARMONY_API_TOKEN` and `HARMONY_APP_PRIVATE_KEY`. The project is the host file's `gcp.project`, else
 `HARMONY_GCP_PROJECT` / `CLOUDSDK_CORE_PROJECT`. The name is the only thing in argv; the value is never logged or
 written to a file; a failure names the secret **name** only. A variable that is already set and non-empty in the environment wins and its secret is **not fetched** (no call). A local host whose host file names neither key behaves exactly as before. So a local conductor needs **no `conductor.env` / `daemon.env`**: one project file plus one host file of secret names. `harmony conductor start|restart` pre-flight resolves them in memory too; the conductor child resolves for itself. A missing `gcloud` or an unreadable secret fails with the secret **name** only. In a pod (`HARMONY_CONDUCTOR_REMOTE=1`) the same resolver is strict: the host file and an `api_token` entry are required. Because the key arrives inline, `github_app.private_key_path` is optional in the host file
