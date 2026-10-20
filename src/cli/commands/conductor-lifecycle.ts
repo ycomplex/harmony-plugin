@@ -28,6 +28,7 @@ import {
   type BoardRow,
 } from '../../daemon/conductor-board.js';
 import { matchConductors, needsCwd, type ConductorProcess } from '../../daemon/conductor-process.js';
+import type { RegistryClient, RegistryStatus, StatusOutcome } from '../../daemon/conductor-registry.js';
 import {
   agentPlistPath,
   daemonPlistPath,
@@ -55,6 +56,11 @@ import {
 } from './conductor-preflight.js';
 
 export const EXIT = { ok: 0, failure: 1, usage: 2, inFlight: 3, notAdopted: 4 } as const;
+
+/** B-1172: a remote restart waits this long for the request to finish and a new holder to heartbeat. */
+export const REMOTE_RESTART_BUDGET_MS = 90_000;
+export const REMOTE_RESTART_POLL_MS = 2_000;
+const REGISTRY_ABSENT = 'registry not deployed on this project';
 
 const LAUNCHD_TEMPLATE = 'container/launchd/com.ycomplex.harmony-conductor.plist.template';
 const SYSTEMD_TEMPLATE = 'container/systemd/harmony-conductor.service.template';
@@ -164,6 +170,45 @@ async function safeBoard(deps: LifecycleDeps, s: ConductorSettings): Promise<{ r
 }
 
 // ---------------------------------------------------------------------------------------------------
+// registry (B-1172)
+// ---------------------------------------------------------------------------------------------------
+
+type RegistryHandle = { client: RegistryClient } | { error: string };
+
+async function openRegistry(deps: LifecycleDeps, s: ConductorSettings): Promise<RegistryHandle> {
+  if (!s.env.HARMONY_API_TOKEN) return { error: 'HARMONY_API_TOKEN is not set' };
+  try {
+    return { client: await deps.registryClient(s.env) };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+const ageText = (sec: number | null): string => (sec === null ? 'unknown' : `${Math.round(sec)}s ago`);
+
+function registryLines(st: RegistryStatus): string[] {
+  if (st.state === 'not_running') return ['Registry: no conductor is registered for this project.'];
+  const lines = [st.state === 'running' ? 'Registry: a conductor is running elsewhere' : 'Registry: a conductor is registered but its heartbeat is STALE (it may have died)'];
+  lines.push(`  host:            ${st.host ?? '(hidden: only the project owner sees the host)'}`);
+  lines.push(`  location:        ${st.location ?? 'unknown'}`);
+  lines.push(`  profile:         ${st.profile ?? 'unknown'}`);
+  lines.push(`  plugin version:  ${st.plugin_version ?? 'unknown'}${st.channel ? ` (channel ${st.channel})` : ''}`);
+  lines.push(`  started:         ${st.started_at ?? 'unknown'}`);
+  lines.push(`  last heartbeat:  ${st.last_heartbeat_at ?? 'never'} (${ageText(st.heartbeat_age_seconds)})`);
+  if (st.log_url) lines.push(`  log:             ${st.log_url}`);
+  if (st.request) lines.push(`  request:         ${st.request.action} ${st.request.state}${st.request.reason ? ` (${st.request.reason})` : ''}${st.request.requested_at ? `, requested ${st.request.requested_at}` : ''}`);
+  if (st.running_legs.length > 0) lines.push(`  running legs:    ${st.running_legs.length}`);
+  return lines;
+}
+
+/** The registry's view, for a machine with no local conductor process. Never throws. */
+async function remoteStatus(deps: LifecycleDeps, s: ConductorSettings): Promise<{ outcome: StatusOutcome } | { error: string }> {
+  const h = await openRegistry(deps, s);
+  if ('error' in h) return { error: h.error };
+  return { outcome: await h.client.status() };
+}
+
+// ---------------------------------------------------------------------------------------------------
 // status
 // ---------------------------------------------------------------------------------------------------
 
@@ -182,7 +227,19 @@ export async function runStatus(deps: LifecycleDeps, opts: StatusOptions = {}, o
   const nowMs = deps.now();
 
   if (procs.length === 0) {
-    out.line('No conductor is running here. Status for a conductor elsewhere arrives with the registry.');
+    out.line('No conductor is running here.');
+    const reg = await remoteStatus(deps, s);
+    let registryData: Record<string, unknown> = { available: false };
+    if ('error' in reg) out.line(`(the registry was not consulted: ${reg.error})`);
+    else if (reg.outcome.kind === 'unavailable') out.line(`(${REGISTRY_ABSENT}; a conductor elsewhere cannot be shown)`);
+    else if (reg.outcome.kind === 'unknown') out.line(`(the registry could not be read: ${reg.outcome.detail})`);
+    else {
+      registryData = { available: true, ...reg.outcome.status };
+      out.line('');
+      for (const l of registryLines(reg.outcome.status)) out.line(l);
+      out.line('');
+    }
+    const remoteState = 'available' in registryData && registryData.available === true ? (registryData.state as string) : null;
     if (sup.kind !== 'none' && sup.active) out.line(`A supervisor job is loaded (${describeSupervisor(sup)}) but no conductor process is running; it may be starting or crash-looping.`);
     const orphans = board.rows ? classifyLeases(board.rows, host, null, timing.freshMs, nowMs).filter((l) => l.owner === 'previous-process') : [];
     if (orphans.length > 0) {
@@ -193,7 +250,8 @@ export async function runStatus(deps: LifecycleDeps, opts: StatusOptions = {}, o
       out.line(`(the board could not be read to list legs: ${board.error})`);
     }
     return out.result(EXIT.ok, {
-      state: 'stopped',
+      state: remoteState === 'running' ? 'running-elsewhere' : remoteState === 'stale' ? 'stale-elsewhere' : 'stopped',
+      registry: registryData,
       host,
       supervisor: sup.kind,
       supervisor_target: sup.target ?? null,
@@ -329,7 +387,7 @@ export async function runStart(deps: LifecycleDeps, opts: StartOptions = {}, onL
     return out.result(EXIT.usage, { error: out.errLines[0] });
   }
   if (opts.remote) {
-    out.err('--remote is not available yet: remote conductors arrive with the registry. Nothing was started.');
+    out.err('--remote is not available yet: starting a conductor on another machine arrives with B-1173. Nothing was started.');
     return out.result(EXIT.usage, { error: out.errLines[0], started: false });
   }
   const mode: 'local' | 'at-boot' = opts.atBoot ? 'at-boot' : 'local';
@@ -436,6 +494,10 @@ export interface RestartOptions {
   dryRun?: boolean;
   /** Skip the in-flight guard. LAST RESORT: a leg on the other backend can end up running twice. */
   force?: boolean;
+  /** B-1172: restart onto the version already on disk — do not pull the channel. */
+  noPull?: boolean;
+  /** B-1172: a registry request id; when given, the request is completed done/failed when the restart ends. */
+  request?: string;
 }
 
 interface InFlight {
@@ -486,9 +548,126 @@ async function legsInFlight(deps: LifecycleDeps, s: ConductorSettings, backend: 
   }
 }
 
+/** B-1172: restart, then (with --request) report the outcome to the registry. The pull-before-stop order of
+ *  restartLocal guarantees a failed pull/version check leaves the OLD conductor running with its leases, and the
+ *  request is then completed 'failed' with the reason. */
 export async function runRestart(deps: LifecycleDeps, opts: RestartOptions = {}, onLine?: (l: string) => void): Promise<CliResult> {
+  const ctx: { settings?: ConductorSettings } = {};
+  const requestId = opts.request;
+  let result: CliResult;
+  try {
+    result = await restartLocal(deps, opts, onLine, ctx);
+  } catch (err) {
+    if (requestId) await completeRequest(deps, ctx.settings, requestId, 'failed', err instanceof Error ? err.message : String(err), {});
+    throw err;
+  }
+  if (requestId) {
+    const ok = result.exitCode === 0;
+    const reason = ok ? null : String(result.errLines[0] ?? result.data.error ?? `restart exited ${result.exitCode}`);
+    const { note, line } = await completeRequest(deps, ctx.settings, requestId, ok ? 'done' : 'failed', reason, result.data);
+    result.lines.push(line);
+    onLine?.(line);
+    result.data.request = { id: requestId, result: ok ? 'done' : 'failed', completion: note };
+  }
+  return result;
+}
+
+async function completeRequest(
+  deps: LifecycleDeps,
+  s: ConductorSettings | undefined,
+  requestId: string,
+  result: 'done' | 'failed',
+  reason: string | null,
+  data: Record<string, unknown>,
+): Promise<{ note: string; line: string }> {
+  let note: string;
+  try {
+    const client = await deps.registryClient(s?.env ?? deps.env);
+    const r = await client.completeRequest(`restart-cli@${deps.hostname()}`, {
+      requestId,
+      result,
+      reason: reason ? reason.slice(0, 500) : null,
+      versionBefore: typeof data.plugin_version_before === 'string' ? data.plugin_version_before : null,
+      versionAfter: typeof data.plugin_version_after === 'string' ? data.plugin_version_after : null,
+    });
+    note = r.kind === 'ok' ? 'ok' : r.kind === 'refused' ? `refused (${r.reason ?? 'no reason'})` : `${r.kind} (${r.detail})`;
+  } catch (err) {
+    note = `error (${err instanceof Error ? err.message : String(err)})`;
+  }
+  return { note, line: `Registry request ${requestId} completed as ${result}: ${note}` };
+}
+
+/** B-1172: no conductor process here — ask the registry to restart the one elsewhere and wait for a new holder. */
+async function restartRemote(deps: LifecycleDeps, s: ConductorSettings, opts: RestartOptions, out: Out): Promise<CliResult> {
+  const action = opts.noPull ? 'restart' : 'update';
+  const h = await openRegistry(deps, s);
+  if ('error' in h) {
+    out.err(`no conductor is running here and the registry could not be used: ${h.error}. Nothing was changed. Start one here with \`harmony conductor start --local\`.`);
+    return out.result(EXIT.failure, { error: out.errLines[0], remote: true });
+  }
+  const before = await h.client.status();
+  if (before.kind === 'unavailable') {
+    out.err(`no conductor is running here, and ${REGISTRY_ABSENT}. Nothing was changed. Start one here with \`harmony conductor start --local\`.`);
+    return out.result(EXIT.failure, { error: out.errLines[0], remote: true, registry: 'unavailable' });
+  }
+  const oldHolder = before.kind === 'status' ? before.status.holder_id : null;
+  out.line(`No conductor is running here; asking the registry to ${action} the project's conductor${before.kind === 'status' && before.status.host ? ` (on ${before.status.host})` : ''}.`);
+  const q = await h.client.request(action);
+  if (q.kind === 'unavailable') {
+    out.err(`${REGISTRY_ABSENT}. Nothing was changed.`);
+    return out.result(EXIT.failure, { error: out.errLines[0], remote: true, registry: 'unavailable' });
+  }
+  if (q.kind === 'forbidden') {
+    out.err(`only the project owner can ${action} a conductor remotely (${q.detail}). Nothing was changed.`);
+    return out.result(EXIT.failure, { error: out.errLines[0], remote: true });
+  }
+  if (q.kind === 'unknown') {
+    out.err(`the registry request failed: ${q.detail}. Nothing was changed.`);
+    return out.result(EXIT.failure, { error: out.errLines[0], remote: true });
+  }
+  if (q.kind === 'refused') {
+    const p = q.pending;
+    out.err(`${q.message}${p ? ` (pending: ${p.action} requested by ${p.requested_by_name ?? p.requested_by ?? 'someone'}${p.requested_at ? ` at ${p.requested_at}` : ''}, ${p.state})` : ''}`);
+    return out.result(EXIT.failure, { error: out.errLines[0], remote: true, refused: q.reason, pending: p });
+  }
+
+  out.line(`Queued ${q.action} request ${q.requestId}. The conductor picks it up on its next heartbeat (up to ~30s).`);
+  out.line(`Waiting up to ${REMOTE_RESTART_BUDGET_MS / 1000}s for it to finish and a new conductor to heartbeat.`);
+  const deadline = deps.now() + REMOTE_RESTART_BUDGET_MS;
+  let last: string;
+  for (;;) {
+    const st: StatusOutcome = await h.client.status();
+    if (st.kind === 'status') {
+      const r = st.status.request;
+      if (r && r.id === q.requestId && (r.state === 'failed' || r.state === 'expired')) {
+        out.err(`the ${q.action} request ${r.state}${r.reason ? `: ${r.reason}` : ''}. The old conductor was left as it was.`);
+        return out.result(EXIT.failure, { error: out.errLines[0], remote: true, request_id: q.requestId, request_state: r.state });
+      }
+      const newHolder = st.status.holder_id !== null && st.status.holder_id !== oldHolder;
+      const fresh = st.status.state === 'running';
+      last = `request ${r && r.id === q.requestId ? r.state : 'not shown'}, registry ${st.status.state}${newHolder ? ', new holder' : ', same holder'}`;
+      if (r && r.id === q.requestId && r.state === 'done' && fresh && newHolder) {
+        out.line('');
+        out.line(`Restarted: new conductor${st.status.host ? ` on ${st.status.host}` : ''}, plugin ${st.status.plugin_version ?? 'unknown'}, heartbeat ${ageText(st.status.heartbeat_age_seconds)}.`);
+        return out.result(EXIT.ok, { remote: true, restarted: true, action: q.action, request_id: q.requestId, new_holder_id: st.status.holder_id, plugin_version: st.status.plugin_version });
+      }
+    } else last = `status read failed (${st.detail})`;
+    if (deps.now() >= deadline) break;
+    await deps.sleep(REMOTE_RESTART_POLL_MS);
+  }
+  out.err(`the ${q.action} was NOT confirmed within ${REMOTE_RESTART_BUDGET_MS / 1000}s (${last}). It may still complete; run \`harmony conductor status\`.`);
+  return out.result(EXIT.notAdopted, { error: out.errLines[0], remote: true, request_id: q.requestId });
+}
+
+async function restartLocal(
+  deps: LifecycleDeps,
+  opts: RestartOptions,
+  onLine: ((l: string) => void) | undefined,
+  ctx: { settings?: ConductorSettings },
+): Promise<CliResult> {
   const out = new Out(onLine);
   const s = await loadSettings(deps, { profile: opts.profile, config: opts.config });
+  ctx.settings = s;
   const timing = timingFromEnv(s.env);
   const host = deps.hostname();
   const procs = await findConductors(deps, s);
@@ -496,8 +675,11 @@ export async function runRestart(deps: LifecycleDeps, opts: RestartOptions = {},
   const supervised = sup.kind !== 'none';
 
   if (procs.length === 0 && !supervised) {
-    out.err('no conductor is running here — nothing to restart. Start one with `harmony conductor start --local`.');
-    return out.result(EXIT.failure, { error: out.errLines[0] });
+    if (opts.request) {
+      out.err('no conductor is running here — nothing to restart for this request.');
+      return out.result(EXIT.failure, { error: out.errLines[0] });
+    }
+    return restartRemote(deps, s, opts, out);
   }
   if (procs.length > 1) {
     out.err(`more than one conductor for this project is running (pids ${procs.map((p) => p.pid).join(', ')}) — stop the extras first`);
@@ -512,7 +694,7 @@ export async function runRestart(deps: LifecycleDeps, opts: RestartOptions = {},
 
   // 1. Pre-flight: read-only, BEFORE any signal.
   out.line('1. Pre-flight');
-  const pre = await runPreflight(deps, s, { pull: true });
+  const pre = await runPreflight(deps, s, { pull: !opts.noPull });
   for (const l of formatChecks(pre.checks)) out.line(l);
   if (!pre.ok || pre.board === null) {
     out.err(`pre-flight failed: ${failedNames(pre.checks).join(', ') || 'cred:board'}. The running conductor and its leases were left untouched.`);
@@ -553,7 +735,7 @@ export async function runRestart(deps: LifecycleDeps, opts: RestartOptions = {},
   if (opts.dryRun) {
     out.line('');
     out.line('Dry run: nothing changed. A real run would:');
-    out.line(s.channel ? `  - pull channel '${s.channel}' (git -C ${s.pluginDir} pull --ff-only origin ${s.channel}); plugin is ${versionBefore} now` : '  - skip the pull (no channel is configured)');
+    out.line(s.channel && !opts.noPull ? `  - pull channel '${s.channel}' (git -C ${s.pluginDir} pull --ff-only origin ${s.channel}); plugin is ${versionBefore} now` : opts.noPull ? '  - skip the pull (--no-pull)' : '  - skip the pull (no channel is configured)');
     if (supervised) for (const c of cmds) out.line(`  - ${c.file} ${c.args.join(' ')}`);
     else out.line(`  - SIGTERM pid ${old?.pid}, wait up to ${timing.stopTimeoutMs / 1000}s, then nohup bash ${launcherPath(s.pluginDir)} ${launchArgs.join(' ')}`.trimEnd());
     out.line(`  - confirm from the board within ${timing.timeoutMs / 1000}s that every held conduction is leased by the new conductor with a heartbeat under ${timing.freshMs / 1000}s old`);
@@ -563,7 +745,8 @@ export async function runRestart(deps: LifecycleDeps, opts: RestartOptions = {},
   // 4. Update: pull the configured channel, fast-forward only.
   out.line('3. Update the plugin checkout');
   let versionAfter = versionBefore;
-  if (s.channel) {
+  if (opts.noPull) out.line(`  --no-pull: restarting the version already on disk (plugin ${versionBefore})`);
+  else if (s.channel) {
     const pull = await deps.exec('git', ['-C', s.pluginDir, 'pull', '--ff-only', 'origin', s.channel]);
     if (pull.code !== 0) {
       out.err(`git pull --ff-only origin ${s.channel} failed in ${s.pluginDir}: ${(pull.stderr || pull.stdout).trim().split('\n')[0]}. The running conductor was left untouched.`);
@@ -703,12 +886,14 @@ export function registerConductorLifecycleCommands(program: Command, conductor: 
 
   conductor
     .command('restart')
-    .description('Update and restart: pull the configured channel (fast-forward only), stop, start, and confirm adoption from the board')
+    .description('Update and restart: pull the configured channel (fast-forward only), stop, start, and confirm adoption from the board. With no conductor on this machine, asks the registry to restart the one elsewhere')
     .option('--profile <name>', 'Launch profile to restart under (unsupervised conductors only; a supervised one follows the config files)')
     .option('--config <path>', 'Explicit deployment.json path')
     .option('--dry-run', 'Run pre-flight and the in-flight guard, print the plan, change nothing', false)
     .option('--force', 'Skip the in-flight guard. LAST RESORT: a leg may end up running twice', false)
-    .action((o: RestartOptions) => emitLive(program, (on) => runRestart(makeDeps(), o, on)));
+    .option('--no-pull', 'Restart onto the version already on disk; do not pull the channel (a remote request is then a plain restart)')
+    .option('--request <id>', 'Registry request id (used by a conductor that spawned this restart): completed done/failed when the restart ends')
+    .action((o: RestartOptions & { pull?: boolean }) => emitLive(program, (on) => runRestart(makeDeps(), { ...o, noPull: o.pull === false }, on)));
 
   conductor
     .command('status')
