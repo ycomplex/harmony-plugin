@@ -36,7 +36,7 @@ Ask the user which Harmony target this project should talk to:
 
 ### 3. Ask for the token and write the configuration
 
-Ask the user for their Harmony API token for the chosen target. They can get one from their Harmony workspace settings.
+Ask the user for their Harmony API token for the chosen target. They can get one from the project's settings in Harmony — Project Settings → Connect AI (tokens are minted per project, and a token reaches only that project).
 
 Once the user provides the token (and, for a non-prod target, the Supabase URL + anon key):
 

@@ -221,3 +221,54 @@ describe("src/auth.ts's exchange() — raw fetch() failure carries .endpoint (B-
     expect((networkErr as { cause?: unknown }).cause).toBe(cause); // untouched
   });
 });
+
+// B-266: the exchanged JWT carries a `project_id` claim the database honours, so the claim is the
+// authoritative project pin. The body's project_id is kept only for a pre-B-266 auth-token function.
+describe('HarmonyAuth — B-266 project pin comes from the JWT claim', () => {
+  function claimedJwt(claims: Record<string, unknown>): string {
+    return `header.${Buffer.from(JSON.stringify(claims)).toString('base64url')}.signature`;
+  }
+
+  it('pins projectId from the JWT project_id claim when the exchange mints one', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        jsonResponse({
+          access_token: claimedJwt({ sub: 'user-1', project_id: 'proj-claimed', workspace_id: 'ws-1' }),
+          expires_in: 3600,
+          project_id: 'proj-claimed',
+        }),
+      ),
+    );
+    const auth = new HarmonyAuth('api-token');
+    await auth.getAccessToken();
+    expect(auth.getProjectId()).toBe('proj-claimed');
+    expect(auth.getUserId()).toBe('user-1');
+  });
+
+  it('a claim-less JWT (pre-B-266 auth-token function) still pins from the body, unchanged', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(jsonResponse({ access_token: fakeJwt('user-2'), expires_in: 3600, project_id: 'proj-body' })),
+    );
+    const auth = new HarmonyAuth('api-token');
+    await auth.getAccessToken();
+    expect(auth.getProjectId()).toBe('proj-body');
+  });
+
+  it('refuses an exchange whose body names a different project than the JWT claim — neither half is trusted', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        jsonResponse({
+          access_token: claimedJwt({ sub: 'user-1', project_id: 'proj-claimed' }),
+          expires_in: 3600,
+          project_id: 'proj-other',
+        }),
+      ),
+    );
+    const auth = new HarmonyAuth('api-token');
+    await expect(auth.getAccessToken()).rejects.toThrow(/scoped to project proj-claimed .* body naming project proj-other/);
+    expect(() => auth.getProjectId()).toThrow(/Not authenticated/);
+  });
+});
