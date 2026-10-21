@@ -8,7 +8,8 @@
     "location": "us-east1-b",
     "namespace": "harmony-legs",
     "registry": "us-east1-docker.pkg.dev/my-gcp-project/harmony",
-    "ticket_disk": "harmony-ticket-disk"
+    "ticket_disk": "20Gi",
+    "storage_class": "harmony-ticket-disk"
   },
   "images": { "worker": "harmony-build-env" },
   "concurrency": { "max_workers": 2 },

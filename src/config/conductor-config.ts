@@ -185,8 +185,10 @@ export function looksLikeSecretValue(v: string): boolean {
 }
 
 /** The documented keys of the host file's `secrets` block (B-1173). The block stays an open record (older
- *  hosts carry other logical names), but these four are the ones the conductor reads:
- *   base                    -> the gke profile's base worker env secret (HARMONY_GKE_BASE_SECRET)
+ *  hosts carry other logical names), but these are the ones the conductor reads (B-1186: `base` is still
+ *  ACCEPTED so old host files load, but nothing reads it and the shipped examples no longer carry it; the
+ *  base worker env secret is gke.base_secret):
+ *   base                    -> legacy, accepted and unused
  *   codex_auth              -> the Codex auth.json secret
  *   api_token               -> HARMONY_API_TOKEN, resolved at boot by a REMOTE conductor
  *   github_app_private_key  -> HARMONY_APP_PRIVATE_KEY (the App key contents), resolved at boot by a REMOTE conductor
@@ -668,6 +670,11 @@ export interface LegacyLayerInput {
   profileName?: string;
   /** Env keys that are OUR OWN applyLaunchEnv output, not operator-supplied legacy knobs. */
   ignoreEnvKeys?: ReadonlySet<string>;
+  /** B-1186: what the project + host files (+ test-override env) already resolve to. A legacy env knob whose
+   *  value EQUALS what these resolve to (compared through `launchEnvFromMerged`, so the derived
+   *  HARMONY_GKE_CONTEXT counts too) is redundant, not a fallback: it is neither applied nor warned about.
+   *  This is the daemon's own applyLaunchEnv output seen by a child process re-reading config. */
+  resolved?: ConductorConfig;
 }
 
 export interface LegacyLayer {
@@ -729,10 +736,12 @@ export function legacyToConductor(input: LegacyLayerInput): LegacyLayer {
     }
   }
 
+  const resolvedEnv = input.resolved ? launchEnvFromMerged(input.resolved) : undefined;
   for (const knob of LEGACY_ENV_KNOBS) {
     if (input.ignoreEnvKeys?.has(knob.name)) continue;
     const raw = env[knob.name];
     if (raw === undefined || raw === '') continue;
+    if (resolvedEnv && resolvedEnv[knob.name] === (knob.type === 'int' ? String(Number(raw.trim())) : raw)) continue;
     const home = knob.name.startsWith('HARMONY_APP_') || knob.name === 'HARMONY_PLUGIN_DIR' || knob.name === 'CLOUDSDK_CORE_ACCOUNT'
       ? '~/.harmony/conductor-host.json'
       : '.harmony/conductor.json';
@@ -1128,7 +1137,7 @@ export function evaluateConductorConfig(opts: ConductorLoadOptions = {}): Conduc
     const builtin = Object.keys(deployment.profiles).filter((n) => n in BUILTIN_PROFILES);
     if (builtin.length === 1) profileName = builtin[0];
   }
-  const legacy = legacyToConductor({ deployment, env, profileName, ignoreEnvKeys: opts.appliedEnvKeys });
+  const legacy = legacyToConductor({ deployment, env, profileName, ignoreEnvKeys: opts.appliedEnvKeys, resolved: nonLegacy });
   if (legacy.used) {
     const parts = [legacy.hasDeployment ? 'deployment.json' : '', legacy.envKnobs.length ? `env ${legacy.envKnobs.join(', ')}` : ''].filter(Boolean);
     sources.push(`legacy (deprecated): ${parts.join('; ')}`);

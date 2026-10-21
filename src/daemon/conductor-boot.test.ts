@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { runConductorBoot, type BootDeps } from './conductor-boot.js';
+import { existsSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { PREFLIGHT_PLUGIN_FILES, runConductorBoot, type BootDeps } from './conductor-boot.js';
+
+const REPO = fileURLToPath(new URL('../../', import.meta.url)).replace(/\/$/, '');
 
 const HOST = JSON.stringify({
   version: 1,
@@ -20,6 +24,7 @@ function deps(over: Partial<BootDeps> = {}): { d: BootDeps; out: string[]; err: 
       return { code: 0, stdout: `${VALUE}\n` };
     },
     readFile: () => HOST,
+    fileExists: () => true,
     run: async (c, a, env) => {
       ran.push({ c, a, env });
       return 7;
@@ -78,5 +83,77 @@ describe('conductor-boot', () => {
     expect(await runConductorBoot([], deps().d)).toBe(2);
     expect(await runConductorBoot(['exec'], deps().d)).toBe(2);
     expect(await runConductorBoot(['check-host'], deps().d)).toBe(2);
+  });
+});
+
+describe('conductor-boot preflight (B-1186)', () => {
+  // The REAL example files; the plugin dir is this checkout, so the presence checks run against real paths.
+  const real = (over: Partial<BootDeps> = {}) => {
+    const probed: string[] = [];
+    const t = deps({
+      env: { PATH: '/bin' },
+      readFile: (p) => readFileSync(p, 'utf8'),
+      fileExists: (p) => existsSync(p) || p.startsWith(`${REPO}/dist/`), // dist/ is generated, not tracked on main
+      run: async (_c, a) => {
+        probed.push(a[1] ?? '');
+        return 0;
+      },
+      ...over,
+    });
+    return { ...t, probed };
+  };
+  const args = ['preflight', '--plugin-dir', REPO];
+
+  it('passes on the shipped example host + project files with every tool present', async () => {
+    const t = real();
+    expect(await runConductorBoot(args, t.d)).toBe(0);
+    expect(t.out.join('\n')).toContain('preflight: ok - profile gke, remote mode');
+    expect(t.probed).toEqual(expect.arrayContaining(['command -v node', 'command -v kubectl']));
+    expect(t.err).toEqual([]);
+    expect(t.calls).toEqual([]); // no gcloud / secret call: nothing credentialed
+  });
+
+  it('every file it checks exists in the repo (so the list cannot name something renamed away)', () => {
+    for (const f of PREFLIGHT_PLUGIN_FILES) {
+      if (f.startsWith('dist/')) continue; // built output
+      expect(existsSync(`${REPO}/${f}`), f).toBe(true);
+    }
+  });
+
+  it('a missing tool the pod needs fails with the tool named', async () => {
+    const t = real({ run: async (_c, a) => (a[1] === 'command -v kubectl' ? 1 : 0) });
+    expect(await runConductorBoot(args, t.d)).toBe(1);
+    expect(t.err.join('\n')).toContain('Missing required tool "kubectl"');
+    expect(t.out.join('\n')).not.toContain('ok');
+  });
+
+  it('gke-gcloud-auth-plugin is NOT required in remote mode (the pod authenticates with its service account token)', async () => {
+    const t = real({ run: async (_c, a) => (a[1] === 'command -v gke-gcloud-auth-plugin' ? 1 : 0) });
+    expect(await runConductorBoot(args, t.d)).toBe(0);
+  });
+
+  it('a missing scripts/ file fails, naming it', async () => {
+    const t = real({ fileExists: (p) => !p.endsWith('scripts/mint-installation-token.mjs') && (existsSync(p) || p.startsWith(`${REPO}/dist/`)) });
+    expect(await runConductorBoot(args, t.d)).toBe(1);
+    expect(t.err.join('\n')).toContain('scripts/mint-installation-token.mjs');
+  });
+
+  it('a missing gke launcher script fails too', async () => {
+    const t = real({ fileExists: (p) => !p.endsWith('container/gke/gke-worker-launch.sh') });
+    expect(await runConductorBoot(args, t.d)).toBe(1);
+    expect(t.err.join('\n')).toContain('container/gke/gke-worker-launch.sh');
+  });
+
+  it('a host file that does not load fails with the config issue', async () => {
+    const t = real({ readFile: (p) => (p.endsWith('conductor.host.example.json') ? '{"version":1,"bogus":true}' : readFileSync(p, 'utf8')) });
+    expect(await runConductorBoot(args, t.d)).toBe(1);
+    expect(t.err.join('\n')).toContain('do not load');
+  });
+
+  it('defaults to the files baked at /opt/harmony-plugin', async () => {
+    const paths: string[] = [];
+    const t = real({ readFile: (p) => (paths.push(p), readFileSync(p.replace('/opt/harmony-plugin', REPO), 'utf8')), fileExists: () => true });
+    expect(await runConductorBoot(['preflight'], t.d)).toBe(0);
+    expect(paths).toEqual(expect.arrayContaining(['/opt/harmony-plugin/container/conductor.host.example.json', '/opt/harmony-plugin/container/conductor.project.example.json']));
   });
 });

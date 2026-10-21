@@ -121,6 +121,41 @@ describe.skipIf(!CAPABLE)('gke-worker-launch.sh — the ticket-disk storage clas
     expect(JSON.parse(read(w, 'pvc.json')).spec.storageClassName).toBe('premium-rwo');
     expect(verbs(w).some((c) => c.includes('get storageclass'))).toBe(false);
   });
+
+  // B-1186: the remote conductor's pod cannot read the cluster-scoped StorageClass.
+  it('a refused read (Forbidden) keeps harmony-ticket-disk and logs why, instead of falling back', () => {
+    const w = makeWorld(seq([COMPLETE], [CLEAN_POD]));
+    const r = launch(w, { STUB_SC_FORBIDDEN: '1' });
+    expect(r.status).toBe(0);
+    expect(JSON.parse(read(w, 'pvc.json')).spec.storageClassName).toBe('harmony-ticket-disk');
+    expect(r.stderr).toContain('could not check storage class harmony-ticket-disk');
+    expect(r.stderr).toContain('Forbidden');
+    expect(r.stderr).not.toContain('using standard-rwo');
+  });
+
+  it('NotFound falls back to standard-rwo with the existing message', () => {
+    const w = makeWorld(seq([COMPLETE], [CLEAN_POD]));
+    const r = launch(w, { STUB_NO_TICKET_SC: '1' });
+    expect(JSON.parse(read(w, 'pvc.json')).spec.storageClassName).toBe('standard-rwo');
+    expect(r.stderr).toContain('storage class harmony-ticket-disk not found; using standard-rwo');
+  });
+
+  it('a successful read uses harmony-ticket-disk with no warning line', () => {
+    const w = makeWorld(seq([COMPLETE], [CLEAN_POD]));
+    const r = launch(w);
+    expect(JSON.parse(read(w, 'pvc.json')).spec.storageClassName).toBe('harmony-ticket-disk');
+    expect(read(w, 'storageclass-reads').split('\n').filter(Boolean)).toHaveLength(1);
+    expect(r.stderr).not.toContain('storage class');
+  });
+
+  it('a configured class never reaches the cluster: the kubectl stub is not asked about storage classes, even when it would refuse', () => {
+    const w = makeWorld(seq([COMPLETE], [CLEAN_POD]));
+    const r = launch(w, { HARMONY_GKE_STORAGE_CLASS: 'harmony-ticket-disk', STUB_SC_FORBIDDEN: '1' });
+    expect(r.status).toBe(0);
+    expect(JSON.parse(read(w, 'pvc.json')).spec.storageClassName).toBe('harmony-ticket-disk');
+    expect(read(w, 'storageclass-reads')).toBe('');
+    expect(r.stderr).not.toContain('storage class');
+  });
 });
 
 describe.skipIf(!CAPABLE)('gke-worker-launch.sh — the four steps (EXECUTED against a stub kubectl)', () => {

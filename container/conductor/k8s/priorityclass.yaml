@@ -1,0 +1,27 @@
+# B-1186: the conductor pod's PriorityClass. CLUSTER-SCOPED, so it is NOT part of the namespaced RBAC the conductor
+# applies to itself (rbac-*.yaml) and its Role cannot create it: an operator applies it ONCE, with their own
+# credentials, BEFORE the Deployment (the Deployment names it, and a pod naming a PriorityClass that does not exist is
+# rejected):
+#   kubectl apply -f container/conductor/k8s/priorityclass.yaml
+# setup-cluster.sh (step 27) applies it for you when the conductor steps are not skipped.
+#
+# WHY: when the leg pool scales up, the cluster is busier and the scheduler may preempt LOWER-priority pods to place
+# higher ones. Leg pods carry the default priority (0); the conductor is worth more than any single leg (a stopped
+# conductor strands every running leg), so it outranks them and is never the pod evicted to make room.
+#
+# WHAT THIS DOES NOT DO: system-critical pods (priorityClassName system-cluster-critical / system-node-critical, i.e.
+# kube-dns, konnectivity-agent, metrics-server and the like) have priority 2,000,000,000+, far above this class, so
+# they can STILL preempt the conductor when the system pool is full. The main fix is headroom: size the system pool so
+# the conductor fits next to those pods at the leg pool's maximum node count (docs/remote-conductor-runbook.md,
+# "Size the system pool").
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: harmony-conductor
+  labels:
+    app.kubernetes.io/name: harmony-conductor
+    app.kubernetes.io/part-of: harmony-conductor
+value: 100000
+globalDefault: false
+preemptionPolicy: PreemptLowerPriority
+description: The remote conductor pod. Outranks leg pods; system-critical pods still outrank it.

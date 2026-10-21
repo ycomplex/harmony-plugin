@@ -1,9 +1,12 @@
+# Runbook: docs/remote-conductor-runbook.md (the ordered steps, system-pool sizing, the fallback).
 # B-1173: the remote conductor — ONE pod running the same daemon (dist/bin/daemon.js) the Mac mini runs, holding
 # the registry lease while it conducts. Everything it needs comes from three places: the image (code), the ConfigMap
 # (names and identifiers), and Secret Manager at boot (HARMONY_API_TOKEN and the GitHub App key, via Workload
 # Identity). NO credential appears in this file, and none must be added to it.
 #
-# APPLY: the image tag below is a placeholder; the Deployment pins a VERSION tag, never a moving one (the channel
+# APPLY ORDER: priorityclass.yaml FIRST (cluster-scoped; setup-cluster.sh step 27 applies it, or `kubectl apply -f
+# container/conductor/k8s/priorityclass.yaml`), because this Deployment names it and the pod is rejected without it.
+# The image tag below is a placeholder; the Deployment pins a VERSION tag, never a moving one (the channel
 # tags :staging / :prod exist for `harmony conductor update` to resolve, not for this file):
 #   sed "s/__CONDUCTOR_VERSION__/<plugin version>/" container/conductor/k8s/deployment.yaml | kubectl apply -f -
 # The version is the one the Cloud Build run published (`gcloud artifacts docker tags list <image>`). After that,
@@ -51,6 +54,8 @@ spec:
         app.kubernetes.io/part-of: harmony-conductor
     spec:
       serviceAccountName: harmony-conductor
+      # Outranks leg pods when the cluster is busy; system-critical pods still outrank it (see priorityclass.yaml).
+      priorityClassName: harmony-conductor
       terminationGracePeriodSeconds: 60
       nodeSelector:
         cloud.google.com/gke-nodepool: default-pool
@@ -78,15 +83,8 @@ spec:
               value: /var/harmony
             - name: HARMONY_CONDUCTOR_HOST_FILE
               value: /etc/harmony/conductor-host.json
-            # Ticket disks use the zone-pinned class. The pod's RBAC cannot read StorageClasses (cluster-scoped), so
-            # the launcher's "does harmony-ticket-disk exist?" probe would fail and silently fall back to
-            # standard-rwo; naming the class here removes the probe.
-            - name: HARMONY_GKE_STORAGE_CLASS
-              value: harmony-ticket-disk
-            - name: CLOUDSDK_CORE_ACCOUNT
-              value: harmony-conductor@harmony-conductor.iam.gserviceaccount.com
-            - name: CLOUDSDK_CORE_PROJECT
-              value: harmony-conductor
+            # gcp.project / gcp.region / gcloud.account and gke.storage_class come from the ConfigMap files (host +
+            # project seed), not from env: a legacy CLOUDSDK_* / HARMONY_GKE_* knob is deprecated and warns at boot.
           readinessProbe:
             exec:
               command: ['sh', '-c', 'test -f "$HARMONY_READY_FILE"']

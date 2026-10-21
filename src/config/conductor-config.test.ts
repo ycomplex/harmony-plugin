@@ -394,6 +394,49 @@ describe('legacy layer', () => {
   });
 });
 
+describe('B-1186: a legacy env knob equal to what the files resolve to is redundant', () => {
+  const files = { [P.snap]: snapshot(gkeProject), [P.host]: host };
+
+  function childRead(env: NodeJS.ProcessEnv) {
+    const seen: string[] = [];
+    const r = loadConductorConfigSync({ env: { HARMONY_HOME: H, ...env }, ...fs(files), warn: (m) => seen.push(m) })!;
+    return { r, seen };
+  }
+
+  it('a child re-reading config with the daemon-applied env logs no deprecated: line', () => {
+    const parent = load(files)!;
+    const applied = launchEnvFromMerged(parent.merged);
+    expect(Object.keys(applied).length).toBeGreaterThan(5);
+    resetConductorWarningDedupe();
+    const { r, seen } = childRead(applied);
+    expect(seen.filter((m) => m.startsWith('deprecated:'))).toEqual([]);
+    expect(r.warnings.filter((m) => m.startsWith('deprecated:'))).toEqual([]);
+    expect(r.sources.some((s) => s.startsWith('legacy'))).toBe(false);
+    expect(r.deploymentConfig.profiles?.gke).toBeDefined();
+    expect(r.merged.gke?.namespace).toBe('ns-project');
+  });
+
+  it('control: a DIFFERING env value still warns and still applies', () => {
+    const { r, seen } = childRead({ HARMONY_GKE_NAMESPACE: 'other' });
+    expect(seen.some((m) => m.startsWith('deprecated: env HARMONY_GKE_NAMESPACE'))).toBe(true);
+    // the project file still outranks the legacy layer
+    expect(r.merged.gke?.namespace).toBe('ns-project');
+  });
+
+  it('control: a knob the files do not carry still warns and applies', () => {
+    const { r, seen } = childRead({ HARMONY_GKE_CPU: '3' });
+    expect(seen.some((m) => m.includes('HARMONY_GKE_CPU'))).toBe(true);
+    expect(r.merged.gke?.cpu).toBe('3');
+  });
+
+  it('an equal integer knob is redundant too', () => {
+    const f = { [P.snap]: snapshot({ ...gkeProject, gke: { ...gkeProject.gke, poll_s: 7 } }), [P.host]: host };
+    const seen: string[] = [];
+    loadConductorConfigSync({ env: { HARMONY_HOME: H, HARMONY_GKE_POLL_S: '7' }, ...fs(f), warn: (m) => seen.push(m) });
+    expect(seen).toEqual([]);
+  });
+});
+
 describe('projectToDeploymentConfig', () => {
   it('overlays new-file sections and passes unrelated legacy sections through untouched', () => {
     const legacy = legacyDep({

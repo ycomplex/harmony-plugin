@@ -31,7 +31,6 @@ data:
         "region": "us-central1"
       },
       "secrets": {
-        "base": "harmony-worker-base-env",
         "codex_auth": "harmony-codex-auth",
         "api_token": "HARMONY_API_TOKEN",
         "github_app_private_key": "harmony-daemon-app-private-key"
@@ -53,9 +52,6 @@ data:
         "registry": "us-central1-docker.pkg.dev/harmony-conductor/harmony-workers",
         "ticket_disk": "20Gi",
         "storage_class": "harmony-ticket-disk"
-      },
-      "images": {
-        "worker": "harmony-build-env"
       },
       "concurrency": {
         "max_workers": 2
