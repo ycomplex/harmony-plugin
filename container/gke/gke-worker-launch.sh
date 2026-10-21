@@ -68,7 +68,7 @@ CONFIG_WORKER_IMAGE="$(harmony_config worker_image)"
 : "${HARMONY_GKE_REGISTRY:=us-central1-docker.pkg.dev/harmony-conductor/harmony-workers}"
 : "${HARMONY_GKE_DEFAULT_IMAGE:=harmony-build-env-docker:latest}"
 : "${HARMONY_GKE_CPU:=6}"
-: "${HARMONY_GKE_MEMORY:=20Gi}"
+: "${HARMONY_GKE_MEMORY:=10Gi}"   # B-1194: 129 measured legs peaked at 7.68 GiB; the 6 CPU request, not memory, keeps one leg per node
 : "${HARMONY_GKE_TICKET_DISK:=20Gi}"
 # HARMONY_GKE_STORAGE_CLASS: set (gke.storage_class) => used as is; unset => harmony-ticket-disk unless the cluster says it is NotFound, then standard-rwo (below).
 : "${HARMONY_GKE_DEADLINE_S:=5400}"          # the Cloud Run job's task timeout

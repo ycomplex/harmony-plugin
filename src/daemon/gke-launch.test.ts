@@ -201,7 +201,9 @@ describe.skipIf(!CAPABLE)('gke-worker-launch.sh — the four steps (EXECUTED aga
     // the Job as created: launch defaults reach the renderer
     const job = JSON.parse(read(w, 'job.json'));
     const worker = job.spec.template.spec.containers[0];
-    expect(worker.resources.requests).toEqual({ cpu: '6', memory: '20Gi' });
+    expect(worker.resources.requests).toEqual({ cpu: '6', memory: '10Gi' });
+    // B-1194: requests only — a leg sets no limits, so a build can burst to the whole node
+    expect(worker.resources.limits).toBeUndefined();
     expect(job.spec.ttlSecondsAfterFinished).toBe(3600);
     expect(job.spec.activeDeadlineSeconds).toBe(5400);
     expect(job.spec.template.spec.volumes[0].persistentVolumeClaim.claimName).toBe('ticket-b-1161');
