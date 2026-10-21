@@ -224,6 +224,8 @@ reads (B-1174; see [`conductor-config.md`](conductor-config.md#conductor-logs-b-
 
 ## The remote conductor (B-1173)
 
+The operator's step-by-step is [`remote-conductor-runbook.md`](remote-conductor-runbook.md).
+
 The remote conductor is the same daemon in one pod of the Deployment `harmony-conductor` (namespace
 `harmony-conductor`, rolling update `maxSurge: 1`, `maxUnavailable: 0`), run with `HARMONY_CONDUCTOR_REMOTE=1`:
 

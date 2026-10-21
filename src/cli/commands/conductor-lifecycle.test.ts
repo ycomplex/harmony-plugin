@@ -611,6 +611,15 @@ describe('restart', () => {
       expect(signalled(m.calls)).toBe(false);
     });
 
+    it('no gcp.project configured: nothing is listed or signalled against an invented project', async () => {
+      const m = makeWorld({ procs: [{ pid: 4242, tail: '--profile cloud' }], held: HELD, env: cloudEnv, cloudExecs: CLOUD_EXECS });
+      m.vfs.set('/cfg/project.json', JSON.stringify({ version: 1, channel: 'staging', profile: 'gke', gke: { cluster: 'c', location: 'us-east1-b' } }));
+      const r = await runRestart(m.deps, {});
+      expect(r.exitCode).toBe(1);
+      expect(callsOf(m.calls, 'gcloud').some((c) => c.args.some((a) => a.startsWith('--project=')))).toBe(false);
+      expect(signalled(m.calls)).toBe(false);
+    });
+
     it('--force proceeds past the guard with a warning', async () => {
       const m = makeWorld({ procs: [{ pid: 4242, tail: '--profile cloud' }], held: HELD, env: cloudEnv, cloudExecs: CLOUD_EXECS });
       const r = await runRestart(m.deps, { force: true });
@@ -952,5 +961,27 @@ describe('pre-flight with secrets resolved from Secret Manager (no env file)', (
     expect(c.ok).toBe(false);
     expect(c.detail).toContain('"harmony-api-token"');
     expect(c.detail).not.toContain('boom');
+  });
+});
+
+describe('pre-flight cloud reach check: gcp.project (B-1186)', () => {
+  const cloudEnv = { HARMONY_CLOUD_RUN_JOB: 'crjob', HARMONY_CLOUD_RUN_REGION: 'us-east1' };
+  it('uses the nested gcp.project, never an invented one', async () => {
+    const m = makeWorld({ profile: 'cloud', env: cloudEnv });
+    const s = await loadSettings(m.deps, {});
+    await runPreflight(m.deps, s, {});
+    const describeCall = m.calls.find((c) => c.file === 'gcloud' && c.args[0] === 'run' && c.args[1] === 'jobs' && c.args[2] === 'describe')!;
+    expect(describeCall.args).toContain('--project=proj');
+  });
+
+  it('with no project it fails the check naming where to set it, and calls no gcloud', async () => {
+    const m = makeWorld({ profile: 'cloud', env: cloudEnv });
+    m.vfs.set('/cfg/project.json', JSON.stringify({ version: 1, channel: 'staging', profile: 'cloud', cloud_run: { job: 'crjob' } }));
+    const s = await loadSettings(m.deps, {});
+    const pre = await runPreflight(m.deps, s, {});
+    const c = pre.checks.find((x) => x.name === 'reach:cloud-run-job')!;
+    expect(c.ok).toBe(false);
+    expect(JSON.stringify(c)).toContain('gcp.project');
+    expect(m.calls.some((x) => x.file === 'gcloud' && x.args.some((a) => a.startsWith('--project=')))).toBe(false);
   });
 });

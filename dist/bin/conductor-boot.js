@@ -8,13 +8,14 @@ var __export = (target, all) => {
 
 // src/bin/conductor-boot.ts
 import { spawn } from "node:child_process";
-import { readFileSync as readFileSync2 } from "node:fs";
+import { existsSync, readFileSync as readFileSync2 } from "node:fs";
 
 // src/config/conductor-secrets.ts
 import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 // src/config/conductor-config.ts
+import { existsSync as fsExistsSync, readFileSync as fsReadFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -4084,6 +4085,9 @@ var ReposSchema = external_exports.array(RepoEntrySchema).refine((repos) => repo
   message: "at most one repos[] entry may set is_plugin"
 });
 
+// src/config/worker-image-default.ts
+var WORKER_IMAGE_DEFAULT = "harmony-build-env";
+
 // src/config/conductor-config.ts
 function resolveConductorPaths(env = process.env) {
   const home = env.HARMONY_HOME || join(homedir(), ".harmony");
@@ -4122,6 +4126,7 @@ var GkeSchema = external_exports.object({
 var ConcurrencySchema = external_exports.object({ max_workers: external_exports.number().int().min(0).optional() }).strict();
 var ModelPolicySchema = external_exports.object({ default: external_exports.string().min(1).optional(), per_gate: external_exports.record(external_exports.string().min(1)).optional() }).strict();
 var TargetSchema = external_exports.enum(["prod", "staging", "custom"]);
+var AGENT_FLAG_ENV = { "claude-code": "CLAUDE_HEADLESS_FLAGS" };
 var AgentFlagsSchema = external_exports.object({ "claude-code": external_exports.string().min(1).optional() }).strict();
 var ProfileOverrideSchema = external_exports.object({
   max_workers: external_exports.number().int().min(0).optional(),
@@ -4207,6 +4212,228 @@ var SnapshotSchema = external_exports.object({
   fetched_at: external_exports.string(),
   content: external_exports.string()
 });
+function parseSnapshotText(text) {
+  try {
+    const r = SnapshotSchema.safeParse(JSON.parse(text));
+    return r.success ? r.data : null;
+  } catch {
+    return null;
+  }
+}
+function formatConfigIssue(i) {
+  return `${i.file} \u203A ${i.key}: ${i.problem.replace(/\.+$/, "")}. Fix: ${i.fix}`;
+}
+function formatConfigIssues(issues) {
+  return issues.map(formatConfigIssue);
+}
+var ConductorConfigError = class extends Error {
+  file;
+  key;
+  problem;
+  fix;
+  issues;
+  constructor(input) {
+    const issues = Array.isArray(input) ? input : [input];
+    super(formatConfigIssues(issues).join("\n"));
+    this.name = "ConductorConfigError";
+    this.issues = issues;
+    const first = issues[0] ?? { file: "(unknown)", key: "(file)", problem: "unknown error", fix: "see the log" };
+    this.file = first.file;
+    this.key = first.key;
+    this.problem = first.problem;
+    this.fix = first.fix;
+  }
+};
+function unwrapSchema(s) {
+  let cur = s;
+  for (; ; ) {
+    if (cur instanceof external_exports.ZodOptional || cur instanceof external_exports.ZodNullable) cur = cur.unwrap();
+    else if (cur instanceof external_exports.ZodDefault) cur = cur.removeDefault();
+    else if (cur instanceof external_exports.ZodEffects) cur = cur.innerType();
+    else return cur;
+  }
+}
+function objectSchemaAt(root, path) {
+  let cur = unwrapSchema(root);
+  for (const seg of path) {
+    if (cur instanceof external_exports.ZodObject) cur = unwrapSchema(cur.shape[String(seg)]);
+    else if (cur instanceof external_exports.ZodRecord) cur = unwrapSchema(cur.valueSchema);
+    else if (cur instanceof external_exports.ZodArray) cur = unwrapSchema(cur.element);
+    else return void 0;
+    if (!cur) return void 0;
+  }
+  return cur instanceof external_exports.ZodObject ? cur : void 0;
+}
+var EXAMPLE_BY_TYPE = {
+  string: '"value"',
+  number: "2",
+  integer: "2",
+  boolean: "true",
+  array: '["a"]',
+  object: "{ }"
+};
+function keyOf(path) {
+  return path.length === 0 ? "(file)" : path.join(".");
+}
+function zodIssuesToConfigIssues(file, issues, root) {
+  const out = [];
+  for (const issue of issues) {
+    switch (issue.code) {
+      case "unrecognized_keys": {
+        const allowed = Object.keys(objectSchemaAt(root, issue.path)?.shape ?? {});
+        for (const k of issue.keys) {
+          out.push({
+            file,
+            key: keyOf([...issue.path, k]),
+            problem: "unknown key",
+            fix: `remove it, or use one of the allowed keys${issue.path.length ? ` under ${keyOf(issue.path)}` : ""}: ${allowed.join(", ")}`
+          });
+        }
+        break;
+      }
+      case "invalid_enum_value":
+        out.push({
+          file,
+          key: keyOf(issue.path),
+          problem: `${JSON.stringify(issue.received)} is not an allowed value`,
+          fix: `set it to one of: ${issue.options.map((o) => JSON.stringify(o)).join(", ")}`
+        });
+        break;
+      case "invalid_type": {
+        const example = EXAMPLE_BY_TYPE[issue.expected] ?? '"value"';
+        const key = keyOf(issue.path);
+        const leaf = String(issue.path[issue.path.length - 1] ?? "");
+        out.push(
+          issue.received === "undefined" ? {
+            file,
+            key,
+            problem: `required ${issue.expected} is missing`,
+            fix: `add ${leaf ? `"${leaf}": ` : ""}${example}`
+          } : {
+            file,
+            key,
+            problem: `expected ${issue.expected}, got ${issue.received}`,
+            fix: `set it to a ${issue.expected}, e.g. ${example}`
+          }
+        );
+        break;
+      }
+      case "invalid_literal":
+        out.push({
+          file,
+          key: keyOf(issue.path),
+          problem: issue.received === void 0 ? `required value ${JSON.stringify(issue.expected)} is missing` : `must be ${JSON.stringify(issue.expected)} (got ${JSON.stringify(issue.received)})`,
+          fix: `set it to ${JSON.stringify(issue.expected)}`
+        });
+        break;
+      case "custom":
+        out.push({ file, key: keyOf(issue.path), problem: issue.message, fix: customFix(issue.message) });
+        break;
+      default:
+        out.push({
+          file,
+          key: keyOf(issue.path),
+          problem: issue.message,
+          fix: "correct the value to match the schema"
+        });
+    }
+  }
+  return out;
+}
+function customFix(message) {
+  return message.includes("secret VALUE") ? "store the value in Secret Manager and put only the secret NAME here" : message === SUPABASE_URL_NEEDS_CUSTOM ? 'add "target": "custom" or remove supabase_url' : "correct the value to match the schema";
+}
+function lineColOf(text, pos) {
+  const before = text.slice(0, pos);
+  const line = before.split("\n").length;
+  return { line, col: pos - (before.lastIndexOf("\n") + 1) + 1 };
+}
+function parseJsonText(file, text) {
+  try {
+    return { ok: true, value: JSON.parse(text) };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    let where = "";
+    if (!/line \d+ column \d+/.test(msg)) {
+      const m = /position (\d+)/.exec(msg);
+      if (m) {
+        const { line, col } = lineColOf(text, Number(m[1]));
+        where = ` (line ${line}, column ${col})`;
+      } else {
+        const snip = /\.\.\."?([\s\S]*?)"? is not valid JSON/.exec(msg)?.[1] ?? /"([\s\S]*?)" is not valid JSON/.exec(msg)?.[1];
+        const at = snip ? text.indexOf(snip) : -1;
+        if (at >= 0) {
+          const { line, col } = lineColOf(text, at + Math.max(0, snip.length - 1));
+          where = ` (near line ${line}, column ${col})`;
+        }
+      }
+    }
+    return {
+      ok: false,
+      issue: { file, key: "(file)", problem: `invalid JSON: ${msg}${where}`, fix: "correct the JSON" }
+    };
+  }
+}
+function validateText(file, text, schema) {
+  const parsed = parseJsonText(file, text);
+  if (!parsed.ok) return { ok: false, issues: [parsed.issue] };
+  const r = schema.safeParse(parsed.value);
+  if (r.success) return { ok: true, value: r.data };
+  return { ok: false, issues: zodIssuesToConfigIssues(file, r.error.issues, schema) };
+}
+function validateProjectFileText(file, text) {
+  return validateText(file, text, ProjectFileSchema);
+}
+var BUILTIN_PROFILES = {
+  cloud: {
+    launch: `bash "$HARMONY_PLUGIN_DIR/container/cloud-worker-launch.sh" {conduction_id} {ticket} '{run_config_json}' '{model}'`,
+    reap: 'bash "$HARMONY_PLUGIN_DIR/container/cloud-worker-reap.sh" {conduction_id} {ticket}',
+    probe: 'bash "$HARMONY_PLUGIN_DIR/container/cloud-worker-probe.sh" {conduction_id} {ticket}',
+    maxConcurrentWorkers: 2,
+    agents: ["claude-code", "codex"],
+    required_tools: { launch: ["node", "gcloud"], reap: ["gcloud"], probe: ["gcloud"] },
+    requires_app_mint: true,
+    schema_version: 1
+  },
+  gke: {
+    // B-1164: gke legs launch from the Docker-capable image; the default (harmony-build-env) has no engine.
+    launch: `HARMONY_GKE_IMAGE=us-central1-docker.pkg.dev/harmony-conductor/harmony-workers/harmony-build-env-docker:latest bash "$HARMONY_PLUGIN_DIR/container/gke/gke-worker-launch.sh" {conduction_id} {ticket} '{run_config_json}' '{model}'`,
+    reap: 'bash "$HARMONY_PLUGIN_DIR/container/gke/gke-worker-reap.sh" {conduction_id} {ticket} {worker_ref}',
+    probe: 'bash "$HARMONY_PLUGIN_DIR/container/gke/gke-worker-probe.sh" {conduction_id} {ticket} {worker_ref}',
+    maxConcurrentWorkers: 2,
+    agents: ["claude-code", "codex"],
+    required_tools: {
+      launch: ["node", "kubectl", "gke-gcloud-auth-plugin"],
+      reap: ["kubectl", "gke-gcloud-auth-plugin"],
+      probe: ["kubectl", "gke-gcloud-auth-plugin"]
+    },
+    requires_app_mint: true,
+    schema_version: 1
+  }
+};
+var isPlain = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+function mergeInto(base, over) {
+  const out = { ...base };
+  for (const [k, v] of Object.entries(over)) {
+    if (v === void 0) continue;
+    out[k] = isPlain(v) && isPlain(out[k]) ? mergeInto(out[k], v) : v;
+  }
+  return out;
+}
+function mergeLayers(...layers) {
+  let out = {};
+  for (const l of layers) if (l) out = mergeInto(out, l);
+  delete out.version;
+  return out;
+}
+function setPath(o, path, value) {
+  let cur = o;
+  for (const seg of path.slice(0, -1)) {
+    if (!isPlain(cur[seg])) cur[seg] = {};
+    cur = cur[seg];
+  }
+  cur[path[path.length - 1]] = value;
+}
 var ENV_LEAVES = [
   ...["channel", "profile", "plugin_dir", "config_repo", "config_ref"].map((k) => ({ path: [k], type: "string" })),
   { path: ["images", "worker"], type: "string" },
@@ -4226,6 +4453,41 @@ var ENV_LEAVES = [
   { path: ["github_app", "installation_id"], type: "string" },
   { path: ["github_app", "private_key_path"], type: "string" }
 ];
+function conductorEnvVarName(path) {
+  return `HARMONY_CONDUCTOR_${path.join("_").toUpperCase()}`;
+}
+function envLayer(env) {
+  const layer = {};
+  const vars = [];
+  const issues = [];
+  for (const leaf of ENV_LEAVES) {
+    const name = conductorEnvVarName(leaf.path);
+    const raw = env[name];
+    if (raw === void 0 || raw === "") continue;
+    vars.push(name);
+    if (leaf.type === "string") setPath(layer, leaf.path, raw);
+    else if (leaf.type === "int") {
+      if (!/^-?\d+$/.test(raw.trim())) {
+        issues.push({ file: "env", key: name, problem: `expected an integer, got ${JSON.stringify(raw)}`, fix: `set ${name} to a whole number, e.g. 2` });
+        continue;
+      }
+      setPath(layer, leaf.path, Number(raw.trim()));
+    } else {
+      const v = raw.trim().toLowerCase();
+      if (["true", "1", "yes"].includes(v)) setPath(layer, leaf.path, true);
+      else if (["false", "0", "no"].includes(v)) setPath(layer, leaf.path, false);
+      else issues.push({ file: "env", key: name, problem: `expected a boolean, got ${JSON.stringify(raw)}`, fix: `set ${name} to true or false` });
+    }
+  }
+  const r = HostFileSchema.omit({ version: true }).safeParse(layer);
+  if (!r.success) {
+    for (const i of zodIssuesToConfigIssues("env", r.error.issues, HostFileSchema)) {
+      const leaf = ENV_LEAVES.find((l) => l.path.join(".") === i.key);
+      issues.push(leaf ? { ...i, key: conductorEnvVarName(leaf.path), fix: i.fix.replace(/^set it/, `set ${conductorEnvVarName(leaf.path)}`) } : i);
+    }
+  }
+  return { layer, vars, issues };
+}
 var LEGACY_ENV_KNOBS = [
   ...[
     ["NAMESPACE", "namespace"],
@@ -4253,6 +4515,330 @@ var LEGACY_ENV_KNOBS = [
   { name: "HARMONY_APP_INSTALLATION_ID", path: ["github_app", "installation_id"], type: "string" },
   { name: "HARMONY_APP_PRIVATE_KEY_PATH", path: ["github_app", "private_key_path"], type: "string" }
 ];
+var deprecation = (old, newKey, file) => `deprecated: ${old} is read as a legacy fallback; set ${newKey} in ${file} instead`;
+function legacyToConductor(input) {
+  const { deployment, env } = input;
+  const layer = {};
+  const warnings = [];
+  const envKnobs = [];
+  const DJ = "deployment.json";
+  if (deployment) {
+    if (deployment.worker_image && deployment.worker_image !== WORKER_IMAGE_DEFAULT) {
+      setPath(layer, ["images", "worker"], deployment.worker_image);
+      warnings.push(deprecation(`${DJ} \u203A worker_image`, "images.worker", ".harmony/conductor.json"));
+    }
+    const prof = input.profileName ? deployment.profiles?.[input.profileName] : void 0;
+    if (prof) {
+      if (prof.gcloud_project) {
+        setPath(layer, ["gcp", "project"], prof.gcloud_project);
+        warnings.push(deprecation(`${DJ} \u203A profiles.${input.profileName}.gcloud_project`, "gcp.project", ".harmony/conductor.json"));
+      }
+      if (prof.maxConcurrentWorkers !== void 0) {
+        setPath(layer, ["concurrency", "max_workers"], prof.maxConcurrentWorkers);
+        warnings.push(deprecation(`${DJ} \u203A profiles.${input.profileName}.maxConcurrentWorkers`, "concurrency.max_workers", ".harmony/conductor.json"));
+      }
+      if (prof.agents) {
+        setPath(layer, ["agents"], prof.agents);
+        warnings.push(deprecation(`${DJ} \u203A profiles.${input.profileName}.agents`, "agents", ".harmony/conductor.json"));
+      }
+    }
+    if (deployment.launcher?.plugin_dir) {
+      setPath(layer, ["plugin_dir"], deployment.launcher.plugin_dir);
+      warnings.push(deprecation(`${DJ} \u203A launcher.plugin_dir`, "plugin_dir", "~/.harmony/conductor-host.json"));
+    }
+    if (deployment.launcher?.github_app) {
+      setPath(layer, ["github_app"], { ...deployment.launcher.github_app });
+      warnings.push(deprecation(`${DJ} \u203A launcher.github_app`, "github_app", "~/.harmony/conductor-host.json"));
+    }
+    const posture = deployment.env?.HARMONY_PLUGIN_POSTURE;
+    if (posture) {
+      const channel = posture === "prod" ? "prod" : posture === "ack:staging" || posture === "staging" ? "staging" : void 0;
+      if (channel) {
+        setPath(layer, ["channel"], channel);
+        warnings.push(deprecation(`${DJ} \u203A env.HARMONY_PLUGIN_POSTURE`, "channel", ".harmony/conductor.json"));
+      } else {
+        warnings.push(`${DJ} \u203A env.HARMONY_PLUGIN_POSTURE=${JSON.stringify(posture)} has no conductor.json channel equivalent (only "prod" and "staging"); it is ignored for channel`);
+      }
+    }
+  }
+  const resolvedEnv2 = input.resolved ? launchEnvFromMerged(input.resolved) : void 0;
+  for (const knob of LEGACY_ENV_KNOBS) {
+    if (input.ignoreEnvKeys?.has(knob.name)) continue;
+    const raw = env[knob.name];
+    if (raw === void 0 || raw === "") continue;
+    if (resolvedEnv2 && resolvedEnv2[knob.name] === (knob.type === "int" ? String(Number(raw.trim())) : raw)) continue;
+    const home = knob.name.startsWith("HARMONY_APP_") || knob.name === "HARMONY_PLUGIN_DIR" || knob.name === "CLOUDSDK_CORE_ACCOUNT" ? "~/.harmony/conductor-host.json" : ".harmony/conductor.json";
+    if (knob.type === "int") {
+      if (!/^\d+$/.test(raw.trim())) {
+        warnings.push(`env ${knob.name}=${JSON.stringify(raw)} is not an integer; ignored (set ${knob.path.join(".")} in ${home})`);
+        continue;
+      }
+      setPath(layer, knob.path, Number(raw.trim()));
+    } else {
+      setPath(layer, knob.path, raw);
+    }
+    envKnobs.push(knob.name);
+    warnings.push(deprecation(`env ${knob.name}`, knob.path.join("."), home));
+  }
+  return { layer, warnings, used: deployment !== null || envKnobs.length > 0, hasDeployment: deployment !== null, envKnobs };
+}
+var PROJECT_FILE_LABEL = "conductor.json";
+var HOST_FILE_LABEL = "conductor-host.json";
+function validateMerged(merged, env = {}) {
+  const issues = [];
+  const need = (file, key, problem, fix) => issues.push({ file, key, problem, fix });
+  if (!merged.channel) {
+    need(PROJECT_FILE_LABEL, "channel", "required key is missing", 'add "channel": "staging" (or "prod") to .harmony/conductor.json');
+  }
+  if (merged.supabase_url !== void 0 && merged.target !== "custom") {
+    need(PROJECT_FILE_LABEL, "supabase_url", SUPABASE_URL_NEEDS_CUSTOM, 'add "target": "custom" or remove supabase_url');
+  }
+  if (!merged.profile) {
+    need(PROJECT_FILE_LABEL, "profile", "required key is missing", 'add "profile": "cloud" (or "gke") to .harmony/conductor.json');
+    return issues;
+  }
+  if (!merged.gcp?.project) {
+    need(PROJECT_FILE_LABEL, "gcp.project", `the ${merged.profile} profile requires a GCP project`, 'add "gcp": { "project": "<gcp-project-id>" } to .harmony/conductor.json');
+  }
+  if (merged.profile === "gke") {
+    if (!merged.gke?.cluster) {
+      need(PROJECT_FILE_LABEL, "gke.cluster", "the gke profile requires a cluster name", 'add "gke": { "cluster": "<cluster-name>" } to .harmony/conductor.json');
+    }
+    if (!merged.gke?.location) {
+      need(PROJECT_FILE_LABEL, "gke.location", "the gke profile requires a cluster location", 'add "gke": { "location": "<zone-or-region>" } to .harmony/conductor.json');
+    }
+  }
+  if (BUILTIN_PROFILES[merged.profile].requires_app_mint) {
+    if (!merged.plugin_dir) {
+      need(HOST_FILE_LABEL, "plugin_dir", `the ${merged.profile} profile launches workers from this machine's plugin checkout`, 'add "plugin_dir": "/path/to/harmony-plugin" to ~/.harmony/conductor-host.json');
+    }
+    const app = merged.github_app;
+    for (const k of ["app_id", "installation_id"]) {
+      if (!app?.[k]) {
+        need(HOST_FILE_LABEL, `github_app.${k}`, `the ${merged.profile} profile mints a worker token from the harmony-daemon GitHub App`, `add "github_app": { "${k}": "<value>" } to ~/.harmony/conductor-host.json`);
+      }
+    }
+    if (!app?.private_key_path && !env.HARMONY_APP_PRIVATE_KEY) {
+      need(HOST_FILE_LABEL, "github_app.private_key_path", "the GitHub App private key location is missing", `add "github_app": { "private_key_path": "/path/to/key.pem" } to ~/.harmony/conductor-host.json (a remote conductor instead names the key's Secret Manager secret as "secrets": { "github_app_private_key": "<secret-name>" })`);
+    }
+  }
+  return issues;
+}
+function sameTemplate(a, b) {
+  return a.launch === b.launch && a.reap === b.reap && a.probe === b.probe && JSON.stringify(a.required_tools ?? null) === JSON.stringify(b.required_tools ?? null) && (a.requires_app_mint ?? false) === (b.requires_app_mint ?? false);
+}
+function projectToDeploymentConfig(merged, legacy = null, warnings = []) {
+  const out = {
+    ...legacy ?? {},
+    worker_image: merged.images?.worker ?? legacy?.worker_image ?? WORKER_IMAGE_DEFAULT
+  };
+  const name = merged.profile;
+  const listed = Object.keys(merged.profiles ?? {}).filter((n) => n in BUILTIN_PROFILES);
+  const names = [.../* @__PURE__ */ new Set([...name ? [name] : [], ...listed])];
+  if (names.length > 0) {
+    const profiles = { ...legacy?.profiles ?? {} };
+    for (const n of names) {
+      const builtin = BUILTIN_PROFILES[n];
+      const existing = legacy?.profiles?.[n];
+      if (existing && !sameTemplate(existing, builtin)) {
+        warnings.push(`custom launch template in deployment.json profiles.${n} is ignored once conductor.json names profile ${n}`);
+      }
+      const block = merged.profiles?.[n];
+      const active = n === name;
+      const entry = {
+        ...builtin,
+        maxConcurrentWorkers: block?.max_workers ?? (active ? merged.concurrency?.max_workers : void 0) ?? builtin.maxConcurrentWorkers,
+        agents: block?.agents ?? (active ? merged.agents : void 0) ?? builtin.agents
+      };
+      if (block?.required_tools) entry.required_tools = { ...builtin.required_tools, ...block.required_tools };
+      if (n === "cloud" && merged.gcp?.project) entry.gcloud_project = merged.gcp.project;
+      profiles[n] = entry;
+    }
+    out.profiles = profiles;
+  }
+  if (merged.repos) out.repos = merged.repos;
+  if (merged.plugin_dir || merged.github_app) {
+    const launcher = { ...legacy?.launcher ?? {} };
+    if (merged.plugin_dir) launcher.plugin_dir = merged.plugin_dir;
+    if (merged.github_app) launcher.github_app = merged.github_app;
+    out.launcher = launcher;
+  }
+  const env = { ...legacy?.env ?? {} };
+  let envSet = false;
+  const putEnv = (k, v) => {
+    if (v === void 0) return;
+    env[k] = v;
+    envSet = true;
+  };
+  if (merged.channel) putEnv("HARMONY_PLUGIN_POSTURE", merged.channel === "prod" ? "prod" : "ack:staging");
+  putEnv("HARMONY_TARGET", merged.target);
+  putEnv("HARMONY_SUPABASE_URL", merged.supabase_url);
+  putEnv(AGENT_FLAG_ENV["claude-code"], merged.agent_flags?.["claude-code"]);
+  if (envSet) out.env = env;
+  return out;
+}
+function launchEnvFromMerged(merged) {
+  const out = {};
+  const put = (k, v) => {
+    if (v !== void 0 && v !== "") out[k] = String(v);
+  };
+  const g = merged.gke;
+  put("HARMONY_GKE_NAMESPACE", g?.namespace);
+  put(
+    "HARMONY_GKE_CONTEXT",
+    g?.context ?? (merged.gcp?.project && g?.location && g?.cluster ? `gke_${merged.gcp.project}_${g.location}_${g.cluster}` : void 0)
+  );
+  put("HARMONY_GKE_BASE_SECRET", g?.base_secret);
+  put("HARMONY_GKE_CODEX_SECRET", g?.codex_secret);
+  put("HARMONY_GKE_REGISTRY", g?.registry);
+  put("HARMONY_GKE_CPU", g?.cpu);
+  put("HARMONY_GKE_MEMORY", g?.memory);
+  put("HARMONY_GKE_TICKET_DISK", g?.ticket_disk);
+  put("HARMONY_GKE_STORAGE_CLASS", g?.storage_class);
+  put("HARMONY_GKE_DEADLINE_S", g?.deadline_s);
+  put("HARMONY_GKE_POLL_S", g?.poll_s);
+  put("HARMONY_GKE_JOB_TTL_S", g?.job_ttl_s);
+  put("HARMONY_GKE_IMAGE", merged.images?.worker);
+  put("HARMONY_CLOUD_RUN_REGION", merged.gcp?.region);
+  put("HARMONY_CLOUD_RUN_JOB", merged.cloud_run?.job);
+  put("CLOUDSDK_CORE_PROJECT", merged.gcp?.project);
+  put("CLOUDSDK_CORE_ACCOUNT", merged.gcloud?.account);
+  put("HARMONY_PLUGIN_DIR", merged.plugin_dir);
+  put("HARMONY_APP_ID", merged.github_app?.app_id);
+  put("HARMONY_APP_INSTALLATION_ID", merged.github_app?.installation_id);
+  put("HARMONY_APP_PRIVATE_KEY_PATH", merged.github_app?.private_key_path);
+  return out;
+}
+var emitted = /* @__PURE__ */ new Set();
+function evaluateConductorConfig(opts = {}) {
+  const env = opts.env ?? process.env;
+  const exists = opts.existsSync ?? fsExistsSync;
+  const read = opts.readFileSync ?? ((p) => fsReadFileSync(p, "utf8"));
+  const paths = resolveConductorPaths(env);
+  const issues = [];
+  const warnings = [];
+  const sources = [];
+  const readText = (path, label) => {
+    try {
+      return read(path);
+    } catch (err) {
+      issues.push({ file: label, key: "(file)", problem: `could not be read: ${err instanceof Error ? err.message : String(err)}`, fix: `check that ${path} exists and is readable` });
+      return null;
+    }
+  };
+  const hasExplicitProject = !!paths.projectFile;
+  const hasSnapshot = !hasExplicitProject && exists(paths.snapshotFile);
+  const hasHost = exists(paths.hostFile);
+  if (!hasExplicitProject && !hasSnapshot && !hasHost) return null;
+  let projectLayer;
+  let projectFailed = false;
+  if (paths.projectFile) {
+    const label = basename(paths.projectFile);
+    if (!exists(paths.projectFile)) {
+      projectFailed = true;
+      issues.push({ file: label, key: "(file)", problem: `not found at ${paths.projectFile}`, fix: "create it, or unset HARMONY_CONDUCTOR_PROJECT_FILE" });
+    } else {
+      const text = readText(paths.projectFile, label);
+      if (text !== null) {
+        const v = validateProjectFileText(label, text);
+        if (v.ok) {
+          projectLayer = v.value;
+          sources.push(`project: ${paths.projectFile}`);
+        } else {
+          projectFailed = true;
+          issues.push(...v.issues);
+        }
+      } else projectFailed = true;
+    }
+  } else if (hasSnapshot) {
+    const text = readText(paths.snapshotFile, "conductor-snapshot.json");
+    if (text !== null) {
+      const snap = parseSnapshotText(text);
+      if (!snap) {
+        warnings.push(`snapshot ${paths.snapshotFile} is unreadable or malformed; ignoring it (run \`harmony conductor config sync\` to rewrite it)`);
+      } else {
+        const v = validateProjectFileText(PROJECT_FILE_LABEL, snap.content);
+        if (v.ok) {
+          projectLayer = v.value;
+          sources.push(`snapshot: ${paths.snapshotFile} (${snap.source.repo}@${snap.source.ref}, fetched ${snap.fetched_at})`);
+        } else {
+          projectFailed = true;
+          issues.push(...v.issues);
+        }
+      }
+    } else projectFailed = true;
+  }
+  let hostLayer;
+  if (hasHost) {
+    const text = readText(paths.hostFile, HOST_FILE_LABEL);
+    if (text !== null) {
+      const v = validateText(HOST_FILE_LABEL, text, HostFileSchema);
+      if (v.ok) {
+        hostLayer = v.value;
+        sources.push(`host: ${paths.hostFile}`);
+      } else issues.push(...v.issues);
+    }
+  }
+  const envL = envLayer(env);
+  issues.push(...envL.issues);
+  if (envL.vars.length) sources.push(`env: ${envL.vars.join(", ")} (test overrides)`);
+  const deployment = opts.loadLegacy ? opts.loadLegacy() : null;
+  const nonLegacy = mergeLayers(projectLayer, hostLayer, envL.layer);
+  let profileName = nonLegacy.profile;
+  if (!profileName && deployment?.profiles) {
+    const builtin = Object.keys(deployment.profiles).filter((n) => n in BUILTIN_PROFILES);
+    if (builtin.length === 1) profileName = builtin[0];
+  }
+  const legacy = legacyToConductor({ deployment, env, profileName, ignoreEnvKeys: opts.appliedEnvKeys, resolved: nonLegacy });
+  if (legacy.used) {
+    const parts = [legacy.hasDeployment ? "deployment.json" : "", legacy.envKnobs.length ? `env ${legacy.envKnobs.join(", ")}` : ""].filter(Boolean);
+    sources.push(`legacy (deprecated): ${parts.join("; ")}`);
+  }
+  if (!projectLayer && !projectFailed) {
+    if (legacy.used) {
+      warnings.push("no project file reachable yet; running on legacy files");
+      if (profileName && !nonLegacy.profile) {
+        legacy.layer.profile = profileName;
+        warnings.push(`profile ${JSON.stringify(profileName)} inferred from deployment.json (set "profile" in .harmony/conductor.json)`);
+      }
+    } else {
+      issues.push({
+        file: PROJECT_FILE_LABEL,
+        key: "(file)",
+        problem: "no project file is available (no snapshot, HARMONY_CONDUCTOR_PROJECT_FILE unset) and no legacy files exist to fall back on",
+        fix: "run `harmony conductor config sync` or set HARMONY_CONDUCTOR_PROJECT_FILE"
+      });
+    }
+  }
+  warnings.push(...legacy.warnings);
+  const merged = mergeLayers(legacy.layer, projectLayer, hostLayer, envL.layer);
+  if (issues.length === 0) issues.push(...validateMerged(merged, env));
+  const uniqueWarnings = [...new Set(warnings)];
+  let deploymentConfig = null;
+  if (issues.length === 0) {
+    deploymentConfig = projectToDeploymentConfig(merged, deployment, uniqueWarnings);
+  }
+  const warnFn = opts.warn ?? ((m) => console.error(`[conductor-config] ${m}`));
+  for (const w of uniqueWarnings) {
+    if (emitted.has(w)) continue;
+    emitted.add(w);
+    warnFn(w);
+  }
+  return {
+    merged,
+    deploymentConfig,
+    sources,
+    warnings: [...new Set(uniqueWarnings)],
+    issues,
+    layers: { project: projectLayer, host: hostLayer, env: envL.layer, legacy: legacy.layer }
+  };
+}
+function loadConductorConfigSync(opts = {}) {
+  const ev = evaluateConductorConfig(opts);
+  if (!ev) return null;
+  if (ev.issues.length > 0 || !ev.deploymentConfig) throw new ConductorConfigError(ev.issues);
+  return ev;
+}
 
 // src/daemon/conductor-remote.ts
 var REMOTE_ENV = "HARMONY_CONDUCTOR_REMOTE";
@@ -4332,8 +4918,172 @@ var execFileSecretExec = (file, args) => new Promise((resolve) => {
   });
 });
 
+// src/daemon/preflight.ts
+var LAUNCHD_PATH_HINT = "Note: launchd inherits a minimal PATH \u2014 add the SDK's bin dir to the plist's EnvironmentVariables PATH key.";
+var CURRENT_SCHEMA_VERSION = 1;
+var CAPABILITIES_BY_VERSION = {
+  1: ["required_tools", "requires_app_mint"]
+};
+function capabilitiesAddedSince(schemaVersion) {
+  const added = [];
+  for (let v = schemaVersion + 1; v <= CURRENT_SCHEMA_VERSION; v++) {
+    added.push(...CAPABILITIES_BY_VERSION[v] ?? []);
+  }
+  return added;
+}
+function resolvedEnv(env, key) {
+  const v = env[key];
+  return v == null || v === "" ? void 0 : v;
+}
+var APP_MINT_VARS = [
+  "HARMONY_APP_ID",
+  "HARMONY_APP_INSTALLATION_ID",
+  "HARMONY_APP_PRIVATE_KEY_PATH",
+  "HARMONY_PLUGIN_DIR"
+];
+function resolveLauncherVar(varName, env, deploymentConfig) {
+  const fromEnv = resolvedEnv(env, varName);
+  if (fromEnv !== void 0) return fromEnv;
+  const launcher = deploymentConfig?.launcher;
+  switch (varName) {
+    case "HARMONY_APP_ID":
+      return launcher?.github_app?.app_id || void 0;
+    case "HARMONY_APP_INSTALLATION_ID":
+      return launcher?.github_app?.installation_id || void 0;
+    case "HARMONY_APP_PRIVATE_KEY_PATH":
+      return launcher?.github_app?.private_key_path || void 0;
+    case "HARMONY_PLUGIN_DIR":
+      return launcher?.plugin_dir || void 0;
+  }
+}
+var TEMPLATE_KEYS = ["launch", "reap", "probe"];
+var NOT_NEEDED_REMOTE = /* @__PURE__ */ new Set(["gke-gcloud-auth-plugin"]);
+async function runBootPreflight(config, profile, opts) {
+  void config;
+  const remote = opts.env.HARMONY_CONDUCTOR_REMOTE === "1";
+  for (const templateKey of TEMPLATE_KEYS) {
+    const tools = profile.required_tools?.[templateKey] ?? [];
+    for (const tool of tools) {
+      if (remote && NOT_NEEDED_REMOTE.has(tool)) continue;
+      const result = await opts.runCommand(`command -v ${tool}`, { quiet: true });
+      if (result.exitCode !== 0) {
+        throw new Error(
+          `Missing required tool "${tool}" (invoked by profile "${opts.profileName}"'s "${templateKey}" template) \u2014 not found on PATH.
+${LAUNCHD_PATH_HINT}`
+        );
+      }
+    }
+  }
+  if (profile.requires_app_mint) {
+    for (const varName of APP_MINT_VARS) {
+      let value = resolveLauncherVar(varName, opts.env, opts.deploymentConfig);
+      if (value === void 0 && varName === "HARMONY_APP_PRIVATE_KEY_PATH") value = resolvedEnv(opts.env, "HARMONY_APP_PRIVATE_KEY");
+      if (value === void 0) {
+        throw new Error(
+          `Missing required launcher-host config "${varName}"${varName === "HARMONY_APP_PRIVATE_KEY_PATH" ? " (or an inline HARMONY_APP_PRIVATE_KEY)" : ""} \u2014 see container/README.md \xA7 The credential envelopes.`
+        );
+      }
+    }
+  }
+  if (profile.probe === void 0) {
+    throw new Error(
+      `Profile "${opts.profileName}" has no "probe" template \u2014 mid-leg re-attach capability is missing, so a takeover would SIGKILL any live worker for this profile and discard its in-progress work (reap-and-refire). Add a working probe template \u2014 see container/migrate-to-deployment-config.md step 3, e.g.:
+  "probe": "docker ps --filter name=harmony-worker-{conduction_id} --filter status=running --quiet | grep -q ."
+Or, if this profile's workers are genuinely safe to reap-and-refire on takeover, opt out explicitly with "probe": false.`
+    );
+  }
+  if (profile.probe === false) {
+    opts.log(
+      `Note: profile "${opts.profileName}" has "probe: false" \u2014 an explicit operator opt-out; mid-leg re-attach is disabled and takeovers will reap-and-refire running workers.`
+    );
+  }
+  if (!profile.required_tools) {
+    opts.log(
+      `Note: profile "${opts.profileName}" has no "required_tools" \u2014 tool-on-PATH preflight skipped for this profile; a missing binary will fail mid-conduction instead of at boot.`
+    );
+  }
+  const namesGcloud = TEMPLATE_KEYS.some(
+    (k) => (profile.required_tools?.[k] ?? []).includes("gcloud")
+  );
+  if (!profile.gcloud_project && namesGcloud) {
+    opts.log(
+      `Note: profile "${opts.profileName}" has no "gcloud_project" \u2014 cloud-worker-*.sh falls back to its own CLOUDSDK_CORE_PROJECT default.`
+    );
+  }
+  const schemaVersion = profile.schema_version ?? CURRENT_SCHEMA_VERSION;
+  if (schemaVersion < CURRENT_SCHEMA_VERSION) {
+    const added = capabilitiesAddedSince(schemaVersion);
+    opts.log(
+      `Note: profile "${opts.profileName}"'s schema_version (${schemaVersion}) is behind the current schema version (${CURRENT_SCHEMA_VERSION}) \u2014 capabilities added since: ${added.join(", ")}.`
+    );
+  }
+}
+
 // src/daemon/conductor-boot.ts
-var USAGE = "usage: conductor-boot exec -- <command> [args...] | conductor-boot check-host <host-file>";
+var USAGE = "usage: conductor-boot exec -- <command> [args...] | conductor-boot check-host <host-file> | conductor-boot preflight [--host-file f] [--project-file f] [--plugin-dir d]";
+var DEFAULT_PLUGIN_DIR = "/opt/harmony-plugin";
+var PREFLIGHT_PLUGIN_FILES = [
+  "dist/bin/daemon.js",
+  "dist/bin/harmony.js",
+  "scripts/mint-installation-token.mjs",
+  "container/gke/gke-worker-launch.sh",
+  "container/gke/gke-worker-reap.sh",
+  "container/gke/gke-worker-probe.sh",
+  "container/gke/gke-common.sh",
+  "container/gke/gke-render-leg.mjs",
+  "container/gke/sweep-ticket-disks.sh"
+];
+function flagValue(args, flag) {
+  const i = args.indexOf(flag);
+  return i >= 0 ? args[i + 1] : void 0;
+}
+async function runPreflightVerb(args, deps) {
+  const pluginDir = flagValue(args, "--plugin-dir") ?? DEFAULT_PLUGIN_DIR;
+  const hostFile = flagValue(args, "--host-file") ?? `${pluginDir}/container/conductor.host.example.json`;
+  const projectFile = flagValue(args, "--project-file") ?? `${pluginDir}/container/conductor.project.example.json`;
+  const fail = (m) => {
+    deps.err(`conductor-boot preflight: FAIL - ${m}`);
+    return 1;
+  };
+  const env = {
+    ...deps.env,
+    HARMONY_CONDUCTOR_REMOTE: "1",
+    HARMONY_CONDUCTOR_HOST_FILE: hostFile,
+    HARMONY_CONDUCTOR_PROJECT_FILE: projectFile,
+    HARMONY_HOME: "/nonexistent-harmony-home",
+    HARMONY_APP_PRIVATE_KEY: "preflight-fixture-not-a-secret"
+    // a pod resolves this at boot; the fixture just satisfies the contract
+  };
+  let loaded;
+  try {
+    loaded = loadConductorConfigSync({ env, existsSync: deps.fileExists, readFileSync: deps.readFile, warn: () => {
+    } });
+  } catch (e) {
+    return fail(`the host + project files do not load: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  if (!loaded) return fail(`no config found (host ${hostFile}, project ${projectFile})`);
+  const profileName = loaded.merged.profile ?? "gke";
+  const profile = loaded.deploymentConfig.profiles?.[profileName];
+  if (!profile) return fail(`the project file names no usable launch profile (${profileName})`);
+  const preflightEnv = { ...launchEnvFromMerged(loaded.merged), ...env, HARMONY_PLUGIN_DIR: pluginDir };
+  const lines = [];
+  try {
+    await runBootPreflight({}, profile, {
+      runCommand: async (cmd) => ({ exitCode: await deps.run("sh", ["-c", cmd], preflightEnv) }),
+      env: preflightEnv,
+      deploymentConfig: loaded.deploymentConfig,
+      profileName,
+      log: (l) => lines.push(l)
+    });
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : String(e));
+  }
+  const missing = PREFLIGHT_PLUGIN_FILES.filter((f) => !deps.fileExists(`${pluginDir}/${f}`));
+  if (missing.length > 0) return fail(`plugin files the launch path needs are missing under ${pluginDir}: ${missing.join(", ")}`);
+  for (const l of lines) deps.out(`conductor-boot preflight: ${l}`);
+  deps.out(`conductor-boot preflight: ok - profile ${profileName}, remote mode, ${PREFLIGHT_PLUGIN_FILES.length} plugin files present`);
+  return 0;
+}
 async function runConductorBoot(argv, deps) {
   const [verb, ...rest] = argv;
   if (verb === "check-host") {
@@ -4359,6 +5109,7 @@ async function runConductorBoot(argv, deps) {
     deps.out(`host file ok: secrets (names only) ${names.length > 0 ? names.join(", ") : "none"}`);
     return 0;
   }
+  if (verb === "preflight") return runPreflightVerb(rest, deps);
   if (verb === "exec") {
     const cmd = rest[0] === "--" ? rest.slice(1) : rest;
     if (cmd.length === 0) {
@@ -4384,6 +5135,7 @@ var code = await runConductorBoot(process.argv.slice(2), {
   env: process.env,
   exec: execFileSecretExec,
   readFile: (p) => readFileSync2(p, "utf8"),
+  fileExists: (p) => existsSync(p),
   out: (l) => void process.stdout.write(`${l}
 `),
   err: (l) => void process.stderr.write(`${l}

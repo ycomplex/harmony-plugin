@@ -21990,10 +21990,12 @@ function legacyToConductor(input) {
       }
     }
   }
+  const resolvedEnv2 = input.resolved ? launchEnvFromMerged(input.resolved) : void 0;
   for (const knob of LEGACY_ENV_KNOBS) {
     if (input.ignoreEnvKeys?.has(knob.name)) continue;
     const raw = env[knob.name];
     if (raw === void 0 || raw === "") continue;
+    if (resolvedEnv2 && resolvedEnv2[knob.name] === (knob.type === "int" ? String(Number(raw.trim())) : raw)) continue;
     const home = knob.name.startsWith("HARMONY_APP_") || knob.name === "HARMONY_PLUGIN_DIR" || knob.name === "CLOUDSDK_CORE_ACCOUNT" ? "~/.harmony/conductor-host.json" : ".harmony/conductor.json";
     if (knob.type === "int") {
       if (!/^\d+$/.test(raw.trim())) {
@@ -22263,7 +22265,7 @@ function evaluateConductorConfig(opts = {}) {
     const builtin = Object.keys(deployment.profiles).filter((n) => n in BUILTIN_PROFILES);
     if (builtin.length === 1) profileName = builtin[0];
   }
-  const legacy = legacyToConductor({ deployment, env, profileName, ignoreEnvKeys: opts.appliedEnvKeys });
+  const legacy = legacyToConductor({ deployment, env, profileName, ignoreEnvKeys: opts.appliedEnvKeys, resolved: nonLegacy });
   if (legacy.used) {
     const parts = [legacy.hasDeployment ? "deployment.json" : "", legacy.envKnobs.length ? `env ${legacy.envKnobs.join(", ")}` : ""].filter(Boolean);
     sources.push(`legacy (deprecated): ${parts.join("; ")}`);

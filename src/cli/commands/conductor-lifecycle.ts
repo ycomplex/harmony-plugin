@@ -50,6 +50,7 @@ import { formatOutput } from '../formatter.js';
 import type { CliResult } from './conductor-config.js';
 import { EXIT, Out } from './conductor-out.js';
 import { ageText, completeRequest, openRegistry, pluginVersion, REGISTRY_ABSENT } from './conductor-registry-cli.js';
+import { GCP_PROJECT_UNSET, resolveGcpProject } from '../../config/gcp-project.js';
 import { isRemoteConductor } from '../../daemon/conductor-remote.js';
 import { runKubeRestart, runStartRemote, runStopRemote } from './conductor-kube.js';
 import { defaultLifecycleDeps, type LifecycleDeps } from './conductor-lifecycle-deps.js';
@@ -502,7 +503,8 @@ async function legsInFlight(deps: LifecycleDeps, s: ConductorSettings, backend: 
   const job = s.env.HARMONY_CLOUD_RUN_JOB;
   const region = s.env.HARMONY_CLOUD_RUN_REGION;
   if (!job || !region) return { ok: false, legs: [], toolMissing: true, reason: 'HARMONY_CLOUD_RUN_JOB / HARMONY_CLOUD_RUN_REGION are not set' };
-  const project = s.env.CLOUDSDK_CORE_PROJECT || 'harmony-conductor';
+  const project = resolveGcpProject({ env: s.env as NodeJS.ProcessEnv, merged: s.merged, existsSync: deps.existsSync, readFileSync: deps.readFileSync });
+  if (!project) return { ok: false, legs: [], reason: GCP_PROJECT_UNSET };
   const r = await deps.exec('gcloud', ['run', 'jobs', 'executions', 'list', `--job=${job}`, `--region=${region}`, `--project=${project}`, '--format=json'], { env: s.env });
   if (r.code === 127) return { ok: false, legs: [], toolMissing: true, reason: 'gcloud is not installed' };
   if (r.code !== 0) return { ok: false, legs: [], reason: `could not list Cloud Run executions of ${job}` };

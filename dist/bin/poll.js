@@ -30260,10 +30260,12 @@ function legacyToConductor(input) {
       }
     }
   }
+  const resolvedEnv = input.resolved ? launchEnvFromMerged(input.resolved) : void 0;
   for (const knob of LEGACY_ENV_KNOBS) {
     if (input.ignoreEnvKeys?.has(knob.name)) continue;
     const raw = env[knob.name];
     if (raw === void 0 || raw === "") continue;
+    if (resolvedEnv && resolvedEnv[knob.name] === (knob.type === "int" ? String(Number(raw.trim())) : raw)) continue;
     const home = knob.name.startsWith("HARMONY_APP_") || knob.name === "HARMONY_PLUGIN_DIR" || knob.name === "CLOUDSDK_CORE_ACCOUNT" ? "~/.harmony/conductor-host.json" : ".harmony/conductor.json";
     if (knob.type === "int") {
       if (!/^\d+$/.test(raw.trim())) {
@@ -30374,6 +30376,38 @@ function projectToDeploymentConfig(merged, legacy = null, warnings = []) {
   if (envSet) out.env = env;
   return out;
 }
+function launchEnvFromMerged(merged) {
+  const out = {};
+  const put2 = (k, v) => {
+    if (v !== void 0 && v !== "") out[k] = String(v);
+  };
+  const g = merged.gke;
+  put2("HARMONY_GKE_NAMESPACE", g?.namespace);
+  put2(
+    "HARMONY_GKE_CONTEXT",
+    g?.context ?? (merged.gcp?.project && g?.location && g?.cluster ? `gke_${merged.gcp.project}_${g.location}_${g.cluster}` : void 0)
+  );
+  put2("HARMONY_GKE_BASE_SECRET", g?.base_secret);
+  put2("HARMONY_GKE_CODEX_SECRET", g?.codex_secret);
+  put2("HARMONY_GKE_REGISTRY", g?.registry);
+  put2("HARMONY_GKE_CPU", g?.cpu);
+  put2("HARMONY_GKE_MEMORY", g?.memory);
+  put2("HARMONY_GKE_TICKET_DISK", g?.ticket_disk);
+  put2("HARMONY_GKE_STORAGE_CLASS", g?.storage_class);
+  put2("HARMONY_GKE_DEADLINE_S", g?.deadline_s);
+  put2("HARMONY_GKE_POLL_S", g?.poll_s);
+  put2("HARMONY_GKE_JOB_TTL_S", g?.job_ttl_s);
+  put2("HARMONY_GKE_IMAGE", merged.images?.worker);
+  put2("HARMONY_CLOUD_RUN_REGION", merged.gcp?.region);
+  put2("HARMONY_CLOUD_RUN_JOB", merged.cloud_run?.job);
+  put2("CLOUDSDK_CORE_PROJECT", merged.gcp?.project);
+  put2("CLOUDSDK_CORE_ACCOUNT", merged.gcloud?.account);
+  put2("HARMONY_PLUGIN_DIR", merged.plugin_dir);
+  put2("HARMONY_APP_ID", merged.github_app?.app_id);
+  put2("HARMONY_APP_INSTALLATION_ID", merged.github_app?.installation_id);
+  put2("HARMONY_APP_PRIVATE_KEY_PATH", merged.github_app?.private_key_path);
+  return out;
+}
 var emitted = /* @__PURE__ */ new Set();
 function evaluateConductorConfig(opts = {}) {
   const env = opts.env ?? process.env;
@@ -30454,7 +30488,7 @@ function evaluateConductorConfig(opts = {}) {
     const builtin = Object.keys(deployment.profiles).filter((n) => n in BUILTIN_PROFILES);
     if (builtin.length === 1) profileName = builtin[0];
   }
-  const legacy = legacyToConductor({ deployment, env, profileName, ignoreEnvKeys: opts.appliedEnvKeys });
+  const legacy = legacyToConductor({ deployment, env, profileName, ignoreEnvKeys: opts.appliedEnvKeys, resolved: nonLegacy });
   if (legacy.used) {
     const parts = [legacy.hasDeployment ? "deployment.json" : "", legacy.envKnobs.length ? `env ${legacy.envKnobs.join(", ")}` : ""].filter(Boolean);
     sources.push(`legacy (deprecated): ${parts.join("; ")}`);

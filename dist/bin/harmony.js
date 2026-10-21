@@ -7276,8 +7276,8 @@ var require_RealtimeChannel = __commonJS({
       }
       /** @internal */
       _notThisChannelEvent(event, ref) {
-        const { close, error, leave, join: join12 } = constants_1.CHANNEL_EVENTS;
-        const events2 = [close, error, leave, join12];
+        const { close, error, leave, join: join13 } = constants_1.CHANNEL_EVENTS;
+        const events2 = [close, error, leave, join13];
         return ref && events2.includes(event) && ref !== this.joinPush.ref;
       }
       /** @internal */
@@ -35880,10 +35880,12 @@ function legacyToConductor(input) {
       }
     }
   }
+  const resolvedEnv = input.resolved ? launchEnvFromMerged(input.resolved) : void 0;
   for (const knob of LEGACY_ENV_KNOBS) {
     if (input.ignoreEnvKeys?.has(knob.name)) continue;
     const raw = env2[knob.name];
     if (raw === void 0 || raw === "") continue;
+    if (resolvedEnv && resolvedEnv[knob.name] === (knob.type === "int" ? String(Number(raw.trim())) : raw)) continue;
     const home = knob.name.startsWith("HARMONY_APP_") || knob.name === "HARMONY_PLUGIN_DIR" || knob.name === "CLOUDSDK_CORE_ACCOUNT" ? "~/.harmony/conductor-host.json" : ".harmony/conductor.json";
     if (knob.type === "int") {
       if (!/^\d+$/.test(raw.trim())) {
@@ -36144,7 +36146,7 @@ function evaluateConductorConfig(opts = {}) {
     const builtin = Object.keys(deployment2.profiles).filter((n) => n in BUILTIN_PROFILES);
     if (builtin.length === 1) profileName = builtin[0];
   }
-  const legacy = legacyToConductor({ deployment: deployment2, env: env2, profileName, ignoreEnvKeys: opts.appliedEnvKeys });
+  const legacy = legacyToConductor({ deployment: deployment2, env: env2, profileName, ignoreEnvKeys: opts.appliedEnvKeys, resolved: nonLegacy });
   if (legacy.used) {
     const parts = [legacy.hasDeployment ? "deployment.json" : "", legacy.envKnobs.length ? `env ${legacy.envKnobs.join(", ")}` : ""].filter(Boolean);
     sources.push(`legacy (deprecated): ${parts.join("; ")}`);
@@ -44174,7 +44176,7 @@ function registerConfigCommands(program3) {
 
 // src/cli/commands/conductor-config.ts
 import { execFile } from "node:child_process";
-import { chmodSync as chmodSync3, existsSync as fsExistsSync2, mkdirSync as mkdirSync3, readFileSync as fsReadFileSync2, writeFileSync as writeFileSync3 } from "node:fs";
+import { chmodSync as chmodSync3, existsSync as fsExistsSync3, mkdirSync as mkdirSync3, readFileSync as fsReadFileSync3, writeFileSync as writeFileSync3 } from "node:fs";
 import { dirname as dirname5, resolve as resolve3 } from "node:path";
 
 // src/config/conductor-migrate.ts
@@ -44479,7 +44481,7 @@ ${new ConductorConfigError(v.issues).message}`);
 }
 
 // src/cli/commands/conductor-lifecycle.ts
-import { dirname as dirname4, join as join8 } from "node:path";
+import { dirname as dirname4, join as join9 } from "node:path";
 
 // src/daemon/conductor-board.ts
 var holderPrefix = (host, pid) => `${host}:${pid}:`;
@@ -44764,6 +44766,42 @@ async function completeRequest(deps, s, requestId, result, reason, data) {
   return { note, line: `Registry request ${requestId} completed as ${result}: ${note}` };
 }
 
+// src/config/gcp-project.ts
+import { existsSync as fsExistsSync2, readFileSync as fsReadFileSync2 } from "node:fs";
+import { join as join7 } from "node:path";
+var GCP_PROJECT_UNSET = 'no GCP project is configured: set "gcp": { "project": "<gcp-project-id>" } in .harmony/conductor.json (or in ~/.harmony/conductor-host.json)';
+function resolveGcpProject(deps) {
+  const exported = deps.env.CLOUDSDK_CORE_PROJECT;
+  if (exported) return exported;
+  const exists = deps.existsSync ?? fsExistsSync2;
+  const read = deps.readFileSync ?? ((p) => fsReadFileSync2(p, "utf8"));
+  let merged = deps.merged ?? null;
+  if (!merged) {
+    try {
+      merged = evaluateConductorConfig({
+        env: deps.env,
+        existsSync: exists,
+        readFileSync: read,
+        warn: () => {
+        },
+        loadLegacy: () => loadLegacyDeploymentConfig({ env: deps.env, existsSync: exists, readFileSync: read })
+      })?.merged ?? null;
+    } catch {
+      merged = null;
+    }
+  }
+  if (merged?.gcp?.project) return merged.gcp.project;
+  try {
+    const local = join7(deps.cwd ?? process.cwd(), CONDUCTOR_PROJECT_PATH);
+    if (exists(local)) {
+      const v = validateProjectFileText(CONDUCTOR_PROJECT_PATH, read(local));
+      if (v.ok) return v.value.gcp?.project;
+    }
+  } catch {
+  }
+  return void 0;
+}
+
 // src/daemon/conductor-remote.ts
 var REMOTE_ENV = "HARMONY_CONDUCTOR_REMOTE";
 var isRemoteConductor = (env2) => env2[REMOTE_ENV] === "1";
@@ -44773,7 +44811,7 @@ function channelFromPosture(posture) {
 }
 
 // src/cli/commands/conductor-preflight.ts
-import { join as join7 } from "node:path";
+import { join as join8 } from "node:path";
 
 // src/config/conductor-secrets.ts
 import { readFileSync as readFileSync5 } from "node:fs";
@@ -44857,8 +44895,8 @@ async function sourceEnvFile(deps, file) {
 }
 async function loadSettings(deps, opts = {}) {
   const paths = resolveConductorPaths(deps.env);
-  const envPath = join7(paths.home, "conductor.env");
-  const legacyPath = join7(paths.home, "daemon.env");
+  const envPath = join8(paths.home, "conductor.env");
+  const legacyPath = join8(paths.home, "daemon.env");
   let envFile = null;
   const fileEnv = {};
   let envFileError;
@@ -44979,8 +45017,10 @@ async function runPreflight(deps, s, opts = {}) {
   } else if (s.profile === "cloud") {
     const job = s.env.HARMONY_CLOUD_RUN_JOB;
     const region = s.env.HARMONY_CLOUD_RUN_REGION;
-    const project = s.env.CLOUDSDK_CORE_PROJECT || "harmony-conductor";
-    if (!has(job) || !has(region)) {
+    const project = resolveGcpProject({ env: s.env, merged: s.merged, existsSync: deps.existsSync, readFileSync: deps.readFileSync });
+    if (!project) {
+      add("reach:cloud-run-job", false, "no GCP project is configured", "set gcp.project in .harmony/conductor.json (or ~/.harmony/conductor-host.json)");
+    } else if (!has(job) || !has(region)) {
       add("reach:cloud-run-job", false, `${[!has(job) ? "HARMONY_CLOUD_RUN_JOB" : "", !has(region) ? "HARMONY_CLOUD_RUN_REGION" : ""].filter(Boolean).join(", ")} not set`, "set cloud_run.job and gcp.region in the config files");
     } else {
       const r = await deps.exec("gcloud", ["run", "jobs", "describe", job, `--region=${region}`, `--project=${project}`, "--format=value(name)"], { env: s.env });
@@ -45775,7 +45815,7 @@ function timingFromEnv(env2) {
     freshMs: n("HARMONY_SWITCH_FRESH_S", 120) * 1e3
   };
 }
-var logPathOf = (s) => join8(s.paths.home, "conductor.out.log");
+var logPathOf = (s) => join9(s.paths.home, "conductor.out.log");
 async function findConductors(deps, s) {
   const procs = await deps.listProcesses();
   const cwdByPid = /* @__PURE__ */ new Map();
@@ -46023,11 +46063,11 @@ async function runStart(deps, opts = {}, onLine) {
   try {
     deps.mkdirSync(dirname4(logPath));
     if (deps.platform === "darwin") {
-      const template = deps.readFileSync(join8(s.pluginDir, LAUNCHD_TEMPLATE));
+      const template = deps.readFileSync(join9(s.pluginDir, LAUNCHD_TEMPLATE));
       if (mode === "at-boot") {
         kind = "launchd-daemon";
         unitPath = daemonPlistPath();
-        const staged = join8(s.paths.home, "conductor-launchd.plist.staged");
+        const staged = join9(s.paths.home, "conductor-launchd.plist.staged");
         deps.writeFileSync(staged, renderLaunchdPlist(template, { ...renderOpts, userName: deps.username }), 420);
         cmds = installCommands(kind, deps.uid, { agentPlist: unitPath, staged });
         out.line(`Installing a LaunchDaemon (${unitPath}) that starts at boot as ${deps.username}; sudo will ask for your password once.`);
@@ -46040,7 +46080,7 @@ async function runStart(deps, opts = {}, onLine) {
         out.line(`Installed the LaunchAgent ${unitPath}.`);
       }
     } else {
-      const template = deps.readFileSync(join8(s.pluginDir, SYSTEMD_TEMPLATE));
+      const template = deps.readFileSync(join9(s.pluginDir, SYSTEMD_TEMPLATE));
       kind = "systemd-user";
       unitPath = systemdUnitPath(deps.home);
       deps.mkdirSync(dirname4(unitPath));
@@ -46055,7 +46095,7 @@ async function runStart(deps, opts = {}, onLine) {
   if (!await runSupervisorCommands(deps, cmds, out)) {
     return out.result(EXIT.failure, { error: out.errLines[0], started: false, supervisor: kind });
   }
-  if (mode === "at-boot") deps.rmSync(join8(s.paths.home, "conductor-launchd.plist.staged"));
+  if (mode === "at-boot") deps.rmSync(join9(s.paths.home, "conductor-launchd.plist.staged"));
   const deadline = deps.now() + 3e4;
   let started = [];
   while (deps.now() < deadline) {
@@ -46090,7 +46130,8 @@ async function legsInFlight(deps, s, backend, board) {
   const job = s.env.HARMONY_CLOUD_RUN_JOB;
   const region = s.env.HARMONY_CLOUD_RUN_REGION;
   if (!job || !region) return { ok: false, legs: [], toolMissing: true, reason: "HARMONY_CLOUD_RUN_JOB / HARMONY_CLOUD_RUN_REGION are not set" };
-  const project = s.env.CLOUDSDK_CORE_PROJECT || "harmony-conductor";
+  const project = resolveGcpProject({ env: s.env, merged: s.merged, existsSync: deps.existsSync, readFileSync: deps.readFileSync });
+  if (!project) return { ok: false, legs: [], reason: GCP_PROJECT_UNSET };
   const r = await deps.exec("gcloud", ["run", "jobs", "executions", "list", `--job=${job}`, `--region=${region}`, `--project=${project}`, "--format=json"], { env: s.env });
   if (r.code === 127) return { ok: false, legs: [], toolMissing: true, reason: "gcloud is not installed" };
   if (r.code !== 0) return { ok: false, legs: [], reason: `could not list Cloud Run executions of ${job}` };
@@ -46264,8 +46305,8 @@ async function restartLocal(deps, opts, onLine, ctx) {
       return out.result(EXIT.failure, { error: out.errLines[0], signalled: false, plugin_version_before: versionBefore });
     }
     versionAfter = pluginVersion(deps, s.pluginDir);
-    if (!deps.existsSync(join8(s.pluginDir, "dist", "bin", "daemon.js"))) {
-      out.err(`after the pull ${join8(s.pluginDir, "dist", "bin", "daemon.js")} does not exist \u2014 the channel branch carries no built bundle. The running conductor was left untouched.`);
+    if (!deps.existsSync(join9(s.pluginDir, "dist", "bin", "daemon.js"))) {
+      out.err(`after the pull ${join9(s.pluginDir, "dist", "bin", "daemon.js")} does not exist \u2014 the channel branch carries no built bundle. The running conductor was left untouched.`);
       return out.result(EXIT.failure, { error: out.errLines[0], signalled: false, plugin_version_before: versionBefore });
     }
     out.line(versionAfter === versionBefore ? `  plugin ${versionBefore} (already the channel's latest)` : `  plugin ${versionBefore} -> ${versionAfter}`);
@@ -46380,8 +46421,8 @@ var gcloudSecretExists = (name, ctx) => new Promise((resolveCheck) => {
 function defaultCliDeps() {
   return {
     env: process.env,
-    existsSync: fsExistsSync2,
-    readFileSync: (p) => fsReadFileSync2(p, "utf8"),
+    existsSync: fsExistsSync3,
+    readFileSync: (p) => fsReadFileSync3(p, "utf8"),
     secretExists: gcloudSecretExists
   };
 }
@@ -46752,12 +46793,12 @@ function registerConductorCommands(program3, makeDeps = defaultCliDeps) {
 }
 
 // src/cli/commands/conductor-logs.ts
-import { existsSync as fsExistsSync3, readFileSync as fsReadFileSync3 } from "node:fs";
+import { existsSync as fsExistsSync4, readFileSync as fsReadFileSync4 } from "node:fs";
 import { execFile as execFile2 } from "node:child_process";
 
 // src/daemon/conductor-logger.ts
 import { homedir as homedir4 } from "node:os";
-import { dirname as dirname6, join as join9 } from "node:path";
+import { dirname as dirname6, join as join10 } from "node:path";
 
 // src/daemon/log-shipper.ts
 var PERMISSION_RETRY_MS = 5 * 6e4;
@@ -46767,7 +46808,7 @@ var TOKEN_TTL_MS = 50 * 6e4;
 var ROTATE_BYTES = 10 * 1024 * 1024;
 var ROTATE_KEEP = 5;
 function resolveConductorLogPath(env2) {
-  return env2.HARMONY_CONDUCTOR_LOG || join9(env2.HARMONY_HOME || join9(homedir4(), ".harmony"), "logs", "conductor.log");
+  return env2.HARMONY_CONDUCTOR_LOG || join10(env2.HARMONY_HOME || join10(homedir4(), ".harmony"), "logs", "conductor.log");
 }
 
 // src/cli/commands/conductor-logs.ts
@@ -46777,8 +46818,8 @@ function defaultLogsDeps() {
   return {
     env: process.env,
     now: Date.now,
-    existsSync: fsExistsSync3,
-    readFileSync: (p) => fsReadFileSync3(p, "utf8"),
+    existsSync: fsExistsSync4,
+    readFileSync: (p) => fsReadFileSync4(p, "utf8"),
     runGcloud: (args) => new Promise((resolve5) => {
       execFile2("gcloud", args, { maxBuffer: 64 * 1024 * 1024, timeout: 6e4 }, (err, stdout, stderr) => {
         const code = err ? typeof err.code === "number" ? err.code : 1 : 0;
@@ -46786,11 +46827,7 @@ function defaultLogsDeps() {
       });
     }),
     configuredProject: () => {
-      try {
-        return loadConductorConfigSync({ env: process.env })?.merged.gcp?.project;
-      } catch {
-        return void 0;
-      }
+      return resolveGcpProject({ env: process.env });
     }
   };
 }
@@ -46845,7 +46882,7 @@ async function runConductorLogs(deps, opts) {
   }
   const project = opts.project || deps.env.CLOUDSDK_CORE_PROJECT || deps.configuredProject?.();
   if (!project) {
-    return { exitCode: 1, lines: [], errLines: ["no GCP project: pass --project, set gcp.project in .harmony/conductor.json, or export CLOUDSDK_CORE_PROJECT"] };
+    return { exitCode: 1, lines: [], errLines: [`${GCP_PROJECT_UNSET} (or pass --project, or export CLOUDSDK_CORE_PROJECT)`] };
   }
   const filter = cloudFilter(project, new Date(sinceMs).toISOString());
   const r = await deps.runGcloud(["logging", "read", filter, `--project=${project}`, "--format=json", `--limit=${limit}`, "--order=desc"]);
@@ -47069,7 +47106,7 @@ import {
   writeFileSync as writeFileSync4,
   appendFileSync
 } from "node:fs";
-import { join as join10, resolve as resolve4 } from "node:path";
+import { join as join11, resolve as resolve4 } from "node:path";
 
 // src/agents/hooks.ts
 var HARMONY_HOOKS = {
@@ -47172,13 +47209,13 @@ function collectInstructionSources(input) {
   const ws = resolve4(input.workspaceDir);
   const plugin = resolve4(input.pluginDir);
   const candidates = [
-    { label: "workspace/CLAUDE.md", path: join10(ws, "CLAUDE.md") },
-    { label: "plugin/CLAUDE.md", path: join10(plugin, "CLAUDE.md") },
-    { label: "web/CLAUDE.md", path: join10(ws, "web", "CLAUDE.md") }
+    { label: "workspace/CLAUDE.md", path: join11(ws, "CLAUDE.md") },
+    { label: "plugin/CLAUDE.md", path: join11(plugin, "CLAUDE.md") },
+    { label: "web/CLAUDE.md", path: join11(ws, "web", "CLAUDE.md") }
   ];
   for (const p of input.extraRepoPaths ?? []) {
     const abs = resolve4(p);
-    candidates.push({ label: `${abs.replace(/^\/+/, "")}/CLAUDE.md`, path: join10(abs, "CLAUDE.md") });
+    candidates.push({ label: `${abs.replace(/^\/+/, "")}/CLAUDE.md`, path: join11(abs, "CLAUDE.md") });
   }
   const seen = /* @__PURE__ */ new Set();
   const out = [];
@@ -47190,11 +47227,11 @@ function collectInstructionSources(input) {
   return out;
 }
 function collectSkillCapabilities(pluginDir) {
-  const root = join10(resolve4(pluginDir), "skills");
+  const root = join11(resolve4(pluginDir), "skills");
   if (!existsSync3(root)) return [];
   const out = [];
   for (const name of readdirSync(root).sort()) {
-    const file = join10(root, name, "SKILL.md");
+    const file = join11(root, name, "SKILL.md");
     if (!isFile(file)) continue;
     const value = capabilitiesFromSkillMd(readFileSync7(file, "utf8"));
     if (value === void 0) continue;
@@ -47211,21 +47248,21 @@ function codexOverlayFor(pluginDir) {
 ${rules}` : CODEX_WORKER_OVERLAY;
 }
 function excludeFromGit(workspaceDir, entries) {
-  const gitDir = join10(workspaceDir, ".git");
+  const gitDir = join11(workspaceDir, ".git");
   if (!existsSync3(gitDir)) return;
-  const infoDir = join10(gitDir, "info");
+  const infoDir = join11(gitDir, "info");
   mkdirSync4(infoDir, { recursive: true });
-  const excludePath = join10(infoDir, "exclude");
+  const excludePath = join11(infoDir, "exclude");
   const current = existsSync3(excludePath) ? readFileSync7(excludePath, "utf8") : "";
   const have = new Set(current.split("\n"));
   const missing = entries.filter((e) => !have.has(e));
   if (missing.length) appendFileSync(excludePath, (current === "" || current.endsWith("\n") ? "" : "\n") + missing.join("\n") + "\n");
 }
 function linkSkills(workspaceDir, pluginDir) {
-  const link = join10(workspaceDir, CODEX_SKILLS_LINK);
-  const target = join10(resolve4(pluginDir), "skills");
+  const link = join11(workspaceDir, CODEX_SKILLS_LINK);
+  const target = join11(resolve4(pluginDir), "skills");
   if (!existsSync3(target)) throw new Error(`skills directory not found at ${target}`);
-  mkdirSync4(join10(workspaceDir, ".agents"), { recursive: true });
+  mkdirSync4(join11(workspaceDir, ".agents"), { recursive: true });
   let st;
   try {
     st = lstatSync(link);
@@ -47244,7 +47281,7 @@ function installAuth(authFile, codexHome) {
   if (!isFile(authFile)) {
     throw new Error(`the Codex login-cache file is missing at ${authFile} (HARMONY_CODEX_AUTH_FILE) \u2014 mount it, see container/README.md "Codex credential runbook"`);
   }
-  const dest = join10(codexHome, CODEX_AUTH_FILE_NAME);
+  const dest = join11(codexHome, CODEX_AUTH_FILE_NAME);
   if (resolve4(authFile) !== resolve4(dest)) {
     copyFileSync(authFile, dest);
   }
@@ -47283,17 +47320,17 @@ function provisionCodex(input) {
   const agentsMd = renderCodexAgentsMd(sources, codexOverlayFor(input.pluginDir));
   const problems = verifyCodexAgentsMd(agentsMd, sources);
   if (problems.length) throw new Error(`AGENTS.md preflight failed: ${problems.join("; ")}`);
-  const agentsMdPath = join10(workspaceDir, "AGENTS.md");
+  const agentsMdPath = join11(workspaceDir, "AGENTS.md");
   if (existsSync3(agentsMdPath) && !readFileSync7(agentsMdPath, "utf8").startsWith(GENERATED_AGENTS_HEADER)) {
     throw new Error(`${agentsMdPath} exists and is not a generated file \u2014 refusing to overwrite a repository's own AGENTS.md`);
   }
   preflightHookScripts(resolve4(input.pluginDir));
   mkdirSync4(codexHome, { recursive: true });
   const config = renderCodexConfig(HARMONY_MCP_CONNECTION, { pluginRoot: resolve4(input.pluginDir) });
-  const configPath = join10(codexHome, config.fileName);
+  const configPath = join11(codexHome, config.fileName);
   writeFileSync4(configPath, config.content, { mode: 420 });
   const hooks = renderCodexHooks(resolve4(input.pluginDir));
-  const hooksPath = join10(codexHome, hooks.fileName);
+  const hooksPath = join11(codexHome, hooks.fileName);
   writeFileSync4(hooksPath, hooks.content, { mode: 420 });
   writeFileSync4(agentsMdPath, agentsMd);
   const skillsLink = linkSkills(workspaceDir, input.pluginDir);
@@ -47312,7 +47349,7 @@ function provisionCodex(input) {
 
 // src/cli/commands/agent.ts
 import { homedir as homedir5 } from "node:os";
-import { join as join11 } from "node:path";
+import { join as join12 } from "node:path";
 function launchRunConfig() {
   try {
     return getRunConfig();
@@ -47394,7 +47431,7 @@ function registerAgentCommands(program3) {
       const r = provisionCodex({
         pluginDir: opts.pluginDir,
         workspaceDir: opts.workspace,
-        codexHome: opts.codexHome || process.env.CODEX_HOME || join11(homedir5(), ".codex"),
+        codexHome: opts.codexHome || process.env.CODEX_HOME || join12(homedir5(), ".codex"),
         authFile,
         extraRepoPaths: opts.extraRepo
       });
@@ -47446,7 +47483,7 @@ function registerAgentCommands(program3) {
     if (!id) process.exit(1);
     try {
       mkdirSync5(opts.dir, { recursive: true });
-      const target = join11(opts.dir, CODEX_THREAD_FILE_NAME);
+      const target = join12(opts.dir, CODEX_THREAD_FILE_NAME);
       const tmp = `${target}.tmp-${process.pid}`;
       writeFileSync5(tmp, `${JSON.stringify(buildCodexThreadRecord(id, opts.model))}
 `);

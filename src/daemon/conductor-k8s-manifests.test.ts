@@ -26,16 +26,16 @@ const rawText = files.map((f) => readFileSync(join(dir, f), 'utf8')).join('\n');
 
 describe('manifest set', () => {
   it('has the expected files and kinds, every document parses', () => {
-    expect(files).toEqual(['00-namespace.yaml', 'configmap.yaml', 'cronjob-sweep.yaml', 'deployment.yaml', 'rbac-conductor.yaml', 'rbac-legs.yaml', 'serviceaccount.yaml']);
+    expect(files).toEqual(['00-namespace.yaml', 'configmap.yaml', 'cronjob-sweep.yaml', 'deployment.yaml', 'priorityclass.yaml', 'rbac-conductor.yaml', 'rbac-legs.yaml', 'serviceaccount.yaml']);
     expect(all.map((x) => x.doc.kind).sort()).toEqual(
-      ['ConfigMap', 'CronJob', 'Deployment', 'Namespace', 'Role', 'Role', 'RoleBinding', 'RoleBinding', 'ServiceAccount'],
+      ['ConfigMap', 'CronJob', 'Deployment', 'Namespace', 'PriorityClass', 'Role', 'Role', 'RoleBinding', 'RoleBinding', 'ServiceAccount'],
     );
   });
 
   it('nothing is cluster-wide: no ClusterRole / ClusterRoleBinding, and the only namespaces used are harmony-conductor and (Role/RoleBinding only) harmony-legs', () => {
     for (const { doc } of all) {
       expect(doc.kind).not.toMatch(/^Cluster/);
-      if (doc.kind === 'Namespace') continue;
+      if (doc.kind === 'Namespace' || doc.kind === 'PriorityClass') continue; // cluster-scoped, applied by the operator (see below)
       const ns = doc.metadata.namespace;
       if (ns === 'harmony-legs') expect(['Role', 'RoleBinding']).toContain(doc.kind);
       else expect(ns).toBe('harmony-conductor');
@@ -62,6 +62,33 @@ describe('manifest set', () => {
       .flatMap((d) => (d.spec.template ?? d.spec.jobTemplate.spec.template).spec.containers)
       .flatMap((c: Doc) => (c.env ?? []).map((e: Doc) => e.name));
     expect(envNames.join(' ')).not.toMatch(/HARMONY_API_TOKEN|PRIVATE_KEY|TOKEN/);
+  });
+});
+
+describe('PriorityClass harmony-conductor (B-1186)', () => {
+  const pc = one('PriorityClass', 'harmony-conductor');
+
+  it('is a high, non-default class that can preempt lower-priority pods, and says system-critical pods still outrank it', () => {
+    expect(pc.value).toBe(100000);
+    expect(pc.globalDefault).toBe(false);
+    expect(pc.preemptionPolicy).toBe('PreemptLowerPriority');
+    expect(pc.metadata.namespace).toBeUndefined();
+    expect(readFileSync(join(dir, 'priorityclass.yaml'), 'utf8')).toMatch(/system-critical pods[\s\S]*STILL preempt the conductor/);
+    expect(pc.value).toBeLessThan(2_000_000_000); // below system-cluster-critical
+  });
+
+  it('is named by the Deployment pod spec, and the conductor Role cannot create one (it is applied by the operator)', () => {
+    const d = one('Deployment', 'harmony-conductor');
+    expect(d.spec.template.spec.priorityClassName).toBe('harmony-conductor');
+    for (const role of all.filter((x) => x.doc.kind === 'Role')) {
+      for (const rule of role.doc.rules) expect(rule.resources).not.toContain('priorityclasses');
+    }
+  });
+
+  it('is applied BEFORE the Deployment: the Deployment header says so, and setup-cluster applies it before step 27 ends', () => {
+    expect(readFileSync(join(dir, 'deployment.yaml'), 'utf8')).toMatch(/priorityclass\.yaml FIRST/);
+    const setup = readFileSync(fileURLToPath(new URL('../../container/gke/setup-cluster.sh', import.meta.url)), 'utf8');
+    expect(setup).toContain('"$MANIFEST_DIR/priorityclass.yaml"');
   });
 });
 
@@ -116,10 +143,9 @@ describe('Deployment harmony-conductor', () => {
       HARMONY_PLUGIN_POSTURE: 'ack:staging',
       HARMONY_HOME: '/var/harmony',
       HARMONY_CONDUCTOR_HOST_FILE: '/etc/harmony/conductor-host.json',
-      HARMONY_GKE_STORAGE_CLASS: 'harmony-ticket-disk',
-      CLOUDSDK_CORE_ACCOUNT: 'harmony-conductor@harmony-conductor.iam.gserviceaccount.com',
-      CLOUDSDK_CORE_PROJECT: 'harmony-conductor',
     });
+    // B-1186: these are deprecated legacy knobs; the ConfigMap files carry the values instead.
+    for (const legacy of ['HARMONY_GKE_STORAGE_CLASS', 'CLOUDSDK_CORE_ACCOUNT', 'CLOUDSDK_CORE_PROJECT']) expect(env).not.toHaveProperty(legacy);
   });
 
   it('documents the node-capacity check as a founder command', () => {
@@ -141,10 +167,15 @@ describe('ServiceAccount, ConfigMap and RBAC', () => {
     expect(HostFileSchema.safeParse(host).success).toBe(true);
     expect(ProjectFileSchema.safeParse(project).success).toBe(true);
     for (const v of Object.values(host.secrets) as string[]) expect(looksLikeSecretValue(v)).toBe(false);
-    expect(Object.keys(host.secrets).sort()).toEqual(['api_token', 'base', 'codex_auth', 'github_app_private_key']);
+    expect(Object.keys(host.secrets).sort()).toEqual(['api_token', 'codex_auth', 'github_app_private_key']);
     expect(host.github_app.private_key_path).toBeUndefined();
     expect(project.gke.namespace).toBe('harmony-legs');
     expect(project.gke.storage_class).toBe('harmony-ticket-disk');
+    expect(project.images).toBeUndefined();
+    expect(host.gcp.project).toBe('harmony-conductor');
+    expect(host.gcloud.account).toBe('harmony-conductor@harmony-conductor.iam.gserviceaccount.com');
+    // the schema still ACCEPTS the legacy secrets.base so old host files load
+    expect(HostFileSchema.safeParse({ ...host, secrets: { ...host.secrets, base: 'harmony-worker-base-env' } }).success).toBe(true);
     expect(JSON.stringify(cm)).not.toMatch(/BEGIN [A-Z ]*PRIVATE KEY/);
   });
 
