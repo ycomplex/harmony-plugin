@@ -132,6 +132,20 @@ describe('container/conductor/entrypoint.sh and smoke.sh', () => {
     expect(spawnSync('bash', [entry, '--with-secrets'], { encoding: 'utf8' }).status).toBe(2);
   });
 
+  it('smoke.sh runs the credential-free boot preflight inside the candidate image, after the host-file check and before PASS (B-1186)', () => {
+    const s = read('container/conductor/smoke.sh');
+    const preflight = s.indexOf('--entrypoint node "$IMAGE" /opt/harmony-plugin/dist/bin/conductor-boot.js preflight');
+    expect(preflight).toBeGreaterThan(-1);
+    expect(preflight).toBeGreaterThan(s.indexOf('conductor-boot.js check-host'));
+    expect(preflight).toBeLessThan(s.indexOf('echo "smoke: PASS"'));
+    // a non-zero exit fails the build with a clear message; nothing about it can be swallowed
+    expect(s).toMatch(/preflight 2>&1\)" \\\n\s+\|\| fail "the pod's boot preflight failed inside the image/);
+    // the header's DEPTH list names it
+    expect(s.slice(0, s.indexOf('set -euo pipefail'))).toContain('BOOT PREFLIGHT');
+    // and the whole smoke still runs before any push (pinned above): the preflight is part of that step
+    expect(ids.indexOf('smoke')).toBeLessThan(build.steps.findIndex((st) => /docker push/.test(stepText(st))));
+  });
+
   it('smoke.sh asserts the label, the host-file load and the resolver guard', () => {
     const s = read('container/conductor/smoke.sh');
     expect(s).toContain('harmony.plugin_version');

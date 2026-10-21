@@ -15,7 +15,11 @@
 #   4. the label harmony.plugin_version is present (and equals the expected version when given);
 #   5. a host file loads: conductor-boot check-host against the baked conductor.host.example.json;
 #   6. the leg-launch helpers are present and the token mint loads (prints its usage);
-#   7. the entrypoint dispatches: a plain command runs, and `--with-secrets` in remote mode with NO host file
+#   7. the pod's BOOT PREFLIGHT passes inside the candidate image (B-1186): conductor-boot preflight loads the baked
+#      example host + project files in remote mode, resolves every tool the gke profile needs (node, kubectl; the
+#      gke-gcloud-auth-plugin is skipped in remote mode by design) and finds every plugin file the launch path
+#      runs (scripts/, container/gke/). A missing tool or script fails the build before anything is pushed;
+#   8. the entrypoint dispatches: a plain command runs, and `--with-secrets` in remote mode with NO host file
 #      fails at the resolver's own guard (proving the resolver executes) without touching the network.
 # NOT proved: a real Secret Manager read, a real cluster, a real rollout.
 set -euo pipefail
@@ -69,6 +73,12 @@ ok "label harmony.plugin_version=$label"
 out="$(docker run --rm --entrypoint node "$IMAGE" /opt/harmony-plugin/dist/bin/conductor-boot.js check-host /opt/harmony-plugin/container/conductor.host.example.json 2>&1)" \
   || fail "the example host file did not load: $out"
 case "$out" in *"host file ok"*) ok "host file loads: $out" ;; *) fail "unexpected check-host output: $out" ;; esac
+
+# B-1186: the pod's boot preflight, run credential-free inside the candidate image (no network, no cluster). This is the
+# check that would have caught a tool or a scripts/ file missing from the image before the pod crash-looped on it.
+out="$(docker run --rm --entrypoint node "$IMAGE" /opt/harmony-plugin/dist/bin/conductor-boot.js preflight 2>&1)" \
+  || fail "the pod's boot preflight failed inside the image: $out"
+case "$out" in *"preflight: ok"*) ok "boot preflight passes: $(printf '%s' "$out" | tail -n 1)" ;; *) fail "unexpected boot preflight output: $out" ;; esac
 
 out="$(docker run --rm "$IMAGE" echo entrypoint-dispatch-ok 2>&1)" || fail "the entrypoint did not run a plain command: $out"
 [ "$out" = "entrypoint-dispatch-ok" ] || fail "entrypoint dispatch printed '$out'"
