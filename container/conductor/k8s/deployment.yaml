@@ -78,15 +78,8 @@ spec:
               value: /var/harmony
             - name: HARMONY_CONDUCTOR_HOST_FILE
               value: /etc/harmony/conductor-host.json
-            # Ticket disks use the zone-pinned class. The pod's RBAC cannot read StorageClasses (cluster-scoped), so
-            # the launcher's "does harmony-ticket-disk exist?" probe would fail and silently fall back to
-            # standard-rwo; naming the class here removes the probe.
-            - name: HARMONY_GKE_STORAGE_CLASS
-              value: harmony-ticket-disk
-            - name: CLOUDSDK_CORE_ACCOUNT
-              value: harmony-conductor@harmony-conductor.iam.gserviceaccount.com
-            - name: CLOUDSDK_CORE_PROJECT
-              value: harmony-conductor
+            # gcp.project / gcp.region / gcloud.account and gke.storage_class come from the ConfigMap files (host +
+            # project seed), not from env: a legacy CLOUDSDK_* / HARMONY_GKE_* knob is deprecated and warns at boot.
           readinessProbe:
             exec:
               command: ['sh', '-c', 'test -f "$HARMONY_READY_FILE"']

@@ -185,8 +185,10 @@ export function looksLikeSecretValue(v: string): boolean {
 }
 
 /** The documented keys of the host file's `secrets` block (B-1173). The block stays an open record (older
- *  hosts carry other logical names), but these four are the ones the conductor reads:
- *   base                    -> the gke profile's base worker env secret (HARMONY_GKE_BASE_SECRET)
+ *  hosts carry other logical names), but these are the ones the conductor reads (B-1186: `base` is still
+ *  ACCEPTED so old host files load, but nothing reads it and the shipped examples no longer carry it; the
+ *  base worker env secret is gke.base_secret):
+ *   base                    -> legacy, accepted and unused
  *   codex_auth              -> the Codex auth.json secret
  *   api_token               -> HARMONY_API_TOKEN, resolved at boot by a REMOTE conductor
  *   github_app_private_key  -> HARMONY_APP_PRIVATE_KEY (the App key contents), resolved at boot by a REMOTE conductor

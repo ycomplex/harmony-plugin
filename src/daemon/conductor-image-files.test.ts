@@ -8,7 +8,8 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileS
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parse } from 'yaml';
+import { parse, parseAllDocuments } from 'yaml';
+import { applyLaunchEnv, launchEnvFromMerged, loadConductorConfigSync, resetConductorWarningDedupe } from '../config/conductor-config.js';
 
 const repo = (rel: string): string => fileURLToPath(new URL(`../../${rel}`, import.meta.url));
 const read = (rel: string): string => readFileSync(repo(rel), 'utf8');
@@ -143,5 +144,88 @@ describe('container/conductor/entrypoint.sh and smoke.sh', () => {
 describe('the build script list', () => {
   it('package.json builds conductor-boot into dist/bin (the entrypoint and the smoke depend on it)', () => {
     expect(JSON.parse(read('package.json')).scripts.build).toContain('src/bin/conductor-boot.ts');
+  });
+});
+
+// B-1186: the pod must boot clean. Load the SHIPPED ConfigMap files and the SHIPPED Deployment + Dockerfile env through
+// the config loader exactly as the pod would, then re-read config the way a child process does after the daemon has
+// pushed its resolved values into the environment, and assert no `deprecated:` line anywhere.
+describe('the shipped pod config boots with no deprecation warnings and no placeholders', () => {
+  const k8sText = (f: string): string => read(`container/conductor/k8s/${f}`);
+  const configMap = parseAllDocuments(k8sText('configmap.yaml'))[0]!.toJS() as { data: Record<string, string> };
+  const deployment = parseAllDocuments(k8sText('deployment.yaml'))[0]!.toJS() as {
+    spec: { template: { spec: { containers: { env: { name: string; value: string }[] }[] } } };
+  };
+  // The only placeholders the operator fills before applying (runbook: "Put the config in the ConfigMap").
+  const FILLED: Record<string, string> = {
+    'REPLACE-OWNER/REPLACE-CONFIG-REPO': 'acme/config',
+    'REPLACE-WITH-APP-ID': '123',
+    'REPLACE-WITH-INSTALLATION-ID': '456',
+  };
+  const fill = (t: string): string => Object.entries(FILLED).reduce((acc, [k, v]) => acc.split(k).join(v), t);
+  const dockerEnv = (): Record<string, string> => {
+    const m = /^ENV ((?:.*\\\n)*.*)$/m.exec(read('container/conductor/Dockerfile'));
+    const out: Record<string, string> = {};
+    for (const tok of (m?.[1] ?? '').replace(/\\\n/g, ' ').split(/\s+/).filter(Boolean)) {
+      const i = tok.indexOf('=');
+      out[tok.slice(0, i)] = tok.slice(i + 1);
+    }
+    return out;
+  };
+
+  const HOST = '/etc/harmony/conductor-host.json';
+  const PROJECT = '/etc/harmony/conductor-project.json';
+  const files: Record<string, string> = {
+    [HOST]: fill(configMap.data['conductor-host.json']!),
+    [PROJECT]: fill(configMap.data['conductor-project.json']!),
+  };
+  const podEnv = (): Record<string, string> => ({
+    ...dockerEnv(),
+    ...Object.fromEntries(deployment.spec.template.spec.containers[0]!.env.map((e) => [e.name, e.value])),
+    HARMONY_CONDUCTOR_PROJECT_FILE: PROJECT, // the seed stands in for the fetched snapshot
+    HARMONY_APP_PRIVATE_KEY: 'resolved-at-boot', // the secret the pod resolves from Secret Manager (name only in the files)
+  });
+  const load = (env: NodeJS.ProcessEnv, warn: (m: string) => void) => {
+    resetConductorWarningDedupe();
+    return loadConductorConfigSync({
+      env,
+      existsSync: (p) => p in files,
+      readFileSync: (p) => {
+        if (!(p in files)) throw new Error(`ENOENT ${p}`);
+        return files[p]!;
+      },
+      warn,
+    })!;
+  };
+
+  it('the only placeholders in the shipped files are the three the runbook has the operator fill', () => {
+    const data = Object.values(configMap.data).join('\n');
+    const found = new Set(data.match(/REPLACE-[A-Z]+(?:-[A-Z]+)*(?:\/REPLACE-[A-Z]+(?:-[A-Z]+)*)?/g) ?? []);
+    expect([...found].sort()).toEqual(Object.keys(FILLED).sort());
+    expect(Object.values(files).join('\n')).not.toContain('REPLACE');
+  });
+
+  it('the Deployment env and Dockerfile ENV name no legacy knob that the files do not already resolve to', () => {
+    const seen: string[] = [];
+    const r = load(podEnv(), (m) => seen.push(m));
+    expect(seen.filter((m) => m.startsWith('deprecated:'))).toEqual([]);
+    expect(r.warnings.filter((m) => m.startsWith('deprecated:'))).toEqual([]);
+    expect(r.merged.gcp?.project).toBe('harmony-conductor');
+    expect(r.merged.gke?.storage_class).toBe('harmony-ticket-disk');
+    expect(r.merged.plugin_dir).toBe('/opt/harmony-plugin');
+  });
+
+  it('a child process re-reading config after the daemon applied its launch env logs no deprecated: line', () => {
+    const parentSeen: string[] = [];
+    const parent = load(podEnv(), (m) => parentSeen.push(m));
+    const childEnv: NodeJS.ProcessEnv = podEnv();
+    const applied = new Set<string>();
+    applyLaunchEnv(childEnv, launchEnvFromMerged(parent.merged), applied);
+    expect(childEnv.CLOUDSDK_CORE_PROJECT).toBe('harmony-conductor'); // the daemon really did push legacy-named vars
+    expect(childEnv.HARMONY_GKE_CONTEXT).toContain('gke_harmony-conductor_us-central1-a_harmony-legs');
+    const childSeen: string[] = [];
+    const child = load(childEnv, (m) => childSeen.push(m));
+    expect([...parentSeen, ...childSeen].filter((m) => m.includes('deprecated'))).toEqual([]);
+    expect(child.merged).toEqual(parent.merged);
   });
 });
