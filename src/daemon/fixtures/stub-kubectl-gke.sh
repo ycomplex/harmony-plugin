@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-{ printf '%s\n' "$@"; echo "--END--"; } >> "$STUB_LOGS/kubectl.log"
+# ONE write per call: the launcher pipes two kubectl processes together, and two appends in flight would interleave.
+printf '%s\n--END--\n' "$(printf '%s\n' "$@")" >> "$STUB_LOGS/kubectl.log"
 args=("$@")
 # drop the leading -n <ns> / --context <c>
 while [ "${args[0]:-}" = "-n" ] || [ "${args[0]:-}" = "--context" ]; do args=("${args[@]:2}"); done
@@ -61,6 +62,6 @@ case "$all" in
   "get events"*) echo "launcher must never read events" >> "$STUB_LOGS/EVENTS-READ"; exit 0 ;;
   "get jobs "*) printf '%s' "${STUB_JOBS_JSON:-{\"items\":[]\}}" ;;
   "patch secret "*) echo "launcher must not patch secrets (the remote conductor cannot read them)" >> "$STUB_LOGS/PATCH-SECRET"; exit 1 ;;
-  "delete job "*) ;;
+  "delete job "*) if [ -n "${STUB_DELETE_FAILS:-}" ]; then echo 'Error from server (Forbidden)' >&2; exit 1; fi ;;
   *) echo "stub kubectl: unhandled: $all" >&2; exit 9 ;;
 esac

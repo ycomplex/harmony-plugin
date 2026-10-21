@@ -36,6 +36,7 @@ const SECRET_VALUE = 'ghs_stub_secret_value';
 const ACTIVE = { metadata: { name: 'j' }, status: { active: 1 } };
 const COMPLETE = { metadata: { name: 'j' }, status: { succeeded: 1, conditions: [{ type: 'Complete', status: 'True' }] } };
 const FAILED = { metadata: { name: 'j' }, status: { failed: 1, conditions: [{ type: 'Failed', status: 'True', reason: 'DeadlineExceeded' }] } };
+const FAILED_BACKOFF = { metadata: { name: 'j' }, status: { failed: 1, conditions: [{ type: 'Failed', status: 'True', reason: 'BackoffLimitExceeded' }] } };
 const pod = (extra: Record<string, unknown> = {}, status: Record<string, unknown> = {}) => ({
   items: [{ metadata: { name: 'leg-pod', ...extra }, status: { phase: 'Succeeded', ...status } }],
 });
@@ -327,12 +328,48 @@ describe.skipIf(!CAPABLE)('gke-worker-launch.sh — the wait loop is the exit-co
     expect(launch(w).status).toBe(0);
   });
 
-  it('Failed -> 1, naming the reason', () => {
+  it('Failed with reason DeadlineExceeded -> 73 (B-1187), naming the reason, without reading pods', () => {
     const w = makeWorld(seq([ACTIVE, FAILED]));
     const r = launch(w);
-    expect(r.status).toBe(1);
+    expect(r.status).toBe(73);
     expect(r.stderr).toContain('DeadlineExceeded');
     expect(podReads(w)).toBe(0);
+  });
+
+  it('Failed for another reason with clean pods -> 1', () => {
+    const w = makeWorld(seq([ACTIVE, FAILED_BACKOFF], [pod({}, { phase: 'Failed', containerStatuses: [{ name: 'worker', state: { terminated: { reason: 'Error', exitCode: 1 } } }] })]));
+    const r = launch(w);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('BackoffLimitExceeded');
+    expect(r.stderr).not.toContain('killed:');
+  });
+
+  it('Failed with the pod list unreadable -> 1', () => {
+    expect(launch(makeWorld(seq([FAILED_BACKOFF], ['ERR']))).status).toBe(1);
+    expect(launch(makeWorld(seq([FAILED_BACKOFF], ['GARBAGE']))).status).toBe(1);
+  });
+
+  // B-1187. HAND-BUILT fixtures from the Kubernetes API field paths (Pod.status.reason,
+  // Pod.status.conditions[], Pod.status.containerStatuses[].state.terminated.reason, Job Failed condition
+  // reason) — no real specimen was available (kubectl / a cluster were not reachable when this was written).
+  it.each([
+    ['pod status.reason Evicted', pod({}, { phase: 'Failed', reason: 'Evicted' }), 71, 'Evicted'],
+    ['a DisruptionTarget=True condition', pod({}, { phase: 'Failed', conditions: [{ type: 'DisruptionTarget', status: 'True', reason: 'EvictionByEvictionAPI' }] }), 71, 'DisruptionTarget'],
+    ['a deletionTimestamp', pod({ deletionTimestamp: '2026-10-19T00:00:00Z' }, { phase: 'Failed' }), 71, 'deleted'],
+    ['an OOMKilled container (state)', pod({}, { phase: 'Failed', containerStatuses: [{ name: 'worker', state: { terminated: { reason: 'OOMKilled', exitCode: 137 } } }] }), 72, 'OOMKilled'],
+    ['an OOMKilled container (lastState)', pod({}, { phase: 'Failed', containerStatuses: [{ name: 'worker', state: {}, lastState: { terminated: { reason: 'OOMKilled', exitCode: 137 } } }] }), 72, 'OOMKilled'],
+    ['OOMKilled AND Evicted (72 outranks 71)', pod({}, { phase: 'Failed', reason: 'Evicted', containerStatuses: [{ name: 'worker', state: { terminated: { reason: 'OOMKilled' } } }] }), 72, 'OOMKilled'],
+  ])('Failed and the pod shows %s -> %i with the reason on stderr', (_l, p, code, needle) => {
+    const w = makeWorld(seq([FAILED_BACKOFF], [p]));
+    const r = launch(w);
+    expect(r.status).toBe(code);
+    expect(r.stderr).toContain(`killed: ${needle}`);
+    expect(podReads(w)).toBe(1);
+  });
+
+  it('DeadlineExceeded (73) outranks pod evidence', () => {
+    const w = makeWorld(seq([FAILED], [pod({}, { reason: 'Evicted' })]));
+    expect(launch(w).status).toBe(73);
   });
 
   it('Job gone (NotFound, confirmed by --ignore-not-found) -> 1', () => {
@@ -374,22 +411,22 @@ describe.skipIf(!CAPABLE)('gke-worker-launch.sh — the wait loop is the exit-co
 
   it.each([
     ['DisruptionTarget=True', pod({}, { conditions: [{ type: 'DisruptionTarget', status: 'True', reason: 'DeletionByTaintManager' }] }), 'DisruptionTarget'],
-    ['a deletionTimestamp', pod({ deletionTimestamp: '2026-10-19T00:00:00Z' }), 'deletionTimestamp'],
+    ['a deletionTimestamp', pod({ deletionTimestamp: '2026-10-19T00:00:00Z' }), 'deleted'],
     ['pod status.reason Terminated', pod({}, { reason: 'Terminated' }), 'Terminated'],
     ['pod status.reason NodeShutdown', pod({}, { reason: 'NodeShutdown' }), 'NodeShutdown'],
     ['pod status.reason Evicted', pod({}, { reason: 'Evicted' }), 'Evicted'],
     ['pod status.reason Preempting', pod({}, { reason: 'Preempting' }), 'Preempting'],
     ['pod status.reason Shutdown', pod({}, { reason: 'Shutdown' }), 'Shutdown'],
-  ])('Complete but the pod has %s -> 1, naming the evidence', (_l, p, needle) => {
+  ])('Complete but the pod has %s -> 71 (B-1187: a disruption), naming the evidence', (_l, p, needle) => {
     const w = makeWorld(seq([COMPLETE], [p]));
     const r = launch(w);
-    expect(r.status).toBe(1);
+    expect(r.status).toBe(71);
     expect(r.stderr).toContain(needle);
   });
 
   it('ANY pod of the Job with disruption evidence fails the leg', () => {
     const two = { items: [pod().items[0], pod({}, { reason: 'Evicted' }).items[0]] };
-    expect(launch(makeWorld(seq([COMPLETE], [two]))).status).toBe(1);
+    expect(launch(makeWorld(seq([COMPLETE], [two]))).status).toBe(71);
   });
 
   it('Complete with a normally finished container (containerStatuses terminated/Completed, no pod-level reason) -> 0', () => {
@@ -451,6 +488,13 @@ describe.skipIf(!CAPABLE)('gke-worker-reap.sh', () => {
     ]);
     expect(verbs(w).some((c) => /pvc|persistentvolumeclaim/i.test(c))).toBe(false);
     expect(minted(w)).toBe(false);
+  });
+
+  it('B-1187: a failed delete -> exit 1 (even when another Job was deleted), never 0', () => {
+    const w = makeWorld({ STUB_DELETE_FAILS: '1', STUB_JOBS_JSON: jobsJson([{ name: 'a', types: [] }]) });
+    const r = run(w, REAP, [CID, TICKET]);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('could not delete job a');
   });
 
   it('exit 3 when nothing is unsettled, and nothing is deleted', () => {
