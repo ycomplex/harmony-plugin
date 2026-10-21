@@ -432,14 +432,14 @@ describe.skipIf(!CAPABLE)('container/gke/setup-cluster.sh (EXECUTED against stub
       'gcloud projects add-iam-policy-binding proj-x',
       'kubectl -n harmony-legs create secret generic harmony-worker-secrets',
       'kubectl -n harmony-legs create secret generic harmony-codex-auth',
-      'gcloud storage buckets describe gs://harmony-conductor-transcripts',
+      'gcloud storage buckets describe gs://proj-x-transcripts',
       'gcloud container clusters update harmony-legs',
       '--workload-pool=proj-x.svc.id.goog',
       '--update-addons GcsFuseCsiDriver=ENABLED',
       'gcloud container node-pools update legs',
       '--workload-metadata=GKE_METADATA',
       'gcloud iam service-accounts create harmony-gke-leg',
-      'gcloud storage buckets add-iam-policy-binding gs://harmony-conductor-transcripts',
+      'gcloud storage buckets add-iam-policy-binding gs://proj-x-transcripts',
       'gcloud iam service-accounts add-iam-policy-binding harmony-gke-leg@proj-x.iam.gserviceaccount.com',
       'kubectl -n harmony-legs create serviceaccount harmony-leg',
       'kubectl -n harmony-legs annotate serviceaccount harmony-leg',
@@ -623,7 +623,7 @@ describe.skipIf(!CAPABLE)('setup-cluster.sh steps 10-16 — transcripts in the b
 
     // bucket-level grant, never project-level
     const bucket = findCall(g(world), 'storage', 'buckets', 'add-iam-policy-binding')!;
-    expect(bucket).toContain('gs://harmony-conductor-transcripts');
+    expect(bucket).toContain('gs://proj-x-transcripts');
     expect(bucket).toContain(`--member=serviceAccount:${GSA}`);
     expect(bucket).toContain('--role=roles/storage.objectUser');
     const projectLevel = g(world).filter((c) => has(c, 'projects', 'add-iam-policy-binding'));
@@ -643,7 +643,7 @@ describe.skipIf(!CAPABLE)('setup-cluster.sh steps 10-16 — transcripts in the b
 
     // the bucket is only ever described, never created
     expect(g(world).some((c) => has(c, 'storage', 'buckets', 'create'))).toBe(false);
-    expect(r.stdout).toContain('gs://harmony-conductor-transcripts');
+    expect(r.stdout).toContain('gs://proj-x-transcripts');
     expect(r.stdout).toContain(GSA);
   });
 
@@ -690,7 +690,7 @@ describe.skipIf(!CAPABLE)('setup-cluster.sh steps 10-16 — transcripts in the b
     const world = makeWorld();
     const r = setup(world, [], { STUB_BUCKET_POLICY_FAIL: '1' });
     expect(r.status).toBe(1);
-    expect(r.stderr).toContain('could not read the IAM policy of gs://harmony-conductor-transcripts');
+    expect(r.stderr).toContain('could not read the IAM policy of gs://proj-x-transcripts');
     expect(g(world).some((c) => has(c, 'storage', 'buckets', 'add-iam-policy-binding'))).toBe(false);
   });
 
@@ -744,7 +744,7 @@ describe.skipIf(!CAPABLE)('setup-cluster.sh steps 10-16 — transcripts in the b
     const world = makeWorld();
     const r = setup(world, [], { STUB_MISSING_BUCKET: '1' });
     expect(r.status).toBe(1);
-    expect(r.stderr).toContain('gs://harmony-conductor-transcripts');
+    expect(r.stderr).toContain('gs://proj-x-transcripts');
     expect(mutating(world)).toEqual([]);
     expect(g(world).some((c) => has(c, 'buckets', 'create'))).toBe(false);
     expect(existsSync(join(world.state, 'cluster'))).toBe(false);

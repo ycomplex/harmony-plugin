@@ -361,6 +361,29 @@ describe.skipIf(!CAPABLE)('gke-worker-launch.sh — image precedence', () => {
     expect(rc.stderr).toContain('source: built-in default');
   });
 
+  it('B-1217: the Cloud Run default worker_image (harmony-build-env) means unset on gke -> the Docker-capable default', () => {
+    const w = makeWorld(seq([COMPLETE], [CLEAN_POD]), { workerImage: 'harmony-build-env' });
+    const r = launch(w);
+    expect(jobImage(w)).toBe(`${REG}/harmony-build-env-docker:latest`);
+    expect(r.stderr).toContain('source: built-in default');
+  });
+
+  it("B-1217: the registry and the transcript bucket default to the conductor's own project", () => {
+    const w = makeWorld(seq([COMPLETE], [CLEAN_POD]));
+    launch(w, { CLOUDSDK_CORE_PROJECT: 'acme-legs' });
+    const job = JSON.parse(read(w, 'job.json'));
+    expect(job.spec.template.spec.containers[0].image).toBe('us-central1-docker.pkg.dev/acme-legs/harmony-workers/harmony-build-env-docker:latest');
+    const tv = job.spec.template.spec.volumes.find((v: { name: string }) => v.name === 'transcripts');
+    expect(tv.csi.volumeAttributes.bucketName).toBe('acme-legs-transcripts');
+  });
+
+  it('B-1217: an explicit HARMONY_GKE_TRANSCRIPT_BUCKET (gke.transcript_bucket) wins over the derived default', () => {
+    const w = makeWorld(seq([COMPLETE], [CLEAN_POD]));
+    launch(w, { CLOUDSDK_CORE_PROJECT: 'acme-legs', HARMONY_GKE_TRANSCRIPT_BUCKET: 'acme-session-logs' });
+    const tv = JSON.parse(read(w, 'job.json')).spec.template.spec.volumes.find((v: { name: string }) => v.name === 'transcripts');
+    expect(tv.csi.volumeAttributes.bucketName).toBe('acme-session-logs');
+  });
+
   it('a value containing / is used verbatim; a bare name gets the registry prefix', () => {
     const a = makeWorld(seq([COMPLETE], [CLEAN_POD]));
     launch(a, { HARMONY_GKE_IMAGE: 'example.io/team/img:3' });
