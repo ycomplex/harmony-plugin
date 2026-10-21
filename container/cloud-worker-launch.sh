@@ -606,6 +606,17 @@ FAILED="${FAILED:-0}"
 if [ "$SUCCEEDED" -ge 1 ] 2>/dev/null; then
   exit 0
 elif [ "$FAILED" -ge 1 ] 2>/dev/null; then
+  # B-1187: map a distinguishable kill reason to the conductor's kill-reason exit codes (72 = memory limit,
+  # 73 = task timeout/deadline; both classify as a dirty exit, exactly like 1). The mapping reads
+  # the conditions[] reason/message fields of the documented Execution resource and is NOT live-verified: no
+  # specimen of a memory- or timeout-killed execution was available. Anything unrecognised keeps exit 1.
+  KILL_HINT="$(gcloud run jobs executions describe "$EXECUTION_NAME" \
+      --region="$HARMONY_CLOUD_RUN_REGION" --format=json 2>/dev/null \
+    | jq -r '[(.status | (.conditions // []))[] | ((.reason // "") + " " + (.message // ""))] | join(" ") | ascii_downcase' 2>/dev/null || true)"
+  case "$KILL_HINT" in
+    *memory*) echo "cloud-worker-launch: execution $EXECUTION_NAME failed — killed: memory limit — dirty exit" >&2; exit 72 ;;
+    *timeout*|*deadline*|*"timed out"*) echo "cloud-worker-launch: execution $EXECUTION_NAME failed — killed: task timeout — dirty exit" >&2; exit 73 ;;
+  esac
   exit 1
 else
   # Neither succeededCount nor failedCount set ⇒ still reconciling. Never hang, never guess
