@@ -32198,6 +32198,10 @@ async function getTask(client, projectId, args) {
       archived: t.archived,
       subsumed_by_task_id: t.subsumed_by_task_id,
       conductor_excluded_at: t.conductor_excluded_at,
+      // B-1157: the declared external wait (`field_values.waiting_on`) — a loop-control marker the daemon's
+      // hold gate / settle classification and the stop gate read through THIS view. ONE narrow key, not the
+      // whole `field_values` (which carries kilobytes of gate_slots): pass-through, null when absent.
+      waiting_on: t.field_values?.waiting_on ?? null,
       pending_resolution,
       active_exchange,
       pending_remark,

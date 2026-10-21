@@ -51,6 +51,11 @@ function parseWaitingOn(fieldValues) {
     ...typeof m.resume_after === "string" ? { resume_after: m.resume_after } : {}
   };
 }
+function waitingOnFieldValues(task) {
+  if (!task) return null;
+  if (task.waiting_on !== void 0 && task.waiting_on !== null) return { waiting_on: task.waiting_on };
+  return task.field_values ?? null;
+}
 function liveWaitingOn(fieldValues, opts) {
   const w = parseWaitingOn(fieldValues);
   if (!w) return null;
@@ -63,7 +68,7 @@ function liveWaitingOn(fieldValues, opts) {
 var STOP_GATE_ESCAPE_ENV = "HARMONY_STOP_GATE_OFF";
 var MAX_BLOCKS_PER_TURN_END = 2;
 function hasLiveDeclaredWait(row, opts) {
-  return liveWaitingOn(row.field_values, { firedAtMs: opts.legStartedAtMs, nowMs: opts.nowMs }) !== null;
+  return liveWaitingOn(waitingOnFieldValues(row), { firedAtMs: opts.legStartedAtMs, nowMs: opts.nowMs }) !== null;
 }
 function describeRow(ticket, row) {
   return `${ticket}: workflow_state=${row.workflow_state ?? "null"}, awaiting_human_input=${row.awaiting_human_input ?? "null"}, non_archived_children=${row.non_archived_child_count ?? 0}, pending_acceptance_event=${row.pending_acceptance_event_id ?? "none"}`;

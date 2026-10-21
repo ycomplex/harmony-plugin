@@ -40667,6 +40667,10 @@ async function getTask(client, projectId, args) {
       archived: t.archived,
       subsumed_by_task_id: t.subsumed_by_task_id,
       conductor_excluded_at: t.conductor_excluded_at,
+      // B-1157: the declared external wait (`field_values.waiting_on`) — a loop-control marker the daemon's
+      // hold gate / settle classification and the stop gate read through THIS view. ONE narrow key, not the
+      // whole `field_values` (which carries kilobytes of gate_slots): pass-through, null when absent.
+      waiting_on: t.field_values?.waiting_on ?? null,
       pending_resolution,
       active_exchange,
       pending_remark,
@@ -41498,6 +41502,26 @@ async function runCommand(opts, handler, formatter) {
 }
 
 // src/cli/commands/tasks.ts
+function buildCleanCheckRow(task, nonArchivedChildCount) {
+  const kind = classifyCleanRowShape(task, nonArchivedChildCount);
+  return {
+    task_id: task.id,
+    task_number: task.task_number ?? null,
+    workflow_state: task.workflow_state ?? null,
+    awaiting_human_input: task.awaiting_human_input ?? null,
+    // B-818: surfaced so --json output and classifyCleanRowShape both see an outstanding
+    // B-797 two-step accept — the gate this field defeats even when the row otherwise looks clean.
+    pending_acceptance_event_id: task.pending_acceptance_event_id ?? null,
+    non_archived_child_count: nonArchivedChildCount,
+    // B-1157: the stop gate reads the declared-wait marker from here. view:'meta' carries it as its own
+    // `waiting_on` key (it omits field_values — the seat's live B-1185 finding); a full row's
+    // field_values.waiting_on is the fallback.
+    waiting_on: task.waiting_on ?? task.field_values?.waiting_on ?? null,
+    field_values: task.field_values ?? null,
+    clean: kind !== null,
+    clean_kind: kind
+  };
+}
 function registerTaskCommands(program3) {
   const tasks = program3.command("tasks").description("Manage tasks");
   tasks.command("list").description("List tasks with optional filters").option("--status <status>", "Filter by legacy status").option("--state <states...>", "Filter by workflow state(s) (opinionated-mode projects only)").option("--assignee <id>", "Filter by assignee").option("--epic <id>", "Filter by epic").option("--milestone <id>", "Filter by milestone").option("--cycle <id>", "Filter by cycle").option("--label <ids...>", "Filter by label IDs").option("--archived", "Include archived tasks", false).option("--full", "Include full descriptions (rows are lean by default)", false).option("--limit <n>", "Max results", "50").option("--offset <n>", "Skip results", "0").action(async (opts) => {
@@ -41551,21 +41575,7 @@ function registerTaskCommands(program3) {
           const children = await listSubtasks(ctx.client, ctx.projectId, { task_id: id });
           nonArchivedChildCount = children.filter((c) => !c.archived).length;
         }
-        const kind = classifyCleanRowShape(task, nonArchivedChildCount);
-        return {
-          task_id: task.id,
-          task_number: task.task_number ?? null,
-          workflow_state: task.workflow_state ?? null,
-          awaiting_human_input: task.awaiting_human_input ?? null,
-          // B-818: surfaced so --json output and classifyCleanRowShape both see an outstanding
-          // B-797 two-step accept — the gate this field defeats even when the row otherwise looks clean.
-          pending_acceptance_event_id: task.pending_acceptance_event_id ?? null,
-          non_archived_child_count: nonArchivedChildCount,
-          // B-1157: the stop gate reads the declared-wait marker (field_values.waiting_on) from here.
-          field_values: task.field_values ?? null,
-          clean: kind !== null,
-          clean_kind: kind
-        };
+        return buildCleanCheckRow(task, nonArchivedChildCount);
       },
       (r) => r.clean ? `clean (${r.clean_kind})` : "NOT clean \u2014 nothing on the board for this leg"
     );

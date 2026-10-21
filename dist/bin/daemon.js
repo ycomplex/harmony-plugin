@@ -34536,6 +34536,10 @@ async function getTask(client, projectId, args) {
       archived: t.archived,
       subsumed_by_task_id: t.subsumed_by_task_id,
       conductor_excluded_at: t.conductor_excluded_at,
+      // B-1157: the declared external wait (`field_values.waiting_on`) — a loop-control marker the daemon's
+      // hold gate / settle classification and the stop gate read through THIS view. ONE narrow key, not the
+      // whole `field_values` (which carries kilobytes of gate_slots): pass-through, null when absent.
+      waiting_on: t.field_values?.waiting_on ?? null,
       pending_resolution,
       active_exchange,
       pending_remark,
@@ -38714,6 +38718,11 @@ function parseWaitingOn(fieldValues) {
     ...typeof m.resume_after === "string" ? { resume_after: m.resume_after } : {}
   };
 }
+function waitingOnFieldValues(task) {
+  if (!task) return null;
+  if (task.waiting_on !== void 0 && task.waiting_on !== null) return { waiting_on: task.waiting_on };
+  return task.field_values ?? null;
+}
 function liveWaitingOn(fieldValues, opts) {
   const w = parseWaitingOn(fieldValues);
   if (!w) return null;
@@ -39250,7 +39259,7 @@ function exchangeKey(ex) {
   return ex ? [ex.exchange_id, ex.status, ex.round, ex.answers_submitted_at, ex.force_quit_requested_at].join("|") : "";
 }
 function waitHoldActive(baseline, current, nowMs) {
-  const w = liveWaitingOn(current.field_values, { nowMs });
+  const w = liveWaitingOn(waitingOnFieldValues(current), { nowMs });
   if (!w || nowMs >= waitResumeAtMs(w)) return null;
   if (baseline) {
     if (baseline.awaitingHumanInput === true && current.awaiting_human_input !== true) return null;
@@ -39581,7 +39590,7 @@ async function settleTrackedLaunch(deps, state, keeper, runtime, row, tracked) {
     repoProgressed,
     refusal,
     // B-1157: a declared external wait, only while live for THIS leg (written at/after fire, inside the ceiling).
-    waitingOn: liveWaitingOn(after.field_values, { firedAtMs: tracked.firedAt, nowMs: deps.now() })
+    waitingOn: liveWaitingOn(waitingOnFieldValues(after), { firedAtMs: tracked.firedAt, nowMs: deps.now() })
   };
   const outcome = classifyWorkerExit(classifyArgs);
   const cls = exitClass(outcome, classifyArgs);

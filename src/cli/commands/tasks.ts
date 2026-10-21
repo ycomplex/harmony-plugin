@@ -5,6 +5,40 @@ import { classifyCleanRowShape } from '../../daemon/classify.js';
 import { runCommand } from '../run-command.js';
 import { formatTable, formatDetail, formatPriority, formatStatus, formatDate } from '../formatter.js';
 
+/** The `view:'meta'` task fields `tasks clean-check` reads. */
+export interface CleanCheckTask {
+  id: string;
+  task_number?: number;
+  workflow_state?: string | null;
+  awaiting_human_input?: boolean | null;
+  pending_acceptance_event_id?: string | null;
+  field_values?: Record<string, unknown> | null;
+  waiting_on?: unknown;
+}
+
+/** B-870/B-818/B-1157: the row `tasks clean-check` reports — extracted so the seam with the REAL
+ *  `getTask(view:'meta')` projection can be tested (the stop gate reads exactly this). */
+export function buildCleanCheckRow(task: CleanCheckTask, nonArchivedChildCount: number) {
+  const kind = classifyCleanRowShape(task, nonArchivedChildCount);
+  return {
+    task_id: task.id,
+    task_number: task.task_number ?? null,
+    workflow_state: task.workflow_state ?? null,
+    awaiting_human_input: task.awaiting_human_input ?? null,
+    // B-818: surfaced so --json output and classifyCleanRowShape both see an outstanding
+    // B-797 two-step accept — the gate this field defeats even when the row otherwise looks clean.
+    pending_acceptance_event_id: task.pending_acceptance_event_id ?? null,
+    non_archived_child_count: nonArchivedChildCount,
+    // B-1157: the stop gate reads the declared-wait marker from here. view:'meta' carries it as its own
+    // `waiting_on` key (it omits field_values — the seat's live B-1185 finding); a full row's
+    // field_values.waiting_on is the fallback.
+    waiting_on: task.waiting_on ?? task.field_values?.waiting_on ?? null,
+    field_values: task.field_values ?? null,
+    clean: kind !== null,
+    clean_kind: kind,
+  };
+}
+
 export function registerTaskCommands(program: Command): void {
   const tasks = program.command('tasks').description('Manage tasks');
 
@@ -70,14 +104,7 @@ export function registerTaskCommands(program: Command): void {
     .argument('<id>', 'Task ID (UUID, number, or B-123)')
     .action(async (id) => {
       await runCommand(program.opts(), async (ctx) => {
-        const task = (await getTask(ctx.client, ctx.projectId, { task_id: id, view: 'meta' })) as {
-          id: string;
-          task_number?: number;
-          workflow_state?: string | null;
-          awaiting_human_input?: boolean | null;
-          pending_acceptance_event_id?: string | null;
-          field_values?: Record<string, unknown> | null;
-        };
+        const task = (await getTask(ctx.client, ctx.projectId, { task_id: id, view: 'meta' })) as unknown as CleanCheckTask;
         let nonArchivedChildCount = 0;
         if (task.workflow_state === 'Decomposed') {
           const children = (await listSubtasks(ctx.client, ctx.projectId, { task_id: id })) as Array<{
@@ -85,21 +112,7 @@ export function registerTaskCommands(program: Command): void {
           }>;
           nonArchivedChildCount = children.filter((c) => !c.archived).length;
         }
-        const kind = classifyCleanRowShape(task, nonArchivedChildCount);
-        return {
-          task_id: task.id,
-          task_number: task.task_number ?? null,
-          workflow_state: task.workflow_state ?? null,
-          awaiting_human_input: task.awaiting_human_input ?? null,
-          // B-818: surfaced so --json output and classifyCleanRowShape both see an outstanding
-          // B-797 two-step accept — the gate this field defeats even when the row otherwise looks clean.
-          pending_acceptance_event_id: task.pending_acceptance_event_id ?? null,
-          non_archived_child_count: nonArchivedChildCount,
-          // B-1157: the stop gate reads the declared-wait marker (field_values.waiting_on) from here.
-          field_values: task.field_values ?? null,
-          clean: kind !== null,
-          clean_kind: kind,
-        };
+        return buildCleanCheckRow(task, nonArchivedChildCount);
       },
         (r) => (r.clean ? `clean (${r.clean_kind})` : 'NOT clean — nothing on the board for this leg'),
       );
