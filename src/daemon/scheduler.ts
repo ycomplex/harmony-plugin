@@ -132,7 +132,7 @@
 // executed proof this reasoning rests on.
 
 import { captureBaseline, detectWake, type WatchBaseline } from './watch.js';
-import { liveWaitingOn, strandedWorkSignal, waitResumeAtMs, type WaitingOn } from './waiting-on.js';
+import { liveWaitingOn, strandedWorkSignal, waitingOnFieldValues, waitResumeAtMs, type WaitingOn } from './waiting-on.js';
 import { classifyWorkerExit, exitClass, settleLogLine, TICKET_TERMINAL_STATES, type ClassifyArgs } from './classify.js';
 import { renderQuietReapOutcome } from './quiet-reap.js';
 import { exchangeWentInactive } from '../conductor/ball-axis.js';
@@ -206,6 +206,9 @@ export type DaemonTask = Taskish & {
   /** B-1157: already part of the meta projection (B-818) — read ONLY by the pre-park re-read's
    *  stranded-work check (strandedWorkSignal). */
   pending_acceptance_event_id?: string | null;
+  /** B-1157: the declared external wait, as the `view:'meta'` projection carries it (that view omits
+   *  `field_values`). Read ONLY through waiting-on.ts `waitingOnFieldValues`. */
+  waiting_on?: unknown;
 };
 
 export interface SchedulerDeps extends WriteRetryDeps {
@@ -1136,7 +1139,7 @@ export function waitHoldActive(
   current: DaemonTask,
   nowMs: number,
 ): WaitingOn | null {
-  const w = liveWaitingOn(current.field_values, { nowMs });
+  const w = liveWaitingOn(waitingOnFieldValues(current), { nowMs });
   if (!w || nowMs >= waitResumeAtMs(w)) return null;
   if (baseline) {
     if (baseline.awaitingHumanInput === true && current.awaiting_human_input !== true) return null;
@@ -1746,7 +1749,7 @@ async function settleTrackedLaunch(
     repoProgressed,
     refusal,
     // B-1157: a declared external wait, only while live for THIS leg (written at/after fire, inside the ceiling).
-    waitingOn: liveWaitingOn(after.field_values, { firedAtMs: tracked.firedAt, nowMs: deps.now() }),
+    waitingOn: liveWaitingOn(waitingOnFieldValues(after), { firedAtMs: tracked.firedAt, nowMs: deps.now() }),
   };
   const outcome = classifyWorkerExit(classifyArgs);
   const cls = exitClass(outcome, classifyArgs);

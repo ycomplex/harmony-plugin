@@ -244,9 +244,9 @@ export async function getTask(
   // select, labels extraction, pending_resolution/active_exchange/pending_remark reads, and the
   // detectRiskClasses call with IDENTICAL inputs (title + description + brief text, changed_paths,
   // label names) — it skips ONLY the pure return-payload selects (acceptance_criteria / test_cases /
-  // attachments, which feed no computation) and returns a pinned 23-key loop-control projection
+  // attachments, which feed no computation) and returns a pinned 24-key loop-control projection
   // (B-792 widened it from 20 to 22 — see active_brief_iteration/knowledge_reference_count below;
-  // B-818 widened it again to 23 — see pending_acceptance_event_id below).
+  // B-818 widened it again to 23 — see pending_acceptance_event_id below; B-1157 to 24 — waiting_on).
   const meta = args.view === 'meta';
   const resolvedId = await resolveTaskId(client, projectId, args.task_id);
   const { data, error } = await client
@@ -361,10 +361,10 @@ export async function getTask(
     labels: labels.map((l: any) => l?.name).filter((n: unknown): n is string => typeof n === 'string'),
   });
 
-  // B-684: the lean 'meta' projection — a pinned 23-key loop-control shape (nothing more, nothing
+  // B-684: the lean 'meta' projection — a pinned 24-key loop-control shape (nothing more, nothing
   // less; tasks.test.ts deep-equals the key set — widened from 20 to 22 by B-792's
-  // active_brief_iteration/knowledge_reference_count, then to 23 by B-818's
-  // pending_acceptance_event_id). risk_classes above was computed exactly as in full mode (trim the
+  // active_brief_iteration/knowledge_reference_count, to 23 by B-818's
+  // pending_acceptance_event_id, then to 24 by B-1157's waiting_on). risk_classes above was computed exactly as in full mode (trim the
   // return, never the computation); the omitted fields (description, acceptance criteria, test
   // cases, attachments, labels, checklist) are pure payload with no loop-control role.
   // pending_remark (B-503) is a poll marker — the conduct loop's poll read classifies on it — so it
@@ -392,6 +392,10 @@ export async function getTask(
       archived: t.archived,
       subsumed_by_task_id: t.subsumed_by_task_id,
       conductor_excluded_at: t.conductor_excluded_at,
+      // B-1157: the declared external wait (`field_values.waiting_on`) — a loop-control marker the daemon's
+      // hold gate / settle classification and the stop gate read through THIS view. ONE narrow key, not the
+      // whole `field_values` (which carries kilobytes of gate_slots): pass-through, null when absent.
+      waiting_on: (t.field_values as Record<string, unknown> | null | undefined)?.waiting_on ?? null,
       pending_resolution,
       active_exchange,
       pending_remark,
