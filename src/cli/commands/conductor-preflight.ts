@@ -17,6 +17,7 @@ import { resolveConductorSecrets } from '../../config/conductor-secrets.js';
 import { loadLegacyDeploymentConfig } from '../../config/deployment-config.js';
 import type { BoardRow } from '../../daemon/conductor-board.js';
 import { runDoctor } from './conductor-config.js';
+import { resolveGcpProject } from '../../config/gcp-project.js';
 import type { LifecycleDeps } from './conductor-lifecycle-deps.js';
 
 export type Env = Record<string, string | undefined>;
@@ -225,8 +226,10 @@ export async function runPreflight(deps: LifecycleDeps, s: ConductorSettings, op
   } else if (s.profile === 'cloud') {
     const job = s.env.HARMONY_CLOUD_RUN_JOB;
     const region = s.env.HARMONY_CLOUD_RUN_REGION;
-    const project = s.env.CLOUDSDK_CORE_PROJECT || 'harmony-conductor';
-    if (!has(job) || !has(region)) {
+    const project = resolveGcpProject({ env: s.env as NodeJS.ProcessEnv, merged: s.merged, existsSync: deps.existsSync, readFileSync: deps.readFileSync });
+    if (!project) {
+      add('reach:cloud-run-job', false, 'no GCP project is configured', 'set gcp.project in .harmony/conductor.json (or ~/.harmony/conductor-host.json)');
+    } else if (!has(job) || !has(region)) {
       add('reach:cloud-run-job', false, `${[!has(job) ? 'HARMONY_CLOUD_RUN_JOB' : '', !has(region) ? 'HARMONY_CLOUD_RUN_REGION' : ''].filter(Boolean).join(', ')} not set`, 'set cloud_run.job and gcp.region in the config files');
     } else {
       const r = await deps.exec('gcloud', ['run', 'jobs', 'describe', job as string, `--region=${region}`, `--project=${project}`, '--format=value(name)'], { env: s.env });

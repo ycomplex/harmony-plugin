@@ -8,7 +8,7 @@
 import { existsSync as fsExistsSync, readFileSync as fsReadFileSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { Command } from 'commander';
-import { loadConductorConfigSync } from '../../config/conductor-config.js';
+import { GCP_PROJECT_UNSET, resolveGcpProject } from '../../config/gcp-project.js';
 import { resolveConductorLogPath, ROTATE_KEEP } from '../../daemon/conductor-logger.js';
 
 export const LOG_NAME = 'harmony-conductor';
@@ -44,11 +44,7 @@ export function defaultLogsDeps(): ConductorLogsDeps {
         });
       }),
     configuredProject: () => {
-      try {
-        return loadConductorConfigSync({ env: process.env })?.merged.gcp?.project;
-      } catch {
-        return undefined;
-      }
+      return resolveGcpProject({ env: process.env });
     },
   };
 }
@@ -137,7 +133,7 @@ export async function runConductorLogs(deps: ConductorLogsDeps, opts: ReadOption
 
   const project = opts.project || deps.env.CLOUDSDK_CORE_PROJECT || deps.configuredProject?.();
   if (!project) {
-    return { exitCode: 1, lines: [], errLines: ['no GCP project: pass --project, set gcp.project in .harmony/conductor.json, or export CLOUDSDK_CORE_PROJECT'] };
+    return { exitCode: 1, lines: [], errLines: [`${GCP_PROJECT_UNSET} (or pass --project, or export CLOUDSDK_CORE_PROJECT)`] };
   }
   const filter = cloudFilter(project, new Date(sinceMs).toISOString());
   const r = await deps.runGcloud(['logging', 'read', filter, `--project=${project}`, '--format=json', `--limit=${limit}`, '--order=desc']);
