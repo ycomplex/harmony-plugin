@@ -5085,5 +5085,27 @@ describe('B-1157: a declared external wait HOLDS the conduction instead of parki
     expect(h.getConduction('cond-1').status).toBe('parked');
     expect(h.getConduction('cond-1').last_worker_exit_class).toBe('no-progress');
     expect(h.getConduction('cond-1').last_worker_exit_code).toBe(0);
+describe('B-1185 fireLaunch catalog wiring', () => {
+  it.each(['codex:gpt-6.1-sol', 'gpt-6.1-sol'])('fires the first leg with the runtime id for %s', async (model) => {
+    const h = makeHarness({
+      conductions: [conduction({ run_config: { agent: { adapter: 'codex' }, model: { default: model } } })],
+      tasks: { 'task-1': pausedTask() },
+      config: { ...config, profile: { ...config.profile, agents: ['codex'], launch: "launch {conduction_id} --model '{model}' --run-config '{run_config_json}'" } },
+    });
+    h.deps.getModelCatalog = async () => [{ alias: 'codex:gpt-6.1-sol', model_id: 'gpt-6.1-sol', agent: 'codex', active: true, label: 'Sol', context_budget_bytes: 1, verified_at: null }];
+    await wakeAndFire(h);
+    expect(h.launches()).toHaveLength(1);
+    expect(h.launches()[0]).toContain("--model 'gpt-6.1-sol'");
+  });
+  it('still fires a bare-id leg when the catalog read throws', async () => {
+    const h = makeHarness({
+      conductions: [conduction({ run_config: { agent: { adapter: 'codex' }, model: { default: 'gpt-6-luna' } } })],
+      tasks: { 'task-1': pausedTask() },
+      config: { ...config, profile: { ...config.profile, agents: ['codex'], launch: "launch {conduction_id} --model '{model}' --run-config '{run_config_json}'" } },
+    });
+    h.deps.getModelCatalog = async () => { throw new Error('offline'); };
+    await wakeAndFire(h);
+    expect(h.launches()).toHaveLength(1);
+    expect(h.launches()[0]).toContain("--model 'gpt-6-luna'");
   });
 });

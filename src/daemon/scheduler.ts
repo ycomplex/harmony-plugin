@@ -145,6 +145,7 @@ import {
   getModelForGate,
   isFastTrackEnabled,
   type RunConfig,
+  type ModelCatalogEntry,
 } from '../config/run-config.js';
 import type { ModelPolicy } from './conductor-config-runtime.js';
 import type { QuotaState } from '../tools/conduction-record.js';
@@ -208,6 +209,8 @@ export type DaemonTask = Taskish & {
 };
 
 export interface SchedulerDeps extends WriteRetryDeps {
+  /** Live catalog at launch only; probe/reap keep their synchronous rendering. */
+  getModelCatalog?(): Promise<readonly ModelCatalogEntry[]>;
   now(): number;
   /** B-1172: true while this conductor must start NO new legs — a registry restart/update request was claimed,
    *  or the registry row is held by another conductor. Running legs are untouched; adoption and settlement
@@ -600,9 +603,9 @@ function runConfigJsonFor(row: ConductionRecord): string {
  *  always resolves a non-empty alias; a non-Claude run with no run-level model resolves '' (the
  *  mint script then writes no HARMONY_MODEL line, and provision.sh falls back to
  *  HARMONY_CODEX_MODEL, else the runtime's own default). */
-function modelFor(row: ConductionRecord, task: DaemonTask | null, runConfig: RunConfig = (row.run_config ?? {}) as RunConfig): string {
+function modelFor(row: ConductionRecord, task: DaemonTask | null, runConfig: RunConfig = (row.run_config ?? {}) as RunConfig, catalog?: readonly ModelCatalogEntry[]): string {
   const gate = resolveLegGate(runConfig, task ?? {});
-  return getModelForGate(runConfig, gate);
+  return getModelForGate(runConfig, gate, process.env, catalog);
 }
 
 /** B-1170: fold the conductor config's `model_policy` into a conduction's run_config by filling ABSENT
@@ -638,6 +641,7 @@ export function templateVars(
   projectKey: string,
   workerImage?: string,
   modelPolicy?: ModelPolicy,
+  catalog?: readonly ModelCatalogEntry[],
 ): {
   conduction_id: string;
   ticket: string;
@@ -664,7 +668,7 @@ export function templateVars(
     run_config_json: runConfigJsonFor(effectiveRow),
     // B-772: same "always computed, harmless when unreferenced" convention as run_config_json
     // above — only the launch template is expected to actually reference {model}.
-    model: modelFor(row, task, effective),
+    model: modelFor(row, task, effective, catalog),
     // B-929: which container image this deployment's workers run (deployment config's top-level
     // `worker_image`, resolved once at daemon boot in src/bin/daemon.ts and carried on
     // SchedulerDeps). Optional there and defaulted HERE to the schema's own default, because most
@@ -2455,9 +2459,20 @@ async function fireLaunch(
   // constraint, unlike a shared mutable write would have. Node's exec() inherits whatever `env` it is
   // given into everything it spawns, so this reaches the mint script on every launch profile with NO
   // launch-profile template change anywhere (no {leg} placeholder).
+  // B-1185: only the launch path needs async catalog resolution. Outages keep the
+  // explicit spelling, which new workers independently normalize when reachable.
+  let catalog: readonly ModelCatalogEntry[] | undefined;
+  try {
+    const selection = getAgentAdapter((row.run_config ?? {}) as RunConfig);
+    if (selection.ok && selection.adapter !== DEFAULT_AGENT_ADAPTER) {
+      catalog = await deps.getModelCatalog?.();
+    }
+  } catch {
+    deps.log(`${label(row, current, deps.projectKey)}: model catalog unavailable; passing launch model through`);
+  }
   const launch = deps
     .runCommand(
-      renderTemplate(deps.config.profile.launch, templateVars(row, current, deps.projectKey, deps.workerImage, deps.getModelPolicy?.())),
+      renderTemplate(deps.config.profile.launch, templateVars(row, current, deps.projectKey, deps.workerImage, deps.getModelPolicy?.(), catalog)),
       { env: { ...process.env, HARMONY_LEG: String(leg) } },
     )
     .then((result) => {

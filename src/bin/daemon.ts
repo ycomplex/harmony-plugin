@@ -34,6 +34,7 @@
 // same-host successor adopt them immediately instead of waiting out the full stale window), log,
 // and exit 0.
 
+import { resolveModelCatalog } from '../config/run-config.js';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { exec, spawn } from 'node:child_process';
 import { hostname } from 'node:os';
@@ -684,6 +685,7 @@ async function main(): Promise<void> {
   );
 
   const deps: SchedulerDeps = {
+    getModelCatalog: async () => (await resolveModelCatalog(client)).entries,
     now: Date.now,
     sleep,
     listConductions: (args) => listConductions(client, args),

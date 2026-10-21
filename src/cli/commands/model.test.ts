@@ -465,3 +465,44 @@ describe('B-1148 harmony model pinned-default / context-budget --agent', () => {
     expect(logSpy).not.toHaveBeenCalledWith('4242');
   });
 });
+
+describe('B-1185 runtime model normalization', () => {
+  const row = { ...liveOnlyRow, alias: 'codex:gpt-6.1-sol', model_id: 'gpt-6.1-sol', agent: 'codex' };
+  it.each(['codex:gpt-6.1-sol', 'gpt-6.1-sol'])('normalizes %s for startup, gate resolution and switch handoff', async (model) => {
+    stubCatalogWith({ data: [row], error: null });
+    await run(['model', 'normalize', '--agent', 'codex', model]);
+    expect(logSpy).toHaveBeenLastCalledWith('gpt-6.1-sol');
+    vi.stubEnv('HARMONY_CONDUCTION_ID', '');
+    vi.stubEnv('HARMONY_RUN_CONFIG_PATH', '');
+    vi.stubEnv('HARMONY_RUN_CONFIG_JSON', Buffer.from(JSON.stringify({ agent: { adapter: 'codex' }, model: { default: 'unknown', per_gate: { build: model } } })).toString('base64'));
+    await run(['model', 'resolve-gate', 'Planned']);
+    expect(logSpy).toHaveBeenLastCalledWith('gpt-6.1-sol');
+    const path = tempHandoffPath();
+    vi.stubEnv('HARMONY_MODEL_HANDOFF_PATH', path);
+    await run(['model', 'request-switch', '--agent', 'codex', model]);
+    expect(JSON.parse(readFileSync(path, 'utf8')).requested_model).toBe('gpt-6.1-sol');
+    await run(['model', 'context-budget', '--agent', 'codex', model]);
+    expect(logSpy).toHaveBeenLastCalledWith('4242');
+  });
+  it('retains the exact unknown-name switch refusal and writes no handoff', async () => {
+    stubCatalogWith({ data: [row], error: null });
+    const path = tempHandoffPath();
+    vi.stubEnv('HARMONY_MODEL_HANDOFF_PATH', path);
+    await expect(run(['model', 'request-switch', '--agent', 'codex', 'codex:unknown'])).rejects.toThrow(ExitSentinel);
+    expect(errSpy).toHaveBeenCalledWith("harmony model request-switch: 'codex:unknown' is not in the live model catalog for runtime 'codex' (gpt-6.1-sol)");
+    expect(existsSync(path)).toBe(false);
+  });
+  it.each(['throws', 'missing', 'empty', 'unauthenticated'])('startup normalization passes through bare ids on %s catalog', async (failure) => {
+    if (failure === 'unauthenticated') authMock.getAuthenticatedContext.mockRejectedValue(new Error('offline'));
+    else stubCatalogWith(failure === 'throws' ? 'throws' : { data: failure === 'empty' ? [] : null, error: failure === 'missing' ? { message: 'relation does not exist' } : null });
+    await run(['model', 'normalize', '--offered-only', '--agent', 'codex', 'gpt-6-luna']);
+    expect(logSpy).toHaveBeenLastCalledWith('gpt-6-luna');
+  });
+  it('keeps live unknown and wrong-runtime inputs out of worker startup', async () => {
+    stubCatalogWith({ data: [row, liveOnlyRow], error: null });
+    for (const model of ['unknown', 'live-only-alias']) {
+      await run(['model', 'normalize', '--offered-only', '--agent', 'codex', model]);
+      expect(logSpy).toHaveBeenLastCalledWith('');
+    }
+  });
+});
