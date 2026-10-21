@@ -265,6 +265,27 @@ describe('doctor', () => {
     expect(out).toMatch(/HOT .*concurrency\.max_workers.*\| RESTART NEEDED: channel, profile/);
   });
 
+  it('B-1217: a laptop host file (names only, no conductor) is not a problem: exit 0 with a note', () => {
+    writeFileSync(
+      join(home, 'conductor-host.json'),
+      j({ version: 1, gcp: { project: 'p' }, gcloud: { account: 'a@x' }, secrets: { api_token: 'HARMONY_API_TOKEN' } }),
+    );
+    const r = runDoctor(deps());
+    expect(r.exitCode).toBe(0);
+    const out = r.lines.join('\n');
+    expect(out).toContain('ISSUES (0)');
+    expect(out).toContain('NOTE: this machine is not a conductor host');
+    expect(out).toContain('harmony conductor status --remote');
+  });
+
+  it('B-1217: a conductor host (config_repo set) with no project file yet still reports the issue', () => {
+    writeFileSync(join(home, 'conductor-host.json'), j(hostOk));
+    const r = runDoctor(deps());
+    expect(r.exitCode).toBe(1);
+    expect(r.lines.join('\n')).toContain('no project file is available');
+    expect(r.lines.join('\n')).not.toContain('not a conductor host');
+  });
+
   it('shows the snapshot with fetched_at and sha', () => {
     writeFileSync(join(home, 'conductor-host.json'), j(hostOk));
     writeFileSync(

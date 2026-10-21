@@ -65,7 +65,11 @@ CONFIG_WORKER_IMAGE="$(harmony_config worker_image)"
 : "${HARMONY_GKE_NAMESPACE:=harmony-legs}"
 : "${HARMONY_GKE_BASE_SECRET:=harmony-worker-secrets}"
 : "${HARMONY_GKE_CODEX_SECRET:=harmony-codex-auth}"
-: "${HARMONY_GKE_REGISTRY:=us-central1-docker.pkg.dev/harmony-conductor/harmony-workers}"
+# B-1217: the registry and the transcript bucket default to the CONDUCTOR'S OWN project (gcp.project ->
+# CLOUDSDK_CORE_PROJECT), so another project's legs never pull from or write to Harmony's. For Harmony
+# (project harmony-conductor) both resolve to exactly the values they always had.
+_GKE_PROJECT="${CLOUDSDK_CORE_PROJECT:-harmony-conductor}"
+: "${HARMONY_GKE_REGISTRY:=us-central1-docker.pkg.dev/$_GKE_PROJECT/harmony-workers}"
 : "${HARMONY_GKE_DEFAULT_IMAGE:=harmony-build-env-docker:latest}"
 : "${HARMONY_GKE_CPU:=6}"
 : "${HARMONY_GKE_MEMORY:=10Gi}"   # B-1194: 129 measured legs peaked at 7.68 GiB; the 6 CPU request, not memory, keeps one leg per node
@@ -74,11 +78,15 @@ CONFIG_WORKER_IMAGE="$(harmony_config worker_image)"
 : "${HARMONY_GKE_DEADLINE_S:=5400}"          # the Cloud Run job's task timeout
 : "${HARMONY_GKE_POLL_S:=5}"
 : "${HARMONY_GKE_JOB_TTL_S:=3600}"
-: "${HARMONY_GKE_TRANSCRIPT_BUCKET:=harmony-conductor-transcripts}"
+: "${HARMONY_GKE_TRANSCRIPT_BUCKET:=$_GKE_PROJECT-transcripts}"   # gke.transcript_bucket
 : "${HARMONY_GKE_SERVICE_ACCOUNT:=harmony-leg}"
 TRANSCRIPT_MOUNT_ROOT="/mnt/harmony-transcripts"
 
-# Image precedence: HARMONY_GKE_IMAGE > the deployment config's worker_image > the built-in default.
+# Image precedence: HARMONY_GKE_IMAGE (images.worker, set by the conductor only when the project file names
+# it) > the deployment config's worker_image > the built-in default (the Docker-capable image, B-1164).
+# B-1217: `config get worker_image` answers the Cloud Run default (harmony-build-env, no Docker engine) when
+# nothing is set; on gke that answer means "unset", not "launch the engine-less image".
+if [ "$CONFIG_WORKER_IMAGE" = "harmony-build-env" ]; then CONFIG_WORKER_IMAGE=""; fi
 if [ -n "${HARMONY_GKE_IMAGE:-}" ]; then
   IMAGE_NAME="$HARMONY_GKE_IMAGE"; IMAGE_SOURCE="HARMONY_GKE_IMAGE"
 elif [ -n "$CONFIG_WORKER_IMAGE" ]; then

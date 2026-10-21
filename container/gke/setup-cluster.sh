@@ -96,7 +96,7 @@ Options (defaults in brackets):
   --sm-codex <name>       Secret Manager name of the Codex credential file [harmony-codex-auth]
   --leg-gsa-name <name>   Google service account the legs act as (Workload Identity) [harmony-gke-leg]
   --leg-ksa <name>        Kubernetes service account the leg pods run as [harmony-leg]
-  --transcript-bucket <b> existing GCS bucket holding session transcripts; never created [harmony-conductor-transcripts]
+  --transcript-bucket <b> existing GCS bucket holding session transcripts; never created [<project>-transcripts]
   --no-codex              skip the Codex file Secret entirely
   --no-conductor          skip steps 18-26 (the remote conductor pod's namespace, account, grants and RBAC)
   --conductor-gsa-name <n> Google service account the conductor pod acts as [harmony-conductor]
@@ -135,7 +135,7 @@ SM_CLAUDE_TOKEN="CLAUDE_CODE_OAUTH_TOKEN"
 SM_CODEX="harmony-codex-auth"
 LEG_GSA_NAME="harmony-gke-leg"
 LEG_KSA="harmony-leg"
-TRANSCRIPT_BUCKET="harmony-conductor-transcripts"
+TRANSCRIPT_BUCKET=""   # B-1217: defaults to <project>-transcripts below (Harmony: harmony-conductor-transcripts)
 TICKET_SC="harmony-ticket-disk"
 NO_CODEX=0
 NO_CONDUCTOR=0
@@ -194,6 +194,7 @@ if [ -z "$PROJECT" ] && command -v gcloud >/dev/null 2>&1; then
   PROJECT="$(gcloud config get-value project 2>/dev/null || true)"
 fi
 [ -n "$PROJECT" ] || die_usage "--project is required (or set CLOUDSDK_CORE_PROJECT, or run 'gcloud config set project')"
+[ -n "$TRANSCRIPT_BUCKET" ] || TRANSCRIPT_BUCKET="$PROJECT-transcripts"   # the launcher's gke.transcript_bucket default
 [ -n "$DAEMON_SA" ] || die_usage "--daemon-sa is required"
 case "$DAEMON_SA" in
   *@* ) ;;

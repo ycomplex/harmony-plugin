@@ -239,11 +239,11 @@ describe.skipIf(!CAPABLE)('container/gke/switch-daemon-profile.sh (EXECUTED agai
       fails(r, w);
       expect(r.stderr).toContain('base Secret');
     });
-    it('gke: launch line lacks HARMONY_GKE_IMAGE=', () => {
+    it('gke: a launch line without HARMONY_GKE_IMAGE= is reported, not refused (B-1217: images.worker applies)', () => {
       const w = makeWorld({ gke: { ...exampleProfile, launch: exampleProfile.launch.replace(/^HARMONY_GKE_IMAGE=\S+ /, '') } });
       const r = go(w, 'gke');
-      fails(r, w);
-      expect(r.stderr).toContain('HARMONY_GKE_IMAGE=');
+      expect(r.stdout).toContain('launch line has no HARMONY_GKE_IMAGE=');
+      expect(r.stderr).not.toContain('has no HARMONY_GKE_IMAGE= setting');
     });
     it('cloud: the Cloud Run job does not exist', () => {
       const w = makeWorld();
