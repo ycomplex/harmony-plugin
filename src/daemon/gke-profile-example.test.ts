@@ -49,5 +49,7 @@ describe('container/gke/daemon-profile.gke.example.json', () => {
     expect(GKE.launch).toContain("gke-worker-launch.sh\" {conduction_id} {ticket} '{run_config_json}' '{model}'");
     expect(GKE.reap).toContain('gke-worker-reap.sh');
     expect(GKE.probe).toContain('gke-worker-probe.sh');
+    expect(GKE.reap).toContain('{worker_ref}');
+    expect(GKE.probe).toContain('{worker_ref}');
   });
 });

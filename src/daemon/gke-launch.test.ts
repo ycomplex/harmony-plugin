@@ -124,6 +124,18 @@ describe.skipIf(!CAPABLE)('gke-worker-launch.sh — the ticket-disk storage clas
 });
 
 describe.skipIf(!CAPABLE)('gke-worker-launch.sh — the four steps (EXECUTED against a stub kubectl)', () => {
+  it('uses the daemon-supplied Job identity when present', () => {
+    const w = makeWorld(seq([COMPLETE], [CLEAN_POD]));
+    expect(launch(w, { HARMONY_GKE_JOB_NAME: 'leg-123e4567-e89b-12d3-a456-426614174000-3' }).status).toBe(0);
+    expect(JSON.parse(read(w, 'job.json')).metadata.name).toBe('leg-123e4567-e89b-12d3-a456-426614174000-3');
+  });
+
+  it('keeps the historical generated Job name when an older daemon supplies no identity', () => {
+    const w = makeWorld(seq([COMPLETE], [CLEAN_POD]));
+    expect(launch(w).status).toBe(0);
+    expect(JSON.parse(read(w, 'job.json')).metadata.name).toMatch(/^leg-cond1234-\d+$/);
+  });
+
   it('runs apply pvc, create job, then creates the leg secret already owned by the Job, with the documented defaults', () => {
     const w = makeWorld(seq([COMPLETE], [CLEAN_POD]));
     const r = launch(w);
@@ -463,6 +475,12 @@ const jobsJson = (items: Array<{ name: string; types: string[] }>) =>
   JSON.stringify({ items: items.map((i) => ({ metadata: { name: i.name }, status: { conditions: i.types.map((type) => ({ type, status: 'True' })) } })) });
 
 describe.skipIf(!CAPABLE)('gke-worker-probe.sh', () => {
+  it('probes only the recorded Job when an identity is available', () => {
+    const w = makeWorld(seq([ACTIVE]));
+    expect(run(w, PROBE, [CID, TICKET, 'leg-recorded-2']).status).toBe(0);
+    expect(calls(w)[0]).toEqual(['-n', 'harmony-legs', 'get', 'job', 'leg-recorded-2', '-o', 'json']);
+  });
+
   it('exit 0 when an unsettled Job exists for the conduction', () => {
     const w = makeWorld({ STUB_JOBS_JSON: jobsJson([{ name: 'a', types: [] }]) });
     expect(run(w, PROBE, [CID, TICKET]).status).toBe(0);
@@ -476,6 +494,12 @@ describe.skipIf(!CAPABLE)('gke-worker-probe.sh', () => {
 });
 
 describe.skipIf(!CAPABLE)('gke-worker-reap.sh', () => {
+  it('deletes only the recorded Job when an identity is available', () => {
+    const w = makeWorld();
+    expect(run(w, REAP, [CID, TICKET, 'leg-recorded-2']).status).toBe(0);
+    expect(calls(w)).toEqual([['-n', 'harmony-legs', 'delete', 'job', 'leg-recorded-2', '--cascade=background', '--wait=false']]);
+  });
+
   it('deletes each unsettled Job with --cascade=background, exits 0, never deletes a PVC', () => {
     const w = makeWorld({ STUB_JOBS_JSON: jobsJson([{ name: 'a', types: [] }, { name: 'b', types: ['Complete'] }, { name: 'c', types: [] }]) });
     mkdirSync(join(w.home, '.harmony-conductions', TICKET, CID), { recursive: true });

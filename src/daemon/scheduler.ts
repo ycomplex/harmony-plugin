@@ -648,6 +648,7 @@ export function templateVars(
   run_config_json: string;
   model: string;
   worker_image: string;
+  worker_ref: string;
 } {
   // B-1170: ONE effective run_config feeds both {run_config_json} and {model} (see applyModelPolicy).
   // With no policy `effective` IS row.run_config, so the output is byte-identical to before.
@@ -675,7 +676,21 @@ export function templateVars(
     // machines have no deployment config at all — loadDeploymentConfig returns null for them and
     // this substitution must never throw. Same always-computed convention as the two above.
     worker_image: workerImage ?? WORKER_IMAGE_DEFAULT,
+    worker_ref: row.worker_ref ?? '',
   };
+}
+
+/** Kubernetes Job identity for one GKE leg. UUID + attempt stays DNS-1123 safe and below 63 chars. */
+export function gkeWorkerJobName(conductionId: string, attempt: number): string {
+  const id = conductionId.toLowerCase();
+  if (!/^[a-z0-9-]+$/.test(id) || !Number.isSafeInteger(attempt) || attempt < 1) {
+    throw new Error('GKE worker identity requires a DNS-safe conduction id and positive safe attempt');
+  }
+  const name = `leg-${id}-${attempt}`;
+  if (name.length > 63 || !/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(name)) {
+    throw new Error(`GKE worker identity exceeds Kubernetes Job name constraints: ${name}`);
+  }
+  return name;
 }
 
 /** B-723: how much of a ticket title a log line carries — enough to recognize the ticket, short
@@ -764,6 +779,8 @@ export interface TrackedLaunch {
    *  passes must compare against what the ticket looked like right before ITS launch, matching the
    *  old inline code's `current` variable, not a stale ready-time snapshot. */
   current: DaemonTask;
+  /** B-1188: identity assigned before this launch; retained for cleanup even if a later read is stale. */
+  workerRef?: string | null;
   /** The durable retry_count this launch is attempt number `retryCount + 1` of. */
   retryCount: number;
   /** B-739: did THIS daemon's own deadline rule this launch overrun and reap it? */
@@ -1047,6 +1064,16 @@ async function writeIfHeld(
   keeper.stop(row.id);
   state.delete(row.id);
   return false;
+}
+
+/** B-1188: retire the worker identity only after the caller's probe/reap or settlement is complete. */
+async function clearWorkerRefIfPresent(
+  deps: SchedulerDeps,
+  state: Map<string, WatchBaseline>,
+  keeper: HeartbeatKeeper,
+  row: ConductionRecord,
+): Promise<boolean> {
+  return row.worker_ref ? writeIfHeld(deps, state, keeper, row, { worker_ref: null }) : true;
 }
 
 /** B-1040: write `last_leg_ended_at` ISOLATED from whatever other patch already ran at this site — a
@@ -1631,7 +1658,10 @@ async function handleWonTakeover(
   // worker on THIS daemon — `running` cannot already hold this id (we just won the takeover, and
   // `running` only ever holds rows this daemon currently holds the lease for), and reconciliation
   // above has already re-attached (and returned) the one case that could otherwise collide.
-  if (!(await writeIfHeld(deps, state, keeper, row, { leg_started_at: null }))) return false;
+  if (!(await writeIfHeld(deps, state, keeper, row, {
+    leg_started_at: null,
+    ...(row.worker_ref ? { worker_ref: null } : {}),
+  }))) return false;
   // B-761 reopen fix (legibility): distinguish a marker-driven adoption (instant, via the clean-
   // shutdown marker) from a genuine staleness-window adoption (waited out the full window) — the
   // PRE-takeover `row` (not `won`, whose CAS write always clears clean_shutdown_at back to null as
@@ -1657,6 +1687,7 @@ async function settleTrackedLaunch(
   row: ConductionRecord,
   tracked: TrackedLaunch,
 ): Promise<void> {
+  if (tracked.workerRef) row.worker_ref = tracked.workerRef;
   runtime.running.delete(row.id);
   tracked.cancelDeadline();
 
@@ -1764,6 +1795,7 @@ async function settleTrackedLaunch(
     ) {
       return;
     }
+    if (!(await clearWorkerRefIfPresent(deps, state, keeper, row))) return;
     if (classifyArgs.waitingOn && outcome.reason === 'waiting-on') {
       deps.log(`${label(row, after, deps.projectKey)}: leg declared an external wait on ${classifyArgs.waitingOn.ref} — conduction held`);
     }
@@ -1792,6 +1824,7 @@ async function settleTrackedLaunch(
         `(attempt ${retryCount}/${deps.config.retryCap}) after reap + ${backoffMs}ms backoff`,
     );
     await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row, after, deps.projectKey, deps.workerImage)));
+    if (!(await clearWorkerRefIfPresent(deps, state, keeper, row))) return;
     // B-717: no synchronous deps.sleep here — a blocked pass is exactly what fire-and-track
     // removes. Queue the retry as a ready candidate gated by `notBefore` so every OTHER row keeps
     // getting served while this one backs off.
@@ -1828,7 +1861,12 @@ async function settleTrackedLaunch(
   }
 
   // B-1187: a park must not leave the last leg's Job running untracked — reap it first.
-  if (outcome.action === 'park') await reapBeforePark(deps, state, keeper, runtime, row, after, tracked);
+  if (outcome.action === 'park') {
+    const reaped = await reapBeforePark(deps, state, keeper, runtime, row, after, tracked);
+    if (reaped && !(await clearWorkerRefIfPresent(deps, state, keeper, row))) return;
+  } else if (!(await clearWorkerRefIfPresent(deps, state, keeper, row))) {
+    return;
+  }
 
   // Park (retry cap exhausted, or a non-dirty-exit park reason) / complete: one terminal status
   // write, exactly as before B-713/B-717.
@@ -1959,6 +1997,7 @@ async function settleRefusal(
           `(${used + 1}/${RATE_LIMIT_BACKOFFS_MS.length}) after reap + ${backoffMs}ms backoff`,
       );
       await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row, after, deps.projectKey, deps.workerImage)));
+      if (!(await clearWorkerRefIfPresent(deps, state, keeper, row))) return;
       runtime.ready.set(row.id, { since: deps.now(), priority: row.task_priority ?? null, notBefore: deps.now() + backoffMs, retryCount: tracked.retryCount });
       return;
     }
@@ -1974,6 +2013,7 @@ async function settleRefusal(
     q.holds.delete(row.id);
     state.delete(row.id);
     keeper.stop(row.id);
+    if (!(await clearWorkerRefIfPresent(deps, state, keeper, row))) return;
     if (!(await writeIfHeld(deps, state, keeper, row, { status: 'parked', last_worker_exit_code: tracked.exitCode, last_worker_exit_class: 'quota-repeated' }))) return;
     await writeLastLegEndedAt(deps, state, keeper, row);
     if (deps.writeQuotaState) {
@@ -1998,6 +2038,7 @@ async function settleRefusal(
   q.holds.set(row.id, { runtime: rt, until: untilMs, pauses });
   q.logged.delete(row.id);
 
+  if (!(await clearWorkerRefIfPresent(deps, state, keeper, row))) return;
   if (!(await writeLastLegEndedAt(deps, state, keeper, row, { last_worker_exit_class: 'quota', last_worker_exit_code: tracked.exitCode }))) return;
   if (deps.writeQuotaState) {
     try {
@@ -2394,11 +2435,22 @@ async function fireLaunch(
   // move together (both land, or neither does). Reached only past the admission check above, so a
   // parked-before-launch fast-track leg is never counted and never receives a HARMONY_LEG value.
   const leg = (row.leg_count ?? 0) + 1;
+  // B-1188: persist the exact per-attempt GKE Job name before launching. Older daemon profiles
+  // may still run the launcher without this value; the script retains its generated-name fallback.
+  const gkeLaunch = deps.config.profile.launch.includes('gke-worker-launch.sh');
+  const workerRef = gkeLaunch ? gkeWorkerJobName(row.id, leg) : row.worker_ref;
 
-  if (!(await writeIfHeld(deps, state, keeper, row, { leg_started_at: iso(deps.now()), leg_count: leg }))) {
+  if (!(await writeIfHeld(deps, state, keeper, row, {
+    leg_started_at: iso(deps.now()),
+    leg_count: leg,
+    ...(gkeLaunch ? { worker_ref: workerRef } : {}),
+  }))) {
     runtime.ready.delete(row.id);
     return;
   }
+  // Keep this pass's snapshot aligned with the lease-guarded write so settlement/reap paths below
+  // can still target the name even when a caller's in-memory list fixture is not refreshed.
+  if (gkeLaunch) row.worker_ref = workerRef ?? null;
   runtime.ready.delete(row.id);
 
   deps.log(`${label(row, current, deps.projectKey)}: launching worker`);
@@ -2411,6 +2463,7 @@ async function fireLaunch(
 
   const tracked: TrackedLaunch = {
     current,
+    workerRef: gkeLaunch ? workerRef : null,
     retryCount,
     timedOut: false,
     settled: false,
@@ -2472,8 +2525,17 @@ async function fireLaunch(
   }
   const launch = deps
     .runCommand(
-      renderTemplate(deps.config.profile.launch, templateVars(row, current, deps.projectKey, deps.workerImage, deps.getModelPolicy?.(), catalog)),
-      { env: { ...process.env, HARMONY_LEG: String(leg) } },
+      renderTemplate(
+        deps.config.profile.launch,
+        templateVars(gkeLaunch ? { ...row, worker_ref: workerRef ?? null } : row, current, deps.projectKey, deps.workerImage, deps.getModelPolicy?.(), catalog),
+      ),
+      {
+        env: {
+          ...process.env,
+          HARMONY_LEG: String(leg),
+          ...(gkeLaunch && workerRef ? { HARMONY_GKE_JOB_NAME: workerRef } : {}),
+        },
+      },
     )
     .then((result) => {
       tracked.settled = true;
