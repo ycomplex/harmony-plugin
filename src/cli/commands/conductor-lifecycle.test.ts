@@ -1026,6 +1026,15 @@ describe('a missing HARMONY_API_TOKEN names its cause and fix (B-808)', () => {
     expect(pre.checks.find((c) => c.name === 'cred:HARMONY_API_TOKEN')!.detail).toContain(`no host file at ${HOST_FILE}`);
   });
 
+  it('the documented minimal laptop host file resolves the token (project, account and secret name only)', async () => {
+    const m = makeWorld({ noToken: true, failExec: (f, a) => (f === 'gcloud' && a[0] === 'secrets' ? { code: 0, stdout: 'tok-from-sm\n', stderr: '' } : undefined) });
+    m.vfs.set(HOST_FILE, JSON.stringify({ version: 1, gcp: { project: 'p' }, gcloud: { account: 'me@example.com' }, secrets: { api_token: 'some-secret' } }));
+    const s = await loadSettings(m.deps, {});
+    expect(s.secretsError).toBeUndefined();
+    expect(s.env.HARMONY_API_TOKEN).toBe('tok-from-sm');
+    expect(m.calls.find((c) => c.file === 'gcloud')!.args).toEqual(['secrets', 'versions', 'access', 'latest', '--secret=some-secret', '--project=p', '--account=me@example.com']);
+  });
+
   it('with a token present nothing changes: the registry is opened', async () => {
     const m = makeWorld();
     const r = await runStart(m.deps, { remote: true });
