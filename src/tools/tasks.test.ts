@@ -735,7 +735,7 @@ describe('getTask', () => {
     }),
   });
 
-  it("B-684/B-792/B-818: view:'meta' returns EXACTLY the 23-key loop-control projection", async () => {
+  it("B-684/B-792/B-818/B-1157: view:'meta' returns EXACTLY the 24-key loop-control projection", async () => {
     const client = makeFullClient({ title: 'T', description: 'A long payload description.' });
     const result = await getTask(client, 'proj-1', { task_id: 'B-1', view: 'meta' });
 
@@ -744,7 +744,7 @@ describe('getTask', () => {
       'awaiting_human_input', 'awaiting_human_reason', 'awaiting_human_ref',
       'pending_acceptance_event_id',
       'stale', 'stale_ref', 'parent_task_id', 'archived', 'subsumed_by_task_id',
-      'conductor_excluded_at',
+      'conductor_excluded_at', 'waiting_on',
       'pending_resolution', 'active_exchange', 'pending_remark', 'risk_classes',
       'active_brief_iteration', 'knowledge_reference_count',
       'updated_at', 'content_updated_at', 'last_activity_at',

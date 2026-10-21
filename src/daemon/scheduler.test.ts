@@ -4940,6 +4940,28 @@ describe('B-1157: a declared external wait HOLDS the conduction instead of parki
     expect(h.logs.some((l) => l.includes('declared an external wait on pr#42'))).toBe(true);
   });
 
+  it("meta-shaped task rows: the marker rides the projection's own `waiting_on` key (no field_values) and still holds", async () => {
+    // The real daemon reads getTask(view:'meta'), which carries `waiting_on` but OMITS field_values
+    // (seat finding, B-1157 AC 6). The hand-built rows above carry field_values; this one must not.
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() } });
+    h.hooks.onLaunch = () => {
+      const t = h.tasks['task-1'] as DaemonTask;
+      delete (t as { field_values?: unknown }).field_values;
+      t.waiting_on = marker(h);
+    };
+    await runOneLeg(h);
+    expect(h.getConduction('cond-1').status).toBe('active');
+    expect(h.getConduction('cond-1').last_worker_exit_class).toBe('waiting-on');
+    expect(h.statusWrites()).toEqual([]);
+
+    await h.pass();
+    await h.pass();
+    expect(h.launches()).toHaveLength(1); // held: no second leg before resume_after
+    h.setNow(h.now() + 10 * MIN);
+    await h.pass();
+    expect(h.launches()).toHaveLength(2); // resume_after reached
+  });
+
   it('the next pass before the resume time queues no leg; at/after resume a leg is queued', async () => {
     const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() } });
     declareWaitDuringLeg(h);

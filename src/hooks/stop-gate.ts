@@ -28,7 +28,7 @@
 // node is ever spawned. Nothing in this file runs for a non-conducting session.
 
 import { isCleanRowShape, type CleanRowShape } from '../daemon/classify.js';
-import { liveWaitingOn } from '../daemon/waiting-on.js';
+import { liveWaitingOn, waitingOnFieldValues } from '../daemon/waiting-on.js';
 
 /** The operator's escape switch. A HUMAN-ONLY control: set it in your own shell profile to run a
  *  session without the gate. It is deliberately absent from every daemon/container profile in this
@@ -73,7 +73,9 @@ export interface ConductBreadcrumb {
 /** The row projection the gate decides from — the two clean-shape fields plus the child count. */
 export interface StopGateRow extends CleanRowShape {
   non_archived_child_count?: number;
-  /** B-1157: raw `tasks.field_values`, read ONLY for the declared-wait marker (`waiting_on`). */
+  /** B-1157: the declared-wait marker as `tasks clean-check` reports it (the meta projection's own key). */
+  waiting_on?: unknown;
+  /** B-1157: fallback — raw `tasks.field_values`, read ONLY for the marker when a full row is supplied. */
   field_values?: Record<string, unknown> | null;
 }
 
@@ -83,10 +85,10 @@ export interface StopGateRow extends CleanRowShape {
  *  (waiting-on.ts `liveWaitingOn`): well-formed, written at/after this leg started when the start is
  *  known, and inside the 24h ceiling. */
 export function hasLiveDeclaredWait(
-  row: Pick<StopGateRow, 'field_values'>,
+  row: Pick<StopGateRow, 'field_values' | 'waiting_on'>,
   opts: { nowMs: number; legStartedAtMs?: number },
 ): boolean {
-  return liveWaitingOn(row.field_values, { firedAtMs: opts.legStartedAtMs, nowMs: opts.nowMs }) !== null;
+  return liveWaitingOn(waitingOnFieldValues(row), { firedAtMs: opts.legStartedAtMs, nowMs: opts.nowMs }) !== null;
 }
 
 export type StopDecision =
