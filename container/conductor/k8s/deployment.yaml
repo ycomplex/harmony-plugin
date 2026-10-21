@@ -1,3 +1,4 @@
+# Runbook: docs/remote-conductor-runbook.md (the ordered steps, system-pool sizing, the fallback).
 # B-1173: the remote conductor — ONE pod running the same daemon (dist/bin/daemon.js) the Mac mini runs, holding
 # the registry lease while it conducts. Everything it needs comes from three places: the image (code), the ConfigMap
 # (names and identifiers), and Secret Manager at boot (HARMONY_API_TOKEN and the GitHub App key, via Workload

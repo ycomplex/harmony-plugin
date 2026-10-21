@@ -371,6 +371,10 @@ launchctl bootout gui/$UID/com.ycomplex.harmony-daemon # stop + unload
 > `container/systemd/harmony-conductor.service.template`, through `container/conductor-launch.sh` (the one
 > place `~/.harmony/conductor.env` is loaded). The hand-edited plist above remains valid. See
 > [`docs/conductor-lifecycle.md`](../docs/conductor-lifecycle.md).
+>
+> **Remote conductor (B-1173):** running the conductor as a pod on the project's GKE cluster (image, manifests,
+> `gke/setup-cluster.sh` steps 18 to 27, system-pool sizing, PriorityClass) is walked through, generically, in
+> [`docs/remote-conductor-runbook.md`](../docs/remote-conductor-runbook.md).
 
 ### Run it directly (no launchd)
 

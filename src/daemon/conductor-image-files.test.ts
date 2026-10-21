@@ -243,3 +243,43 @@ describe('the shipped pod config boots with no deprecation warnings and no place
     expect(child.merged).toEqual(parent.merged);
   });
 });
+
+// B-1186: the runbook ships with the plugin and must be followable with only the plugin installed.
+describe('docs/remote-conductor-runbook.md', () => {
+  const rb = read('docs/remote-conductor-runbook.md');
+  const code = rb.split('\n').filter((l) => /^\s*(\$ |bash |node |kubectl |gcloud |sed |PLUGIN_DIR|M=|test )/.test(l) || l.includes('`')).join('\n');
+
+  it('sets PLUGIN_DIR once and never uses a workspace-relative plugin path or a bare harmony', () => {
+    expect(rb).toContain('PLUGIN_DIR="$(ls -d');
+    expect(rb).not.toMatch(/plugin\/container\//);
+    expect(rb).not.toMatch(/docs\/project\//);
+    expect(code).not.toMatch(/(^|[\s`])harmony (conductor|config|login|tasks)\b/m);
+    expect(rb).toContain('node "$PLUGIN_DIR/dist/bin/harmony.js"');
+    expect(rb).toContain('bash "$PLUGIN_DIR/container/gke/setup-cluster.sh"');
+  });
+
+  it('uses the real pod label, lists the operator prerequisites, sizing, PriorityClass and the preemption caveat', () => {
+    expect(rb).toContain('app.kubernetes.io/name=harmony-conductor');
+    expect(rb).not.toMatch(/-l app=harmony-conductor/);
+    expect(rb).toContain('gke-gcloud-auth-plugin');
+    expect(rb).toContain('gcloud container clusters get-credentials <cluster>');
+    expect(rb).toMatch(/MAXIMUM node count/);
+    expect(rb).toContain('konnectivity-agent');
+    expect(rb).toContain('kube-dns');
+    expect(rb).toContain('--system-nodes');
+    expect(rb).toContain('--system-machine-type');
+    expect(rb).toContain('DRIFT:');
+    expect(rb.indexOf('priorityclass.yaml"')).toBeLessThan(rb.indexOf('/deployment.yaml" | kubectl apply -f -'));
+    expect(rb).toMatch(/system-critical/);
+    expect(rb).toMatch(/Headroom is the main fix/);
+  });
+
+  it('names no Harmony-specific deployment value', () => {
+    expect(rb).not.toMatch(/harmony-conductor@harmony-conductor|eioxsunvhakmelhanmnn|meqkdgncdzromunylyxf|\bMac mini\b/);
+  });
+
+  it('is indexed from docs/README.md and container/README.md', () => {
+    expect(read('docs/README.md')).toContain('remote-conductor-runbook.md');
+    expect(read('container/README.md')).toContain('remote-conductor-runbook.md');
+  });
+});
