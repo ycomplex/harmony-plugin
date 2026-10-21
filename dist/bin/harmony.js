@@ -37252,8 +37252,11 @@ function resolveDeploymentProfile(env2 = process.env) {
 }
 function getModelForGate(runConfig, gate, env2 = process.env, catalog) {
   const perGate = gate ? runConfig.model?.per_gate?.[gate] : void 0;
-  if (perGate) return perGate;
-  if (runConfig.model?.default) return runConfig.model.default;
+  const explicit = perGate || runConfig.model?.default;
+  if (explicit) {
+    const selection2 = getAgentAdapter(runConfig);
+    return catalog ? normalizeModelId(explicit, catalog, selection2.ok ? selection2.adapter : DEFAULT_AGENT_ADAPTER) : explicit;
+  }
   const selection = getAgentAdapter(runConfig);
   const adapter = selection.ok ? selection.adapter : DEFAULT_AGENT_ADAPTER;
   const profile = resolveDeploymentProfile(env2);
@@ -37271,6 +37274,15 @@ function entryModelId(entry) {
 }
 function catalogEntriesForAgent(entries, agent = DEFAULT_AGENT_ADAPTER) {
   return entries.filter((entry) => entryAgent(entry) === agent);
+}
+function findModelEntry(model, entries, agent = DEFAULT_AGENT_ADAPTER) {
+  return catalogEntriesForAgent(entries, agent).find(
+    (entry) => entry.active && (entry.alias === model || entryModelId(entry) === model)
+  );
+}
+function normalizeModelId(model, entries, agent = DEFAULT_AGENT_ADAPTER) {
+  const entry = findModelEntry(model, entries, agent);
+  return entry ? entryModelId(entry) : model;
 }
 function isMissingCatalogColumnError(error) {
   if (!error || typeof error !== "object") return false;
@@ -37386,11 +37398,11 @@ async function resolveModelCatalog(client) {
 }
 async function isAllowedModelAlias(alias, client, agent = DEFAULT_AGENT_ADAPTER) {
   const { entries } = await resolveModelCatalog(client);
-  return catalogEntriesForAgent(entries, agent).some((entry) => entryModelId(entry) === alias);
+  return !!findModelEntry(alias, entries, agent);
 }
 async function getModelContextBudgetBytes(alias, client, agent) {
   const { entries } = await resolveModelCatalog(client);
-  const found = agent ? catalogEntriesForAgent(entries, agent).find((entry) => entryModelId(entry) === alias) : entries.find((entry) => entry.alias === alias);
+  const found = agent ? findModelEntry(alias, entries, agent) : entries.find((entry) => entry.alias === alias);
   return found?.context_budget_bytes ?? DEFAULT_MODEL_CONTEXT_BUDGET_BYTES;
 }
 var DEFAULT_MODEL_HANDOFF_FILENAME = "model-handoff-request.json";
@@ -44045,7 +44057,7 @@ async function assertRunConfigRuntime(client, runConfig) {
   if (requested.length === 0) return;
   const { entries } = await resolveModelCatalog(client);
   const available = catalogEntriesForAgent(entries, adapter).map((entry) => entryModelId(entry));
-  const bad = [...new Set(requested.filter((model) => !available.includes(model)))];
+  const bad = [...new Set(requested.filter((model) => !findModelEntry(model, entries, adapter)))];
   if (bad.length > 0) {
     throw new Error(
       `Model${bad.length > 1 ? "s" : ""} ${bad.map((m) => `'${m}'`).join(", ")} not available on runtime '${adapter}' \u2014 available models for '${adapter}': ${available.length > 0 ? available.join(", ") : "(none in the catalog)"}`
@@ -46922,6 +46934,10 @@ function registerModelCommands(program3) {
     console.log(ok ? "true" : "false");
     process.exit(ok ? 0 : 1);
   });
+  model.command("normalize").description("Print the runtime model id for a catalog alias or id; pass through unchanged if the live catalog is unavailable or the name is unknown.").argument("<model>").option("--agent <id>", "Agent runtime whose active rows to match", DEFAULT_AGENT_ADAPTER).option("--offered-only", "Print nothing for an unoffered name when the live catalog is reachable").action(async (model2, opts) => {
+    const { entries, source } = await resolveModelCatalog(await getCatalogClient());
+    console.log(source === "live" && opts.offeredOnly && !findModelEntry(model2, entries, opts.agent) ? "" : source === "live" ? normalizeModelId(model2, entries, opts.agent) : model2);
+  });
   model.command("context-budget").description(
     "Print <alias>'s resumable-session-size budget in bytes, from the live catalog (falling back to the embedded degrade-only list, then a conservative default for an alias absent from either \u2014 always exits 0)."
   ).argument("<alias>").option("--agent <id>", "Agent runtime whose catalog row to weigh against (B-1148); omitted = the pre-B-1148 alias match").action(async (alias, opts) => {
@@ -46979,19 +46995,19 @@ function registerModelCommands(program3) {
   ).argument("<alias>").option("--agent <id>", "Agent runtime the alias must belong to (B-1147)", DEFAULT_AGENT_ADAPTER).action(async (alias, opts) => {
     const agent = opts.agent ?? DEFAULT_AGENT_ADAPTER;
     const client = await getCatalogClient();
-    const ok = await isAllowedModelAlias(alias, client, agent);
-    if (!ok) {
-      const { entries } = await resolveModelCatalog(client);
+    const { entries } = await resolveModelCatalog(client);
+    const entry = findModelEntry(alias, entries, agent);
+    if (!entry) {
       console.error(
         `harmony model request-switch: '${alias}' is not in the live model catalog for runtime '${agent}' (${catalogEntriesForAgent(
           entries,
           agent
-        ).map((entry) => entryModelId(entry)).join(", ")})`
+        ).map((entry2) => entryModelId(entry2)).join(", ")})`
       );
       process.exit(1);
       return;
     }
-    writeModelHandoffRequest(alias);
+    writeModelHandoffRequest(entryModelId(entry));
   });
   model.command("read-handoff").description(
     "Print the pending handoff request's alias to stdout and exit 0, or print nothing and exit 1 when none is pending. Does NOT delete the file \u2014 pair with `clear-handoff` after consuming."

@@ -10,6 +10,7 @@ import { hasAdapter, listAdapterIds } from '../agents/registry.js';
 import {
   catalogEntriesForAgent,
   entryModelId,
+  findModelEntry,
   getAgentAdapter,
   resolveModelCatalog,
   type RunConfig,
@@ -41,7 +42,7 @@ export async function assertRunConfigRuntime(
 
   const { entries } = await resolveModelCatalog(client);
   const available = catalogEntriesForAgent(entries, adapter).map((entry) => entryModelId(entry));
-  const bad = [...new Set(requested.filter((model) => !available.includes(model)))];
+  const bad = [...new Set(requested.filter((model) => !findModelEntry(model, entries, adapter)))];
   if (bad.length > 0) {
     throw new Error(
       `Model${bad.length > 1 ? 's' : ''} ${bad.map((m) => `'${m}'`).join(', ')} not available on runtime '${adapter}' — ` +

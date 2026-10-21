@@ -419,9 +419,11 @@ export function getModelForGate(
   catalog?: readonly ModelCatalogEntry[] | null,
 ): string {
   const perGate = gate ? runConfig.model?.per_gate?.[gate] : undefined;
-  if (perGate) return perGate;
-
-  if (runConfig.model?.default) return runConfig.model.default;
+  const explicit = perGate || runConfig.model?.default;
+  if (explicit) {
+    const selection = getAgentAdapter(runConfig);
+    return catalog ? normalizeModelId(explicit, catalog, selection.ok ? selection.adapter : DEFAULT_AGENT_ADAPTER) : explicit;
+  }
 
   // B-1147: the pinned tier is per-adapter. A malformed `agent` reads as claude-code HERE (the
   // launch path refuses it separately — getAgentAdapter's own callers); for a non-Claude runtime
@@ -503,6 +505,27 @@ export function catalogEntriesForAgent(
   agent: string = DEFAULT_AGENT_ADAPTER,
 ): ModelCatalogEntry[] {
   return entries.filter((entry) => entryAgent(entry) === agent);
+}
+
+/** B-1185: match either spelling only within active rows of the selected runtime.
+ * Unknown values pass through for the caller's existing refusal; never strip a prefix. */
+export function findModelEntry(
+  model: string,
+  entries: readonly ModelCatalogEntry[],
+  agent: string = DEFAULT_AGENT_ADAPTER,
+): ModelCatalogEntry | undefined {
+  return catalogEntriesForAgent(entries, agent).find(
+    (entry) => entry.active && (entry.alias === model || entryModelId(entry) === model),
+  );
+}
+
+export function normalizeModelId(
+  model: string,
+  entries: readonly ModelCatalogEntry[],
+  agent: string = DEFAULT_AGENT_ADAPTER,
+): string {
+  const entry = findModelEntry(model, entries, agent);
+  return entry ? entryModelId(entry) : model;
 }
 
 /** B-1147: is `error` Postgres "undefined column" (42703) or PostgREST's schema-cache miss for a
@@ -708,9 +731,8 @@ export async function isAllowedModelAlias(
   agent: string = DEFAULT_AGENT_ADAPTER,
 ): Promise<boolean> {
   const { entries } = await resolveModelCatalog(client);
-  // B-1147: runtime-filtered — match on model_id within `agent`. For claude-code rows model_id ==
-  // alias, so Claude behavior is unchanged.
-  return catalogEntriesForAgent(entries, agent).some((entry) => entryModelId(entry) === alias);
+  // B-1185: accept catalog aliases and runtime ids within the selected runtime.
+  return !!findModelEntry(alias, entries, agent);
 }
 
 /** B-881: per-model resumable-session-SIZE budget, in BYTES — the narrowed session-resume guard's
@@ -737,7 +759,7 @@ export async function getModelContextBudgetBytes(
   // rollout is weighed against the Codex row's budget, never a Claude row). Without one the
   // pre-B-1148 alias match is unchanged.
   const found = agent
-    ? catalogEntriesForAgent(entries, agent).find((entry) => entryModelId(entry) === alias)
+    ? findModelEntry(alias, entries, agent)
     : entries.find((entry) => entry.alias === alias);
   return found?.context_budget_bytes ?? DEFAULT_MODEL_CONTEXT_BUDGET_BYTES;
 }

@@ -46038,6 +46038,11 @@ function entryModelId(entry) {
 function catalogEntriesForAgent(entries, agent = DEFAULT_AGENT_ADAPTER) {
   return entries.filter((entry) => entryAgent(entry) === agent);
 }
+function findModelEntry(model, entries, agent = DEFAULT_AGENT_ADAPTER) {
+  return catalogEntriesForAgent(entries, agent).find(
+    (entry) => entry.active && (entry.alias === model || entryModelId(entry) === model)
+  );
+}
 function isMissingCatalogColumnError(error2) {
   if (!error2 || typeof error2 !== "object") return false;
   const e = error2;
@@ -53444,7 +53449,7 @@ async function assertRunConfigRuntime(client, runConfig) {
   if (requested.length === 0) return;
   const { entries } = await resolveModelCatalog(client);
   const available = catalogEntriesForAgent(entries, adapter).map((entry) => entryModelId(entry));
-  const bad = [...new Set(requested.filter((model) => !available.includes(model)))];
+  const bad = [...new Set(requested.filter((model) => !findModelEntry(model, entries, adapter)))];
   if (bad.length > 0) {
     throw new Error(
       `Model${bad.length > 1 ? "s" : ""} ${bad.map((m) => `'${m}'`).join(", ")} not available on runtime '${adapter}' \u2014 available models for '${adapter}': ${available.length > 0 ? available.join(", ") : "(none in the catalog)"}`

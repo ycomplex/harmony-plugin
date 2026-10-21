@@ -400,7 +400,9 @@ case "$MODE" in
     # --- B-1148: a Codex leg's model, resolved BEFORE the resume guard so the guard can weigh the
     # rollout against it. B-1076: another runtime cannot run a Claude alias. B-1147: the catalog is
     # runtime-scoped, so a Codex leg keeps HARMONY_MODEL ONLY when the catalog confirms it belongs to
-    # this runtime (`harmony model check-alias --agent <id>`) — which also keeps an OLDER conductor's
+    # this runtime (`harmony model normalize --offered-only --agent <id>`). A catalog outage
+    # passes the launch value through unchanged; a reachable catalog rejects another runtime.
+    # This also keeps an OLDER conductor's
     # Claude-catalog resolution (or a plugin build without --agent, which exits non-zero) from ever
     # reaching Codex. B-1148: otherwise the live catalog's PINNED Codex model for this deployment's
     # profile (`harmony model pinned-default --agent <id>`), then HARMONY_CODEX_MODEL (the
@@ -408,10 +410,10 @@ case "$MODE" in
     # unchanged: its CURRENT_MODEL is still taken from HARMONY_MODEL below the guard.
     CODEX_CURRENT_MODEL=""
     if [ "${AGENT_ID:-claude-code}" != "claude-code" ]; then
-      if [ -n "${HARMONY_MODEL:-}" ] \
-        && node "$PLUGIN_DIR/dist/bin/harmony.js" model check-alias --agent "${AGENT_ID}" "$HARMONY_MODEL" >/dev/null 2>&1; then
-        CODEX_CURRENT_MODEL="$HARMONY_MODEL"
-      else
+      if [ -n "${HARMONY_MODEL:-}" ]; then
+        CODEX_CURRENT_MODEL="$(node "$PLUGIN_DIR/dist/bin/harmony.js" model normalize --offered-only --agent "${AGENT_ID}" "$HARMONY_MODEL" 2>/dev/null || printf '%s' "$HARMONY_MODEL")"
+      fi
+      if [ -z "$CODEX_CURRENT_MODEL" ]; then
         CODEX_CURRENT_MODEL="$(node "$PLUGIN_DIR/dist/bin/harmony.js" model pinned-default --agent "${AGENT_ID}" 2>/dev/null || true)"
         if [ -n "$CODEX_CURRENT_MODEL" ]; then
           echo "B-1148: no usable run/gate model for this ${AGENT_ID} leg — launching on the catalog's pinned model '$CODEX_CURRENT_MODEL'." >&2

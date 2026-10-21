@@ -245,3 +245,29 @@ describe('B-1147 conduction-defaults agent fill', () => {
     expect(fillRunConfigDefaults(undefined, { agent: {} })).toBeUndefined();
   });
 });
+
+describe('B-1185 catalog spelling equivalence', () => {
+  it.each(['codex:gpt-6.1-sol', 'gpt-6.1-sol'])('resolves and validates %s for defaults and overrides', async (model) => {
+    const { client } = sequencedClient([{ data: [codexRow, claudeRow], error: null }]);
+    for (const modelConfig of [{ default: model }, { default: 'unknown', per_gate: { build: model } }]) {
+      const config = { agent: { adapter: 'codex' }, model: modelConfig };
+      expect(getModelForGate(config, 'build', PROD_ENV, [codexRow, claudeRow])).toBe('gpt-6.1-sol');
+    }
+    await expect(assertRunConfigRuntime(client, { agent: { adapter: 'codex' }, model: { default: model, per_gate: { build: model } } })).resolves.toBeUndefined();
+    await expect(isAllowedModelAlias(model, client, 'codex')).resolves.toBe(true);
+    await expect(isAllowedModelAlias(model, client, 'claude-code')).resolves.toBe(false);
+  });
+
+  it('keeps unknown, inactive and wrong-runtime names unnormalized', async () => {
+    for (const model of ['unknown', 'codex:unknown', 'claude-opus-5']) {
+      expect(getModelForGate({ agent: { adapter: 'codex' }, model: { default: model } }, 'build', PROD_ENV, [codexRow, claudeRow])).toBe(model);
+    }
+    const { client } = sequencedClient([{ data: [{ ...codexRow, active: false }], error: null }]);
+    await expect(isAllowedModelAlias(codexRow.alias, client, 'codex')).resolves.toBe(false);
+  });
+
+  it('preserves bare gpt-6-luna and explicit values without catalog data', () => {
+    expect(getModelForGate({ agent: { adapter: 'codex' }, model: { default: 'gpt-6-luna' } }, 'build', PROD_ENV, [codexRow])).toBe('gpt-6-luna');
+    expect(getModelForGate({ agent: { adapter: 'codex' }, model: { default: codexRow.alias } }, 'build', PROD_ENV)).toBe(codexRow.alias);
+  });
+});
