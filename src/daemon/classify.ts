@@ -28,6 +28,12 @@
 //       scheduler fetched (conduction_leg_costs.refusal_kind), NEVER from worker stdout. The
 //       scheduler turns it into a bounded retry / runtime-wide PAUSE, never a park on first sight.
 //   6. non-zero (or unknown) exitCode                  ⇒ park     / 'dirty-exit'
+//   6b. exitCode=0, flag false, progressed=false,
+//      a LIVE declared wait (B-1157 `waitingOn`)        ⇒ wait     / 'waiting-on'
+//      (the leg declared an external wait — CI, a PR state, an off-board human step — so the
+//      conduction is HELD, not parked; the scheduler's hold gate keeps the next pass from re-firing
+//      it until the marker's resume time. The marker is validated by the scheduler (waiting-on.ts):
+//      stale/expired/absent reads as null and falls through to branch 7.)
 //   7. exitCode=0, flag false, progressed=false,
 //      repoProgressed=false                            ⇒ park     / 'no-progress'
 //   7b. exitCode=0, flag false, progressed=false,
@@ -49,6 +55,7 @@
 // Pure functions, no I/O.
 
 import type { Taskish } from '../conductor/poll-loop.js';
+import type { WaitingOn } from './waiting-on.js';
 
 /** The ticket workflow states that end a conduction. An EXPLICIT allowlist constant — consumers
  *  must never hand-write terminal checks or substring-match state names (the B-565/B-580 completion-
@@ -116,7 +123,7 @@ export function isCleanRowShape(row: CleanRowShape, nonArchivedChildCount: numbe
 }
 
 export type ExitOutcome =
-  | { action: 'wait' }
+  | { action: 'wait'; reason?: 'waiting-on' }
   | { action: 'complete' }
   | { action: 'park'; reason: string };
 
@@ -152,6 +159,9 @@ export interface ClassifyArgs {
    *  refusal_resets_at), fetched by the scheduler at settle and passed in — classify.ts never reads
    *  worker output. Absent/null = no refusal (today's behaviour). */
   refusal?: { kind: 'quota' | 'rate-limit'; resets_at: string | null } | null;
+  /** B-1157: the ticket's declared external wait, ALREADY validated as live by the scheduler
+   *  (liveWaitingOn: well-formed, written this leg, inside the ceiling). Absent/null = no wait. */
+  waitingOn?: WaitingOn | null;
 }
 
 export function classifyWorkerExit(args: ClassifyArgs): ExitOutcome {
@@ -211,6 +221,10 @@ export function classifyWorkerExit(args: ClassifyArgs): ExitOutcome {
   // 6. Dirty exit — non-zero or unknown code with nothing above explaining it.
   if (exitCode !== 0) return { action: 'park', reason: 'dirty-exit' };
 
+  // 6b. B-1157: a clean exit that moved nothing BUT declared a live external wait — hold, don't park.
+  //     After the dirty-exit branch (a crash with a marker is still a crash) and before branch 7.
+  if (exitCode === 0 && !progressed && args.waitingOn) return { action: 'wait', reason: 'waiting-on' };
+
   // 7. Clean exit that moved nothing and paused nothing on the BOARD — but the repo may still have
   //    moved (a commit/push/PR head advanced with no state-advancing write yet possible). Distinguish
   //    the two park reasons so a human triaging parked conductions can tell "finished real work,
@@ -236,7 +250,7 @@ export function exitClass(outcome: ExitOutcome, args: ClassifyArgs): string {
       ? 'terminal'
       : 'split-umbrella';
   }
-  return 'clean-pause';
+  return outcome.reason === 'waiting-on' ? 'waiting-on' : 'clean-pause';
 }
 
 /** B-1166: the settle log's outcome wording — a park is a conduction state, never an implication
