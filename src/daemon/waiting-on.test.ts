@@ -76,6 +76,31 @@ describe('strandedWorkSignal (B-1157)', () => {
     expect(strandedWorkSignal({ pending_resolution: { command: 'reshape' } })).toBe('late-reshape');
     expect(strandedWorkSignal({ pending_acceptance_event_id: 'e1' })).toBe('late-acceptance');
   });
+  it('a signal already present on a row the leg saw is NOT late (it had its chance)', () => {
+    const ex = { answers_submitted_at: 'a1' };
+    expect(strandedWorkSignal({ active_exchange: ex }, [{ active_exchange: ex }])).toBeNull();
+    expect(strandedWorkSignal({ pending_acceptance_event_id: 'e1' }, [{ pending_acceptance_event_id: 'e1' }])).toBeNull();
+    expect(strandedWorkSignal({ pending_resolution: { command: 'reshape' } }, [{ pending_resolution: { command: 'reshape' } }])).toBeNull();
+    // seen on the FIRE-time row only (second element) is enough
+    expect(strandedWorkSignal({ pending_acceptance_event_id: 'e1' }, [{}, { pending_acceptance_event_id: 'e1' }])).toBeNull();
+  });
+  it('a signal that is new or changed relative to the seen rows is late', () => {
+    expect(strandedWorkSignal({ pending_acceptance_event_id: 'e2' }, [{ pending_acceptance_event_id: 'e1' }])).toBe('late-acceptance');
+    expect(strandedWorkSignal({ active_exchange: { answers_submitted_at: 'a2' } }, [{ active_exchange: { answers_submitted_at: 'a1' } }])).toBe('late-answers-landed');
+    expect(strandedWorkSignal({ pending_resolution: { command: 'reshape', detail: 'b' } }, [{ pending_resolution: { command: 'reshape', detail: 'a' } }])).toBe('late-reshape');
+    expect(strandedWorkSignal({ pending_acceptance_event_id: 'e1' }, [{}, {}])).toBe('late-acceptance');
+  });
+  it('a stale signal does not mask a genuinely new one of lower priority', () => {
+    expect(
+      strandedWorkSignal(
+        { active_exchange: { answers_submitted_at: 'a1' }, pending_acceptance_event_id: 'e2' },
+        [{ active_exchange: { answers_submitted_at: 'a1' } }],
+      ),
+    ).toBe('late-acceptance');
+  });
+  it('late-human-ball is not compared against seen rows (a human-held ball cannot loop legs)', () => {
+    expect(strandedWorkSignal({ awaiting_human_input: true }, [{ awaiting_human_input: true }])).toBe('late-human-ball');
+  });
   it('an active exchange with no stamp is not stranded', () => {
     expect(strandedWorkSignal({ active_exchange: {} })).toBeNull();
   });

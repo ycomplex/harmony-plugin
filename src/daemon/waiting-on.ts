@@ -78,15 +78,38 @@ export interface StrandedWorkRow {
   pending_acceptance_event_id?: string | null;
 }
 
-/** B-1157: does a FRESH post-exit read show work stranded by a late write (a human answered, flipped
- *  the ball, reshaped or accepted after the leg's last read)? Returns the `late-<reason>` exit class,
- *  else null. Order is the priority when several are present. */
-export function strandedWorkSignal(fresh: StrandedWorkRow): string | null {
-  if (fresh.active_exchange && (fresh.active_exchange.answers_submitted_at != null || fresh.active_exchange.force_quit_requested_at != null)) {
-    return 'late-answers-landed';
+/** The identity of each stranded-work signal on a row — the VALUE that makes two sightings "the same
+ *  signal" — or null when the row does not carry it. */
+function strandedValue(row: StrandedWorkRow, code: 'answers' | 'reshape' | 'acceptance'): string | null {
+  if (code === 'answers') {
+    const a = row.active_exchange?.answers_submitted_at ?? null;
+    const f = row.active_exchange?.force_quit_requested_at ?? null;
+    return a !== null || f !== null ? `${a ?? ''}|${f ?? ''}` : null;
   }
+  if (code === 'reshape') {
+    return row.pending_resolution !== null && row.pending_resolution !== undefined ? JSON.stringify(row.pending_resolution) : null;
+  }
+  return row.pending_acceptance_event_id ?? null;
+}
+
+/** B-1157: does a FRESH post-exit read show work stranded by a LATE write (a human answered, reshaped or
+ *  accepted after the leg's last read)? Returns the `late-<reason>` exit class, else null. Order is the
+ *  priority when several are present.
+ *
+ *  `seen` are the rows the leg already had its chance at — the post-exit read that classified the exit
+ *  and the fire-time read it launched from. A signal whose value is the SAME on any of them is NOT late:
+ *  the leg could have consumed it and did not (a bug, a refused consume, a malformed answer), and
+ *  keeping the conduction active on it would loop legs forever instead of parking no-progress as today.
+ *  Only a signal that DIFFERS from every seen row (new, or changed) counts. `late-human-ball` is not
+ *  compared: a human-held ball does not wake a leg, so it cannot loop. */
+export function strandedWorkSignal(fresh: StrandedWorkRow, seen: readonly StrandedWorkRow[] = []): string | null {
+  const isNew = (code: 'answers' | 'reshape' | 'acceptance'): boolean => {
+    const v = strandedValue(fresh, code);
+    return v !== null && !seen.some((s) => strandedValue(s, code) === v);
+  };
+  if (isNew('answers')) return 'late-answers-landed';
   if (fresh.awaiting_human_input === true) return 'late-human-ball';
-  if (fresh.pending_resolution !== null && fresh.pending_resolution !== undefined) return 'late-reshape';
-  if (fresh.pending_acceptance_event_id !== null && fresh.pending_acceptance_event_id !== undefined) return 'late-acceptance';
+  if (isNew('reshape')) return 'late-reshape';
+  if (isNew('acceptance')) return 'late-acceptance';
   return null;
 }

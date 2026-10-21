@@ -4840,6 +4840,65 @@ describe('B-1157: a declared external wait HOLDS the conduction instead of parki
     expect(h.state.get('cond-1')?.awaitingHumanInput).toBe(true);
   });
 
+  it('pre-park re-read: a signal the leg ALREADY had its chance at (present at fire time and in the fresh read) parks no-progress', async () => {
+    // Seat review of #364: an unconsumed acceptance event the leg could not consume must not keep the
+    // conduction active forever — only a signal that is NEW relative to what the leg saw counts.
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask({ pending_acceptance_event_id: 'ev-1' }) },
+    });
+    await wakeAndFire(h);
+    await h.pass(); // settle
+    expect(h.getConduction('cond-1').status).toBe('parked');
+    expect(h.getConduction('cond-1').last_worker_exit_class).toBe('no-progress');
+    expect(h.logs.some((l) => l.includes('stranded work'))).toBe(false);
+  });
+
+  it('pre-park re-read: the same pre-existing signal queues no second leg across passes', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask({ pending_acceptance_event_id: 'ev-1' }) },
+    });
+    await wakeAndFire(h);
+    await h.pass(); // settle -> parked
+    expect(h.launches()).toHaveLength(1);
+    await h.pass();
+    await h.pass();
+    expect(h.launches()).toHaveLength(1);
+    expect(h.ready()).toEqual([]);
+    expect(h.getConduction('cond-1').status).toBe('parked');
+  });
+
+  it('pre-park re-read: a pre-existing submitted answer (same stamp at fire time and fresh) parks too', async () => {
+    const exchange = { exchange_id: 'ex1', status: 'active', answers_submitted_at: '2026-10-21T00:00:00Z' };
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask({ active_exchange: exchange }) },
+    });
+    await wakeAndFire(h);
+    await h.pass();
+    expect(h.getConduction('cond-1').status).toBe('parked');
+    expect(h.getConduction('cond-1').last_worker_exit_class).toBe('no-progress');
+  });
+
+  it('pre-park re-read: a signal that CHANGED since the leg saw it (new event id) still stays active', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask({ pending_acceptance_event_id: 'ev-1' }) },
+    });
+    await wakeAndFire(h);
+    const orig = h.deps.getTaskMeta;
+    let reads = 0;
+    h.deps.getTaskMeta = vi.fn(async (id: string) => {
+      const r = await orig(id);
+      reads += 1;
+      return reads >= 2 ? { ...r, pending_acceptance_event_id: 'ev-2' } : r;
+    });
+    await h.pass();
+    expect(h.getConduction('cond-1').status).toBe('active');
+    expect(h.getConduction('cond-1').last_worker_exit_class).toBe('late-acceptance');
+  });
+
   it('pre-park re-read failure parks exactly as before', async () => {
     const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() } });
     await wakeAndFire(h);

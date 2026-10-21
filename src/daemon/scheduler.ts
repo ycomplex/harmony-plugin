@@ -1791,7 +1791,9 @@ async function settleTrackedLaunch(
     } catch (err) {
       deps.log(`${label(row, after, deps.projectKey)}: pre-park re-read failed (${formatDaemonError(err)}) — parking as classified`);
     }
-    const stranded = fresh ? strandedWorkSignal(fresh) : null;
+    // Only a signal NEW relative to what this leg already saw (the post-exit read + its fire-time read) is a late
+    // write; one it already had its chance at must park as classified, never loop legs (seat review of #364).
+    const stranded = fresh ? strandedWorkSignal(fresh, [after, tracked.current]) : null;
     if (fresh && stranded) {
       deps.log(`${label(row, after, deps.projectKey)}: pre-park re-read shows stranded work (${stranded}) — staying active instead of parking`);
       if (!(await writeLastLegEndedAt(deps, state, keeper, row, { last_worker_exit_class: stranded, last_worker_exit_code: tracked.exitCode }))) return;
