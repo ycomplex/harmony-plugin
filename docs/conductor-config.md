@@ -52,7 +52,7 @@ at boot (a change is logged as `restart needed`).
 | `gke.context` | string | derived `gke_<project>_<location>_<cluster>` | host (machine kubeconfig) | restart |
 | `gke.registry` | string | the launch script's default registry | project | launch env |
 | `gke.base_secret`, `gke.codex_secret` | string (Secret Manager secret **names**) | script defaults | project | launch env |
-| `gke.cpu`, `gke.memory` | string | `6`, `20Gi` | project | launch env |
+| `gke.cpu`, `gke.memory` | string | `6`, `10Gi` | project | launch env |
 | `gke.ticket_disk`, `gke.storage_class` | string | `20Gi`, `harmony-ticket-disk` when the cluster has it (setup step 17), else `standard-rwo` | project | launch env |
 | `gke.deadline_s`, `gke.job_ttl_s`, `gke.poll_s` | integer | `5400`, `3600`, `5` | project | launch env |
 | `concurrency.max_workers` | integer >= 0 | `2` (the built-in profile's cap) | project | **hot** |

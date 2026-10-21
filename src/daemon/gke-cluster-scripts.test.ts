@@ -219,7 +219,7 @@ function makeWorld(): World {
     '      *" --flatten=config.taints[] "*) [ -n "${STUB_POOL_NO_TAINT:-}" ] || printf \'harmony-leg\\ttrue\\tNO_SCHEDULE\\n\' ;;',
     // Real gcloud prints value(config.labels) as k=v pairs joined by ';', and an empty line for none.
     '      *"--format=value(config.labels)"*) [ -n "${STUB_POOL_NO_LABEL:-}" ] && echo "" || echo "cloud.google.com/x=y;harmony-leg=true" ;;',
-    '      *--format=*) printf \'%s\\t%s\\t%s\\t%s\\n\' "${STUB_POOL_MT:-e2-standard-8}" "${STUB_POOL_DT:-pd-standard}" "" "${STUB_POOL_MAX:-2}" ;;',
+    '      *--format=*) printf \'%s\\t%s\\t%s\\t%s\\n\' "${STUB_POOL_MT:-e2-standard-8}" "${STUB_POOL_DT:-pd-standard}" "" "${STUB_POOL_MAX:-5}" ;;',
     '    esac; exit 0 ;;',
     '  *" container node-pools create "*) touch "$STUB_STATE/pool"; exit 0 ;;',
     // Real gcloud: `compute regions describe` takes NO --filter / --flatten (they belong to `list` commands)
@@ -374,7 +374,7 @@ describe.skipIf(!CAPABLE)('container/gke/setup-cluster.sh (EXECUTED against stub
     expect(flagValue(pool, '--node-taints')).toBe('harmony-leg=true:NoSchedule');
     expect(flagValue(pool, '--node-labels')).toBe('harmony-leg=true'); // gke-render-leg.mjs selects on it
     expect(flagValue(pool, '--min-nodes')).toBe('0');
-    expect(flagValue(pool, '--max-nodes')).toBe('2');
+    expect(flagValue(pool, '--max-nodes')).toBe('5'); // B-1194: pool ceiling 5; max_workers stays 2 until quotas land
     expect(flagValue(pool, '--num-nodes')).toBe('0');
     expect(flagValue(pool, '--machine-type')).toBe('e2-standard-8');
     expect(pool).toContain('--enable-autoscaling');
@@ -507,7 +507,7 @@ describe.skipIf(!CAPABLE)('container/gke/setup-cluster.sh (EXECUTED against stub
     writeFileSync(join(world.state, 'cluster'), '');
     writeFileSync(join(world.state, 'pool'), '');
     for (const f of ['wi', 'fuse', 'gkemd']) writeFileSync(join(world.state, f), ''); // B-1169 enable-only steps already satisfied
-    const r = setup(world, [], { STUB_POOL_MT: 'n1-standard-4', STUB_POOL_DT: 'pd-ssd', STUB_POOL_MAX: '5', STUB_POOL_NO_TAINT: '1', STUB_POOL_NO_LABEL: '1' });
+    const r = setup(world, [], { STUB_POOL_MT: 'n1-standard-4', STUB_POOL_DT: 'pd-ssd', STUB_POOL_MAX: '2', STUB_POOL_NO_TAINT: '1', STUB_POOL_NO_LABEL: '1' });
     expect(r.status).toBe(0);
     const g = calls(world, 'gcloud');
     expect(g.some((c) => c.some((a) => ['create', 'update', 'delete', 'resize', 'upgrade'].includes(a)) && c.includes('container'))).toBe(false);
