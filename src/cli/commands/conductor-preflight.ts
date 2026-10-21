@@ -5,9 +5,10 @@
 // and its leases untouched. Every check is reported by NAME; credentials are reported by NAME only, never by
 // value. The config check is `harmony conductor config doctor`'s own logic (runDoctor), not a copy.
 
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import {
   evaluateConductorConfig,
+  HostFileSchema,
   launchEnvFromMerged,
   resolveConductorPaths,
   type ConductorConfig,
@@ -162,6 +163,41 @@ async function haveTool(deps: LifecycleDeps, tool: string): Promise<boolean> {
   return (await deps.exec('sh', ['-c', 'command -v "$1"', '_', tool])).code === 0;
 }
 
+const AUTH_PLUGIN = 'gke-gcloud-auth-plugin';
+
+/** B-808: the fix for a missing gke-gcloud-auth-plugin. `gcloud components install` reports "up to date" yet does
+ *  not put the plugin on PATH; the SDK's own path.<shell>.inc does. Names the exact line to run, never runs it. */
+async function authPluginFix(deps: LifecycleDeps, env: Env): Promise<string> {
+  const install = `run \`gcloud components install ${AUTH_PLUGIN}\``;
+  let root = '';
+  try {
+    const r = await deps.exec('gcloud', ['info', '--format=value(installation.sdk_root)'], { env });
+    if (r.code === 0) root = r.stdout.trim();
+  } catch {
+    // no gcloud, or it failed: fall through to the install hint
+  }
+  if (!root || !deps.existsSync(join(root, 'bin', AUTH_PLUGIN))) return install;
+  const ext = basename(env.SHELL ?? '') === 'zsh' ? 'zsh' : 'bash';
+  return `${AUTH_PLUGIN} is installed at ${join(root, 'bin')} but is not on PATH (\`gcloud components install\` reports up to date and does not add it): run \`source ${join(root, `path.${ext}.inc`)}\` and add that line to your shell profile`;
+}
+
+/** B-808: why HARMONY_API_TOKEN is not set, and what to do. Names the cause the settings loader saw (no host
+ *  file, no secrets.api_token entry in it, or a failed Secret Manager read), never a value. */
+export function missingTokenReason(deps: LifecycleDeps, s: ConductorSettings): string {
+  const hostFile = s.paths.hostFile;
+  const fix = 'create it by hand (docs/conductor-lifecycle.md, "Minimal operator-laptop host file") or export HARMONY_API_TOKEN';
+  if (s.secretsError) return `HARMONY_API_TOKEN is not set and reading its secret failed: ${s.secretsError}`;
+  if (!deps.existsSync(hostFile)) return `HARMONY_API_TOKEN is not set and there is no host file at ${hostFile} to name its secret: ${fix}`;
+  let named = false;
+  try {
+    named = !!HostFileSchema.safeParse(JSON.parse(deps.readFileSync(hostFile))).data?.secrets?.api_token;
+  } catch {
+    // unreadable or not JSON: treated as having no entry; `harmony conductor config doctor` reports the file itself
+  }
+  if (!named) return `HARMONY_API_TOKEN is not set and the host file ${hostFile} has no secrets.api_token entry naming its secret: add one ("secrets": { "api_token": "<secret-name>" }) or export HARMONY_API_TOKEN`;
+  return 'HARMONY_API_TOKEN is not set';
+}
+
 export async function runPreflight(deps: LifecycleDeps, s: ConductorSettings, opts: PreflightOptions = {}): Promise<PreflightResult> {
   const checks: Check[] = [];
   const warnings: string[] = [];
@@ -184,15 +220,16 @@ export async function runPreflight(deps: LifecycleDeps, s: ConductorSettings, op
   if (s.profile === 'gke') tools.push('kubectl');
   else if (s.profile === 'cloud') tools.push('gcloud');
   else if (s.profile) tools.push('kubectl', 'gcloud');
+  if (s.profile === 'gke') tools.push(AUTH_PLUGIN);
   for (const t of tools) {
     const ok = await haveTool(deps, t);
-    add(`tool:${t}`, ok, ok ? `${t} found on PATH` : `${t} is not on PATH`, `install ${t} or fix PATH`);
+    add(`tool:${t}`, ok, ok ? `${t} found on PATH` : `${t} is not on PATH`, ok ? `install ${t} or fix PATH` : t === AUTH_PLUGIN ? await authPluginFix(deps, s.env) : `install ${t} or fix PATH`);
   }
   if (!s.profile) add('profile', true, 'profile not determined (no config file names one and none was passed): only generic tools were checked');
 
   // --- credentials, by NAME only
   const tokenOk = has(s.env.HARMONY_API_TOKEN);
-  add('cred:HARMONY_API_TOKEN', tokenOk, tokenOk ? 'present' : 'not set', 'name its secret in conductor-host.json ("secrets": { "api_token": "<secret-name>" }) or export HARMONY_API_TOKEN');
+  add('cred:HARMONY_API_TOKEN', tokenOk, tokenOk ? 'present' : missingTokenReason(deps, s), 'name its secret in conductor-host.json ("secrets": { "api_token": "<secret-name>" }) or export HARMONY_API_TOKEN');
   let board: BoardRow[] | null = null;
   if (tokenOk) {
     try {

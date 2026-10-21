@@ -38139,8 +38139,8 @@ function basenameOf(path3) {
   const idx = path3.lastIndexOf("/");
   return idx === -1 ? path3 : path3.slice(idx + 1);
 }
-function tokenizeBasename(basename3) {
-  const spaced = basename3.replace(/([a-zA-Z])([0-9])/g, "$1 $2").replace(/([0-9])([a-zA-Z])/g, "$1 $2").replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[-_.]+/g, " ");
+function tokenizeBasename(basename4) {
+  const spaced = basename4.replace(/([a-zA-Z])([0-9])/g, "$1 $2").replace(/([0-9])([a-zA-Z])/g, "$1 $2").replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[-_.]+/g, " ");
   return spaced.split(/\s+/).filter((t) => t.length > 0);
 }
 function authBasenameHit(path3) {
@@ -44729,78 +44729,13 @@ var Out = class {
 var EXIT = { ok: 0, failure: 1, usage: 2, inFlight: 3, notAdopted: 4 };
 
 // src/cli/commands/conductor-registry-cli.ts
-import { join as join6 } from "node:path";
-var REGISTRY_ABSENT = "registry not deployed on this project";
-function pluginVersion(deps, pluginDir) {
-  try {
-    const v = JSON.parse(deps.readFileSync(join6(pluginDir, ".claude-plugin", "plugin.json"))).version;
-    return v || "unknown";
-  } catch {
-    return "unknown";
-  }
-}
-async function openRegistry(deps, s) {
-  if (!s.env.HARMONY_API_TOKEN) return { error: "HARMONY_API_TOKEN is not set" };
-  try {
-    return { client: await deps.registryClient(s.env) };
-  } catch (err) {
-    return { error: err instanceof Error ? err.message : String(err) };
-  }
-}
-var ageText = (sec) => sec === null ? "unknown" : `${Math.round(sec)}s ago`;
-async function completeRequest(deps, s, requestId, result, reason, data) {
-  let note;
-  try {
-    const client = await deps.registryClient(s?.env ?? deps.env);
-    const r = await client.completeRequest(`restart-cli@${deps.hostname()}`, {
-      requestId,
-      result,
-      reason: reason ? reason.slice(0, 500) : null,
-      versionBefore: typeof data.plugin_version_before === "string" ? data.plugin_version_before : null,
-      versionAfter: typeof data.plugin_version_after === "string" ? data.plugin_version_after : null
-    });
-    note = r.kind === "ok" ? "ok" : r.kind === "refused" ? `refused (${r.reason ?? "no reason"})` : `${r.kind} (${r.detail})`;
-  } catch (err) {
-    note = `error (${err instanceof Error ? err.message : String(err)})`;
-  }
-  return { note, line: `Registry request ${requestId} completed as ${result}: ${note}` };
-}
+import { join as join8 } from "node:path";
 
-// src/config/gcp-project.ts
-import { existsSync as fsExistsSync2, readFileSync as fsReadFileSync2 } from "node:fs";
-import { join as join7 } from "node:path";
-var GCP_PROJECT_UNSET = 'no GCP project is configured: set "gcp": { "project": "<gcp-project-id>" } in .harmony/conductor.json (or in ~/.harmony/conductor-host.json)';
-function resolveGcpProject(deps) {
-  const exported = deps.env.CLOUDSDK_CORE_PROJECT;
-  if (exported) return exported;
-  const exists = deps.existsSync ?? fsExistsSync2;
-  const read = deps.readFileSync ?? ((p) => fsReadFileSync2(p, "utf8"));
-  let merged = deps.merged ?? null;
-  if (!merged) {
-    try {
-      merged = evaluateConductorConfig({
-        env: deps.env,
-        existsSync: exists,
-        readFileSync: read,
-        warn: () => {
-        },
-        loadLegacy: () => loadLegacyDeploymentConfig({ env: deps.env, existsSync: exists, readFileSync: read })
-      })?.merged ?? null;
-    } catch {
-      merged = null;
-    }
-  }
-  if (merged?.gcp?.project) return merged.gcp.project;
-  try {
-    const local = join7(deps.cwd ?? process.cwd(), CONDUCTOR_PROJECT_PATH);
-    if (exists(local)) {
-      const v = validateProjectFileText(CONDUCTOR_PROJECT_PATH, read(local));
-      if (v.ok) return v.value.gcp?.project;
-    }
-  } catch {
-  }
-  return void 0;
-}
+// src/cli/commands/conductor-preflight.ts
+import { basename as basename3, join as join7 } from "node:path";
+
+// src/config/conductor-secrets.ts
+import { readFileSync as readFileSync5 } from "node:fs";
 
 // src/daemon/conductor-remote.ts
 var REMOTE_ENV = "HARMONY_CONDUCTOR_REMOTE";
@@ -44810,11 +44745,7 @@ function channelFromPosture(posture) {
   return posture === "ack:staging" || posture === "staging" ? "staging" : null;
 }
 
-// src/cli/commands/conductor-preflight.ts
-import { join as join8 } from "node:path";
-
 // src/config/conductor-secrets.ts
-import { readFileSync as readFileSync5 } from "node:fs";
 var SECRET_ENV_TARGETS = [
   { key: SECRET_KEYS.apiToken, envVar: "HARMONY_API_TOKEN" },
   { key: SECRET_KEYS.githubAppPrivateKey, envVar: "HARMONY_APP_PRIVATE_KEY" }
@@ -44881,6 +44812,42 @@ async function resolveConductorSecrets(deps) {
   return result;
 }
 
+// src/config/gcp-project.ts
+import { existsSync as fsExistsSync2, readFileSync as fsReadFileSync2 } from "node:fs";
+import { join as join6 } from "node:path";
+var GCP_PROJECT_UNSET = 'no GCP project is configured: set "gcp": { "project": "<gcp-project-id>" } in .harmony/conductor.json (or in ~/.harmony/conductor-host.json)';
+function resolveGcpProject(deps) {
+  const exported = deps.env.CLOUDSDK_CORE_PROJECT;
+  if (exported) return exported;
+  const exists = deps.existsSync ?? fsExistsSync2;
+  const read = deps.readFileSync ?? ((p) => fsReadFileSync2(p, "utf8"));
+  let merged = deps.merged ?? null;
+  if (!merged) {
+    try {
+      merged = evaluateConductorConfig({
+        env: deps.env,
+        existsSync: exists,
+        readFileSync: read,
+        warn: () => {
+        },
+        loadLegacy: () => loadLegacyDeploymentConfig({ env: deps.env, existsSync: exists, readFileSync: read })
+      })?.merged ?? null;
+    } catch {
+      merged = null;
+    }
+  }
+  if (merged?.gcp?.project) return merged.gcp.project;
+  try {
+    const local = join6(deps.cwd ?? process.cwd(), CONDUCTOR_PROJECT_PATH);
+    if (exists(local)) {
+      const v = validateProjectFileText(CONDUCTOR_PROJECT_PATH, read(local));
+      if (v.ok) return v.value.gcp?.project;
+    }
+  } catch {
+  }
+  return void 0;
+}
+
 // src/cli/commands/conductor-preflight.ts
 var SHELL_NOISE = /* @__PURE__ */ new Set(["_", "SHLVL", "PWD", "OLDPWD"]);
 async function sourceEnvFile(deps, file) {
@@ -44895,8 +44862,8 @@ async function sourceEnvFile(deps, file) {
 }
 async function loadSettings(deps, opts = {}) {
   const paths = resolveConductorPaths(deps.env);
-  const envPath = join8(paths.home, "conductor.env");
-  const legacyPath = join8(paths.home, "daemon.env");
+  const envPath = join7(paths.home, "conductor.env");
+  const legacyPath = join7(paths.home, "daemon.env");
   let envFile = null;
   const fileEnv = {};
   let envFileError;
@@ -44961,6 +44928,32 @@ var has = (v) => v !== void 0 && v !== "";
 async function haveTool(deps, tool) {
   return (await deps.exec("sh", ["-c", 'command -v "$1"', "_", tool])).code === 0;
 }
+var AUTH_PLUGIN = "gke-gcloud-auth-plugin";
+async function authPluginFix(deps, env2) {
+  const install = `run \`gcloud components install ${AUTH_PLUGIN}\``;
+  let root = "";
+  try {
+    const r = await deps.exec("gcloud", ["info", "--format=value(installation.sdk_root)"], { env: env2 });
+    if (r.code === 0) root = r.stdout.trim();
+  } catch {
+  }
+  if (!root || !deps.existsSync(join7(root, "bin", AUTH_PLUGIN))) return install;
+  const ext = basename3(env2.SHELL ?? "") === "zsh" ? "zsh" : "bash";
+  return `${AUTH_PLUGIN} is installed at ${join7(root, "bin")} but is not on PATH (\`gcloud components install\` reports up to date and does not add it): run \`source ${join7(root, `path.${ext}.inc`)}\` and add that line to your shell profile`;
+}
+function missingTokenReason(deps, s) {
+  const hostFile = s.paths.hostFile;
+  const fix = 'create it by hand (docs/conductor-lifecycle.md, "Minimal operator-laptop host file") or export HARMONY_API_TOKEN';
+  if (s.secretsError) return `HARMONY_API_TOKEN is not set and reading its secret failed: ${s.secretsError}`;
+  if (!deps.existsSync(hostFile)) return `HARMONY_API_TOKEN is not set and there is no host file at ${hostFile} to name its secret: ${fix}`;
+  let named = false;
+  try {
+    named = !!HostFileSchema.safeParse(JSON.parse(deps.readFileSync(hostFile))).data?.secrets?.api_token;
+  } catch {
+  }
+  if (!named) return `HARMONY_API_TOKEN is not set and the host file ${hostFile} has no secrets.api_token entry naming its secret: add one ("secrets": { "api_token": "<secret-name>" }) or export HARMONY_API_TOKEN`;
+  return "HARMONY_API_TOKEN is not set";
+}
 async function runPreflight(deps, s, opts = {}) {
   const checks = [];
   const warnings = [];
@@ -44979,13 +44972,14 @@ async function runPreflight(deps, s, opts = {}) {
   if (s.profile === "gke") tools.push("kubectl");
   else if (s.profile === "cloud") tools.push("gcloud");
   else if (s.profile) tools.push("kubectl", "gcloud");
+  if (s.profile === "gke") tools.push(AUTH_PLUGIN);
   for (const t of tools) {
     const ok = await haveTool(deps, t);
-    add(`tool:${t}`, ok, ok ? `${t} found on PATH` : `${t} is not on PATH`, `install ${t} or fix PATH`);
+    add(`tool:${t}`, ok, ok ? `${t} found on PATH` : `${t} is not on PATH`, ok ? `install ${t} or fix PATH` : t === AUTH_PLUGIN ? await authPluginFix(deps, s.env) : `install ${t} or fix PATH`);
   }
   if (!s.profile) add("profile", true, "profile not determined (no config file names one and none was passed): only generic tools were checked");
   const tokenOk = has(s.env.HARMONY_API_TOKEN);
-  add("cred:HARMONY_API_TOKEN", tokenOk, tokenOk ? "present" : "not set", 'name its secret in conductor-host.json ("secrets": { "api_token": "<secret-name>" }) or export HARMONY_API_TOKEN');
+  add("cred:HARMONY_API_TOKEN", tokenOk, tokenOk ? "present" : missingTokenReason(deps, s), 'name its secret in conductor-host.json ("secrets": { "api_token": "<secret-name>" }) or export HARMONY_API_TOKEN');
   let board = null;
   if (tokenOk) {
     try {
@@ -45048,6 +45042,43 @@ function formatChecks(checks) {
   return checks.map((c) => `  [${c.ok ? "ok  " : "FAIL"}] ${c.name}: ${c.detail}${!c.ok && c.fix ? `. Fix: ${c.fix}` : ""}`);
 }
 var failedNames = (checks) => checks.filter((c) => !c.ok).map((c) => c.name);
+
+// src/cli/commands/conductor-registry-cli.ts
+var REGISTRY_ABSENT = "registry not deployed on this project";
+function pluginVersion(deps, pluginDir) {
+  try {
+    const v = JSON.parse(deps.readFileSync(join8(pluginDir, ".claude-plugin", "plugin.json"))).version;
+    return v || "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+async function openRegistry(deps, s) {
+  if (!s.env.HARMONY_API_TOKEN) return { error: missingTokenReason(deps, s) };
+  try {
+    return { client: await deps.registryClient(s.env) };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+}
+var ageText = (sec) => sec === null ? "unknown" : `${Math.round(sec)}s ago`;
+async function completeRequest(deps, s, requestId, result, reason, data) {
+  let note;
+  try {
+    const client = await deps.registryClient(s?.env ?? deps.env);
+    const r = await client.completeRequest(`restart-cli@${deps.hostname()}`, {
+      requestId,
+      result,
+      reason: reason ? reason.slice(0, 500) : null,
+      versionBefore: typeof data.plugin_version_before === "string" ? data.plugin_version_before : null,
+      versionAfter: typeof data.plugin_version_after === "string" ? data.plugin_version_after : null
+    });
+    note = r.kind === "ok" ? "ok" : r.kind === "refused" ? `refused (${r.reason ?? "no reason"})` : `${r.kind} (${r.detail})`;
+  } catch (err) {
+    note = `error (${err instanceof Error ? err.message : String(err)})`;
+  }
+  return { note, line: `Registry request ${requestId} completed as ${result}: ${note}` };
+}
 
 // src/cli/commands/conductor-kube.ts
 var KUBE_NAMESPACE = "harmony-conductor";
@@ -45851,7 +45882,7 @@ function launcherArgsFrom(o) {
   return [...o.config ? ["--config", o.config] : [], ...o.profile ? ["--profile", o.profile] : []];
 }
 async function safeBoard(deps, s) {
-  if (!s.env.HARMONY_API_TOKEN) return { rows: null, error: "HARMONY_API_TOKEN is not set" };
+  if (!s.env.HARMONY_API_TOKEN) return { rows: null, error: missingTokenReason(deps, s) };
   try {
     return { rows: await deps.readBoard(s.env) };
   } catch (err) {
@@ -47128,6 +47159,16 @@ var HARMONY_HOOKS = {
           {
             "type": "command",
             "command": `d="\${HARMONY_HOME:-$HOME/.harmony}/conduct-sessions"; mkdir -p "$d" 2>/dev/null; i=$(cat 2>/dev/null | tr -d '\\n' | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p'); if [ -n "$i" ]; then printf '%s' "$i" > "$d/current-session"; fi; find "$d" -type f -mtime +7 -delete 2>/dev/null; printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"Harmony conduct-session id: %s. A session that drives a Harmony ticket writes its conduct breadcrumb at %s/%s.json (see the harmony-conduct skill)."}}' "$i" "$d" "$i"`,
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": 'sh "{pluginRoot}/hooks/link-cli.sh"',
             "timeout": 10
           }
         ]

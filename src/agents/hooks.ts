@@ -45,6 +45,16 @@ export const HARMONY_HOOKS: HooksFile = {
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"{pluginRoot}/hooks/link-cli.sh\"",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "Stop": [

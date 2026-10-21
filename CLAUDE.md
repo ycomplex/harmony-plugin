@@ -8,7 +8,7 @@ This is the Harmony plugin for Claude Code — an MCP server, CLI, and workflow 
 
 The `harmony` CLI provides the same functionality as the MCP server for direct terminal use.
 
-- **Binary:** `harmony` (via `npx @harmony-ad/harmony` or local `node dist/bin/harmony.js`)
+- **Binary:** `harmony`, on PATH after the plugin is installed: the SessionStart hook `hooks/link-cli.sh` (B-808) keeps a marker-guarded wrapper at `~/.local/bin/harmony` and a pointer at `~/.harmony/plugin-root`; never clobbers a foreign `harmony`, never edits a shell profile. Details, the manual fallback and the minimal operator-laptop host file are in [`docs/conductor-lifecycle.md`](docs/conductor-lifecycle.md#operator-machines-harmony-on-path-the-host-file-and-gcloud-b-808). Without the hook: local `node dist/bin/harmony.js`
 - **Config:** `~/.harmony/config.json` (multi-project auth tokens)
 - **Output modes:** Human-readable tables (default) or `--json` for scripting
 - **Help:** `harmony --help`, `harmony <command> --help`
@@ -192,7 +192,7 @@ The script writes the dogfood dir's `.claude/settings.local.json` (staging `HARM
 harmony-plugin/
 ├── .claude-plugin/plugin.json   # Plugin manifest
 ├── .mcp.json                    # MCP server config (stdio)
-├── hooks/hooks.json             # SessionStart: auto-install + build
+├── hooks/hooks.json             # SessionStart: auto-install + build, link-cli (harmony on PATH)
 ├── skills/                      # Workflow skills
 ├── src/
 │   ├── index.ts                 # MCP server entry point

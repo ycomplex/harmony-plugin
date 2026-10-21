@@ -353,7 +353,7 @@ describe.skipIf(!HAVE_CODEX)(`the installed Codex CLI (${VERSION ?? 'not install
       // run in this e2e (no breadcrumb ⇒ both take their fast path). They must exist: a Stop hook command
       // that cannot run (exit 127) was observed to wedge codex 0.163.0 — see docs/codex-phase0-findings.md.
       mkdirSync(join(plugin, 'hooks'), { recursive: true });
-      for (const f of ['stop-gate.sh', 'pretooluse-gate.sh']) writeFileSync(join(plugin, 'hooks', f), read(`hooks/${f}`));
+      for (const f of ['stop-gate.sh', 'pretooluse-gate.sh', 'link-cli.sh']) writeFileSync(join(plugin, 'hooks', f), read(`hooks/${f}`));
       writeFileSync(auth, '{"fake":"not a real login cache"}');
       provisionCodex({ pluginDir: plugin, workspaceDir: ws, codexHome, authFile: auth });
 
