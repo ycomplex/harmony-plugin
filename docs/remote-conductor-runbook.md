@@ -1,5 +1,7 @@
 # Remote conductor runbook (B-1173, B-1186)
 
+> **Living · product · Tier 2** · verified against plugin 0.16.0 / web 1b45424 on 2026-10-21 · **revise when:** the conductor image, its manifests, `setup-cluster.sh`, the leg size or the quotas the ceiling needs change. Convention: harmony-workspace `docs/README.md` (B-1044).
+
 How to run a project's conductor as **one pod on the project's own GKE cluster**, from a machine that has only this
 plugin installed. Follow it top to bottom. Every command is written so it works from any directory: the plugin is
 addressed through `$PLUGIN_DIR` (step 0), never through a relative path or a bare `harmony`.
@@ -146,19 +148,65 @@ A leg requests 6 CPU and 10Gi and sets no limits (`container/gke/gke-worker-laun
 request is sized from measured usage (peak 7.68 GiB over 129 legs). Set the ceiling in two places, together:
 `--max-nodes` on the pool (`setup-cluster.sh`, default 5) and `concurrency.max_workers` in the project file.
 
-Quotas the ceiling needs. All three are Compute Engine quotas; read them with
-`gcloud compute regions describe <region> --project <project> --format='value(quotas)'`
-(and `gcloud compute project-info describe --project <project>` for the project-wide `CPUS_ALL_REGIONS`).
+#### The quotas the ceiling needs
 
-| Quota | Scope | Must be at least |
-|---|---|---|
-| `CPUS_ALL_REGIONS` | project-wide | ceiling x leg-node vCPU + system-pool vCPU, plus headroom for a surge upgrade |
-| `IN_USE_ADDRESSES` | region | leg nodes at the ceiling + system nodes, plus headroom for a rollout |
-| `SSD_TOTAL_GB` | region | what is already used + ceiling x ticket-disk size (`gke.ticket_disk`, default `20Gi`) |
+Google Cloud caps how much a project may run at once. A new project's defaults are too low for even a small pool:
+the project-wide CPU cap starts at 32 on many projects, and the regional address cap at 8. Ask for the increases
+**before** you raise the ceiling. A leg that cannot get a node waits in `Pending` with no error on the board.
 
-To request an increase: open the Google Cloud console, go to IAM & Admin, then Quotas & System Limits; filter by the
-quota name and region; tick it; choose Edit quotas; enter the new limit and a one-line reason; submit. Small
-increases are usually granted within minutes. Do not raise `max_workers` until the grant shows in the quota page.
+Every row below is a Compute Engine quota. Work out the figure from four numbers:
+
+- `C`: the parallelism ceiling (the pool's `--max-nodes`, equal to `concurrency.max_workers`).
+- `V`: vCPU per leg node. `e2-standard-8` has 8. One leg per node, so a node is a leg.
+- `S`: system nodes, and `s`, vCPU per system node. The script's system pool is `e2-medium`, 2 vCPU.
+- `T`: how many ticket disks exist at once. **This is not the ceiling.** A ticket keeps its 20Gi disk
+  (`gke.ticket_disk`) from its first leg until the sweep deletes it after the ticket is Verified, Cancelled or
+  archived, so `T` is roughly the number of tickets in flight plus those waiting for verify, often several times `C`.
+
+Add one node of headroom (`+1`) to the node-shaped rows: a GKE surge upgrade adds a node before it removes one.
+
+| Quota (metric) | Scope | What uses it | Must be at least | Worked example: `C`=5, `V`=8, `S`=2, `s`=2 |
+|---|---|---|---|---|
+| `CPUS_ALL_REGIONS` ("CPUs (all regions)") | project | every node's vCPU, in every region | `(C + 1) x V + S x s` | 6 x 8 + 2 x 2 = 52: request **64** |
+| `CPUS` ("CPUs") | region | the same vCPU, counted per region | `(C + 1) x V + S x s` | 52: often within the default |
+| `IN_USE_ADDRESSES` ("In-use IP addresses") | region | one external IP per node | `C + S + 1` | 8: request **16** (a default of 8 leaves no room for a rollout) |
+| `INSTANCES` ("VM instances") | region | one VM per node | `C + S + 1` | 8: usually within the default |
+| `SSD_TOTAL_GB` ("Persistent Disk SSD (GB)") | region | ticket disks: the class is `pd-balanced`, which counts as SSD | `T x 20` plus anything else already on `pd-balanced` or `pd-ssd` | 19 open ticket disks: 380 GB |
+| `DISKS_TOTAL_GB` ("Persistent Disk Standard (GB)") | region | node boot disks: the script uses `pd-standard`, 100 GB each | `(C + S + 1) x 100` | 800 GB: usually within the default |
+
+The bold figures are the increases a project on default quotas typically has to request; the rest usually fit the
+defaults. Defaults vary by project and billing history, so read yours first:
+
+```bash
+gcloud compute project-info describe --project <project> --format=json \
+  | jq -r '.quotas[] | select(.metric=="CPUS_ALL_REGIONS") | "\(.metric) \(.usage)/\(.limit)"'
+gcloud compute regions describe <region> --project <project> --format=json \
+  | jq -r '.quotas[] | select(.metric|IN("CPUS","IN_USE_ADDRESSES","INSTANCES","SSD_TOTAL_GB","DISKS_TOTAL_GB"))
+           | "\(.metric) \(.usage)/\(.limit)"'
+```
+
+**Requesting an increase**, once per quota that is short:
+
+1. In the Google Cloud console, pick the project, then open **IAM & Admin > Quotas & System Limits**.
+2. In the filter box, type the metric's display name from the table (for example `CPUs (all regions)`). For a
+   regional quota, also filter **Dimensions: region** to your region.
+3. Tick the row, then choose **Edit quotas** at the top.
+4. Enter the new limit. Round up: asking for 64 rather than 52 leaves room to raise the ceiling later without
+   another request.
+5. Give a reason. Google reads this; plain and specific works. For example:
+   `GKE node pool for CI-style build workers: up to 5 e2-standard-8 nodes (8 vCPU each) plus a 2-node system
+   pool, autoscaling from zero. Needs 52 vCPU at peak; requesting 64 for upgrade headroom.`
+   For addresses: `One external IP per GKE node: up to 5 build nodes plus 2 system nodes, plus one surge node
+   during upgrades. Requesting 16.`
+6. Submit. Small increases on an account with billing history are usually granted within minutes, and an email
+   confirms it. A larger one, or a new billing account, can take a day or be refused; the email says which.
+
+Do not raise `max_workers` until every grant shows on the quota page. If one is refused, keep the ceiling at what
+the granted quotas allow.
+
+The disk quotas rarely need a request at small ceilings, but `SSD_TOTAL_GB` grows with tickets, not with legs. If it
+gets close, check that the sweep runs (`harmony-sweep` CronJob, every 6 hours) before asking for more. Disks of
+Verified tickets that are still there mean the sweep is not running.
 
 Raising the ceiling, in this order (the pool first, the cap last):
 
