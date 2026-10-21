@@ -28,6 +28,8 @@ import {
   catalogEntriesForAgent,
   DEFAULT_AGENT_ADAPTER,
   entryModelId,
+  findModelEntry,
+  normalizeModelId,
   getAgentAdapter,
   getModelForGate,
   getPinnedDefaultModel,
@@ -117,6 +119,18 @@ export function registerModelCommands(program: Command): void {
       const ok = await isAllowedModelAlias(alias, client, opts.agent ?? DEFAULT_AGENT_ADAPTER);
       console.log(ok ? 'true' : 'false');
       process.exit(ok ? 0 : 1);
+    });
+
+  model
+    .command('normalize')
+    .description('Print the runtime model id for a catalog alias or id; pass through unchanged if the live catalog is unavailable or the name is unknown.')
+    .argument('<model>')
+    .option('--agent <id>', 'Agent runtime whose active rows to match', DEFAULT_AGENT_ADAPTER)
+    .option('--offered-only', 'Print nothing for an unoffered name when the live catalog is reachable')
+    .action(async (model: string, opts: { agent?: string; offeredOnly?: boolean }) => {
+      const { entries, source } = await resolveModelCatalog(await getCatalogClient());
+      console.log(source === 'live' && opts.offeredOnly && !findModelEntry(model, entries, opts.agent)
+        ? '' : source === 'live' ? normalizeModelId(model, entries, opts.agent) : model);
     });
 
   model
@@ -234,9 +248,9 @@ export function registerModelCommands(program: Command): void {
     .action(async (alias: string, opts: { agent?: string }) => {
       const agent = opts.agent ?? DEFAULT_AGENT_ADAPTER;
       const client = await getCatalogClient();
-      const ok = await isAllowedModelAlias(alias, client, agent);
-      if (!ok) {
-        const { entries } = await resolveModelCatalog(client);
+      const { entries } = await resolveModelCatalog(client);
+      const entry = findModelEntry(alias, entries, agent);
+      if (!entry) {
         console.error(
           `harmony model request-switch: '${alias}' is not in the live model catalog for runtime '${agent}' (${catalogEntriesForAgent(
             entries,
@@ -248,7 +262,7 @@ export function registerModelCommands(program: Command): void {
         process.exit(1);
         return;
       }
-      writeModelHandoffRequest(alias);
+      writeModelHandoffRequest(entryModelId(entry));
     });
 
   model

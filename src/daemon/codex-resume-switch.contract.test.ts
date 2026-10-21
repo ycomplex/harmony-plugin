@@ -41,6 +41,10 @@ const last = argv[argv.length - 1];
 const codexAgent = argv.includes('--agent') && argv[argv.indexOf('--agent') + 1] === 'codex';
 const handoff = process.env.FAKE_HANDOFF;
 if (sub === 'pinned-default') { console.log(process.env.FAKE_PINNED || ''); process.exit(0); }
+if (sub === 'normalize') {
+  const ok = codexAgent && (process.env.FAKE_CODEX_MODELS || '').split(',').includes(last);
+  console.log(ok ? last : ''); process.exit(0);
+}
 if (sub === 'check-alias') {
   const ok = codexAgent && (process.env.FAKE_CODEX_MODELS || '').split(',').includes(last);
   process.exit(ok ? 0 : 1);

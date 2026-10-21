@@ -76,3 +76,16 @@ describe('model policy fold (templateVars)', () => {
     expect(applyModelPolicy(rc, 'build', undefined)).toBe(rc);
   });
 });
+
+describe('B-1185 first-launch model spelling', () => {
+  const catalog = [{ alias: 'codex:gpt-6.1-sol', model_id: 'gpt-6.1-sol', agent: 'codex', label: 'Sol', active: true, verified_at: null, context_budget_bytes: 1 }];
+  it.each(['codex:gpt-6.1-sol', 'gpt-6.1-sol'])('launches %s as the runtime id for defaults and overrides', (model) => {
+    for (const config of [{ default: model }, { default: 'other', per_gate: { build: model } }]) {
+      const r = row({ agent: { adapter: 'codex' }, model: config });
+      const v = templateVars(r, task('Planned'), 'B', undefined, undefined, catalog);
+      expect(v.model).toBe('gpt-6.1-sol');
+      expect(getModelForGate(decode(v.run_config_json), 'build', {}, catalog)).toBe(v.model);
+      expect(templateVars(r, task('Planned'), 'B').model).toBe(model);
+    }
+  });
+});
