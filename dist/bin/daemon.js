@@ -39509,6 +39509,17 @@ async function settleTrackedLaunch(deps, state, keeper, runtime, row, tracked) {
     await settleRefusal(deps, state, keeper, runtime, row, after, tracked, cls, refusal, progressed);
     return;
   }
+  if (outcome.action !== "complete") {
+    const killed = killReasonFromExitCode(tracked.exitCode);
+    if (killed) {
+      const attempt = `attempt ${tracked.retryCount + 1} of ${deps.config.retryCap + 1}`;
+      await commentOnTicket(
+        deps,
+        row,
+        outcome.action === "wait" ? `Leg killed by the platform: ${killed} (exit ${tracked.exitCode}), ${attempt} \u2014 the ticket already shows a brief, so it stays a clean pause.` : `Leg killed by the platform: ${killed} (exit ${tracked.exitCode}), ${attempt} \u2014 counted as a failed leg.`
+      );
+    }
+  }
   if (outcome.action === "wait") {
     if (!await writeLastLegEndedAt(deps, state, keeper, row, {
       last_worker_exit_class: cls,
@@ -39525,7 +39536,10 @@ async function settleTrackedLaunch(deps, state, keeper, runtime, row, tracked) {
   if (outcome.action === "park" && cls === "dirty-exit" && tracked.retryCount < deps.config.retryCap) {
     const retryCount = tracked.retryCount + 1;
     if (!await writeIfHeld(deps, state, keeper, row, { retry_count: retryCount })) return;
-    await writeLastLegEndedAt(deps, state, keeper, row);
+    await writeLastLegEndedAt(deps, state, keeper, row, {
+      last_worker_exit_class: cls,
+      last_worker_exit_code: tracked.exitCode
+    });
     const backoffMs = deps.config.retryBackoffMs * 2 ** (retryCount - 1);
     deps.log(
       `${label(row, after, deps.projectKey)}: dirty exit \u2014 retrying (attempt ${retryCount}/${deps.config.retryCap}) after reap + ${backoffMs}ms backoff`
@@ -39554,6 +39568,7 @@ async function settleTrackedLaunch(deps, state, keeper, runtime, row, tracked) {
       return;
     }
   }
+  if (outcome.action === "park") await reapBeforePark(deps, state, keeper, runtime, row, after, tracked);
   state.delete(row.id);
   keeper.stop(row.id);
   await writeIfHeld(deps, state, keeper, row, {
@@ -39563,6 +39578,33 @@ async function settleTrackedLaunch(deps, state, keeper, runtime, row, tracked) {
   });
   await writeLastLegEndedAt(deps, state, keeper, row);
   await flushLaunchOutput(deps, row, tracked);
+}
+function killReasonFromExitCode(code) {
+  if (code === 71) return "Evicted or disrupted";
+  if (code === 72) return "OOMKilled";
+  if (code === 73) return "DeadlineExceeded";
+  return null;
+}
+var REAP_BEFORE_PARK_ATTEMPTS = 3;
+async function reapBeforePark(deps, _state, _keeper, _runtime, row, after, _tracked) {
+  const cmd = renderTemplate(deps.config.profile.reap, templateVars(row, after, deps.projectKey, deps.workerImage));
+  let last = "no attempt";
+  for (let attempt = 1; attempt <= REAP_BEFORE_PARK_ATTEMPTS; attempt++) {
+    try {
+      const r = await deps.runCommand(cmd);
+      if (r.exitCode === 0 || r.exitCode === 3) return true;
+      last = `exit ${r.exitCode}`;
+    } catch (err) {
+      last = formatDaemonError(err);
+    }
+    deps.log(`${label(row, after, deps.projectKey)}: reap before park unconfirmed (${last}), attempt ${attempt}/${REAP_BEFORE_PARK_ATTEMPTS}`);
+  }
+  await commentOnTicket(
+    deps,
+    row,
+    `Parked, but the leg's Job could not be confirmed deleted after ${REAP_BEFORE_PARK_ATTEMPTS} reap attempts (${last}) \u2014 it may still be running; check the cluster and delete it by hand.`
+  );
+  return false;
 }
 async function resetQuotaPauses(deps, runtime, row) {
   const q = quotaMaps(runtime);

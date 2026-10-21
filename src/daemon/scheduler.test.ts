@@ -8,6 +8,7 @@ import {
   runScheduler,
   createSchedulerRuntime,
   isAuthShapedError,
+  killReasonFromExitCode,
   PersistentAuthFailure,
   PersistentReapFailure,
   type SchedulerDeps,
@@ -785,7 +786,7 @@ describe('runSchedulerPass — wake, fire, and settle (fire-and-track)', () => {
     await h.pass(); // fire 3
     await h.pass(); // settle 3 (dirty, cap exhausted) → park
     expect(h.launches()).toHaveLength(3);
-    expect(h.reaps()).toHaveLength(2);
+    expect(h.reaps()).toHaveLength(3); // B-1187: two retry reaps + the pre-park reap, written before the parked status
     expect(h.getConduction('cond-1').retry_count).toBe(2);
     expect(h.deps.updateConductionIfHeld).toHaveBeenCalledWith('cond-1', ME, {
       status: 'parked',
@@ -797,6 +798,169 @@ describe('runSchedulerPass — wake, fire, and settle (fire-and-track)', () => {
     // Cap exhausted → parked-and-stopped: no further fire.
     await h.pass();
     expect(h.launches()).toHaveLength(3);
+  });
+
+  it('B-1187: killReasonFromExitCode maps only 71/72/73', () => {
+    expect([71, 72, 73, 1, 0, 137, null].map(killReasonFromExitCode)).toEqual(['Evicted or disrupted', 'OOMKilled', 'DeadlineExceeded', null, null, null, null]);
+  });
+
+  // ── B-1187 ──────────────────────────────────────────────────────────────────────────────────
+  const orderOf = (h: ReturnType<typeof makeHarness>) => {
+    const reapOrders = (h.deps.runCommand as unknown as { mock: { calls: unknown[][]; invocationCallOrder: number[] } }).mock;
+    const reapIdx = reapOrders.calls.map((c, i) => (String(c[0]).startsWith('reap') ? reapOrders.invocationCallOrder[i] : -1)).filter((n) => n >= 0);
+    const w = (h.deps.updateConductionIfHeld as unknown as { mock: { calls: unknown[][]; invocationCallOrder: number[] } }).mock;
+    const parkedIdx = w.calls.map((c, i) => ('status' in (c[2] as object) ? w.invocationCallOrder[i] : -1)).filter((n) => n >= 0);
+    return { reapIdx, parkedIdx };
+  };
+
+  it('B-1187: the final dirty attempt is reaped BEFORE the parked write (3 launches, 3 reaps)', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask() },
+      config: retryConfig,
+      launchExitCodes: [1, 1, 1],
+    });
+    await h.pass();
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    await h.pass();
+    await h.pass();
+    h.setNow(h.now() + 15_000);
+    await h.pass();
+    await h.pass();
+    h.setNow(h.now() + 30_000);
+    await h.pass();
+    await h.pass();
+    expect(h.launches()).toHaveLength(3);
+    expect(h.reaps()).toHaveLength(3);
+    const { reapIdx, parkedIdx } = orderOf(h);
+    expect(parkedIdx).toHaveLength(1);
+    expect(reapIdx[reapIdx.length - 1]).toBeLessThan(parkedIdx[0]);
+  });
+
+  it("B-1187: a dirty-exit retry writes THIS leg's class and exit code, even when the previous class was 'clean-pause'", async () => {
+    const h = makeHarness({
+      conductions: [conduction({ last_worker_exit_class: 'clean-pause', last_worker_exit_code: 0 })],
+      tasks: { 'task-1': pausedTask() },
+      config: retryConfig,
+      launchExitCodes: [72],
+    });
+    await h.pass();
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    await h.pass(); // fire
+    await h.pass(); // settle -> retry queued
+    expect(h.ready()).toEqual(['cond-1']);
+    expect(h.getConduction('cond-1').status).toBe('active');
+    expect(h.getConduction('cond-1').last_worker_exit_class).toBe('dirty-exit');
+    expect(h.getConduction('cond-1').last_worker_exit_code).toBe(72);
+  });
+
+  it.each([
+    [71, 'Evicted or disrupted'],
+    [72, 'OOMKilled'],
+    [73, 'DeadlineExceeded'],
+  ])('B-1187: exit %i posts a kill-reason comment on the retry path', async (code, reason) => {
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() }, config: retryConfig, launchExitCodes: [code] });
+    const addTicketComment = vi.fn(async () => {});
+    h.deps.addTicketComment = addTicketComment;
+    await h.pass();
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    await h.pass();
+    await h.pass();
+    expect(addTicketComment).toHaveBeenCalledTimes(1);
+    expect(addTicketComment).toHaveBeenCalledWith(
+      'task-1',
+      `Leg killed by the platform: ${reason} (exit ${code}), attempt 1 of 3 — counted as a failed leg.`,
+    );
+  });
+
+  it('B-1187: a killed leg on the final attempt (park path) also posts the kill-reason comment, then parks', async () => {
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() }, launchExitCodes: [72] });
+    const addTicketComment = vi.fn(async () => {});
+    h.deps.addTicketComment = addTicketComment;
+    await h.pass();
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    await h.pass();
+    await h.pass();
+    expect(addTicketComment).toHaveBeenCalledWith('task-1', 'Leg killed by the platform: OOMKilled (exit 72), attempt 1 of 1 — counted as a failed leg.');
+    expect(h.getConduction('cond-1').status).toBe('parked');
+    expect(h.getConduction('cond-1').last_worker_exit_class).toBe('dirty-exit');
+  });
+
+  it('B-1187: a killed leg that stays a clean pause (the ticket already shows a brief) still gets the comment', async () => {
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() }, launchExitCodes: [73] });
+    const addTicketComment = vi.fn(async () => {});
+    h.deps.addTicketComment = addTicketComment;
+    h.hooks.onLaunch = () => {
+      (h.tasks['task-1'] as DaemonTask).awaiting_human_input = true;
+    };
+    await h.pass();
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    await h.pass();
+    await h.pass();
+    expect(h.getConduction('cond-1').status).toBe('active');
+    expect(h.getConduction('cond-1').last_worker_exit_class).toBe('clean-pause');
+    expect(addTicketComment).toHaveBeenCalledTimes(1);
+    expect(String(addTicketComment.mock.calls[0][1])).toContain('DeadlineExceeded (exit 73)');
+    expect(String(addTicketComment.mock.calls[0][1])).toContain('clean pause');
+    expect(h.reaps()).toEqual([]); // the wait path is not a park: no pre-park reap
+  });
+
+  it('B-1187: an ordinary dirty exit (1) posts no kill-reason comment', async () => {
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() }, config: retryConfig, launchExitCodes: [1] });
+    const addTicketComment = vi.fn(async () => {});
+    h.deps.addTicketComment = addTicketComment;
+    await h.pass();
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    await h.pass();
+    await h.pass();
+    expect(addTicketComment).not.toHaveBeenCalled();
+  });
+
+  it('B-1187: reap exit 3 (nothing there) before a park is safe — parks normally, no warning comment', async () => {
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() }, launchExitCode: 1, reapExitCode: 3 });
+    const addTicketComment = vi.fn(async () => {});
+    h.deps.addTicketComment = addTicketComment;
+    await h.pass();
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    await h.pass();
+    await h.pass();
+    expect(h.reaps()).toHaveLength(1);
+    expect(h.getConduction('cond-1').status).toBe('parked');
+    expect(addTicketComment).not.toHaveBeenCalled();
+  });
+
+  it('B-1187: reap exit 1 retries 3 times (inline, no new leg), then parks with a possibly-still-running comment', async () => {
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() }, launchExitCode: 1, reapExitCode: 1 });
+    const addTicketComment = vi.fn(async () => {});
+    h.deps.addTicketComment = addTicketComment;
+    await h.pass();
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    await h.pass();
+    await h.pass();
+    expect(h.reaps()).toHaveLength(3);
+    expect(h.launches()).toHaveLength(1); // no new worker leg fired by the failing reap
+    expect(h.getConduction('cond-1').status).toBe('parked');
+    const { reapIdx, parkedIdx } = orderOf(h);
+    expect(reapIdx[2]).toBeLessThan(parkedIdx[0]); // active until the last attempt is spent
+    expect(addTicketComment).toHaveBeenCalledTimes(1);
+    expect(String(addTicketComment.mock.calls[0][1])).toContain('may still be running');
+  });
+
+  it('B-1187: a reap that THROWS counts as unconfirmed (parks after 3 attempts; the pass does not throw)', async () => {
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() }, launchExitCode: 1 });
+    const real = h.deps.runCommand;
+    h.deps.runCommand = vi.fn(async (cmd: string, o?: { quiet?: boolean }) => {
+      if (cmd.startsWith('reap')) throw new Error('kubectl exploded');
+      return real(cmd, o);
+    }) as typeof real;
+    const addTicketComment = vi.fn(async () => {});
+    h.deps.addTicketComment = addTicketComment;
+    await h.pass();
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    await h.pass();
+    await h.pass();
+    expect(h.getConduction('cond-1').status).toBe('parked');
+    expect(String(addTicketComment.mock.calls[0][1])).toContain('may still be running');
   });
 
   it('case 4b (B-713): dirty exit retried, succeeds before cap, stays active, retry_count not reset', async () => {
@@ -849,7 +1013,7 @@ describe('runSchedulerPass — wake, fire, and settle (fire-and-track)', () => {
 
     // A single launch, no reap, no re-queue, no retry_count bump — identical to the no-retry-config case.
     expect(h.launches()).toHaveLength(1);
-    expect(h.reaps()).toHaveLength(0);
+    expect(h.reaps()).toHaveLength(1); // B-1187: the park itself is reaped (no retry reap)
     expect(h.getConduction('cond-1').retry_count).toBe(0);
     expect(h.deps.updateConductionIfHeld).toHaveBeenCalledWith('cond-1', ME, {
       status: 'parked',
@@ -2418,7 +2582,7 @@ describe('B-842: a takeover reap genuinely kills a live worker — distinguishab
     ).toBe(true);
   });
 
-  it('contrast: a normally-exited worker settles via classify and DOES get a recorded exit class — no reap ever runs', async () => {
+  it('contrast: a normally-exited worker settles via classify and DOES get a recorded exit class — its only reap is the B-1187 pre-park one', async () => {
     const h = makeHarness({
       conductions: [conduction()],
       tasks: { 'task-1': pausedTask() },
@@ -2427,7 +2591,7 @@ describe('B-842: a takeover reap genuinely kills a live worker — distinguishab
     await wakeAndFire(h); // fire
     await h.pass(); // settle → classify
 
-    expect(h.reaps()).toEqual([]); // never reaped — this worker exited entirely on its own
+    expect(h.reaps()).toEqual(['reap cond-1']); // B-1187: only the idempotent pre-park reap; nothing was escalated
     expect(h.getConduction('cond-1').leg_started_at).toBeNull(); // cleared, but via SETTLEMENT
     expect(h.getConduction('cond-1').last_worker_exit_code).toBe(1);
     expect(h.getConduction('cond-1').last_worker_exit_class).toBe('dirty-exit'); // classified, never discarded
@@ -2554,7 +2718,7 @@ describe('B-739: the per-launch deadline is enforced by firing the REAP template
     await h.fireDeadline();
     await h.pass(); // observes the reap-freed settlement, classifies worker-timeout, parks
 
-    expect(h.reaps()).toEqual(['reap cond-1']);
+    expect(h.reaps()).toEqual(['reap cond-1', 'reap cond-1']); // the escalation's reap + B-1187's pre-park reap
     expect(h.statusWrites()).toEqual([
       { status: 'parked', last_worker_exit_code: 137, last_worker_exit_class: 'worker-timeout' },
     ]);
@@ -2681,7 +2845,7 @@ describe('B-740: the early-reap lever (reap_requested_at consumed by the shared 
     await h.pass(); // notices reap_requested_at on the fresh row → escalates; the reap frees it
     await h.pass(); // observes the reap-freed settlement, classifies operator-reap, parks
 
-    expect(h.reaps()).toEqual(['reap cond-1']);
+    expect(h.reaps()).toEqual(['reap cond-1', 'reap cond-1']); // the escalation's reap + B-1187's pre-park reap
     expect(h.statusWrites()).toEqual([
       { status: 'parked', last_worker_exit_code: 137, last_worker_exit_class: 'operator-reap' },
     ]);
@@ -2725,7 +2889,7 @@ describe('B-740: the early-reap lever (reap_requested_at consumed by the shared 
 
     // The natural deadline never got a chance to ALSO fire its own escalation — only ONE reap
     // sequence ran (bounded, from the early-reap path), never two overlapping ones.
-    expect(h.reaps()).toEqual(['reap cond-1']);
+    expect(h.reaps()).toEqual(['reap cond-1', 'reap cond-1']); // the escalation's reap + B-1187's pre-park reap
   });
 
   it('the early-reap lever stays available on an already-tracked conduction even when the ticket is ALSO archived (archived only gates a NEW fire, never an in-flight one)', async () => {
@@ -2741,7 +2905,7 @@ describe('B-740: the early-reap lever (reap_requested_at consumed by the shared 
     await h.pass();
     await h.pass();
 
-    expect(h.reaps()).toEqual(['reap cond-1']);
+    expect(h.reaps()).toEqual(['reap cond-1', 'reap cond-1']); // the escalation's reap + B-1187's pre-park reap
     expect(h.statusWrites()).toEqual([
       { status: 'parked', last_worker_exit_code: 137, last_worker_exit_class: 'operator-reap' },
     ]);
