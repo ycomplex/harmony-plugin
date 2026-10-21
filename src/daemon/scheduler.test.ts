@@ -5085,6 +5085,9 @@ describe('B-1157: a declared external wait HOLDS the conduction instead of parki
     expect(h.getConduction('cond-1').status).toBe('parked');
     expect(h.getConduction('cond-1').last_worker_exit_class).toBe('no-progress');
     expect(h.getConduction('cond-1').last_worker_exit_code).toBe(0);
+  });
+});
+
 describe('B-1185 fireLaunch catalog wiring', () => {
   it.each(['codex:gpt-6.1-sol', 'gpt-6.1-sol'])('fires the first leg with the runtime id for %s', async (model) => {
     const h = makeHarness({
