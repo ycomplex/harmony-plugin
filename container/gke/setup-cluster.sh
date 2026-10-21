@@ -87,7 +87,7 @@ Options (defaults in brackets):
   --cluster <name>        [harmony-legs]
   --pool <name>           [legs]
   --machine-type <type>   [e2-standard-8]
-  --max-nodes <n>         [2]
+  --max-nodes <n>         [5]  the pool ceiling; set it together with concurrency.max_workers (runbook §3a)
   --namespace <ns>        [harmony-legs]
   --env-secret <name>     Kubernetes Secret holding the two env tokens [harmony-worker-secrets]
   --codex-secret <name>   Kubernetes Secret holding the Codex file credential [harmony-codex-auth]
@@ -126,7 +126,7 @@ ZONE="us-central1-a"
 CLUSTER="harmony-legs"
 POOL="legs"
 MACHINE_TYPE="e2-standard-8"
-MAX_NODES="2"
+MAX_NODES="5"
 NAMESPACE="harmony-legs"
 ENV_SECRET="harmony-worker-secrets"
 CODEX_SECRET="harmony-codex-auth"

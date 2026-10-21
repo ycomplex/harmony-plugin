@@ -132,6 +132,47 @@ Leave out `--cloud-run-runtime-sa` if you do not use the cloud profile from the 
 skipped). The script also applies `container/conductor/k8s/priorityclass.yaml` (step 27) with your credentials; step 5
 below applies it by hand if you used `--no-conductor`.
 
+### 3a. Choosing the parallelism ceiling, and the quotas it needs (B-1194)
+
+How many legs run at once is a choice about appetite, not a measurement. The pool scales to zero and a leg costs the
+same per hour whether 2 or 20 run, so a higher ceiling changes *when* money is spent, not how much. Weigh these before
+picking a number: model API rate limits (Anthropic, OpenAI), GitHub API limits, merge contention (by default the
+operator approves every pull request, so more legs means more pull requests waiting on a human), and the fact that a
+looping bug spends faster at a higher ceiling. The cap is partly a circuit breaker; a Google Cloud budget alert is the
+console-side alarm for it.
+
+A leg requests 6 CPU and 10Gi and sets no limits (`container/gke/gke-worker-launch.sh`,
+`container/gke/gke-render-leg.mjs`). The 6 CPU request is what keeps one leg per node on an 8 vCPU machine; the memory
+request is sized from measured usage (peak 7.68 GiB over 129 legs). Set the ceiling in two places, together:
+`--max-nodes` on the pool (`setup-cluster.sh`, default 5) and `concurrency.max_workers` in the project file.
+
+Quotas the ceiling needs. All three are Compute Engine quotas; read them with
+`gcloud compute regions describe <region> --project <project> --format='value(quotas)'`
+(and `gcloud compute project-info describe --project <project>` for the project-wide `CPUS_ALL_REGIONS`).
+
+| Quota | Scope | Must be at least |
+|---|---|---|
+| `CPUS_ALL_REGIONS` | project-wide | ceiling x leg-node vCPU + system-pool vCPU, plus headroom for a surge upgrade |
+| `IN_USE_ADDRESSES` | region | leg nodes at the ceiling + system nodes, plus headroom for a rollout |
+| `SSD_TOTAL_GB` | region | what is already used + ceiling x ticket-disk size (`gke.ticket_disk`, default `20Gi`) |
+
+To request an increase: open the Google Cloud console, go to IAM & Admin, then Quotas & System Limits; filter by the
+quota name and region; tick it; choose Edit quotas; enter the new limit and a one-line reason; submit. Small
+increases are usually granted within minutes. Do not raise `max_workers` until the grant shows in the quota page.
+
+Raising the ceiling, in this order (the pool first, the cap last):
+
+```bash
+gcloud container clusters update <cluster> --project <project> --zone <zone> \
+  --node-pool <pool> --enable-autoscaling --min-nodes 0 --max-nodes <ceiling>
+# edit concurrency.max_workers to <ceiling> in the project file (.harmony/conductor.json, or the configmap seed),
+# then for the pod's seed copy:
+kubectl -n harmony-conductor apply -f "$M/configmap.yaml"
+```
+
+`concurrency.max_workers` is hot: the conductor re-reads the merged config every 5 minutes, so no restart is needed
+(`HARMONY_DAEMON_MAX_CONCURRENT_WORKERS`, when set, still wins).
+
 ## 4. Put the config in the manifests
 
 The shipped manifests carry **placeholders and the reference deployment's names**. Edit these before applying:

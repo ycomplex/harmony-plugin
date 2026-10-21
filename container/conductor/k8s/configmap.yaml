@@ -5,6 +5,9 @@
 #   conductor-project.json  a SEED copy of the project file (normally .harmony/conductor.json in the config repo, which
 #                           the conductor fetches and snapshots itself). Not used unless HARMONY_CONDUCTOR_PROJECT_FILE
 #                           points at it (see the Deployment); kept here so a pod can run with no config repo reachable.
+# B-1194: concurrency.max_workers below is 2 on purpose. The leg pool's node maximum (setup-cluster.sh --max-nodes)
+# defaults to 5; raise max_workers to the same number only after the GCP quotas for that ceiling are granted
+# (docs/remote-conductor-runbook.md §3a). A cap above the pool's capacity does not fail, but legs wait in Pending.
 # Fill the REPLACE-WITH-* placeholders (App id and installation id are identifiers, not secrets) and config_repo
 # before applying. `harmony conductor config doctor` checks a filled copy; the image smoke checks the example host
 # file with the same schema.
