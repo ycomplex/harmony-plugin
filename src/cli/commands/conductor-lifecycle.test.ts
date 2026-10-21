@@ -432,7 +432,7 @@ describe('pre-flight (shared by start and restart)', () => {
   it('a gke profile needs kubectl and the base Secret; a cloud profile needs gcloud and the Cloud Run job', async () => {
     const gke = makeWorld({ profile: 'gke' });
     await runStart(gke.deps, { local: true });
-    expect(gke.calls.filter((c) => c.file === 'sh').map((c) => c.args[3])).toEqual(['git', 'node', 'kubectl']);
+    expect(gke.calls.filter((c) => c.file === 'sh').map((c) => c.args[3])).toEqual(['git', 'node', 'kubectl', 'gke-gcloud-auth-plugin']);
     expect(callsOf(gke.calls, 'kubectl')[0].args).toEqual(['-n', 'harmony-legs', '--context', 'gke_proj_us-east1-b_c', 'get', 'secret', 'harmony-worker-secrets']);
     const cloud = makeWorld({ profile: 'cloud', env: { HARMONY_CLOUD_RUN_REGION: 'us-east1' } });
     await runStart(cloud.deps, { local: true });
@@ -983,5 +983,103 @@ describe('pre-flight cloud reach check: gcp.project (B-1186)', () => {
     expect(c.ok).toBe(false);
     expect(JSON.stringify(c)).toContain('gcp.project');
     expect(m.calls.some((x) => x.file === 'gcloud' && x.args.some((a) => a.startsWith('--project=')))).toBe(false);
+  });
+});
+
+describe('a missing HARMONY_API_TOKEN names its cause and fix (B-808)', () => {
+  const HOST_FILE = `${HOME}/.harmony/conductor-host.json`;
+
+  it('no host file: says so with the real path, and the fix', async () => {
+    const m = makeWorld({ noToken: true });
+    m.vfs.delete(HOST_FILE);
+    const r = await runStart(m.deps, { remote: true });
+    const msg = r.errLines.join('\n');
+    expect(r.exitCode).toBe(1);
+    expect(msg).toContain(`no host file at ${HOST_FILE}`);
+    expect(msg).toContain('create it by hand');
+    expect(msg).toContain('export HARMONY_API_TOKEN');
+    expect(msg).not.toContain('config init');
+  });
+
+  it('a host file without secrets.api_token: says that', async () => {
+    const m = makeWorld({ noToken: true });
+    const r = await runStart(m.deps, { remote: true });
+    const msg = r.errLines.join('\n');
+    expect(msg).toContain(`the host file ${HOST_FILE} has no secrets.api_token entry`);
+    expect(msg).toContain('"api_token": "<secret-name>"');
+  });
+
+  it('a failed Secret Manager read: carries that message', async () => {
+    const m = makeWorld({ noToken: true, failExec: (f) => (f === 'gcloud' ? { code: 1, stdout: '', stderr: 'boom' } : undefined) });
+    m.vfs.set(HOST_FILE, JSON.stringify({ version: 1, gcp: { project: 'proj' }, secrets: { api_token: 'harmony-api-token' } }));
+    const r = await runStart(m.deps, { remote: true });
+    const msg = r.errLines.join('\n');
+    expect(msg).toContain('reading its secret failed');
+    expect(msg).toContain('"harmony-api-token"');
+    expect(msg).not.toContain('boom');
+  });
+
+  it('the pre-flight credential check carries the same reason', async () => {
+    const m = makeWorld({ noToken: true });
+    m.vfs.delete(HOST_FILE);
+    const pre = await runPreflight(m.deps, await loadSettings(m.deps, {}), {});
+    expect(pre.checks.find((c) => c.name === 'cred:HARMONY_API_TOKEN')!.detail).toContain(`no host file at ${HOST_FILE}`);
+  });
+
+  it('the documented minimal laptop host file resolves the token (project, account and secret name only)', async () => {
+    const m = makeWorld({ noToken: true, failExec: (f, a) => (f === 'gcloud' && a[0] === 'secrets' ? { code: 0, stdout: 'tok-from-sm\n', stderr: '' } : undefined) });
+    m.vfs.set(HOST_FILE, JSON.stringify({ version: 1, gcp: { project: 'p' }, gcloud: { account: 'me@example.com' }, secrets: { api_token: 'some-secret' } }));
+    const s = await loadSettings(m.deps, {});
+    expect(s.secretsError).toBeUndefined();
+    expect(s.env.HARMONY_API_TOKEN).toBe('tok-from-sm');
+    expect(m.calls.find((c) => c.file === 'gcloud')!.args).toEqual(['secrets', 'versions', 'access', 'latest', '--secret=some-secret', '--project=p', '--account=me@example.com']);
+  });
+
+  it('with a token present nothing changes: the registry is opened', async () => {
+    const m = makeWorld();
+    const r = await runStart(m.deps, { remote: true });
+    expect(r.errLines.join('\n')).not.toContain('HARMONY_API_TOKEN');
+  });
+});
+
+describe('pre-flight gke-gcloud-auth-plugin hint (B-808)', () => {
+  const SDK = '/opt/google-cloud-sdk';
+  const missing = (file: string, args: string[]): ExecResult | undefined =>
+    file === 'sh' && args.includes('gke-gcloud-auth-plugin') ? { code: 1, stdout: '', stderr: '' } : undefined;
+  const info = (file: string, args: string[]): ExecResult | undefined =>
+    file === 'gcloud' && args[0] === 'info' ? { code: 0, stdout: `${SDK}\n`, stderr: '' } : missing(file, args);
+  const check = async (m: ReturnType<typeof makeWorld>) =>
+    (await runPreflight(m.deps, await loadSettings(m.deps, {}), {})).checks.find((c) => c.name === 'tool:gke-gcloud-auth-plugin')!;
+
+  it('present on PATH: ok, and gcloud is not asked', async () => {
+    const m = makeWorld();
+    expect((await check(m)).ok).toBe(true);
+    expect(m.calls.some((c) => c.file === 'gcloud' && c.args[0] === 'info')).toBe(false);
+  });
+
+  it('installed under the SDK but off PATH: names the exact zsh file to source', async () => {
+    const m = makeWorld({ env: { SHELL: '/bin/zsh' }, failExec: info });
+    m.vfs.set(`${SDK}/bin/gke-gcloud-auth-plugin`, 'x');
+    const c = await check(m);
+    expect(c.ok).toBe(false);
+    expect(c.fix).toContain(`source ${SDK}/path.zsh.inc`);
+    expect(c.fix).toContain('up to date');
+    expect(m.calls.find((x) => x.file === 'gcloud')!.args).toEqual(['info', '--format=value(installation.sdk_root)']);
+  });
+
+  it('bash gets path.bash.inc', async () => {
+    const m = makeWorld({ env: { SHELL: '/usr/bin/bash' }, failExec: info });
+    m.vfs.set(`${SDK}/bin/gke-gcloud-auth-plugin`, 'x');
+    expect((await check(m)).fix).toContain(`source ${SDK}/path.bash.inc`);
+  });
+
+  it('not under the SDK: says to install the component', async () => {
+    const m = makeWorld({ failExec: info });
+    expect((await check(m)).fix).toContain('gcloud components install gke-gcloud-auth-plugin');
+  });
+
+  it('gcloud info failing is tolerated: install hint', async () => {
+    const m = makeWorld({ failExec: (f, a) => (f === 'gcloud' ? { code: 1, stdout: '', stderr: '' } : missing(f, a)) });
+    expect((await check(m)).fix).toContain('gcloud components install gke-gcloud-auth-plugin');
   });
 });

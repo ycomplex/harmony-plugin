@@ -138,8 +138,8 @@ conductor and its leases are untouched. Credentials are reported by name, never 
 |---|---|
 | `env-file` | `~/.harmony/conductor.env` (else the legacy `daemon.env`) sources cleanly |
 | `config` | `harmony conductor config doctor` reports no issue |
-| `tool:git`, `tool:node` | always; plus `tool:kubectl` (gke) or `tool:gcloud` (cloud) |
-| `cred:HARMONY_API_TOKEN` | present |
+| `tool:git`, `tool:node` | always; plus `tool:kubectl` and `tool:gke-gcloud-auth-plugin` (gke) or `tool:gcloud` (cloud). A missing `gke-gcloud-auth-plugin` asks `gcloud info` for the SDK root and, if the plugin is installed there, names the exact `source <sdk_root>/path.zsh.inc` (or `path.bash.inc`) line; see [operator machines](#operator-machines-harmony-on-path-the-host-file-and-gcloud-b-808) |
+| `cred:HARMONY_API_TOKEN` | present; when missing, the detail says why (no host file at `<path>`, no `secrets.api_token` entry in it, or the Secret Manager read failed) |
 | `cred:board` | the board is readable with that token |
 | `cred:github-app-key` | `HARMONY_APP_PRIVATE_KEY_PATH` names a readable file (or `HARMONY_APP_PRIVATE_KEY` is set) |
 | `reach:gke-base-secret` / `reach:cloud-run-job` | `kubectl get secret <base secret>` / `gcloud run jobs describe` succeeds |
@@ -214,6 +214,95 @@ Adoption: every lease on this host is held by pid 9001 with a fresh heartbeat.
 If a lease is still held by the old pid, `status` prints `NOT YET ADOPTED: n lease(s) ...` and
 `adoption_complete` is false in `--json`; wait a poll interval and run it again. A macOS host that must start
 the conductor before anyone logs in uses `harmony conductor start --at-boot` instead of `--local` in step 2.
+
+## Operator machines: `harmony` on PATH, the host file and gcloud (B-808)
+
+### How the plugin puts `harmony` on PATH
+
+Installing the plugin is enough; no repo checkout is needed. On **every session start** the plugin's
+SessionStart hook `hooks/link-cli.sh` (registered after the build hook in `hooks/hooks.json`; POSIX `sh`, no
+node, no network) keeps two things in place:
+
+| What | Where | Content |
+|---|---|---|
+| Pointer | `${HARMONY_HOME:-~/.harmony}/plugin-root` | one line: the absolute path of the plugin directory running this session. Rewritten (atomically) whenever it differs, so a plugin update repoints it |
+| Wrapper | `${HARMONY_BIN_DIR:-~/.local/bin}/harmony` | a tiny `sh` script that reads the pointer at run time and runs `node <plugin>/dist/bin/harmony.js "$@"`. Its **second line** is the marker `# harmony-plugin-shim v1`. It is written only if missing or carrying an older marker version, so it never changes on a plugin update |
+
+Rules the hook keeps:
+
+- **No clobbering.** A file (or symlink) already at the wrapper path without the marker is left untouched and
+  the hook prints one line saying so. Move it aside to let the plugin manage `harmony`.
+- **No profile edits.** If the bin dir is not on `PATH` the hook prints one line with the exact
+  `export PATH="$HOME/.local/bin:$PATH"` to add. It never writes a shell profile or rc file.
+- **Never fails the session.** Every error path exits 0 and prints at most one short line to stderr.
+- **Last session wins.** A `claude --plugin-dir <checkout>` session (the staging channel) repoints the pointer
+  at that checkout; the next ordinary session repoints it back. The wrapper follows whichever session started
+  last.
+- The wrapper reports a missing pointer, a missing `dist/bin/harmony.js` or a missing `node` as one line and
+  exits 127. `dist/` is built by the build hook on first launch of a source checkout (installed plugins ship it).
+
+**Manual fallback** (no hook, e.g. a machine that never runs Claude Code): create the same two things by hand.
+Replace `<plugin dir>` with the plugin directory containing `dist/bin/harmony.js`.
+
+```sh
+mkdir -p ~/.local/bin ~/.harmony
+printf '%s\n' "<plugin dir>" > ~/.harmony/plugin-root
+cat > ~/.local/bin/harmony <<'WRAP'
+#!/bin/sh
+# harmony-plugin-shim v1
+p="${HARMONY_HOME:-$HOME/.harmony}/plugin-root"
+[ -r "$p" ] || { echo "harmony: no plugin pointer at $p" >&2; exit 127; }
+IFS= read -r root < "$p"
+t="$root/dist/bin/harmony.js"
+[ -f "$t" ] || { echo "harmony: $t not found" >&2; exit 127; }
+command -v node >/dev/null 2>&1 || { echo "harmony: node is not on PATH" >&2; exit 127; }
+exec node "$t" "$@"
+WRAP
+chmod 755 ~/.local/bin/harmony
+```
+
+### Minimal operator-laptop host file
+
+A laptop that only **operates** a remote conductor (`harmony conductor status`, `start --remote`, `stop --remote`,
+`restart`) has no `conductor.env` and runs no conductor. It needs the registry, which needs `HARMONY_API_TOKEN`.
+The token is not stored on the laptop; the host file names the Secret Manager secret that holds it, and the CLI
+reads it in memory through `gcloud`. **There is no `harmony conductor config init` command** (`config` has only
+`sync`, `migrate` and `doctor`): create `~/.harmony/conductor-host.json` by hand. Secret **names** only, never values:
+
+```json
+{
+  "version": 1,
+  "gcp": { "project": "<gcp-project-id>" },
+  "gcloud": { "account": "<you@example.com>" },
+  "secrets": { "api_token": "<secret-name>" }
+}
+```
+
+- `secrets.api_token`: the Secret Manager secret holding the API token (becomes `HARMONY_API_TOKEN`).
+- `gcp.project`: the project the secret lives in (the resolver also accepts `HARMONY_GCP_PROJECT`,
+  `CLOUDSDK_CORE_PROJECT` or `GOOGLE_CLOUD_PROJECT` when the file does not set it).
+- `gcloud.account`: the gcloud account to read it with (passed as `--account`), instead of gcloud's active one.
+
+An exported `HARMONY_API_TOKEN` wins and costs no `gcloud` call. Without the file, or with a file that lacks
+`secrets.api_token`, the commands fail with `HARMONY_API_TOKEN is not set and ...` naming which of the two it
+is and the path it looked at; a failed Secret Manager read is reported with the secret name. Check the file
+with `harmony conductor config doctor`. The other keys are in [`conductor-config.md`](conductor-config.md).
+
+### gcloud and `gke-gcloud-auth-plugin`
+
+An operator machine needs `gcloud` (logged in as the account above), `kubectl`, and, for the gke profile,
+`gke-gcloud-auth-plugin` **on PATH**. `gcloud components install gke-gcloud-auth-plugin` can report "up to date"
+while the plugin is still not on PATH, because the SDK adds its `bin/` to PATH only through the SDK's shell
+include. The pre-flight (`tool:gke-gcloud-auth-plugin`) therefore finds the SDK root with
+`gcloud info --format="value(installation.sdk_root)"` and, when the plugin is installed under it, tells you to
+`source <sdk_root>/path.zsh.inc` (zsh) or `path.bash.inc` (bash); put that line in your shell profile. It prints
+the line and never runs it.
+
+### `harmony conductor status` on a laptop
+
+With no conductor process on the machine, `status` prints `No conductor is running here.` and then the
+registry's view (see [`status`](#harmony-conductor-status---json)), so it works from a laptop that has the host
+file above (or `HARMONY_API_TOKEN` exported).
 
 ## Logs
 
