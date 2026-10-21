@@ -1,6 +1,6 @@
 # Harmony Plugin for Claude Code
 
-> **Living · project · Tier 1** · verified against plugin 0.15.64 / web cabbdf4 on 2026-10-19 · **revise when:** versioning, the staging channel, a release rule or a plugin convention changes. Convention: harmony-workspace `docs/README.md` (B-1044).
+> **Living · project · Tier 1** · verified against plugin 0.16.0 / web 1b45424 on 2026-10-21 · **revise when:** versioning, the staging channel, a release rule or a plugin convention changes. Convention: harmony-workspace `docs/README.md` (B-1044).
 
 This is the Harmony plugin for Claude Code — an MCP server, CLI, and workflow skills for Harmony project management.
 
@@ -8,11 +8,12 @@ This is the Harmony plugin for Claude Code — an MCP server, CLI, and workflow 
 
 The `harmony` CLI provides the same functionality as the MCP server for direct terminal use.
 
-- **Binary:** `harmony`, on PATH after the plugin is installed: the SessionStart hook `hooks/link-cli.sh` (B-808) keeps a marker-guarded wrapper at `~/.local/bin/harmony` and a pointer at `~/.harmony/plugin-root`; never clobbers a foreign `harmony`, never edits a shell profile. Details, the manual fallback and the minimal operator-laptop host file are in [`docs/conductor-lifecycle.md`](docs/conductor-lifecycle.md#operator-machines-harmony-on-path-the-host-file-and-gcloud-b-808). Without the hook: local `node dist/bin/harmony.js`
+- **Binary:** `harmony`, on PATH after the plugin is installed: the SessionStart hook `hooks/link-cli.sh` (B-808) keeps a marker-guarded wrapper at `~/.local/bin/harmony` and a pointer at `~/.harmony/plugin-root`; never clobbers a foreign `harmony`, never edits a shell profile. Details, the manual fallback and the minimal operator-laptop host file are in [`docs/conductor-lifecycle.md`](docs/conductor-lifecycle.md#operator-machines-harmony-on-path-the-host-file-and-gcloud-b-808). Without the hook: local `node dist/bin/harmony.js`. `harmony --version` prints the `version` of `.claude-plugin/plugin.json` in the copy that is running (B-1079): the generated release on an installed plugin, `0.0.0-dev` in a source checkout
 - **Config:** `~/.harmony/config.json` (multi-project auth tokens)
 - **Output modes:** Human-readable tables (default) or `--json` for scripting
 - **Help:** `harmony --help`, `harmony <command> --help`
 - **Conductor config (B-1170):** `harmony conductor config <migrate|doctor|sync>` — a project's conductor is configured by `.harmony/conductor.json` in its repo plus `~/.harmony/conductor-host.json`; reference in [`docs/conductor-config.md`](docs/conductor-config.md) **Conductor lifecycle (B-1171):** `harmony conductor <start|stop|restart|status>` — stop = no new launches (legs keep running, the next start adopts them), restart = stop + start + adopt, update = restart onto the channel's latest version; semantics, pre-flight and the nohup-to-launchd adoption sequence in [`docs/conductor-lifecycle.md`](docs/conductor-lifecycle.md)
+- **Remote conductor (B-1173):** a project's conductor can run as one pod on its own GKE cluster (`container/conductor/`), built per plugin version from `staging` and `prod`. `harmony conductor start|stop --remote` scales it from an operator machine; `status` reads the registry, so it works from any laptop holding a minimal host file; the web's Conductor panel shows it and its **Update** moves the Deployment to the channel's newest version tag (B-1172). Merging builds an image; only an Update or restart deploys it. Setup, quotas and the ceiling: [`docs/remote-conductor-runbook.md`](docs/remote-conductor-runbook.md)
 - **Conductor logs (B-1174):** `harmony conductor logs --since <1h|30m|2d> [--source local|cloud] [--limit n]` reads the conductor's JSON-lines log (`~/.harmony/logs/conductor.log`) or Cloud Logging; setup and the `gcloud logging read` query are in [`docs/conductor-config.md`](docs/conductor-config.md#conductor-logs-b-1174)
 
 ### Quick start
@@ -62,7 +63,7 @@ When you retire a Harmony ticket — including the general conversational "let's
 The version in `.claude-plugin/plugin.json` is still **the only signal Claude Code uses to detect
 plugin updates** — that goal is untouched. What moved is the *mechanism*: the bump is no longer
 something a PR does by hand, it is **generated downstream on `staging`**, one patch bump per push to
-`main`. `main`'s `0.0.0-dev` is deliberately inert: it parses as a semver, and `0.0.0` sorts below
+`main` (or the floor below, when it is higher). `main`'s `0.0.0-dev` is deliberately inert: it parses as a semver, and `0.0.0` sorts below
 every version the marketplace has ever served, so it can never be mistaken for a release.
 
 **Starting a new minor or major line (B-1211).** The generator only patch-bumps. To cut, say, 0.16.0, merge an ordinary PR on `main` that writes `0.16.0` into **`.harmony/version-floor`** (one line, `x.y.z`). The next generation produces exactly that version, rebuilds `dist/` under it, and later merges continue `0.16.1`, `0.16.2` and so on. A floor at or below the patch bump is ignored, and an unparseable one fails the generation closed. It lives in `.harmony/`, not `.claude-plugin/`, because it is a Harmony release setting and the plugin runs on Codex as well as Claude. The PR gate does not forbid it: only `plugin.json`'s `version` and `dist/**` are off-limits.
@@ -194,7 +195,10 @@ The script writes the dogfood dir's `.claude/settings.local.json` (staging `HARM
 harmony-plugin/
 ├── .claude-plugin/plugin.json   # Plugin manifest
 ├── .mcp.json                    # MCP server config (stdio)
+├── .harmony/                     # this repo's Harmony settings: project.yml (release steps), version-floor (B-1211)
 ├── hooks/hooks.json             # SessionStart: auto-install + build, link-cli (harmony on PATH)
+├── container/                   # worker images, the cloud and gke launch scripts, the conductor pod (container/conductor/)
+├── docs/                        # contracts and operator guides: conductor config, lifecycle, remote runbook
 ├── skills/                      # Workflow skills
 ├── src/
 │   ├── index.ts                 # MCP server entry point
