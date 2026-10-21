@@ -244,6 +244,45 @@ describe.skipIf(!CAPABLE)('generate-staging.sh (B-1007 staging generation)', () 
     expect(tracked.sort()).toEqual(['dist/bin/harmony.js', 'dist/index.js']);
   }, 60_000);
 
+  /** Commit a version floor on main (B-1211), as the reviewed close-out PR would. */
+  function setFloor(floor: string): void {
+    mkdirSync(join(seedDir, '.harmony'), { recursive: true });
+    writeFileSync(join(seedDir, '.harmony', 'version-floor'), `${floor}\n`);
+    git(seedDir, 'add', '.harmony/version-floor');
+    git(seedDir, 'commit', '-q', '-m', 'main: version floor');
+    git(seedDir, 'push', '-q', 'origin', 'main');
+  }
+
+  it('B-1211: a version floor above the patch bump IS the next version; the next merge continues from it', () => {
+    generate(); // staging at 0.14.188
+    setFloor('0.15.0');
+    const output = generate();
+    expect(output).toContain('version floor 0.15.0');
+    git(ciDir, 'fetch', '-q', 'origin', 'staging');
+    expect(versionAt(remoteStagingSha())).toBe('0.15.0');
+    advanceMain('export const n = 4;\n');
+    generate(); // the floor is now at or below the bump, so it is ignored
+    git(ciDir, 'fetch', '-q', 'origin', 'staging');
+    expect(versionAt(remoteStagingSha())).toBe('0.15.1');
+  }, 60_000);
+
+  it('B-1211: a floor at or below the patch bump is ignored (an ordinary patch bump)', () => {
+    generate(); // 0.14.188
+    setFloor('0.14.5');
+    generate();
+    git(ciDir, 'fetch', '-q', 'origin', 'staging');
+    expect(versionAt(remoteStagingSha())).toBe('0.14.189');
+  }, 60_000);
+
+  it('B-1211: an unparseable floor fails closed and pushes nothing', () => {
+    generate();
+    git(ciDir, 'fetch', '-q', 'origin', 'staging');
+    const before = remoteStagingSha();
+    setFloor('0.15');
+    expect(() => generate()).toThrow();
+    expect(remoteStagingSha()).toBe(before);
+  }, 60_000);
+
   it('fails closed on bootstrap when there is no prod branch and no explicit seed version', () => {
     git(seedDir, 'push', '-q', originDir, '--delete', 'prod');
     expect(() => generate()).toThrow();

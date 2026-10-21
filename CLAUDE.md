@@ -65,6 +65,8 @@ something a PR does by hand, it is **generated downstream on `staging`**, one pa
 `main`. `main`'s `0.0.0-dev` is deliberately inert: it parses as a semver, and `0.0.0` sorts below
 every version the marketplace has ever served, so it can never be mistaken for a release.
 
+**Starting a new minor or major line (B-1211).** The generator only patch-bumps. To cut, say, 0.16.0, merge an ordinary PR on `main` that writes `0.16.0` into **`.harmony/version-floor`** (one line, `x.y.z`). The next generation produces exactly that version, rebuilds `dist/` under it, and later merges continue `0.16.1`, `0.16.2` and so on. A floor at or below the patch bump is ignored, and an unparseable one fails the generation closed. It lives in `.harmony/`, not `.claude-plugin/`, because it is a Harmony release setting and the plugin runs on Codex as well as Claude. The PR gate does not forbid it: only `plugin.json`'s `version` and `dist/**` are off-limits.
+
 **The PR gate is INVERTED.** The old rule ("every PR must bump the version") is gone; its
 replacement, `scripts/check-generated-artifacts.sh`, enforces the opposite:
 

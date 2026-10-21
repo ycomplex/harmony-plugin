@@ -175,6 +175,24 @@ NEW_VERSION="$(node -e '
   if (!m) { console.error(`cannot parse semver: ${process.argv[1]}`); process.exit(1); }
   console.log(`${Number(m[1])}.${Number(m[2])}.${Number(m[3]) + 1}`);
 ' "$BASE_VERSION")" || die "cannot patch-bump $BASE_VERSION"
+
+# B-1211: a VERSION FLOOR starts a new minor/major line through an ordinary reviewed PR on main. It
+# lives in Harmony's own config, not in .claude-plugin/: it is a release setting, and the plugin runs
+# on Codex as well as Claude. One line, a plain x.y.z. When it is above the patch bump, it IS the new
+# version; at or below, it is ignored (harmless once passed). An unparseable floor fails closed, as
+# every other unreadable input here does.
+FLOOR_FILE="${HARMONY_STAGING_VERSION_FLOOR_FILE:-.harmony/version-floor}"
+if [ -f "$FLOOR_FILE" ]; then
+  FLOOR="$(tr -d '[:space:]' < "$FLOOR_FILE")"
+  NEW_VERSION="$(node -e '
+    const parse = (v) => { const m = String(v).match(/^(\d+)\.(\d+)\.(\d+)$/); return m && m.slice(1).map(Number); };
+    const [next, floor] = [parse(process.argv[1]), parse(process.argv[2])];
+    if (!floor) { console.error(`unparseable version floor: ${JSON.stringify(process.argv[2])} (expected x.y.z)`); process.exit(1); }
+    const cmp = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+    console.log(cmp(floor, next) > 0 ? floor.join(".") : next.join("."));
+  ' "$NEW_VERSION" "$FLOOR")" || die "cannot apply the version floor in $FLOOR_FILE"
+  say "version floor $FLOOR (from $FLOOR_FILE) checked against the patch bump"
+fi
 say "version: $BASE_VERSION -> $NEW_VERSION"
 
 # Rewrite only the version FIELD, textually, so the manifest's formatting is otherwise untouched.

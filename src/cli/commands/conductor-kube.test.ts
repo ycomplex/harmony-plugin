@@ -119,6 +119,8 @@ describe('version tag selection', () => {
   it('orders numerically, not lexically', () => {
     expect(compareVersionTags('0.15.7', '0.15.65')).toBeLessThan(0);
     expect(compareVersionTags('v1.0.0', '0.99.99')).toBeGreaterThan(0);
+    expect(compareVersionTags('0.16.0', '0.15.99')).toBeGreaterThan(0); // B-1211: a version-floor minor bump outranks the last patch
+
   });
   it('picks the newest release tag on the SAME image as the channel tag; ignores pre-releases and other images', () => {
     const list = JSON.stringify([tag('staging', 'sha256:aaa'), tag('0.15.64', 'sha256:old'), tag('0.15.65', 'sha256:aaa'), tag('0.15.66-rc1', 'sha256:aaa'), tag('0.15.7', 'sha256:aaa')]);
