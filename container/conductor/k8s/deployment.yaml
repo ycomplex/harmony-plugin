@@ -66,7 +66,10 @@ spec:
       containers:
         - name: conductor
           image: us-central1-docker.pkg.dev/harmony-conductor/harmony-workers/harmony-conductor:__CONDUCTOR_VERSION__
-          imagePullPolicy: IfNotPresent
+          # Always pull: a node may hold an older image cached under the same version tag (runbook step 11b pushes a
+          # deliberately broken image as the next version). IfNotPresent would start that cached build after the real
+          # one is published. The digest-pinned Update (B-1209) is the durable fix; until then the tag is re-resolved.
+          imagePullPolicy: Always
           env:
             - name: HARMONY_CONDUCTOR_REMOTE
               value: '1'
