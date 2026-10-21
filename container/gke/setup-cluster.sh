@@ -55,7 +55,8 @@
 #  27. on cluster create: --num-nodes/--machine-type come from those flags and nodes get GKE_METADATA (step 4);
 #      on an existing cluster: sets GKE_METADATA on default-pool when missing (recreates its nodes, so it REFUSES
 #      while a leg Job is active) and REPORTS node-count / machine-type drift as `DRIFT:` lines with the exact
-#      fix command, changing nothing else.
+#      fix command, changing nothing else; and (unless --no-conductor) applies the cluster-scoped PriorityClass
+#      container/conductor/k8s/priorityclass.yaml, which the conductor Deployment names.
 #  It does NOT apply the ConfigMap, Deployment or CronJob: those carry an image version and the App
 #  identifiers, so they are applied by hand (see the comments in container/conductor/k8s/).
 #
@@ -769,6 +770,16 @@ system_pool_report_drift() {
   return 0
 }
 
+# The conductor's PriorityClass is cluster-scoped, so the pod's own namespaced Role cannot create it: apply it here
+# with the operator's credentials (step 6), BEFORE the Deployment that names it. create-or-update, a no-op if unchanged.
+system_pool_apply_priorityclass() {
+  if [ ! -f "$MANIFEST_DIR/priorityclass.yaml" ]; then
+    echo "setup-cluster: manifest $MANIFEST_DIR/priorityclass.yaml not found" >&2
+    exit 1
+  fi
+  run kubectl apply -f "$MANIFEST_DIR/priorityclass.yaml"
+}
+
 step "27. System node pool $SYSTEM_POOL ($SYSTEM_NODES x $SYSTEM_MACHINE_TYPE)"
 if probe gcloud container node-pools describe "$SYSTEM_POOL" --cluster "$CLUSTER" --zone "$ZONE" --project "$PROJECT"; then
   system_pool_ensure_metadata
@@ -777,6 +788,9 @@ elif [ "$DRY_RUN" -eq 1 ]; then
   echo "dry run: on an existing cluster this step would enable GKE_METADATA on $SYSTEM_POOL if missing and report size drift"
 else
   echo "node pool $SYSTEM_POOL: not found on cluster $CLUSTER (a cluster made by an older script or by hand may name it differently); nothing to check"
+fi
+if [ "$NO_CONDUCTOR" -eq 0 ]; then
+  system_pool_apply_priorityclass
 fi
 
 step "Done. Values for the deployment config"

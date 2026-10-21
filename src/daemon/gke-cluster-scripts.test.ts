@@ -1266,6 +1266,20 @@ describe.skipIf(!CAPABLE)('container/gke/setup-cluster.sh — step 27, the syste
     expect(calls(world, 'gcloud').some((c) => has(c, 'resize'))).toBe(false);
   });
 
+  it('applies the cluster-scoped PriorityClass with the operator credentials, before the Deployment would be applied; --no-conductor skips it', () => {
+    const world = makeWorld();
+    existing(world);
+    const withConductor = setupAll(world);
+    expect(withConductor.status).toBe(0);
+    const pcApply = calls(world, 'kubectl').filter((c) => has(c, 'apply') && c.some((a) => a.endsWith('conductor/k8s/priorityclass.yaml')));
+    expect(pcApply).toHaveLength(1);
+    expect(calls(world, 'kubectl').some((c) => c.some((a) => a.endsWith('deployment.yaml')))).toBe(false); // the script never applies the Deployment
+    const world2 = makeWorld();
+    existing(world2);
+    expect(setup(world2).status).toBe(0);
+    expect(calls(world2, 'kubectl').some((c) => c.some((a) => a.endsWith('priorityclass.yaml')))).toBe(false);
+  });
+
   it('--dry-run prints the step and runs no stub', () => {
     const world = makeWorld();
     const r = setup(world, ['--dry-run']);
