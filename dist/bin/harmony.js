@@ -49457,7 +49457,7 @@ function registerFasttrackCommands(program3) {
 
 // src/cli/index.ts
 var require2 = createRequire(import.meta.url);
-var { version: version3 } = require2("../../package.json");
+var { version: version3 } = require2("../../.claude-plugin/plugin.json");
 var program2 = new Command();
 program2.name("harmony").description("Harmony project management CLI").version(version3).option("--json", "Output results as JSON", false);
 registerAuthCommands(program2);
