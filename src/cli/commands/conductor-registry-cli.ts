@@ -3,7 +3,7 @@
 import { join } from 'node:path';
 import type { RegistryClient } from '../../daemon/conductor-registry.js';
 import type { LifecycleDeps } from './conductor-lifecycle-deps.js';
-import type { ConductorSettings } from './conductor-preflight.js';
+import { missingTokenReason, type ConductorSettings } from './conductor-preflight.js';
 
 export const REGISTRY_ABSENT = 'registry not deployed on this project';
 
@@ -19,7 +19,7 @@ export function pluginVersion(deps: LifecycleDeps, pluginDir: string): string {
 export type RegistryHandle = { client: RegistryClient } | { error: string };
 
 export async function openRegistry(deps: LifecycleDeps, s: ConductorSettings): Promise<RegistryHandle> {
-  if (!s.env.HARMONY_API_TOKEN) return { error: 'HARMONY_API_TOKEN is not set' };
+  if (!s.env.HARMONY_API_TOKEN) return { error: missingTokenReason(deps, s) };
   try {
     return { client: await deps.registryClient(s.env) };
   } catch (err) {
