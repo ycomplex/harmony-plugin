@@ -49,6 +49,20 @@ statement of what a clean place to stop looks like, in this order:
    (`ticket-parked`, B-1107) for `Parked` so it stays on Live with Resume; the stop gate treats all three as clean;
 3. `Decomposed` with ≥1 non-archived child and the flag down — the split-umbrella report-and-stop.
 
+A **fifth sanctioned shape** sits beside these (B-1157), deliberately *not* on the list above — it is a hold,
+not a clean place to stop, and the classifier never maps it to `complete`:
+
+5. **A declared external wait** — the leg is waiting on something outside the board (CI, a PR state, an
+   off-board human step) and says so by writing `field_values.waiting_on`
+   (`{ kind: 'ci' | 'pr-state' | 'human-step', ref, since, first_since, resume_after? }`, via `update_task`)
+   plus a `WAITING-ON ref=<ref>` comment. It counts only while **live**: well-formed, `since` at or after this
+   leg's start (a marker left by an earlier leg holds nothing), and inside 24h of `first_since`
+   (`liveWaitingOn`, `src/daemon/waiting-on.ts`). The daemon classifier then holds the conduction
+   (`wait` / `waiting-on`) instead of parking it `no-progress`, and the scheduler does not re-fire it until
+   `resume_after`; the stop gate allows the turn-end on the same liveness test (`hasLiveDeclaredWait`). A
+   dirty exit with a marker is still a dirty exit, and the leg clears the marker (`waiting_on: null`) when the
+   wait ends.
+
 Nothing else is a clean voluntary stop. A contract test (`src/hooks/stop-gate.contract.test.ts`) runs a
 table of row shapes through **both** consumers and fails if they ever disagree.
 
