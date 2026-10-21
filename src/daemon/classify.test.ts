@@ -591,3 +591,64 @@ describe('B-1166: the classifier sees only the exit code + ticket row, never k8s
     expect(classifyWorkerExit(withReason)).toEqual({ action: 'wait' });
   });
 });
+
+describe('B-1157: a live declared wait HOLDS instead of parking no-progress', () => {
+  const waitingOn = {
+    kind: 'ci' as const,
+    ref: 'pr#12',
+    since: '2026-10-21T10:00:00.000Z',
+    first_since: '2026-10-21T10:00:00.000Z',
+  };
+  const idle = { progressed: false, waitingOn };
+
+  it("exit 0 + not progressed + live marker ⇒ wait / 'waiting-on'", () => {
+    const a = args(idle);
+    const outcome = classifyWorkerExit(a);
+    expect(outcome).toEqual({ action: 'wait', reason: 'waiting-on' });
+    expect(exitClass(outcome, a)).toBe('waiting-on');
+  });
+
+  it('a non-zero exit with a marker is still dirty-exit', () => {
+    expect(classifyWorkerExit(args({ ...idle, exitCode: 1 }))).toEqual({ action: 'park', reason: 'dirty-exit' });
+    expect(classifyWorkerExit(args({ ...idle, exitCode: null }))).toEqual({ action: 'park', reason: 'dirty-exit' });
+  });
+
+  it('an absent or null marker still parks no-progress / repo-active-board-silent', () => {
+    expect(classifyWorkerExit(args({ progressed: false }))).toEqual({ action: 'park', reason: 'no-progress' });
+    expect(classifyWorkerExit(args({ progressed: false, waitingOn: null }))).toEqual({ action: 'park', reason: 'no-progress' });
+    expect(classifyWorkerExit(args({ ...idle, waitingOn: null, repoProgressed: true }))).toEqual({
+      action: 'park',
+      reason: 'repo-active-board-silent',
+    });
+  });
+
+  it('a live marker also holds when the repo moved (the wait is declared, so the leg is not board-silent)', () => {
+    expect(classifyWorkerExit(args({ ...idle, repoProgressed: true }))).toEqual({ action: 'wait', reason: 'waiting-on' });
+  });
+
+  it("a progressed leg is an ordinary wait / 'clean-pause', marker or not", () => {
+    const a = args({ progressed: true, waitingOn });
+    const outcome = classifyWorkerExit(a);
+    expect(outcome).toEqual({ action: 'wait' });
+    expect(exitClass(outcome, a)).toBe('clean-pause');
+  });
+
+  it('clean-row branches 1-3 still win over the marker', () => {
+    expect(classifyWorkerExit(args({ ...idle, row: { workflow_state: 'Built', awaiting_human_input: true } }))).toEqual({ action: 'wait' });
+    expect(classifyWorkerExit(args({ ...idle, row: { workflow_state: 'Verified', awaiting_human_input: false } }))).toEqual({ action: 'complete' });
+    expect(classifyWorkerExit(args({ ...idle, row: { workflow_state: 'Parked', awaiting_human_input: false } }))).toEqual({
+      action: 'park',
+      reason: 'ticket-parked',
+    });
+    expect(classifyWorkerExit(args({ ...idle, row: { workflow_state: 'Decomposed', awaiting_human_input: false }, nonArchivedChildCount: 2 }))).toEqual({
+      action: 'complete',
+    });
+  });
+
+  it('stale / timeout / operator-reap / refusal still win over the marker', () => {
+    expect(classifyWorkerExit(args({ ...idle, row: { workflow_state: 'Built', awaiting_human_input: false, stale: true } }))).toEqual({ action: 'park', reason: 'stale' });
+    expect(classifyWorkerExit(args({ ...idle, timedOut: true }))).toEqual({ action: 'park', reason: 'worker-timeout' });
+    expect(classifyWorkerExit(args({ ...idle, operatorReaped: true }))).toEqual({ action: 'park', reason: 'operator-reap' });
+    expect(classifyWorkerExit(args({ ...idle, refusal: { kind: 'quota', resets_at: null } }))).toEqual({ action: 'park', reason: 'quota' });
+  });
+});
