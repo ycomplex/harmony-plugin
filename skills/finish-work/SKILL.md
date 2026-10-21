@@ -989,6 +989,32 @@ If CI/deploy goes red, **do not advance** — the ticket stays Built; fix and re
 `Deployed` meaning "deployed" (state-machine §6.1), so `verifying` (O3) checks against a real deploy
 rather than a state that ran ahead of reality (the B-60 conflation — review F4).
 
+#### Declaring an external wait (B-1157)
+
+If the leg must end while something OUTSIDE the board is still pending — the PR's checks are still in
+flight, or the release is accepted but an off-board step has not landed (the founder's `./promote-prod.sh`
+in an ordered release, or the merge itself) — do **not** just exit: a clean exit that moved nothing is
+parked `no-progress`. Declare the wait instead, with the existing `update_task` (top-level `field_values`
+merges; no new tool):
+
+```
+mcp__harmony__update_task({ task_id, field_values: { waiting_on: {
+  kind: "ci" | "pr-state" | "human-step",
+  ref: "<what you wait on, e.g. pr#42 checks>",
+  since: "<now, ISO>",
+  first_since: "<ISO of the FIRST declaration — copy it forward unchanged on every re-declaration>",
+  resume_after: "<ISO, ~10-15 min ahead for CI>"
+} } })
+mcp__harmony__add_comment({ task_id, content: "WAITING-ON ref=<ref>" })
+```
+
+Then exit. The conductor HOLDS the conduction (stays active, never parked) and queues the next leg at
+`resume_after`, or earlier if the ball flips or an exchange changes. The declaration only counts while it is
+**live**: written during THIS leg (a marker left by an earlier leg does not hold this one) and within 24h of
+`first_since`; a re-declaration cannot extend that ceiling. When the wait ends — or the next leg proceeds —
+clear it: `update_task({ task_id, field_values: { waiting_on: null } })`. An observed failure is still an
+observed failure: declare a wait only for something genuinely pending, never to defer a red check.
+
 ### O3. Verify (Deployed → Verified)
 
 After deploy, file the verification brief so the human can acknowledge real-world behaviour matches the

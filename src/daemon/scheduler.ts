@@ -132,6 +132,7 @@
 // executed proof this reasoning rests on.
 
 import { captureBaseline, detectWake, type WatchBaseline } from './watch.js';
+import { liveWaitingOn, strandedWorkSignal, waitResumeAtMs, type WaitingOn } from './waiting-on.js';
 import { classifyWorkerExit, exitClass, settleLogLine, TICKET_TERMINAL_STATES, type ClassifyArgs } from './classify.js';
 import { renderQuietReapOutcome } from './quiet-reap.js';
 import { exchangeWentInactive } from '../conductor/ball-axis.js';
@@ -201,6 +202,9 @@ export type DaemonTask = Taskish & {
   awaiting_human_reason?: string | null;
   /** B-1052: ditto — only `.kind` is ever read, and only for the sentinel belt above. */
   awaiting_human_ref?: { kind?: string | null } | null;
+  /** B-1157: already part of the meta projection (B-818) — read ONLY by the pre-park re-read's
+   *  stranded-work check (strandedWorkSignal). */
+  pending_acceptance_event_id?: string | null;
 };
 
 export interface SchedulerDeps extends WriteRetryDeps {
@@ -833,6 +837,8 @@ export interface SchedulerRuntime {
   rateLimitRetries?: Map<string, number>;
   /** B-1149: conductions whose "runtime held" skip was already logged (log once per hold). */
   heldLogged?: Set<string>;
+  /** B-1157: conductions whose declared-wait hold was already logged (log once per hold). */
+  waitLogged?: Set<string>;
   /** B-1171: true once a leg_backend read or write reported the column missing — no further attempts. */
   legBackendAbsent?: boolean;
   /** B-1171: leases this conductor won but REFUSED to adopt (recorded backend unresolvable) — skipped
@@ -944,6 +950,7 @@ export async function runSchedulerPass(
     for (const id of [...q.holds.keys()]) if (!activeIds.has(id)) q.holds.delete(id);
     for (const id of [...q.rateLimit.keys()]) if (!activeIds.has(id)) q.rateLimit.delete(id);
     for (const id of [...q.logged]) if (!activeIds.has(id)) q.logged.delete(id);
+    for (const id of [...(runtime.waitLogged ?? [])]) if (!activeIds.has(id)) runtime.waitLogged?.delete(id);
     // B-1149: the persisted quota state, read ONCE per pass. null = the columns are not live yet
     // (in-memory holds only); a throw keeps last pass's read rather than dropping a hold.
     if (deps.readQuotaState) {
@@ -1082,6 +1089,31 @@ async function handleConduction(
   await handleHeldConduction(deps, state, keeper, excluded, runtime, row);
 }
 
+/** B-1157: the active exchange's identity + stamps, for "did the exchange change since the baseline?". */
+function exchangeKey(ex: WatchBaseline['activeExchange']): string {
+  return ex ? [ex.exchange_id, ex.status, ex.round, ex.answers_submitted_at, ex.force_quit_requested_at].join('|') : '';
+}
+
+/** B-1157: is a declared external wait HOLDING this conduction right now? Returns the live marker when
+ *  it does, else null (fall through to the ordinary wake logic UNCHANGED). Held only while the marker
+ *  is live (valid, inside the 24h ceiling), the resume time has not arrived, the ball did not flip back
+ *  from the human, and the active exchange is unchanged since the baseline. Derived from the ticket
+ *  row + the rolling baseline alone, so it survives a daemon restart. Without it detectWake would
+ *  re-fire the leg immediately (the ball is the agent's, so first-pickup 'agent-ball' matches). */
+export function waitHoldActive(
+  baseline: WatchBaseline | undefined,
+  current: DaemonTask,
+  nowMs: number,
+): WaitingOn | null {
+  const w = liveWaitingOn(current.field_values, { nowMs });
+  if (!w || nowMs >= waitResumeAtMs(w)) return null;
+  if (baseline) {
+    if (baseline.awaitingHumanInput === true && current.awaiting_human_input !== true) return null;
+    if (exchangeKey(baseline.activeExchange) !== exchangeKey(current.active_exchange ?? null)) return null;
+  }
+  return w;
+}
+
 /** The full per-pass handling for a row THIS daemon currently holds the lease for — states
  *  (a)/(b)/(c) of the module header. Shared by the normal per-row dispatch AND by a takeover win's
  *  fallthrough (today's pre-B-717 code fell through to this exact continuation, unconditionally,
@@ -1186,6 +1218,24 @@ async function handleHeldConduction(
     );
     return;
   }
+
+  // B-1157: HOLD GATE — a leg declared an external wait (field_values.waiting_on). Roll the baseline and
+  // queue nothing until the marker expires, its resume time arrives, the ball flips or the exchange
+  // changes; then fall through to the ordinary wake logic UNCHANGED.
+  const waitLogged = (runtime.waitLogged ??= new Set<string>());
+  const held = waitHoldActive(state.get(row.id), current, deps.now());
+  if (held) {
+    if (!waitLogged.has(row.id)) {
+      deps.log(
+        `${label(row, current, deps.projectKey)}: holding on declared wait (${held.kind} ${held.ref}) until ` +
+          `${iso(waitResumeAtMs(held))} — not queuing`,
+      );
+      waitLogged.add(row.id);
+    }
+    state.set(row.id, captureBaseline(current));
+    return;
+  }
+  waitLogged.delete(row.id);
 
   const baseline = state.get(row.id);
   if (!baseline) {
@@ -1660,6 +1710,8 @@ async function settleTrackedLaunch(
     operatorReaped: tracked.operatorReaped,
     repoProgressed,
     refusal,
+    // B-1157: a declared external wait, only while live for THIS leg (written at/after fire, inside the ceiling).
+    waitingOn: liveWaitingOn(after.field_values, { firedAtMs: tracked.firedAt, nowMs: deps.now() }),
   };
   const outcome = classifyWorkerExit(classifyArgs);
   const cls = exitClass(outcome, classifyArgs);
@@ -1686,11 +1738,14 @@ async function settleTrackedLaunch(
     // is no worse than today's total silence on this branch.
     if (
       !(await writeLastLegEndedAt(deps, state, keeper, row, {
-        last_worker_exit_class: 'clean-pause',
+        last_worker_exit_class: cls,
         last_worker_exit_code: tracked.exitCode,
       }))
     ) {
       return;
+    }
+    if (classifyArgs.waitingOn && outcome.reason === 'waiting-on') {
+      deps.log(`${label(row, after, deps.projectKey)}: leg declared an external wait on ${classifyArgs.waitingOn.ref} — conduction held`);
     }
     state.set(row.id, captureBaseline(after));
     return;
@@ -1723,6 +1778,31 @@ async function settleTrackedLaunch(
     });
     return;
   }
+
+  // B-1157: PRE-PARK RE-READ. A no-progress park is decided on a read taken BEFORE this point; a human
+  // answer / ball flip / reshape / acceptance can land in that gap and would be stranded by the park
+  // (the conduction leaves the active set and nothing wakes it). Re-read once and, if the fresh row
+  // shows stranded work, stay active with the baseline taken from the FRESH row so the next pass's wake
+  // logic fires or holds correctly. A failed re-read parks exactly as before.
+  if (outcome.action === 'park' && (cls === 'no-progress' || cls === 'repo-active-board-silent')) {
+    let fresh: DaemonTask | null = null;
+    try {
+      fresh = await deps.getTaskMeta(row.task_id);
+    } catch (err) {
+      deps.log(`${label(row, after, deps.projectKey)}: pre-park re-read failed (${formatDaemonError(err)}) — parking as classified`);
+    }
+    // Only a signal NEW relative to what this leg already saw (the post-exit read + its fire-time read) is a late
+    // write; one it already had its chance at must park as classified, never loop legs (seat review of #364).
+    const stranded = fresh ? strandedWorkSignal(fresh, [after, tracked.current]) : null;
+    if (fresh && stranded) {
+      deps.log(`${label(row, after, deps.projectKey)}: pre-park re-read shows stranded work (${stranded}) — staying active instead of parking`);
+      if (!(await writeLastLegEndedAt(deps, state, keeper, row, { last_worker_exit_class: stranded, last_worker_exit_code: tracked.exitCode }))) return;
+      state.set(row.id, captureBaseline(fresh));
+      return;
+    }
+  }
+
+  // B-1187 inserts its reap of the final attempt's Job AFTER this re-read decides to park and BEFORE the status write.
 
   // Park (retry cap exhausted, or a non-dirty-exit park reason) / complete: one terminal status
   // write, exactly as before B-713/B-717.

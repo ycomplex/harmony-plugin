@@ -38622,6 +38622,65 @@ function detectWake(baseline, current) {
   return null;
 }
 
+// src/daemon/waiting-on.ts
+var WAIT_CEILING_MS = 24 * 60 * 60 * 1e3;
+var WAIT_DEFAULT_RECHECK_MS = 15 * 60 * 1e3;
+var WAITING_ON_KINDS = ["ci", "pr-state", "human-step"];
+function validIso(v) {
+  return typeof v === "string" && Number.isFinite(Date.parse(v));
+}
+function parseWaitingOn(fieldValues) {
+  if (fieldValues === null || typeof fieldValues !== "object") return null;
+  const raw = fieldValues.waiting_on;
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const m = raw;
+  if (!WAITING_ON_KINDS.includes(m.kind)) return null;
+  if (typeof m.ref !== "string" || m.ref.trim() === "") return null;
+  if (!validIso(m.since) || !validIso(m.first_since)) return null;
+  if (m.resume_after !== void 0 && m.resume_after !== null && !validIso(m.resume_after)) return null;
+  return {
+    kind: m.kind,
+    ref: m.ref,
+    since: m.since,
+    first_since: m.first_since,
+    ...typeof m.resume_after === "string" ? { resume_after: m.resume_after } : {}
+  };
+}
+function liveWaitingOn(fieldValues, opts) {
+  const w = parseWaitingOn(fieldValues);
+  if (!w) return null;
+  if (opts.firedAtMs !== void 0 && Date.parse(w.since) < opts.firedAtMs) return null;
+  if (opts.nowMs >= Date.parse(w.first_since) + WAIT_CEILING_MS) return null;
+  return w;
+}
+function waitResumeAtMs(w) {
+  const ceiling = Date.parse(w.first_since) + WAIT_CEILING_MS;
+  const wanted = w.resume_after ? Date.parse(w.resume_after) : Date.parse(w.since) + WAIT_DEFAULT_RECHECK_MS;
+  return Math.min(wanted, ceiling);
+}
+function strandedValue(row, code) {
+  if (code === "answers") {
+    const a = row.active_exchange?.answers_submitted_at ?? null;
+    const f = row.active_exchange?.force_quit_requested_at ?? null;
+    return a !== null || f !== null ? `${a ?? ""}|${f ?? ""}` : null;
+  }
+  if (code === "reshape") {
+    return row.pending_resolution !== null && row.pending_resolution !== void 0 ? JSON.stringify(row.pending_resolution) : null;
+  }
+  return row.pending_acceptance_event_id ?? null;
+}
+function strandedWorkSignal(fresh, seen = []) {
+  const isNew = (code) => {
+    const v = strandedValue(fresh, code);
+    return v !== null && !seen.some((s) => strandedValue(s, code) === v);
+  };
+  if (isNew("answers")) return "late-answers-landed";
+  if (fresh.awaiting_human_input === true) return "late-human-ball";
+  if (isNew("reshape")) return "late-reshape";
+  if (isNew("acceptance")) return "late-acceptance";
+  return null;
+}
+
 // src/daemon/classify.ts
 var TICKET_TERMINAL_STATES = ["Verified", "Cancelled", "Parked"];
 function classifyCleanRowShape(row, nonArchivedChildCount) {
@@ -38653,6 +38712,7 @@ function classifyWorkerExit(args) {
     return { action: "park", reason: args.refusal.kind };
   }
   if (exitCode !== 0) return { action: "park", reason: "dirty-exit" };
+  if (exitCode === 0 && !progressed && args.waitingOn) return { action: "wait", reason: "waiting-on" };
   if (!progressed) {
     return args.repoProgressed ? { action: "park", reason: "repo-active-board-silent" } : { action: "park", reason: "no-progress" };
   }
@@ -38664,7 +38724,7 @@ function exitClass(outcome, args) {
     const state = args.row.workflow_state ?? null;
     return state !== null && TICKET_TERMINAL_STATES.includes(state) ? "terminal" : "split-umbrella";
   }
-  return "clean-pause";
+  return outcome.reason === "waiting-on" ? "waiting-on" : "clean-pause";
 }
 function settleLogLine(outcome, cls, ticketState) {
   switch (outcome.action) {
@@ -39038,6 +39098,7 @@ async function runSchedulerPass(deps, state, keeper, runtime) {
     for (const id of [...q.holds.keys()]) if (!activeIds.has(id)) q.holds.delete(id);
     for (const id of [...q.rateLimit.keys()]) if (!activeIds.has(id)) q.rateLimit.delete(id);
     for (const id of [...q.logged]) if (!activeIds.has(id)) q.logged.delete(id);
+    for (const id of [...runtime.waitLogged ?? []]) if (!activeIds.has(id)) runtime.waitLogged?.delete(id);
     if (deps.readQuotaState) {
       try {
         const read = await deps.readQuotaState([...activeIds]);
@@ -39102,6 +39163,18 @@ async function handleConduction(deps, state, keeper, excluded, runtime, row, ste
   if (runtime.adoptRefused?.has(row.id)) return;
   await handleHeldConduction(deps, state, keeper, excluded, runtime, row);
 }
+function exchangeKey(ex) {
+  return ex ? [ex.exchange_id, ex.status, ex.round, ex.answers_submitted_at, ex.force_quit_requested_at].join("|") : "";
+}
+function waitHoldActive(baseline, current, nowMs) {
+  const w = liveWaitingOn(current.field_values, { nowMs });
+  if (!w || nowMs >= waitResumeAtMs(w)) return null;
+  if (baseline) {
+    if (baseline.awaitingHumanInput === true && current.awaiting_human_input !== true) return null;
+    if (exchangeKey(baseline.activeExchange) !== exchangeKey(current.active_exchange ?? null)) return null;
+  }
+  return w;
+}
 async function handleHeldConduction(deps, state, keeper, excluded, runtime, row) {
   const tracked = runtime.running.get(row.id);
   if (tracked) {
@@ -39157,6 +39230,19 @@ async function handleHeldConduction(deps, state, keeper, excluded, runtime, row)
     );
     return;
   }
+  const waitLogged = runtime.waitLogged ??= /* @__PURE__ */ new Set();
+  const held = waitHoldActive(state.get(row.id), current, deps.now());
+  if (held) {
+    if (!waitLogged.has(row.id)) {
+      deps.log(
+        `${label(row, current, deps.projectKey)}: holding on declared wait (${held.kind} ${held.ref}) until ${iso(waitResumeAtMs(held))} \u2014 not queuing`
+      );
+      waitLogged.add(row.id);
+    }
+    state.set(row.id, captureBaseline(current));
+    return;
+  }
+  waitLogged.delete(row.id);
   const baseline = state.get(row.id);
   if (!baseline) {
     state.set(row.id, captureBaseline(current));
@@ -39406,7 +39492,9 @@ async function settleTrackedLaunch(deps, state, keeper, runtime, row, tracked) {
     timedOut: tracked.timedOut,
     operatorReaped: tracked.operatorReaped,
     repoProgressed,
-    refusal
+    refusal,
+    // B-1157: a declared external wait, only while live for THIS leg (written at/after fire, inside the ceiling).
+    waitingOn: liveWaitingOn(after.field_values, { firedAtMs: tracked.firedAt, nowMs: deps.now() })
   };
   const outcome = classifyWorkerExit(classifyArgs);
   const cls = exitClass(outcome, classifyArgs);
@@ -39423,10 +39511,13 @@ async function settleTrackedLaunch(deps, state, keeper, runtime, row, tracked) {
   }
   if (outcome.action === "wait") {
     if (!await writeLastLegEndedAt(deps, state, keeper, row, {
-      last_worker_exit_class: "clean-pause",
+      last_worker_exit_class: cls,
       last_worker_exit_code: tracked.exitCode
     })) {
       return;
+    }
+    if (classifyArgs.waitingOn && outcome.reason === "waiting-on") {
+      deps.log(`${label(row, after, deps.projectKey)}: leg declared an external wait on ${classifyArgs.waitingOn.ref} \u2014 conduction held`);
     }
     state.set(row.id, captureBaseline(after));
     return;
@@ -39447,6 +39538,21 @@ async function settleTrackedLaunch(deps, state, keeper, runtime, row, tracked) {
       retryCount
     });
     return;
+  }
+  if (outcome.action === "park" && (cls === "no-progress" || cls === "repo-active-board-silent")) {
+    let fresh = null;
+    try {
+      fresh = await deps.getTaskMeta(row.task_id);
+    } catch (err) {
+      deps.log(`${label(row, after, deps.projectKey)}: pre-park re-read failed (${formatDaemonError(err)}) \u2014 parking as classified`);
+    }
+    const stranded = fresh ? strandedWorkSignal(fresh, [after, tracked.current]) : null;
+    if (fresh && stranded) {
+      deps.log(`${label(row, after, deps.projectKey)}: pre-park re-read shows stranded work (${stranded}) \u2014 staying active instead of parking`);
+      if (!await writeLastLegEndedAt(deps, state, keeper, row, { last_worker_exit_class: stranded, last_worker_exit_code: tracked.exitCode })) return;
+      state.set(row.id, captureBaseline(fresh));
+      return;
+    }
   }
   state.delete(row.id);
   keeper.stop(row.id);

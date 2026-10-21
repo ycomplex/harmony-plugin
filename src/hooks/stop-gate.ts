@@ -28,6 +28,7 @@
 // node is ever spawned. Nothing in this file runs for a non-conducting session.
 
 import { isCleanRowShape, type CleanRowShape } from '../daemon/classify.js';
+import { liveWaitingOn } from '../daemon/waiting-on.js';
 
 /** The operator's escape switch. A HUMAN-ONLY control: set it in your own shell profile to run a
  *  session without the gate. It is deliberately absent from every daemon/container profile in this
@@ -72,6 +73,20 @@ export interface ConductBreadcrumb {
 /** The row projection the gate decides from — the two clean-shape fields plus the child count. */
 export interface StopGateRow extends CleanRowShape {
   non_archived_child_count?: number;
+  /** B-1157: raw `tasks.field_values`, read ONLY for the declared-wait marker (`waiting_on`). */
+  field_values?: Record<string, unknown> | null;
+}
+
+/** B-1157: a LIVE declared external wait is a sanctioned turn-end shape too — a SEPARATE predicate,
+ *  deliberately NOT a new `classifyCleanRowShape` kind (the daemon classifier maps every clean kind to
+ *  'complete', which a held wait must never be). Live = the SAME test the daemon applies
+ *  (waiting-on.ts `liveWaitingOn`): well-formed, written at/after this leg started when the start is
+ *  known, and inside the 24h ceiling. */
+export function hasLiveDeclaredWait(
+  row: Pick<StopGateRow, 'field_values'>,
+  opts: { nowMs: number; legStartedAtMs?: number },
+): boolean {
+  return liveWaitingOn(row.field_values, { firedAtMs: opts.legStartedAtMs, nowMs: opts.nowMs }) !== null;
 }
 
 export type StopDecision =
@@ -97,6 +112,9 @@ export function decideStop(args: {
   blocksSoFar: number;
   /** The runtime's re-entry signal: true when this stop FOLLOWS a block. */
   stopHookActive: boolean;
+  /** B-1157: clock + leg start, for the declared-wait liveness check. Absent nowMs = Date.now(). */
+  nowMs?: number;
+  legStartedAtMs?: number;
 }): StopDecision {
   const { ticket, row, stopHookActive } = args;
 
@@ -107,6 +125,13 @@ export function decideStop(args: {
     return {
       action: 'allow',
       reason: `[harmony stop-gate] clean — ${describeRow(ticket, row)}`,
+    };
+  }
+
+  if (hasLiveDeclaredWait(row, { nowMs: args.nowMs ?? Date.now(), legStartedAtMs: args.legStartedAtMs })) {
+    return {
+      action: 'allow',
+      reason: `[harmony stop-gate] declared external wait (waiting_on) — ${describeRow(ticket, row)}`,
     };
   }
 
@@ -132,7 +157,9 @@ export function decideStop(args: {
       `  * FILE AN ELICITATION ROUND (file_elicitation_round, trigger 'worker-question') if you ` +
       `hit a judgment call or a capability denial you cannot decide alone;\n` +
       `  * DEFER / PARK the ticket with an authored reason, or drive it to a terminal state, or ` +
-      `decompose it into live children.\n` +
+      `decompose it into live children;\n` +
+      `  * DECLARE AN EXTERNAL WAIT (update_task field_values.waiting_on + a WAITING-ON ref=<ref> ` +
+      `comment) if you are waiting on CI, a PR state or an off-board human step.\n` +
       `If the question is too small to be worth the human's time, DECIDE it, record the decision ` +
       `and its rationale as a ticket comment, and continue — do not stop for it.`,
   };
@@ -192,7 +219,15 @@ export function runStopGate(deps: StopGateDeps): number {
       blocksSoFar = 0; // unreadable counter ⇒ the stop_hook_active flag alone caps the gate.
     }
 
-    const decision = decideStop({ ticket, row, blocksSoFar, stopHookActive });
+    const startedMs = typeof breadcrumb.started_at === 'string' ? Date.parse(breadcrumb.started_at) : NaN;
+    const decision = decideStop({
+      ticket,
+      row,
+      blocksSoFar,
+      stopHookActive,
+      nowMs: Date.now(),
+      legStartedAtMs: Number.isFinite(startedMs) ? startedMs : undefined,
+    });
 
     if (decision.action === 'block') {
       try {

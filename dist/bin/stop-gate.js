@@ -27,9 +27,44 @@ function isCleanRowShape(row, nonArchivedChildCount) {
   return classifyCleanRowShape(row, nonArchivedChildCount) !== null;
 }
 
+// src/daemon/waiting-on.ts
+var WAIT_CEILING_MS = 24 * 60 * 60 * 1e3;
+var WAIT_DEFAULT_RECHECK_MS = 15 * 60 * 1e3;
+var WAITING_ON_KINDS = ["ci", "pr-state", "human-step"];
+function validIso(v) {
+  return typeof v === "string" && Number.isFinite(Date.parse(v));
+}
+function parseWaitingOn(fieldValues) {
+  if (fieldValues === null || typeof fieldValues !== "object") return null;
+  const raw = fieldValues.waiting_on;
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const m = raw;
+  if (!WAITING_ON_KINDS.includes(m.kind)) return null;
+  if (typeof m.ref !== "string" || m.ref.trim() === "") return null;
+  if (!validIso(m.since) || !validIso(m.first_since)) return null;
+  if (m.resume_after !== void 0 && m.resume_after !== null && !validIso(m.resume_after)) return null;
+  return {
+    kind: m.kind,
+    ref: m.ref,
+    since: m.since,
+    first_since: m.first_since,
+    ...typeof m.resume_after === "string" ? { resume_after: m.resume_after } : {}
+  };
+}
+function liveWaitingOn(fieldValues, opts) {
+  const w = parseWaitingOn(fieldValues);
+  if (!w) return null;
+  if (opts.firedAtMs !== void 0 && Date.parse(w.since) < opts.firedAtMs) return null;
+  if (opts.nowMs >= Date.parse(w.first_since) + WAIT_CEILING_MS) return null;
+  return w;
+}
+
 // src/hooks/stop-gate.ts
 var STOP_GATE_ESCAPE_ENV = "HARMONY_STOP_GATE_OFF";
 var MAX_BLOCKS_PER_TURN_END = 2;
+function hasLiveDeclaredWait(row, opts) {
+  return liveWaitingOn(row.field_values, { firedAtMs: opts.legStartedAtMs, nowMs: opts.nowMs }) !== null;
+}
 function describeRow(ticket, row) {
   return `${ticket}: workflow_state=${row.workflow_state ?? "null"}, awaiting_human_input=${row.awaiting_human_input ?? "null"}, non_archived_children=${row.non_archived_child_count ?? 0}, pending_acceptance_event=${row.pending_acceptance_event_id ?? "none"}`;
 }
@@ -40,6 +75,12 @@ function decideStop(args) {
     return {
       action: "allow",
       reason: `[harmony stop-gate] clean \u2014 ${describeRow(ticket, row)}`
+    };
+  }
+  if (hasLiveDeclaredWait(row, { nowMs: args.nowMs ?? Date.now(), legStartedAtMs: args.legStartedAtMs })) {
+    return {
+      action: "allow",
+      reason: `[harmony stop-gate] declared external wait (waiting_on) \u2014 ${describeRow(ticket, row)}`
     };
   }
   if (blocksSoFar >= MAX_BLOCKS_PER_TURN_END) {
@@ -54,7 +95,8 @@ function decideStop(args) {
 Leave the ticket in exactly one of the sanctioned shapes before you stop:
   * COMPOSE THE BRIEF for the gate you are at and pause on it (compose_brief \u2014 the pause happens ON the brief, never in the gap before it);
   * FILE AN ELICITATION ROUND (file_elicitation_round, trigger 'worker-question') if you hit a judgment call or a capability denial you cannot decide alone;
-  * DEFER / PARK the ticket with an authored reason, or drive it to a terminal state, or decompose it into live children.
+  * DEFER / PARK the ticket with an authored reason, or drive it to a terminal state, or decompose it into live children;
+  * DECLARE AN EXTERNAL WAIT (update_task field_values.waiting_on + a WAITING-ON ref=<ref> comment) if you are waiting on CI, a PR state or an off-board human step.
 If the question is too small to be worth the human's time, DECIDE it, record the decision and its rationale as a ticket comment, and continue \u2014 do not stop for it.`
   };
 }
@@ -82,7 +124,15 @@ function runStopGate(deps) {
     } catch {
       blocksSoFar = 0;
     }
-    const decision = decideStop({ ticket, row, blocksSoFar, stopHookActive });
+    const startedMs = typeof breadcrumb.started_at === "string" ? Date.parse(breadcrumb.started_at) : NaN;
+    const decision = decideStop({
+      ticket,
+      row,
+      blocksSoFar,
+      stopHookActive,
+      nowMs: Date.now(),
+      legStartedAtMs: Number.isFinite(startedMs) ? startedMs : void 0
+    });
     if (decision.action === "block") {
       try {
         deps.writeBlockCount(sessionId, (stopHookActive ? blocksSoFar : 0) + 1);

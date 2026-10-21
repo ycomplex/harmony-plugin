@@ -4694,3 +4694,232 @@ describe('B-1171: adoption log lines keep matching switch-daemon-profile.sh\'s c
     }
   });
 });
+
+describe('B-1157: a declared external wait HOLDS the conduction instead of parking no-progress', () => {
+  const MIN = 60_000;
+
+  /** The marker a leg writes through update_task: since = now (so >= the leg's fire time). */
+  function marker(h: ReturnType<typeof makeHarness>, over: Record<string, unknown> = {}) {
+    return {
+      kind: 'ci',
+      ref: 'pr#42',
+      since: iso(h.now()),
+      first_since: iso(h.now()),
+      resume_after: iso(h.now() + 10 * MIN),
+      ...over,
+    };
+  }
+
+  /** Arm the fake leg to declare a wait while it runs (writes the marker on the task row). */
+  function declareWaitDuringLeg(h: ReturnType<typeof makeHarness>, over: Record<string, unknown> = {}) {
+    h.hooks.onLaunch = () => {
+      const t = h.tasks['task-1'] as DaemonTask;
+      t.field_values = { ...(t.field_values ?? {}), waiting_on: marker(h, over) };
+    };
+  }
+
+  /** baseline -> wake -> fire -> settle; returns after the settle pass. */
+  async function runOneLeg(h: ReturnType<typeof makeHarness>) {
+    await wakeAndFire(h);
+    await h.pass(); // settle
+  }
+
+  it('leg exits 0 with a live marker => stays active, class waiting-on, no park write', async () => {
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() } });
+    declareWaitDuringLeg(h);
+    await runOneLeg(h);
+
+    expect(h.getConduction('cond-1').status).toBe('active');
+    expect(h.getConduction('cond-1').last_worker_exit_class).toBe('waiting-on');
+    expect(h.statusWrites()).toEqual([]);
+    expect(h.logs.some((l) => l.includes('declared an external wait on pr#42'))).toBe(true);
+  });
+
+  it('the next pass before the resume time queues no leg; at/after resume a leg is queued', async () => {
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() } });
+    declareWaitDuringLeg(h);
+    await runOneLeg(h);
+    expect(h.launches()).toHaveLength(1);
+
+    await h.pass();
+    await h.pass();
+    expect(h.launches()).toHaveLength(1);
+    expect(h.ready()).toEqual([]);
+    expect(h.logs.filter((l) => l.includes('holding on declared wait'))).toHaveLength(1); // once per hold
+
+    h.setNow(h.now() + 10 * MIN); // resume_after reached
+    await h.pass(); // wake -> queued -> fired
+    expect(h.launches()).toHaveLength(2);
+  });
+
+  it('releases early when the ball flips (a human round trip on the held ticket)', async () => {
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() } });
+    declareWaitDuringLeg(h);
+    await runOneLeg(h);
+
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = true; // agent files a brief mid-hold
+    await h.pass();
+    expect(h.launches()).toHaveLength(1);
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false; // human resolves: true -> false
+    await h.pass();
+    expect(h.launches()).toHaveLength(2);
+  });
+
+  it('a stale marker (since < the leg fire time) parks no-progress', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: {
+        'task-1': pausedTask({
+          field_values: { waiting_on: { kind: 'ci', ref: 'old', since: iso(T0 - 5 * MIN), first_since: iso(T0 - 5 * MIN) } },
+        }),
+      },
+    });
+    await runOneLeg(h);
+    expect(h.getConduction('cond-1').status).toBe('parked');
+    expect(h.getConduction('cond-1').last_worker_exit_class).toBe('no-progress');
+  });
+
+  it('a marker past the 24h ceiling parks no-progress', async () => {
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() } });
+    h.setNow(T0 + 30 * 60 * MIN);
+    declareWaitDuringLeg(h, { first_since: iso(h.now() - 25 * 60 * MIN) });
+    await runOneLeg(h);
+    expect(h.getConduction('cond-1').status).toBe('parked');
+    expect(h.getConduction('cond-1').last_worker_exit_class).toBe('no-progress');
+  });
+
+  it('holds from the ticket marker alone after a daemon restart (fresh state + runtime)', async () => {
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() } });
+    declareWaitDuringLeg(h);
+    await runOneLeg(h);
+    expect(h.launches()).toHaveLength(1);
+
+    h.state.clear(); // restart: no baseline, no runtime memory
+    h.runtime.waitLogged?.clear();
+    await h.pass(); // first sight of the row
+    await h.pass(); // would be 'agent-ball' wake without the hold
+    expect(h.launches()).toHaveLength(1);
+    expect(h.ready()).toEqual([]);
+
+    h.setNow(h.now() + 10 * MIN);
+    await h.pass();
+    expect(h.launches()).toHaveLength(2);
+  });
+
+  it('pre-park re-read: a late submitted answer is not parked; baseline comes from the fresh row', async () => {
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() } });
+    await wakeAndFire(h);
+    const orig = h.deps.getTaskMeta;
+    let reads = 0;
+    h.deps.getTaskMeta = vi.fn(async (id: string) => {
+      const r = await orig(id);
+      reads += 1;
+      return reads >= 2
+        ? { ...r, active_exchange: { exchange_id: 'ex1', status: 'active', answers_submitted_at: iso(h.now()) } }
+        : r;
+    });
+    await h.pass(); // settle
+    expect(h.getConduction('cond-1').status).toBe('active');
+    expect(h.getConduction('cond-1').last_worker_exit_class).toBe('late-answers-landed');
+    expect(h.state.get('cond-1')?.activeExchange?.answers_submitted_at).toBeTruthy();
+  });
+
+  it('pre-park re-read: a late human ball is not parked', async () => {
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() } });
+    await wakeAndFire(h);
+    const orig = h.deps.getTaskMeta;
+    let reads = 0;
+    h.deps.getTaskMeta = vi.fn(async (id: string) => {
+      const r = await orig(id);
+      reads += 1;
+      return reads >= 2 ? { ...r, awaiting_human_input: true } : r;
+    });
+    await h.pass();
+    expect(h.getConduction('cond-1').status).toBe('active');
+    expect(h.getConduction('cond-1').last_worker_exit_class).toBe('late-human-ball');
+    expect(h.state.get('cond-1')?.awaitingHumanInput).toBe(true);
+  });
+
+  it('pre-park re-read: a signal the leg ALREADY had its chance at (present at fire time and in the fresh read) parks no-progress', async () => {
+    // Seat review of #364: an unconsumed acceptance event the leg could not consume must not keep the
+    // conduction active forever — only a signal that is NEW relative to what the leg saw counts.
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask({ pending_acceptance_event_id: 'ev-1' }) },
+    });
+    await wakeAndFire(h);
+    await h.pass(); // settle
+    expect(h.getConduction('cond-1').status).toBe('parked');
+    expect(h.getConduction('cond-1').last_worker_exit_class).toBe('no-progress');
+    expect(h.logs.some((l) => l.includes('stranded work'))).toBe(false);
+  });
+
+  it('pre-park re-read: the same pre-existing signal queues no second leg across passes', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask({ pending_acceptance_event_id: 'ev-1' }) },
+    });
+    await wakeAndFire(h);
+    await h.pass(); // settle -> parked
+    expect(h.launches()).toHaveLength(1);
+    await h.pass();
+    await h.pass();
+    expect(h.launches()).toHaveLength(1);
+    expect(h.ready()).toEqual([]);
+    expect(h.getConduction('cond-1').status).toBe('parked');
+  });
+
+  it('pre-park re-read: a pre-existing submitted answer (same stamp at fire time and fresh) parks too', async () => {
+    const exchange = { exchange_id: 'ex1', status: 'active', answers_submitted_at: '2026-10-21T00:00:00Z' };
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask({ active_exchange: exchange }) },
+    });
+    await wakeAndFire(h);
+    await h.pass();
+    expect(h.getConduction('cond-1').status).toBe('parked');
+    expect(h.getConduction('cond-1').last_worker_exit_class).toBe('no-progress');
+  });
+
+  it('pre-park re-read: a signal that CHANGED since the leg saw it (new event id) still stays active', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask({ pending_acceptance_event_id: 'ev-1' }) },
+    });
+    await wakeAndFire(h);
+    const orig = h.deps.getTaskMeta;
+    let reads = 0;
+    h.deps.getTaskMeta = vi.fn(async (id: string) => {
+      const r = await orig(id);
+      reads += 1;
+      return reads >= 2 ? { ...r, pending_acceptance_event_id: 'ev-2' } : r;
+    });
+    await h.pass();
+    expect(h.getConduction('cond-1').status).toBe('active');
+    expect(h.getConduction('cond-1').last_worker_exit_class).toBe('late-acceptance');
+  });
+
+  it('pre-park re-read failure parks exactly as before', async () => {
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() } });
+    await wakeAndFire(h);
+    const orig = h.deps.getTaskMeta;
+    let reads = 0;
+    h.deps.getTaskMeta = vi.fn(async (id: string) => {
+      reads += 1;
+      if (reads >= 2) throw new Error('boom');
+      return orig(id);
+    });
+    await h.pass();
+    expect(h.getConduction('cond-1').status).toBe('parked');
+    expect(h.getConduction('cond-1').last_worker_exit_class).toBe('no-progress');
+    expect(h.logs.some((l) => l.includes('pre-park re-read failed'))).toBe(true);
+  });
+
+  it('no marker: unchanged — a quiet leg parks no-progress after one extra read only', async () => {
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() } });
+    await runOneLeg(h);
+    expect(h.getConduction('cond-1').status).toBe('parked');
+    expect(h.getConduction('cond-1').last_worker_exit_class).toBe('no-progress');
+    expect(h.getConduction('cond-1').last_worker_exit_code).toBe(0);
+  });
+});
