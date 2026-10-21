@@ -4100,6 +4100,7 @@ var GkeSchema = external_exports.object({
   memory: external_exports.string().min(1).optional(),
   ticket_disk: external_exports.string().min(1).optional(),
   storage_class: external_exports.string().min(1).optional(),
+  transcript_bucket: external_exports.string().min(1).optional(),
   deadline_s: external_exports.number().int().optional(),
   job_ttl_s: external_exports.number().int().optional(),
   poll_s: external_exports.number().int().optional()
@@ -4193,7 +4194,7 @@ var ENV_LEAVES = [
   { path: ["gcp", "project"], type: "string" },
   { path: ["gcp", "region"], type: "string" },
   { path: ["cloud_run", "job"], type: "string" },
-  ...["cluster", "location", "namespace", "context", "registry", "base_secret", "codex_secret", "cpu", "memory", "ticket_disk", "storage_class"].map(
+  ...["cluster", "location", "namespace", "context", "registry", "base_secret", "codex_secret", "cpu", "memory", "ticket_disk", "storage_class", "transcript_bucket"].map(
     (k) => ({ path: ["gke", k], type: "string" })
   ),
   ...["deadline_s", "job_ttl_s", "poll_s"].map((k) => ({ path: ["gke", k], type: "int" })),
@@ -4215,7 +4216,8 @@ var LEGACY_ENV_KNOBS = [
     ["CPU", "cpu"],
     ["MEMORY", "memory"],
     ["TICKET_DISK", "ticket_disk"],
-    ["STORAGE_CLASS", "storage_class"]
+    ["STORAGE_CLASS", "storage_class"],
+    ["TRANSCRIPT_BUCKET", "transcript_bucket"]
   ].map(([v, k]) => ({ name: `HARMONY_GKE_${v}`, path: ["gke", k], type: "string" })),
   ...[
     ["DEADLINE_S", "deadline_s"],

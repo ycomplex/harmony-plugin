@@ -41,7 +41,7 @@ at boot (a change is logged as `restart needed`).
 |---|---|---|---|---|
 | `channel` | `"staging"` \| `"prod"` | required | project | restart |
 | `profile` | `"cloud"` \| `"gke"` | required | project | restart |
-| `images.worker` | string (bare name, or a ref containing `/`) | the worker-image default | project | restart |
+| `images.worker` | string (bare name, or a ref containing `/`) | the worker-image default; on `gke`, `harmony-build-env-docker:latest` (the gke launch line no longer pins it, B-1217) | project | restart |
 | `images.codex` | string | unset | project | restart |
 | `gcp.project` | string | required by both profiles | project | restart |
 | `gcp.region` | string | the launch script's own default | project | restart |
@@ -50,7 +50,8 @@ at boot (a change is logged as `restart needed`).
 | `gke.location` | string (zone or region) | required for `gke` | project | restart |
 | `gke.namespace` | string | `harmony-legs` | project | restart |
 | `gke.context` | string | derived `gke_<project>_<location>_<cluster>` | host (machine kubeconfig) | restart |
-| `gke.registry` | string | the launch script's default registry | project | launch env |
+| `gke.registry` | string | `us-central1-docker.pkg.dev/<gcp.project>/harmony-workers` (B-1217) | project | launch env |
+| `gke.transcript_bucket` | string (GCS bucket name) | `<gcp.project>-transcripts` (B-1217) | project | launch env |
 | `gke.base_secret`, `gke.codex_secret` | string (Secret Manager secret **names**) | script defaults | project | launch env |
 | `gke.cpu`, `gke.memory` | string | `6`, `10Gi` | project | launch env |
 | `gke.ticket_disk`, `gke.storage_class` | string | `20Gi`, `harmony-ticket-disk` when the cluster has it (setup step 17), else `standard-rwo` | project | launch env |
@@ -156,7 +157,7 @@ of them, not the first.
 
 ```
 conductor.json › gke.cluster: the gke profile requires a cluster name. Fix: add "gke": { "cluster": "<cluster-name>" } to .harmony/conductor.json
-conductor-host.json › gke.nampespace: unknown key. Fix: remove it, or use one of the allowed keys under gke: cluster, location, namespace, context, registry, base_secret, codex_secret, cpu, memory, ticket_disk, storage_class, deadline_s, job_ttl_s, poll_s
+conductor-host.json › gke.nampespace: unknown key. Fix: remove it, or use one of the allowed keys under gke: cluster, location, namespace, context, registry, base_secret, codex_secret, cpu, memory, ticket_disk, storage_class, transcript_bucket, deadline_s, job_ttl_s, poll_s
 conductor-host.json › secrets.base: looks like a secret VALUE, not a Secret Manager secret NAME (the secrets block holds names only). Fix: store the value in Secret Manager and put only the secret NAME here
 ```
 

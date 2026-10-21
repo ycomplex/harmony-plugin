@@ -21530,6 +21530,7 @@ var GkeSchema = external_exports.object({
   memory: external_exports.string().min(1).optional(),
   ticket_disk: external_exports.string().min(1).optional(),
   storage_class: external_exports.string().min(1).optional(),
+  transcript_bucket: external_exports.string().min(1).optional(),
   deadline_s: external_exports.number().int().optional(),
   job_ttl_s: external_exports.number().int().optional(),
   poll_s: external_exports.number().int().optional()
@@ -21801,8 +21802,9 @@ var BUILTIN_PROFILES = {
     schema_version: 1
   },
   gke: {
-    // B-1164: gke legs launch from the Docker-capable image; the default (harmony-build-env) has no engine.
-    launch: `HARMONY_GKE_IMAGE=us-central1-docker.pkg.dev/harmony-conductor/harmony-workers/harmony-build-env-docker:latest bash "$HARMONY_PLUGIN_DIR/container/gke/gke-worker-launch.sh" {conduction_id} {ticket} '{run_config_json}' '{model}'`,
+    // B-1164: gke legs launch from the Docker-capable image — now the launcher's own default (B-1217), so the
+    // line no longer pins Harmony's registry path and `images.worker` (-> HARMONY_GKE_IMAGE) takes effect.
+    launch: `bash "$HARMONY_PLUGIN_DIR/container/gke/gke-worker-launch.sh" {conduction_id} {ticket} '{run_config_json}' '{model}'`,
     reap: 'bash "$HARMONY_PLUGIN_DIR/container/gke/gke-worker-reap.sh" {conduction_id} {ticket} {worker_ref}',
     probe: 'bash "$HARMONY_PLUGIN_DIR/container/gke/gke-worker-probe.sh" {conduction_id} {ticket} {worker_ref}',
     maxConcurrentWorkers: 2,
@@ -21846,7 +21848,7 @@ var ENV_LEAVES = [
   { path: ["gcp", "project"], type: "string" },
   { path: ["gcp", "region"], type: "string" },
   { path: ["cloud_run", "job"], type: "string" },
-  ...["cluster", "location", "namespace", "context", "registry", "base_secret", "codex_secret", "cpu", "memory", "ticket_disk", "storage_class"].map(
+  ...["cluster", "location", "namespace", "context", "registry", "base_secret", "codex_secret", "cpu", "memory", "ticket_disk", "storage_class", "transcript_bucket"].map(
     (k) => ({ path: ["gke", k], type: "string" })
   ),
   ...["deadline_s", "job_ttl_s", "poll_s"].map((k) => ({ path: ["gke", k], type: "int" })),
@@ -21903,7 +21905,8 @@ var LEGACY_ENV_KNOBS = [
     ["CPU", "cpu"],
     ["MEMORY", "memory"],
     ["TICKET_DISK", "ticket_disk"],
-    ["STORAGE_CLASS", "storage_class"]
+    ["STORAGE_CLASS", "storage_class"],
+    ["TRANSCRIPT_BUCKET", "transcript_bucket"]
   ].map(([v, k]) => ({ name: `HARMONY_GKE_${v}`, path: ["gke", k], type: "string" })),
   ...[
     ["DEADLINE_S", "deadline_s"],
@@ -22100,6 +22103,7 @@ function launchEnvFromMerged(merged) {
   put2("HARMONY_GKE_MEMORY", g?.memory);
   put2("HARMONY_GKE_TICKET_DISK", g?.ticket_disk);
   put2("HARMONY_GKE_STORAGE_CLASS", g?.storage_class);
+  put2("HARMONY_GKE_TRANSCRIPT_BUCKET", g?.transcript_bucket);
   put2("HARMONY_GKE_DEADLINE_S", g?.deadline_s);
   put2("HARMONY_GKE_POLL_S", g?.poll_s);
   put2("HARMONY_GKE_JOB_TTL_S", g?.job_ttl_s);

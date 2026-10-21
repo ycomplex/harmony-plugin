@@ -35438,6 +35438,7 @@ var GkeSchema = external_exports.object({
   memory: external_exports.string().min(1).optional(),
   ticket_disk: external_exports.string().min(1).optional(),
   storage_class: external_exports.string().min(1).optional(),
+  transcript_bucket: external_exports.string().min(1).optional(),
   deadline_s: external_exports.number().int().optional(),
   job_ttl_s: external_exports.number().int().optional(),
   poll_s: external_exports.number().int().optional()
@@ -35715,8 +35716,9 @@ var BUILTIN_PROFILES = {
     schema_version: 1
   },
   gke: {
-    // B-1164: gke legs launch from the Docker-capable image; the default (harmony-build-env) has no engine.
-    launch: `HARMONY_GKE_IMAGE=us-central1-docker.pkg.dev/harmony-conductor/harmony-workers/harmony-build-env-docker:latest bash "$HARMONY_PLUGIN_DIR/container/gke/gke-worker-launch.sh" {conduction_id} {ticket} '{run_config_json}' '{model}'`,
+    // B-1164: gke legs launch from the Docker-capable image — now the launcher's own default (B-1217), so the
+    // line no longer pins Harmony's registry path and `images.worker` (-> HARMONY_GKE_IMAGE) takes effect.
+    launch: `bash "$HARMONY_PLUGIN_DIR/container/gke/gke-worker-launch.sh" {conduction_id} {ticket} '{run_config_json}' '{model}'`,
     reap: 'bash "$HARMONY_PLUGIN_DIR/container/gke/gke-worker-reap.sh" {conduction_id} {ticket} {worker_ref}',
     probe: 'bash "$HARMONY_PLUGIN_DIR/container/gke/gke-worker-probe.sh" {conduction_id} {ticket} {worker_ref}',
     maxConcurrentWorkers: 2,
@@ -35760,7 +35762,7 @@ var ENV_LEAVES = [
   { path: ["gcp", "project"], type: "string" },
   { path: ["gcp", "region"], type: "string" },
   { path: ["cloud_run", "job"], type: "string" },
-  ...["cluster", "location", "namespace", "context", "registry", "base_secret", "codex_secret", "cpu", "memory", "ticket_disk", "storage_class"].map(
+  ...["cluster", "location", "namespace", "context", "registry", "base_secret", "codex_secret", "cpu", "memory", "ticket_disk", "storage_class", "transcript_bucket"].map(
     (k) => ({ path: ["gke", k], type: "string" })
   ),
   ...["deadline_s", "job_ttl_s", "poll_s"].map((k) => ({ path: ["gke", k], type: "int" })),
@@ -35817,7 +35819,8 @@ var LEGACY_ENV_KNOBS = [
     ["CPU", "cpu"],
     ["MEMORY", "memory"],
     ["TICKET_DISK", "ticket_disk"],
-    ["STORAGE_CLASS", "storage_class"]
+    ["STORAGE_CLASS", "storage_class"],
+    ["TRANSCRIPT_BUCKET", "transcript_bucket"]
   ].map(([v, k]) => ({ name: `HARMONY_GKE_${v}`, path: ["gke", k], type: "string" })),
   ...[
     ["DEADLINE_S", "deadline_s"],
@@ -36014,6 +36017,7 @@ function launchEnvFromMerged(merged) {
   put2("HARMONY_GKE_MEMORY", g?.memory);
   put2("HARMONY_GKE_TICKET_DISK", g?.ticket_disk);
   put2("HARMONY_GKE_STORAGE_CLASS", g?.storage_class);
+  put2("HARMONY_GKE_TRANSCRIPT_BUCKET", g?.transcript_bucket);
   put2("HARMONY_GKE_DEADLINE_S", g?.deadline_s);
   put2("HARMONY_GKE_POLL_S", g?.poll_s);
   put2("HARMONY_GKE_JOB_TTL_S", g?.job_ttl_s);
@@ -46768,12 +46772,22 @@ function runDoctor(deps, opts = {}) {
   } catch (err) {
     issues = [{ file: "deployment.json", key: "(file)", problem: err instanceof Error ? err.message : String(err), fix: `correct or remove ${legacyPath}` }];
   }
+  const projectSourceFound = sources[0].found || sources[1].found || sources[3].found || sources[4].found;
+  const hostRead = sources[2].found ? readHostFile(deps, paths.hostFile).host : null;
+  const notAConductorHost = !projectSourceFound && hostRead !== null && !["plugin_dir", "github_app", "config_repo"].some((k) => k in hostRead);
+  if (notAConductorHost) issues = issues.filter((i) => !(i.key === "(file)" && i.file !== "conductor-host.json"));
   const hot = [...HOT_KEYS];
   const restart = [...RESTART_ONLY_KEYS];
   const lines = [];
   lines.push("SOURCES");
   for (const s of sources) {
     lines.push(`  ${s.found ? "[found ]" : "[absent]"} ${s.source}${s.path ? `: ${s.path}` : ""}${s.detail ? ` (${s.detail})` : ""}`);
+  }
+  if (notAConductorHost) {
+    lines.push(
+      "",
+      "NOTE: this machine is not a conductor host. Its host file names no plugin_dir, github_app or config_repo, and no project file exists here, which is expected on a machine that only drives a remote conductor (check that with `harmony conductor status --remote`). To run a conductor on this machine, see `harmony conductor config migrate` / `sync`."
+    );
   }
   if (!evaluated && issues.length === 0) {
     lines.push("", "No project file, snapshot or host file exists: nothing to validate. The conductor runs on the legacy files exactly as before.");

@@ -470,6 +470,16 @@ export function runDoctor(deps: ConductorCliDeps, opts: { config?: string } = {}
     issues = [{ file: 'deployment.json', key: '(file)', problem: err instanceof Error ? err.message : String(err), fix: `correct or remove ${legacyPath}` }];
   }
 
+  // B-1217: an operator's laptop keeps a host file (gcp project, gcloud account, secret NAMES) so
+  // `harmony conductor … --remote` can reach the pod, but it runs no conductor. With no project source, no
+  // legacy files and no conductor-host key in the host file, "no project file" is a fact about the machine,
+  // not a problem with it: say so and stay green.
+  const projectSourceFound = sources[0].found || sources[1].found || sources[3].found || sources[4].found;
+  const hostRead = sources[2].found ? readHostFile(deps, paths.hostFile).host : null;
+  const notAConductorHost =
+    !projectSourceFound && hostRead !== null && !['plugin_dir', 'github_app', 'config_repo'].some((k) => k in hostRead);
+  if (notAConductorHost) issues = issues.filter((i) => !(i.key === '(file)' && i.file !== 'conductor-host.json'));
+
   const hot = [...HOT_KEYS];
   const restart = [...RESTART_ONLY_KEYS];
 
@@ -477,6 +487,12 @@ export function runDoctor(deps: ConductorCliDeps, opts: { config?: string } = {}
   lines.push('SOURCES');
   for (const s of sources) {
     lines.push(`  ${s.found ? '[found ]' : '[absent]'} ${s.source}${s.path ? `: ${s.path}` : ''}${s.detail ? ` (${s.detail})` : ''}`);
+  }
+  if (notAConductorHost) {
+    lines.push(
+      '',
+      'NOTE: this machine is not a conductor host. Its host file names no plugin_dir, github_app or config_repo, and no project file exists here, which is expected on a machine that only drives a remote conductor (check that with `harmony conductor status --remote`). To run a conductor on this machine, see `harmony conductor config migrate` / `sync`.',
+    );
   }
   if (!evaluated && issues.length === 0) {
     lines.push('', 'No project file, snapshot or host file exists: nothing to validate. The conductor runs on the legacy files exactly as before.');

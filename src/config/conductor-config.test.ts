@@ -503,6 +503,11 @@ describe('launchEnvFromMerged / applyLaunchEnv', () => {
     });
   });
 
+  it('B-1217: gke.transcript_bucket reaches HARMONY_GKE_TRANSCRIPT_BUCKET; unset sets nothing', () => {
+    expect(launchEnvFromMerged(mergeLayers({ ...gkeProject, gke: { ...gkeProject.gke, transcript_bucket: 'tb' } })).HARMONY_GKE_TRANSCRIPT_BUCKET).toBe('tb');
+    expect('HARMONY_GKE_TRANSCRIPT_BUCKET' in launchEnvFromMerged(mergeLayers(gkeProject))).toBe(false);
+  });
+
   it('explicit gke.context wins; HARMONY_GKE_IMAGE only when images.worker is explicit', () => {
     const env = launchEnvFromMerged(mergeLayers({ ...gkeProject, gke: { ...gkeProject.gke, context: 'my-ctx' }, images: { worker: 'img' } }));
     expect(env.HARMONY_GKE_CONTEXT).toBe('my-ctx');

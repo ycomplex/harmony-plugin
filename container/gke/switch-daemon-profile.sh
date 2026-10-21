@@ -18,7 +18,7 @@
 #      HARMONY_APP_INSTALLATION_ID, HARMONY_APP_PRIVATE_KEY_PATH (or HARMONY_APP_PRIVATE_KEY) for the mint, and
 #      HARMONY_CLOUD_RUN_JOB, HARMONY_CLOUD_RUN_REGION, CLOUDSDK_CORE_ACCOUNT for Cloud Run (always needed: one
 #      side of every switch is cloud, either the target or the backend the guard inspects). For gke: kubectl
-#      reaches the cluster, the base Secret exists, and the profile's launch line carries HARMONY_GKE_IMAGE=.
+#      reaches the cluster and the base Secret exists (a HARMONY_GKE_IMAGE= on the launch line is reported, not required: B-1217).
 #      For cloud: the Cloud Run job exists. Also: exactly one conductor is running and the board is readable.
 #   2. In-flight guard. Refuses (exit 3) while a leg is running on the OUTGOING backend (an active k8s Job in
 #      the legs namespace when leaving gke; a running Cloud Run execution when leaving cloud), and names each
@@ -263,8 +263,8 @@ if [ "$TARGET" = "gke" ]; then
     || die "base Secret $HARMONY_GKE_NAMESPACE/$HARMONY_GKE_BASE_SECRET does not exist (run container/gke/setup-cluster.sh)"
   echo "base Secret $HARMONY_GKE_BASE_SECRET exists"
   case "$profile_launch" in
-    *HARMONY_GKE_IMAGE=*) echo "launch line carries HARMONY_GKE_IMAGE=" ;;
-    *) die "the gke profile's launch line in $CONFIG has no HARMONY_GKE_IMAGE= setting (see container/gke/daemon-profile.gke.example.json)" ;;
+    *HARMONY_GKE_IMAGE=*) echo "launch line carries HARMONY_GKE_IMAGE= (it overrides images.worker)" ;;
+    *) echo "launch line has no HARMONY_GKE_IMAGE=: the launcher uses images.worker, else harmony-build-env-docker:latest (B-1217)" ;;
   esac
 else
   gcloud run jobs describe "$HARMONY_CLOUD_RUN_JOB" --region="$HARMONY_CLOUD_RUN_REGION" --project="$CLOUDSDK_CORE_PROJECT" \

@@ -130,6 +130,13 @@ bash "$PLUGIN_DIR/container/gke/setup-cluster.sh" \
 # read the output, then run the same command without --dry-run
 ```
 
+Your legs use your own project's registry and transcript bucket by default (B-1217). With `gcp.project` set in the
+project file, a leg launches from `us-central1-docker.pkg.dev/<project>/harmony-workers/harmony-build-env-docker:latest`
+and writes transcripts to `gs://<project>-transcripts`, and `setup-cluster.sh` checks and binds that same bucket. To
+use other names, set them in the project file: `images.worker` (a bare name is joined to `gke.registry`; a ref with a
+`/` is used as is), `gke.registry`, and `gke.transcript_bucket` (pass the same name to `setup-cluster.sh
+--transcript-bucket`). The bucket is never created for you; create it before step 3.
+
 Leave out `--cloud-run-runtime-sa` if you do not use the cloud profile from the pod (step 22 then says it was
 skipped). The script also applies `container/conductor/k8s/priorityclass.yaml` (step 27) with your credentials; step 5
 below applies it by hand if you used `--no-conductor`.
