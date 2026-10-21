@@ -59,7 +59,7 @@ const GCLOUD_ALLOWED: Record<string, string[]> = {
   // `compute regions describe` takes no --filter / --flatten (they belong to list commands).
   'compute regions describe': [],
   'container clusters describe': ['--zone'],
-  'container clusters create': ['--zone', '--num-nodes', '--machine-type', '--disk-type', '--enable-image-streaming'],
+  'container clusters create': ['--zone', '--num-nodes', '--machine-type', '--disk-type', '--enable-image-streaming', '--workload-pool', '--workload-metadata'],
   'container clusters update': ['--zone', '--workload-pool', '--update-addons'],
   'container clusters get-credentials': ['--zone'],
   'container node-pools describe': ['--cluster', '--zone', '--flatten'],
@@ -80,6 +80,7 @@ const GCLOUD_ALLOWED: Record<string, string[]> = {
 const KUBECTL_VALUE_GLOBALS = ['-n', '--namespace', '--context', '--kubeconfig'];
 const KUBECTL_ALLOWED: Record<string, string[]> = {
   'get namespace': [],
+  'get nodes': ['-l', '-o'],
   'get storageclass': ['-o'],
   'get serviceaccount': ['-o'],
   'get jobs': ['-l', '-o'],
@@ -177,6 +178,15 @@ function makeWorld(): World {
     '      *" --workload-pool="*) touch "$STUB_STATE/wi" ;;',
     '      *" GcsFuseCsiDriver=ENABLED "*) touch "$STUB_STATE/fuse" ;;',
     '    esac; exit 0 ;;',
+    // B-1186: the system pool (default-pool) answers from its own knobs; it exists whenever the cluster does. Unless a
+    // test opts out (STUB_SYS_NO_GKEMD) it is already on GKE_METADATA, as a cluster made by step 4 is.
+    '  *" container node-pools describe default-pool "*)',
+    '    [ -f "$STUB_STATE/cluster" ] || { echo "ERROR: not found" >&2; exit 1; }',
+    '    case " $* " in',
+    '      *workloadMetadataConfig*) { [ -z "${STUB_SYS_NO_GKEMD:-}" ] || [ -f "$STUB_STATE/sysgkemd" ]; } && echo "GKE_METADATA" ;;',
+    '      *config.machineType*) echo "${STUB_SYS_MT:-e2-medium}" ;;',
+    '    esac; exit 0 ;;',
+    '  *" container node-pools update default-pool "*) touch "$STUB_STATE/sysgkemd"; exit 0 ;;',
     '  *" container node-pools update "*) touch "$STUB_STATE/gkemd"; exit 0 ;;',
     '  *" storage buckets describe "*) [ -z "${STUB_MISSING_BUCKET:-}" ] || { echo "NOT_FOUND" >&2; exit 1; }; echo bucket; exit 0 ;;',
     // Real gcloud rejects --flatten/--filter on this command (exit 2); the stub does too, so a script that
@@ -240,6 +250,7 @@ function makeWorld(): World {
     'echo "${KUBECONFIG:-}" >> "$STUB_LOGS/kubeconfig.log"',
     'if [ -n "${KUBECONFIG:-}" ] && [ -f "$KUBECONFIG" ]; then echo yes >> "$STUB_LOGS/kubeconfig-existed.log"; fi',
     'case " $* " in',
+    '  *" get nodes "*) n="${STUB_SYS_NODES:-2}"; i=0; while [ "$i" -lt "$n" ]; do echo "node/gke-sys-$i"; i=$((i+1)); done; exit 0 ;;',
     '  *" get namespace "*) [ -f "$STUB_STATE/ns-$3" ] || exit 1; exit 0 ;;',
     '  *" get storageclass "*)',
     '    [ -f "$STUB_STATE/sc" ] || exit 1',
@@ -1163,5 +1174,104 @@ describe.skipIf(!CAPABLE)('container/gke/sweep-ticket-disks.sh (EXECUTED against
     const r = exec(makeWorld(), sweepPath, ['--nope']);
     expect(r.status).toBe(2);
     expect(r.stderr).toContain('Usage:');
+  });
+});
+
+// B-1186: the system pool (default-pool): sized by --system-nodes / --system-machine-type, GKE_METADATA, drift report.
+describe.skipIf(!CAPABLE)('container/gke/setup-cluster.sh — step 27, the system pool (B-1186)', () => {
+  const existing = (world: World) => {
+    writeFileSync(join(world.state, 'cluster'), '');
+    writeFileSync(join(world.state, 'pool'), '');
+    for (const f of ['wi', 'fuse', 'gkemd']) writeFileSync(join(world.state, f), '');
+  };
+  const sysUpdates = (world: World) => calls(world, 'gcloud').filter((c) => has(c, 'node-pools', 'update', 'default-pool'));
+
+  it('creates the cluster with the default 2 x e2-medium system pool on GKE_METADATA', () => {
+    const world = makeWorld();
+    const r = setup(world);
+    expect(r.status).toBe(0);
+    const create = findCall(calls(world, 'gcloud'), 'clusters', 'create')!;
+    expect(flagValue(create, '--num-nodes')).toBe('2');
+    expect(flagValue(create, '--machine-type')).toBe('e2-medium');
+    expect(create).toContain('--workload-metadata=GKE_METADATA');
+    expect(create).toContain('--workload-pool=proj-x.svc.id.goog');
+  });
+
+  it('--system-nodes and --system-machine-type are used by the cluster create', () => {
+    const world = makeWorld();
+    const r = setup(world, ['--system-nodes', '3', '--system-machine-type', 'e2-standard-2']);
+    expect(r.status).toBe(0);
+    const create = findCall(calls(world, 'gcloud'), 'clusters', 'create')!;
+    expect(flagValue(create, '--num-nodes')).toBe('3');
+    expect(flagValue(create, '--machine-type')).toBe('e2-standard-2');
+    expect(r.stdout).toContain('27. System node pool default-pool (3 x e2-standard-2)');
+  });
+
+  it('rejects a non-numeric --system-nodes with usage, before any call', () => {
+    const world = makeWorld();
+    const r = setup(world, ['--system-nodes', 'two']);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('--system-nodes must be a positive integer');
+    expect(calls(world, 'gcloud')).toEqual([]);
+  });
+
+  it('usage() documents both flags', () => {
+    const r = spawnSync(RESOLVED.bash!, [setupPath, '--help'], { encoding: 'utf8' });
+    expect(r.stdout).toContain('--system-nodes <n>');
+    expect(r.stdout).toContain('--system-machine-type <t>');
+  });
+
+  it('an existing, matching system pool: no update, no DRIFT, a plain "matches" line', () => {
+    const world = makeWorld();
+    existing(world);
+    const r = setup(world);
+    expect(r.status).toBe(0);
+    expect(sysUpdates(world)).toEqual([]);
+    expect(r.stdout).toContain('node pool default-pool: workload metadata already GKE_METADATA');
+    expect(r.stdout).toContain('node pool default-pool: 2 x e2-medium, matches the expected settings');
+    expect(r.stdout).not.toContain('DRIFT:');
+  });
+
+  it('an existing system pool without GKE_METADATA is updated once, with no leg Job active', () => {
+    const world = makeWorld();
+    existing(world);
+    const r = setup(world, [], { STUB_SYS_NO_GKEMD: '1' });
+    expect(r.status).toBe(0);
+    const ups = sysUpdates(world);
+    expect(ups).toHaveLength(1);
+    expect(ups[0]).toContain('--workload-metadata=GKE_METADATA');
+  });
+
+  it('REFUSES the GKE_METADATA update while a leg Job is active: exit 1, no update', () => {
+    const world = makeWorld();
+    existing(world);
+    const r = setup(world, [], { STUB_SYS_NO_GKEMD: '1', STUB_JOBS_ACTIVE: '1' });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('a leg Job is active');
+    expect(r.stderr).toContain('default-pool');
+    expect(sysUpdates(world)).toEqual([]);
+  });
+
+  it('reports node-count and machine-type drift with the exact fix commands and changes nothing', () => {
+    const world = makeWorld();
+    existing(world);
+    const r = setup(world, [], { STUB_SYS_MT: 'e2-small', STUB_SYS_NODES: '1' });
+    expect(r.status).toBe(0);
+    const drift = r.stdout.split('\n').filter((l) => l.startsWith('DRIFT:') && l.includes('default-pool'));
+    expect(drift.join('\n')).toContain("machine type is 'e2-small', expected 'e2-medium'");
+    expect(drift.join('\n')).toContain('has 1 node(s), expected 2');
+    expect(r.stdout).toContain('gcloud container clusters resize harmony-legs --node-pool default-pool --num-nodes 2 --zone us-central1-a --project proj-x');
+    expect(r.stdout).toContain('gcloud container node-pools create default-pool-v2');
+    expect(sysUpdates(world)).toEqual([]);
+    expect(calls(world, 'gcloud').some((c) => has(c, 'resize'))).toBe(false);
+  });
+
+  it('--dry-run prints the step and runs no stub', () => {
+    const world = makeWorld();
+    const r = setup(world, ['--dry-run']);
+    expect(r.status).toBe(0);
+    expect(log(world, 'gcloud') + log(world, 'kubectl')).toBe('');
+    expect(r.stdout).toContain('27. System node pool default-pool');
+    expect(r.stdout).toContain('--workload-metadata=GKE_METADATA');
   });
 });

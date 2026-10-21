@@ -49,6 +49,13 @@
 #      (roles/iam.workloadIdentityUser);
 #  25. creates that Kubernetes service account and annotates it with the Google one;
 #  26. applies the two namespaced RBAC manifests (container/conductor/k8s/rbac-legs.yaml, rbac-conductor.yaml).
+#  And, for the cluster's SYSTEM pool (B-1186 — default-pool carries kube-system and, on a remote-conductor
+#  cluster, the conductor pod; it is sized by --system-nodes / --system-machine-type, and is NOT touched by
+#  --no-conductor):
+#  27. on cluster create: --num-nodes/--machine-type come from those flags and nodes get GKE_METADATA (step 4);
+#      on an existing cluster: sets GKE_METADATA on default-pool when missing (recreates its nodes, so it REFUSES
+#      while a leg Job is active) and REPORTS node-count / machine-type drift as `DRIFT:` lines with the exact
+#      fix command, changing nothing else.
 #  It does NOT apply the ConfigMap, Deployment or CronJob: those carry an image version and the App
 #  identifiers, so they are applied by hand (see the comments in container/conductor/k8s/).
 #
@@ -98,6 +105,8 @@ Options (defaults in brackets):
   --artifact-repo <name>  Artifact Registry repository with the conductor image [harmony-workers]
   --artifact-location <l> its location [the region of --zone]
   --artifact-project <id> its project [--project]
+  --system-nodes <n>      nodes in the system pool (default-pool) when the cluster is created; drift is reported on an existing one [2]
+  --system-machine-type <t> machine type of the system pool [e2-medium]
   --skip-quota-check      do not read the SSD_TOTAL_GB quota
   --dry-run               print every command instead of running it (no gcloud/kubectl needed)
   -h, --help              this text
@@ -140,6 +149,8 @@ ARTIFACT_LOCATION=""
 ARTIFACT_PROJECT=""
 SKIP_QUOTA=0
 DRY_RUN=0
+SYSTEM_NODES="2"
+SYSTEM_MACHINE_TYPE="e2-medium"
 
 need_value() { [ $# -ge 2 ] || die_usage "$1 needs a value"; }
 while [ $# -gt 0 ]; do
@@ -169,6 +180,8 @@ while [ $# -gt 0 ]; do
     --artifact-repo) need_value "$@"; ARTIFACT_REPO="$2"; shift 2 ;;
     --artifact-location) need_value "$@"; ARTIFACT_LOCATION="$2"; shift 2 ;;
     --artifact-project) need_value "$@"; ARTIFACT_PROJECT="$2"; shift 2 ;;
+    --system-nodes) need_value "$@"; SYSTEM_NODES="$2"; shift 2 ;;
+    --system-machine-type) need_value "$@"; SYSTEM_MACHINE_TYPE="$2"; shift 2 ;;
     --skip-quota-check) SKIP_QUOTA=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h | --help) usage; exit 0 ;;
@@ -187,6 +200,10 @@ case "$DAEMON_SA" in
 esac
 case "$MAX_NODES" in
   '' | *[!0-9]* | 0) die_usage "--max-nodes must be a positive integer, got '$MAX_NODES'" ;;
+esac
+
+case "$SYSTEM_NODES" in
+  '' | *[!0-9]* | 0) die_usage "--system-nodes must be a positive integer, got '$SYSTEM_NODES'" ;;
 esac
 
 REGION="${ZONE%-*}"
@@ -320,7 +337,8 @@ if probe gcloud container clusters describe "$CLUSTER" --zone "$ZONE" --project 
   echo "cluster $CLUSTER: exists, left unchanged"
 else
   run gcloud container clusters create "$CLUSTER" --zone "$ZONE" --project "$PROJECT" \
-    --num-nodes 1 --machine-type e2-medium --disk-type pd-standard --enable-image-streaming
+    --num-nodes "$SYSTEM_NODES" --machine-type "$SYSTEM_MACHINE_TYPE" --disk-type pd-standard --enable-image-streaming \
+    "--workload-pool=$PROJECT.svc.id.goog" --workload-metadata=GKE_METADATA
 fi
 
 step "5. Leg node pool $POOL"
@@ -684,11 +702,89 @@ else
   done
 fi
 
+# --- B-1186: the system pool (default-pool). Its own functions and its own step, so it stays separable from the
+# leg-pool steps above. A fresh cluster already got SYSTEM_NODES / SYSTEM_MACHINE_TYPE / GKE_METADATA from step 4;
+# on an EXISTING cluster this step enables GKE_METADATA when missing and REPORTS size drift (never resizes).
+SYSTEM_POOL="default-pool"
+
+# Same safety as step 12: changing the metadata mode recreates the pool's nodes, which would kill a running leg,
+# so refuse while any leg Job is active. An unreadable answer is treated as "active" (fail closed).
+system_pool_refuse_if_leg_active() {
+  local active_raw
+  if [ "$DRY_RUN" -eq 1 ]; then
+    capture kubectl -n "$NAMESPACE" get jobs -l app.kubernetes.io/part-of=harmony-legs -o 'jsonpath={.items[*].status.active}' || true
+    return 0
+  fi
+  if ! active_raw="$(capture kubectl -n "$NAMESPACE" get jobs -l app.kubernetes.io/part-of=harmony-legs -o 'jsonpath={.items[*].status.active}')"; then
+    echo "setup-cluster: could not read the leg Jobs in $NAMESPACE — refusing to recreate the nodes of pool $SYSTEM_POOL; nothing was changed by this step." >&2
+    exit 1
+  fi
+  if printf '%s' "$active_raw" | tr ' ' '\n' | awk '$1 + 0 > 0 { f = 1 } END { exit !f }'; then
+    echo "setup-cluster: a leg Job is active in $NAMESPACE — setting GKE_METADATA recreates the nodes of pool $SYSTEM_POOL and would kill it." >&2
+    echo "setup-cluster: wait for the legs to finish, then run again; nothing was changed by this step." >&2
+    exit 1
+  fi
+}
+
+system_pool_ensure_metadata() {
+  local have_mode
+  have_mode="$(capture gcloud container node-pools describe "$SYSTEM_POOL" --cluster "$CLUSTER" --zone "$ZONE" --project "$PROJECT" \
+    '--format=value(config.workloadMetadataConfig.mode)' || true)"
+  if [ "$have_mode" = "GKE_METADATA" ]; then
+    echo "node pool $SYSTEM_POOL: workload metadata already GKE_METADATA"
+    return 0
+  fi
+  system_pool_refuse_if_leg_active
+  run gcloud container node-pools update "$SYSTEM_POOL" --cluster "$CLUSTER" --zone "$ZONE" --project "$PROJECT" --workload-metadata=GKE_METADATA
+}
+
+# Reports only. The node count comes from the live node list (the pool's declared size is not what is running).
+system_pool_report_drift() {
+  local have_mt have_count drift=0
+  have_mt="$(capture gcloud container node-pools describe "$SYSTEM_POOL" --cluster "$CLUSTER" --zone "$ZONE" --project "$PROJECT" \
+    '--format=value(config.machineType)' || true)"
+  if have_count="$(capture kubectl get nodes -l "cloud.google.com/gke-nodepool=$SYSTEM_POOL" -o name)"; then
+    have_count="$(printf '%s\n' "$have_count" | grep -c . || true)"
+  else
+    have_count=""
+  fi
+  if [ -n "$have_mt" ] && [ "$have_mt" != "$SYSTEM_MACHINE_TYPE" ]; then
+    echo "DRIFT: pool $SYSTEM_POOL machine type is '$have_mt', expected '$SYSTEM_MACHINE_TYPE'"
+    echo "  fix: a machine type cannot be changed in place. Create a replacement pool, move the pods, then delete the old one:"
+    echo "    gcloud container node-pools create ${SYSTEM_POOL}-v2 --cluster $CLUSTER --zone $ZONE --project $PROJECT --machine-type $SYSTEM_MACHINE_TYPE --num-nodes $SYSTEM_NODES --workload-metadata=GKE_METADATA"
+    echo "    (then cordon and drain the $SYSTEM_POOL nodes, update the conductor Deployment's nodeSelector to the new pool, and delete $SYSTEM_POOL)"
+    drift=1
+  fi
+  if [ -n "$have_count" ] && [ "$have_count" != "$SYSTEM_NODES" ]; then
+    echo "DRIFT: pool $SYSTEM_POOL has $have_count node(s), expected $SYSTEM_NODES"
+    echo "  fix: gcloud container clusters resize $CLUSTER --node-pool $SYSTEM_POOL --num-nodes $SYSTEM_NODES --zone $ZONE --project $PROJECT"
+    drift=1
+  fi
+  if [ -z "$have_mt" ] || [ -z "$have_count" ]; then
+    [ "$DRY_RUN" -eq 1 ] || echo "note: could not read the machine type or node count of pool $SYSTEM_POOL; size drift was not checked"
+  elif [ "$drift" -eq 0 ]; then
+    echo "node pool $SYSTEM_POOL: $have_count x $have_mt, matches the expected settings"
+  fi
+  [ "$drift" -eq 0 ] || echo "(nothing was changed — the size of $SYSTEM_POOL is yours to decide; see docs/remote-conductor-runbook.md for how to size it)"
+  return 0
+}
+
+step "27. System node pool $SYSTEM_POOL ($SYSTEM_NODES x $SYSTEM_MACHINE_TYPE)"
+if probe gcloud container node-pools describe "$SYSTEM_POOL" --cluster "$CLUSTER" --zone "$ZONE" --project "$PROJECT"; then
+  system_pool_ensure_metadata
+  system_pool_report_drift
+elif [ "$DRY_RUN" -eq 1 ]; then
+  echo "dry run: on an existing cluster this step would enable GKE_METADATA on $SYSTEM_POOL if missing and report size drift"
+else
+  echo "node pool $SYSTEM_POOL: not found on cluster $CLUSTER (a cluster made by an older script or by hand may name it differently); nothing to check"
+fi
+
 step "Done. Values for the deployment config"
 echo "project:        $PROJECT"
 echo "zone:           $ZONE"
 echo "cluster:        $CLUSTER"
 echo "node pool:      $POOL"
+echo "system pool:    $SYSTEM_POOL ($SYSTEM_NODES x $SYSTEM_MACHINE_TYPE)"
 echo "namespace:      $NAMESPACE"
 echo "transcripts:    gs://$TRANSCRIPT_BUCKET (Cloud Storage FUSE CSI)"
 echo "leg GSA:        $LEG_GSA_EMAIL"
