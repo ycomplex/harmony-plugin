@@ -3,7 +3,8 @@ import { Command } from 'commander';
 import { registerAuthCommands } from './commands/auth.js';
 
 const require = createRequire(import.meta.url);
-const { version } = require('../../package.json');
+// Resolve at runtime from this plugin copy, in both src/cli and the bundled dist/bin CLI.
+const { version } = require('../../.claude-plugin/plugin.json');
 import { registerTaskCommands } from './commands/tasks.js';
 import { registerQueryCommand } from './commands/query.js';
 import { registerCommentCommands } from './commands/comments.js';
