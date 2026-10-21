@@ -146,7 +146,13 @@ fi
 # ticket-disk cleanup sweep: ticket-<id lower-cased, [^a-z0-9-] -> '-'>.
 TICKET_SLUG="$(printf '%s' "$TICKET" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-' '-')"
 PVC_NAME="ticket-$TICKET_SLUG"
-JOB_NAME="leg-${CONDUCTION_ID:0:8}-$(date +%s)"
+# B-1188: the daemon persists this attempt-unique identity before launch. Keep the historical
+# generated form as a compatibility path for older daemons that do not supply it.
+JOB_NAME="${HARMONY_GKE_JOB_NAME:-leg-${CONDUCTION_ID:0:8}-$(date +%s)}"
+if [ "${#JOB_NAME}" -gt 63 ] || [[ ! "$JOB_NAME" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
+  echo "gke-worker-launch: refusing invalid Kubernetes Job name '$JOB_NAME'" >&2
+  exit 1
+fi
 LEG_SECRET="$JOB_NAME-env"
 
 # --- Ticket-disk storage class. setup-cluster.sh step 17 creates harmony-ticket-disk: Immediate binding,

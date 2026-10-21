@@ -21819,8 +21819,8 @@ var BUILTIN_PROFILES = {
   gke: {
     // B-1164: gke legs launch from the Docker-capable image; the default (harmony-build-env) has no engine.
     launch: `HARMONY_GKE_IMAGE=us-central1-docker.pkg.dev/harmony-conductor/harmony-workers/harmony-build-env-docker:latest bash "$HARMONY_PLUGIN_DIR/container/gke/gke-worker-launch.sh" {conduction_id} {ticket} '{run_config_json}' '{model}'`,
-    reap: 'bash "$HARMONY_PLUGIN_DIR/container/gke/gke-worker-reap.sh" {conduction_id} {ticket}',
-    probe: 'bash "$HARMONY_PLUGIN_DIR/container/gke/gke-worker-probe.sh" {conduction_id} {ticket}',
+    reap: 'bash "$HARMONY_PLUGIN_DIR/container/gke/gke-worker-reap.sh" {conduction_id} {ticket} {worker_ref}',
+    probe: 'bash "$HARMONY_PLUGIN_DIR/container/gke/gke-worker-probe.sh" {conduction_id} {ticket} {worker_ref}',
     maxConcurrentWorkers: 2,
     agents: ["claude-code", "codex"],
     required_tools: {
@@ -39061,8 +39061,20 @@ function templateVars(row, task, projectKey, workerImage, modelPolicy, catalog) 
     // SchedulerDeps). Optional there and defaulted HERE to the schema's own default, because most
     // machines have no deployment config at all — loadDeploymentConfig returns null for them and
     // this substitution must never throw. Same always-computed convention as the two above.
-    worker_image: workerImage ?? WORKER_IMAGE_DEFAULT
+    worker_image: workerImage ?? WORKER_IMAGE_DEFAULT,
+    worker_ref: row.worker_ref ?? ""
   };
+}
+function gkeWorkerJobName(conductionId, attempt) {
+  const id = conductionId.toLowerCase();
+  if (!/^[a-z0-9-]+$/.test(id) || !Number.isSafeInteger(attempt) || attempt < 1) {
+    throw new Error("GKE worker identity requires a DNS-safe conduction id and positive safe attempt");
+  }
+  const name = `leg-${id}-${attempt}`;
+  if (name.length > 63 || !/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(name)) {
+    throw new Error(`GKE worker identity exceeds Kubernetes Job name constraints: ${name}`);
+  }
+  return name;
 }
 var TITLE_MAX = 48;
 function truncateTitle(title, max = TITLE_MAX) {
@@ -39210,6 +39222,9 @@ async function writeIfHeld(deps, state, keeper, row, patch) {
   keeper.stop(row.id);
   state.delete(row.id);
   return false;
+}
+async function clearWorkerRefIfPresent(deps, state, keeper, row) {
+  return row.worker_ref ? writeIfHeld(deps, state, keeper, row, { worker_ref: null }) : true;
 }
 async function writeLastLegEndedAt(deps, state, keeper, row, extra = {}) {
   try {
@@ -39522,7 +39537,10 @@ async function handleWonTakeover(deps, state, keeper, runtime, row, won) {
       { quiet: true, quietRender: renderQuietReapOutcome }
     );
   }
-  if (!await writeIfHeld(deps, state, keeper, row, { leg_started_at: null })) return false;
+  if (!await writeIfHeld(deps, state, keeper, row, {
+    leg_started_at: null,
+    ...row.worker_ref ? { worker_ref: null } : {}
+  })) return false;
   if (row.clean_shutdown_at !== null) {
     deps.log(`conduction ${row.id}: adopted cleanly-released lease from ${row.lease_holder}`);
   } else {
@@ -39531,6 +39549,7 @@ async function handleWonTakeover(deps, state, keeper, runtime, row, won) {
   return true;
 }
 async function settleTrackedLaunch(deps, state, keeper, runtime, row, tracked) {
+  if (tracked.workerRef) row.worker_ref = tracked.workerRef;
   runtime.running.delete(row.id);
   tracked.cancelDeadline();
   if (!await writeIfHeld(deps, state, keeper, row, { leg_started_at: null })) return;
@@ -39592,6 +39611,7 @@ async function settleTrackedLaunch(deps, state, keeper, runtime, row, tracked) {
     })) {
       return;
     }
+    if (!await clearWorkerRefIfPresent(deps, state, keeper, row)) return;
     if (classifyArgs.waitingOn && outcome.reason === "waiting-on") {
       deps.log(`${label(row, after, deps.projectKey)}: leg declared an external wait on ${classifyArgs.waitingOn.ref} \u2014 conduction held`);
     }
@@ -39610,6 +39630,7 @@ async function settleTrackedLaunch(deps, state, keeper, runtime, row, tracked) {
       `${label(row, after, deps.projectKey)}: dirty exit \u2014 retrying (attempt ${retryCount}/${deps.config.retryCap}) after reap + ${backoffMs}ms backoff`
     );
     await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row, after, deps.projectKey, deps.workerImage)));
+    if (!await clearWorkerRefIfPresent(deps, state, keeper, row)) return;
     runtime.ready.set(row.id, {
       since: deps.now(),
       priority: row.task_priority ?? null,
@@ -39633,7 +39654,12 @@ async function settleTrackedLaunch(deps, state, keeper, runtime, row, tracked) {
       return;
     }
   }
-  if (outcome.action === "park") await reapBeforePark(deps, state, keeper, runtime, row, after, tracked);
+  if (outcome.action === "park") {
+    const reaped = await reapBeforePark(deps, state, keeper, runtime, row, after, tracked);
+    if (reaped && !await clearWorkerRefIfPresent(deps, state, keeper, row)) return;
+  } else if (!await clearWorkerRefIfPresent(deps, state, keeper, row)) {
+    return;
+  }
   state.delete(row.id);
   keeper.stop(row.id);
   await writeIfHeld(deps, state, keeper, row, {
@@ -39705,6 +39731,7 @@ async function settleRefusal(deps, state, keeper, runtime, row, after, tracked, 
         `${label(row, after, deps.projectKey)}: rate limit on ${rt} \u2014 retrying (${used + 1}/${RATE_LIMIT_BACKOFFS_MS.length}) after reap + ${backoffMs}ms backoff`
       );
       await deps.runCommand(renderTemplate(deps.config.profile.reap, templateVars(row, after, deps.projectKey, deps.workerImage)));
+      if (!await clearWorkerRefIfPresent(deps, state, keeper, row)) return;
       runtime.ready.set(row.id, { since: deps.now(), priority: row.task_priority ?? null, notBefore: deps.now() + backoffMs, retryCount: tracked.retryCount });
       return;
     }
@@ -39718,6 +39745,7 @@ async function settleRefusal(deps, state, keeper, runtime, row, after, tracked, 
     q.holds.delete(row.id);
     state.delete(row.id);
     keeper.stop(row.id);
+    if (!await clearWorkerRefIfPresent(deps, state, keeper, row)) return;
     if (!await writeIfHeld(deps, state, keeper, row, { status: "parked", last_worker_exit_code: tracked.exitCode, last_worker_exit_class: "quota-repeated" })) return;
     await writeLastLegEndedAt(deps, state, keeper, row);
     if (deps.writeQuotaState) {
@@ -39739,6 +39767,7 @@ async function settleRefusal(deps, state, keeper, runtime, row, after, tracked, 
   const untilMs = Number.isFinite(reported) && reported > now ? reported : now + QUOTA_DEFAULT_PAUSE_MS;
   q.holds.set(row.id, { runtime: rt, until: untilMs, pauses });
   q.logged.delete(row.id);
+  if (!await clearWorkerRefIfPresent(deps, state, keeper, row)) return;
   if (!await writeLastLegEndedAt(deps, state, keeper, row, { last_worker_exit_class: "quota", last_worker_exit_code: tracked.exitCode })) return;
   if (deps.writeQuotaState) {
     try {
@@ -39951,16 +39980,24 @@ async function fireLaunch(deps, state, keeper, runtime, row, preReadCurrent, ret
     return;
   }
   const leg = (row.leg_count ?? 0) + 1;
-  if (!await writeIfHeld(deps, state, keeper, row, { leg_started_at: iso(deps.now()), leg_count: leg })) {
+  const gkeLaunch = deps.config.profile.launch.includes("gke-worker-launch.sh");
+  const workerRef = gkeLaunch ? gkeWorkerJobName(row.id, leg) : row.worker_ref;
+  if (!await writeIfHeld(deps, state, keeper, row, {
+    leg_started_at: iso(deps.now()),
+    leg_count: leg,
+    ...gkeLaunch ? { worker_ref: workerRef } : {}
+  })) {
     runtime.ready.delete(row.id);
     return;
   }
+  if (gkeLaunch) row.worker_ref = workerRef ?? null;
   runtime.ready.delete(row.id);
   deps.log(`${label(row, current, deps.projectKey)}: launching worker`);
   const fireRef = resolveWorkRef(current);
   const preFireHeadSha = fireRef ? await safeProbeRef(deps, fireRef) : null;
   const tracked = {
     current,
+    workerRef: gkeLaunch ? workerRef : null,
     retryCount,
     timedOut: false,
     settled: false,
@@ -39993,8 +40030,17 @@ async function fireLaunch(deps, state, keeper, runtime, row, preReadCurrent, ret
     deps.log(`${label(row, current, deps.projectKey)}: model catalog unavailable; passing launch model through`);
   }
   const launch = deps.runCommand(
-    renderTemplate(deps.config.profile.launch, templateVars(row, current, deps.projectKey, deps.workerImage, deps.getModelPolicy?.(), catalog)),
-    { env: { ...process.env, HARMONY_LEG: String(leg) } }
+    renderTemplate(
+      deps.config.profile.launch,
+      templateVars(gkeLaunch ? { ...row, worker_ref: workerRef ?? null } : row, current, deps.projectKey, deps.workerImage, deps.getModelPolicy?.(), catalog)
+    ),
+    {
+      env: {
+        ...process.env,
+        HARMONY_LEG: String(leg),
+        ...gkeLaunch && workerRef ? { HARMONY_GKE_JOB_NAME: workerRef } : {}
+      }
+    }
   ).then((result) => {
     tracked.settled = true;
     tracked.exitCode = result.exitCode;

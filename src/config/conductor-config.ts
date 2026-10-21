@@ -507,8 +507,8 @@ export const BUILTIN_PROFILES: Record<BuiltinProfileName, LaunchProfileConfig> =
     launch:
       'HARMONY_GKE_IMAGE=us-central1-docker.pkg.dev/harmony-conductor/harmony-workers/harmony-build-env-docker:latest ' +
       'bash "$HARMONY_PLUGIN_DIR/container/gke/gke-worker-launch.sh" {conduction_id} {ticket} \'{run_config_json}\' \'{model}\'',
-    reap: 'bash "$HARMONY_PLUGIN_DIR/container/gke/gke-worker-reap.sh" {conduction_id} {ticket}',
-    probe: 'bash "$HARMONY_PLUGIN_DIR/container/gke/gke-worker-probe.sh" {conduction_id} {ticket}',
+    reap: 'bash "$HARMONY_PLUGIN_DIR/container/gke/gke-worker-reap.sh" {conduction_id} {ticket} {worker_ref}',
+    probe: 'bash "$HARMONY_PLUGIN_DIR/container/gke/gke-worker-probe.sh" {conduction_id} {ticket} {worker_ref}',
     maxConcurrentWorkers: 2,
     agents: ['claude-code', 'codex'],
     required_tools: {

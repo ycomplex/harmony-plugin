@@ -9,6 +9,7 @@ import {
   createSchedulerRuntime,
   isAuthShapedError,
   killReasonFromExitCode,
+  gkeWorkerJobName,
   PersistentAuthFailure,
   PersistentReapFailure,
   type SchedulerDeps,
@@ -3373,6 +3374,45 @@ describe('B-1020: HARMONY_LEG delivery', () => {
   });
 });
 
+describe('B-1188: GKE worker identity', () => {
+  const id = '123e4567-e89b-12d3-a456-426614174000';
+  const gkeConfig: DaemonConfig = {
+    ...config,
+    profile: {
+      ...config.profile,
+      launch: 'bash gke-worker-launch.sh {conduction_id} {ticket}',
+      reap: 'reap {conduction_id} {worker_ref}',
+      probe: 'probe {conduction_id} {worker_ref}',
+    },
+  };
+
+  it('derives a DNS-safe attempt name and rejects names beyond Kubernetes limits', () => {
+    expect(gkeWorkerJobName(id.toUpperCase(), 12)).toBe(`leg-${id}-12`);
+    expect(gkeWorkerJobName(id, Number.MAX_SAFE_INTEGER).length).toBeLessThanOrEqual(63);
+    expect(() => gkeWorkerJobName('bad/name', 1)).toThrow(/DNS-safe/);
+    expect(() => gkeWorkerJobName(id, 0)).toThrow(/positive safe attempt/);
+  });
+
+  it('persists the attempt identity before launch, supplies it to the launcher, then clears it on settlement', async () => {
+    const h = makeHarness({
+      conductions: [conduction({ id })],
+      tasks: { 'task-1': pausedTask() },
+      config: gkeConfig,
+    });
+    await h.pass();
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    await h.pass();
+
+    const name = `leg-${id}-1`;
+    expect(h.deps.updateConductionIfHeld).toHaveBeenCalledWith(id, ME, {
+      leg_started_at: iso(T0), leg_count: 1, worker_ref: name,
+    });
+    const launchCall = h.runCommandCalls().find(([cmd]) => cmd.startsWith('bash gke-worker-launch.sh'));
+    expect(launchCall?.[1]?.env).toMatchObject({ HARMONY_GKE_JOB_NAME: name, HARMONY_LEG: '1' });
+    expect(h.getConduction(id).worker_ref).toBe(name);
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // B-723 — the per-leg log lines name the TICKET, alongside the full conduction id. Split under
 // B-717 into a "queued" line (wake→ready) and a "launching worker" line (ready→running, the fire
@@ -4096,7 +4136,8 @@ describe('B-845: withWriteRetry exclusion — the fire/worker-launch path is nev
     // B-1020 reformatted this call across multiple lines (to carry the new `env` option) — match
     // the two pieces separately rather than one brittle single-line substring.
     expect(body).toContain('.runCommand('); // the launch call is really in here
-    expect(body).toContain('renderTemplate(deps.config.profile.launch');
+    expect(body).toContain('renderTemplate(');
+    expect(body).toContain('deps.config.profile.launch');
     expect(body).not.toContain('withWriteRetry');
   });
 });
