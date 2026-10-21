@@ -18,7 +18,13 @@
 #     FUSE CSI driver and reached via the Kubernetes service account $HARMONY_GKE_SERVICE_ACCOUNT
 #     (Workload Identity); setup-cluster.sh steps 10-16 provision all of that.
 #   * Exit. Polls the Job: Complete with clean pod evidence -> 0; Failed, gone, or Complete with pod
-#     evidence of a disruption (or evidence that cannot be read) -> 1. backoffLimit 0: the conductor's
+#     evidence of a disruption (or evidence that cannot be read) -> 1, EXCEPT (B-1187) a leg Kubernetes itself
+#     killed, which exits with a code the conductor reads as a kill reason (all three classify as a dirty exit):
+#       73 = the Job's Failed condition reason is DeadlineExceeded;
+#       72 = a pod container was OOMKilled;
+#       71 = a pod was evicted / preempted / shut down / disrupted (status.reason Evicted|Preempting|NodeShutdown|
+#            Shutdown|Terminated, a DisruptionTarget=True condition, or a deletionTimestamp).
+#     Precedence 73, 72, 71; anything else, or a pod list that cannot be read, stays 1. backoffLimit 0: the conductor's
 #     ladder retries, never Kubernetes. Events are never read.
 #
 # usage: gke-worker-launch.sh <conduction_id> <ticket> [run_config_json] [model]
@@ -225,6 +231,54 @@ process.stdin.on("end", () => {
   }
   process.stdout.write(found.length ? "bad " + found.join("; ") + "\n" : "clean\n");
 });'
+# B-1187: the kill reason, from the pod list on stdin. Prints "72 <what>" (OOMKilled), "71 <what>"
+# (evicted / disrupted) or "none". Field paths are the Kubernetes API's (Pod.status.containerStatuses[]
+# .state/.lastState.terminated.reason; Pod.status.reason; Pod.status.conditions[DisruptionTarget]).
+POD_KILL_JS='
+let s = "";
+process.stdin.on("data", (d) => (s += d));
+process.stdin.on("end", () => {
+  let j;
+  try { j = JSON.parse(s); } catch { process.stdout.write("none\n"); return; }
+  const items = j && Array.isArray(j.items) ? j.items : [];
+  const BAD = ["Terminated", "NodeShutdown", "Shutdown", "Evicted", "Preempting"];
+  let oom = null;
+  let disrupted = null;
+  for (const p of items) {
+    const st = p.status || {};
+    const statuses = [].concat(st.containerStatuses || [], st.initContainerStatuses || []);
+    for (const cs of statuses) {
+      for (const t of [cs.state && cs.state.terminated, cs.lastState && cs.lastState.terminated]) {
+        if (t && t.reason === "OOMKilled" && !oom) oom = "OOMKilled";
+      }
+    }
+    if (BAD.includes(st.reason) && !disrupted) disrupted = st.reason;
+    if ((st.conditions || []).some((c) => c.type === "DisruptionTarget" && c.status === "True") && !disrupted) disrupted = "DisruptionTarget";
+    if (p.metadata && p.metadata.deletionTimestamp && !disrupted) disrupted = "deleted";
+  }
+  if (oom) process.stdout.write("72 " + oom + "\n");
+  else if (disrupted) process.stdout.write("71 " + disrupted + "\n");
+  else process.stdout.write("none\n");
+});'
+# kill_exit <job-failed-reason-or-empty>: exits 73/72/71 when Kubernetes killed the leg, else returns.
+kill_exit() {
+  local reason="$1" pods out
+  if [ "$reason" = "DeadlineExceeded" ]; then
+    echo "gke-worker-launch: job $JOB_NAME failed ($reason) — killed: DeadlineExceeded — dirty exit" >&2
+    exit 73
+  fi
+  set +e
+  pods="$("${KUBECTL[@]}" get pods -l "job-name=$JOB_NAME" -o json 2>/dev/null)"
+  local rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || return 0
+  out="$(printf '%s' "$pods" | node -e "$POD_KILL_JS" 2>/dev/null || true)"
+  case "$out" in
+    72*) echo "gke-worker-launch: job $JOB_NAME failed (${reason:-complete with pod evidence}) — killed: ${out#72 } — dirty exit" >&2; exit 72 ;;
+    71*) echo "gke-worker-launch: job $JOB_NAME failed (${reason:-complete with pod evidence}) — killed: ${out#71 } — dirty exit" >&2; exit 71 ;;
+  esac
+  return 0
+}
 
 POD_TRIES=0
 while :; do
@@ -243,6 +297,7 @@ while :; do
   fi
   case "$VERDICT" in
     failed*)
+      kill_exit "${VERDICT#failed }"
       echo "gke-worker-launch: job $JOB_NAME failed (${VERDICT#failed }) — dirty exit" >&2
       exit 1 ;;
     complete)
@@ -257,6 +312,7 @@ while :; do
       case "$EVIDENCE" in
         clean) exit 0 ;;
         bad*)
+          kill_exit ""
           echo "gke-worker-launch: job $JOB_NAME is Complete but its pod shows a disruption (${EVIDENCE#bad }) — dirty exit" >&2
           exit 1 ;;
       esac

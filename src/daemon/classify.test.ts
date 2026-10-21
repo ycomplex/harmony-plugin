@@ -107,6 +107,13 @@ describe('classifyWorkerExit — the B-693 worker exit contract, in order', () =
     expect(exitClass(outcome, a)).toBe('stale');
   });
 
+  it.each([71, 72, 73])("B-1187: launcher kill-reason exit code %i classifies as an ordinary dirty-exit (the code is never keyed on)", (code) => {
+    const a = args({ exitCode: code, progressed: false });
+    const outcome = classifyWorkerExit(a);
+    expect(outcome).toEqual({ action: 'park', reason: 'dirty-exit' });
+    expect(exitClass(outcome, a)).toBe('dirty-exit');
+  });
+
   it("5. non-zero exitCode, nothing else matched ⇒ park / 'dirty-exit'", () => {
     const a = args({ exitCode: 1 });
     const outcome = classifyWorkerExit(a);

@@ -206,6 +206,32 @@ conflict with a legacy env knob carries the note *environment wins at launch (de
 remove it from conductor.env*. Exit **1** when there is any issue; conflicts and legacy use are warnings (exit
 0). To check what the conductor sees, load its environment first: `set -a; . <conductor.env>; set +a`.
 
+## Launch and reap exit codes (B-1187)
+
+The conductor reads only a launch script's exit code. Besides `0` (clean) and `1` (any dirty exit), a launcher
+may exit with a **kill reason** when the platform itself killed the leg:
+
+| Exit | Meaning | GKE source | Cloud Run source |
+|---|---|---|---|
+| `71` | evicted / preempted / node shutdown / disrupted | a pod with `status.reason` Evicted, Preempting, NodeShutdown, Shutdown or Terminated, a `DisruptionTarget=True` condition, or a `deletionTimestamp` | (not mapped) |
+| `72` | out of memory | a container terminated with reason `OOMKilled` | an execution condition mentioning memory (documented fields, not live-verified) |
+| `73` | deadline exceeded | the Job's `Failed` condition reason is `DeadlineExceeded` | an execution condition mentioning timeout / deadline / timed out (not live-verified) |
+
+Precedence is 73, then 72, then 71. All three classify as an ordinary `dirty-exit` (the classifier never keys on
+the code): they are counted against the retry cap exactly like exit 1, the board records the real class and code
+(`last_worker_exit_class` / `last_worker_exit_code`), and the conductor adds a ticket comment naming the reason.
+
+The **reap** script contract (`gke-worker-reap.sh`) is `0` = at least one `kubectl delete job` succeeded, `3` =
+no unsettled Job was there, `1` = a delete failed. Before every park the scheduler reaps the conduction's leg
+and treats `0` and `3` as safe; any other result is retried twice more in the same pass (no new leg is fired),
+then the conduction parks anyway with a ticket comment saying the Job may still be running.
+
+**Rollout.** The launcher and reap scripts (and the `.sh` fixtures) go live when `staging` regenerates after the
+merge; the scheduler change needs a conductor-image rollout (the remote conductor's registry Update, or a local
+`harmony conductor restart`). Each side tolerates the other's old version: an old scheduler sees 71-73 as a plain
+dirty exit, and a new scheduler on an old launcher simply never sees those codes (the reap-before-park still
+works, treating the old reap's exit 0 as deleted).
+
 ## Conductor logs (B-1174)
 
 The conductor writes **two outputs from one logger**:

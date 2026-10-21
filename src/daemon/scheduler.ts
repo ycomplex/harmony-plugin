@@ -1731,6 +1731,22 @@ async function settleTrackedLaunch(
     return;
   }
 
+  // B-1187: a leg the launcher reported as killed by the platform (exit 71/72/73) keeps its death visible
+  // on the ticket, whichever way the classification goes (retry, park, or the clean-pause wait below).
+  if (outcome.action !== 'complete') {
+    const killed = killReasonFromExitCode(tracked.exitCode);
+    if (killed) {
+      const attempt = `attempt ${tracked.retryCount + 1} of ${deps.config.retryCap + 1}`;
+      await commentOnTicket(
+        deps,
+        row,
+        outcome.action === 'wait'
+          ? `Leg killed by the platform: ${killed} (exit ${tracked.exitCode}), ${attempt} — the ticket already shows a brief, so it stays a clean pause.`
+          : `Leg killed by the platform: ${killed} (exit ${tracked.exitCode}), ${attempt} — counted as a failed leg.`,
+      );
+    }
+  }
+
   if (outcome.action === 'wait') {
     // B-1040: record the leg's clean-pause ending as a board fact. Nothing existed on this branch
     // before this ticket, so bundling the exit-class/exit-code fields into this SAME isolated call is
@@ -1757,7 +1773,12 @@ async function settleTrackedLaunch(
     const retryCount = tracked.retryCount + 1;
     if (!(await writeIfHeld(deps, state, keeper, row, { retry_count: retryCount }))) return;
     // B-1040: last_leg_ended_at, isolated from the retry_count write above.
-    await writeLastLegEndedAt(deps, state, keeper, row);
+    // B-1187: this leg's own class and exit code — without them the board kept the PREVIOUS leg's value
+    // (a killed leg showed as a clean pause).
+    await writeLastLegEndedAt(deps, state, keeper, row, {
+      last_worker_exit_class: cls,
+      last_worker_exit_code: tracked.exitCode,
+    });
     // B-717 item 4: EXPONENTIAL backoff (was a flat deps.config.retryBackoffMs) — a flat delay lets
     // N concurrently-dirty-exiting conductions pile every retry back onto a rate limit at the same
     // instant; the base config knob is unchanged, no new env var.
@@ -1802,7 +1823,8 @@ async function settleTrackedLaunch(
     }
   }
 
-  // B-1187 inserts its reap of the final attempt's Job AFTER this re-read decides to park and BEFORE the status write.
+  // B-1187: a park must not leave the last leg's Job running untracked — reap it first.
+  if (outcome.action === 'park') await reapBeforePark(deps, state, keeper, runtime, row, after, tracked);
 
   // Park (retry cap exhausted, or a non-dirty-exit park reason) / complete: one terminal status
   // write, exactly as before B-713/B-717.
@@ -1820,6 +1842,60 @@ async function settleTrackedLaunch(
   // B-720: the captured LAUNCH-COMMAND output goes out as a SEPARATE, never-throwing write, AFTER
   // the terminal status patch above and never folded into it. See flushLaunchOutput.
   await flushLaunchOutput(deps, row, tracked);
+}
+
+/** B-1187: exit codes the launch scripts use for a leg the PLATFORM killed (launcher-agnostic: the GKE launcher
+ *  derives them from the Job and pod status, the Cloud Run launcher from the execution's conditions). The
+ *  classifier treats each as any other non-zero exit (dirty-exit) — the code only names the kill reason. */
+export function killReasonFromExitCode(code: number | null): 'Evicted or disrupted' | 'OOMKilled' | 'DeadlineExceeded' | null {
+  if (code === 71) return 'Evicted or disrupted';
+  if (code === 72) return 'OOMKilled';
+  if (code === 73) return 'DeadlineExceeded';
+  return null;
+}
+
+/** B-1187: how many times the reap is tried before a park (settled in one pass, no sleeping). */
+const REAP_BEFORE_PARK_ATTEMPTS = 3;
+
+/** B-1187: reap the conduction's leg before the terminal PARK write, so the last attempt's Job never keeps
+ *  running untracked behind a parked conduction. Exit 0 (deleted) and 3 (nothing there) are safe; anything
+ *  else, or a thrown error, is unconfirmed.
+ *
+ *  DESIGN: unconfirmed reaps are retried INLINE, back to back, up to REAP_BEFORE_PARK_ATTEMPTS, rather than
+ *  re-queued across passes. By this point the launch is settled and leg_started_at is cleared, so a conduction
+ *  left active would be re-visited by the watch logic (handleHeldConduction (b)) — a wake would fire a brand
+ *  new worker leg, which is exactly what a failed reap must not cause. The conduction stays active (status is
+ *  untouched) for the whole sequence because the terminal write only happens after this returns. After the
+ *  last unconfirmed attempt it parks anyway, with a ticket comment naming the Job as possibly still running.
+ *  The state/keeper/runtime parameters are the caller's context (kept so a sibling's edit to the tail of
+ *  settleTrackedLaunch has the same shape); they are not needed by the inline design. */
+async function reapBeforePark(
+  deps: SchedulerDeps,
+  _state: Map<string, WatchBaseline>,
+  _keeper: HeartbeatKeeper,
+  _runtime: SchedulerRuntime,
+  row: ConductionRecord,
+  after: DaemonTask,
+  _tracked: TrackedLaunch,
+): Promise<boolean> {
+  const cmd = renderTemplate(deps.config.profile.reap, templateVars(row, after, deps.projectKey, deps.workerImage));
+  let last = 'no attempt';
+  for (let attempt = 1; attempt <= REAP_BEFORE_PARK_ATTEMPTS; attempt++) {
+    try {
+      const r = await deps.runCommand(cmd);
+      if (r.exitCode === 0 || r.exitCode === 3) return true;
+      last = `exit ${r.exitCode}`;
+    } catch (err) {
+      last = formatDaemonError(err);
+    }
+    deps.log(`${label(row, after, deps.projectKey)}: reap before park unconfirmed (${last}), attempt ${attempt}/${REAP_BEFORE_PARK_ATTEMPTS}`);
+  }
+  await commentOnTicket(
+    deps,
+    row,
+    `Parked, but the leg's Job could not be confirmed deleted after ${REAP_BEFORE_PARK_ATTEMPTS} reap attempts (${last}) — it may still be running; check the cluster and delete it by hand.`,
+  );
+  return false;
 }
 
 /** B-1149: write quota_pauses back to 0 (tolerant of the column being absent). */
