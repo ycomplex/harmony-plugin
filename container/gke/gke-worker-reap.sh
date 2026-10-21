@@ -7,12 +7,23 @@
 # Deleting the Job deletes its pod and (ownerReference) its per-leg secret. The ticket's PVC is
 # deliberately NEVER deleted here: it carries the engine cache and transcripts the next leg resumes from.
 set -euo pipefail
-CONDUCTION_ID="${1:?usage: gke-worker-reap.sh <conduction_id> <ticket>}"
-TICKET="${2:?usage: gke-worker-reap.sh <conduction_id> <ticket>}"
+CONDUCTION_ID="${1:?usage: gke-worker-reap.sh <conduction_id> <ticket> [job_name]}"
+TICKET="${2:?usage: gke-worker-reap.sh <conduction_id> <ticket> [job_name]}"
+JOB_NAME="${3:-}"
 # shellcheck source=gke-common.sh
 . "$(dirname "${BASH_SOURCE[0]}")/gke-common.sh"
 gke_init_kubectl
 rm -f "$HOME/.harmony-conductions/$TICKET/$CONDUCTION_ID/run.env"
+
+if [ -n "$JOB_NAME" ]; then
+  if OUTPUT="$("${KUBECTL[@]}" delete job "$JOB_NAME" --cascade=background --wait=false 2>&1)"; then
+    exit 0
+  fi
+  case "$OUTPUT" in
+    *NotFound*|*not\ found*) exit 3 ;;
+    *) echo "gke-worker-reap: could not delete job $JOB_NAME: $OUTPUT" >&2; exit 1 ;;
+  esac
+fi
 
 ACTIVE="$(gke_unsettled_jobs "$CONDUCTION_ID")"
 [ -z "$ACTIVE" ] && exit 3
