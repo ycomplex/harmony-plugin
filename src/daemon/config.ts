@@ -366,6 +366,7 @@ export function renderTemplate(
     run_config_json?: string;
     model?: string;
     worker_image?: string;
+    worker_ref?: string;
   },
 ): string {
   return tpl.replace(/\{([A-Za-z0-9_]+)\}/g, (_match, name: string) => {
@@ -378,9 +379,12 @@ export function renderTemplate(
     if (name === 'model' && vars.model !== undefined) return vars.model;
     // B-929: which worker image this deployment runs — same convention as the two above.
     if (name === 'worker_image' && vars.worker_image !== undefined) return vars.worker_image;
+    // B-1188: the recorded GKE Job name for exact-name probe/reap. Empty when none is recorded, so the
+    // scripts fall back to their label lookup (their third argument is optional).
+    if (name === 'worker_ref') return vars.worker_ref ?? '';
     throw new Error(
       `unknown placeholder {${name}} in launch-profile template — supported: {conduction_id}, ` +
-        `{ticket}, {run_config_json}, {model}, {worker_image}`,
+        `{ticket}, {run_config_json}, {model}, {worker_image}, {worker_ref}`,
     );
   });
 }

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { loadDaemonConfig, renderTemplate, selectNamedProfile } from './config.js';
 import { loadDeploymentConfig } from '../config/deployment-config.js';
+import { BUILTIN_PROFILES } from '../config/conductor-config.js';
 import type { DeploymentConfig } from '../config/deployment-config.js';
 
 const PROFILE_JSON = JSON.stringify({
@@ -286,6 +287,22 @@ describe('loadDaemonConfig', () => {
 });
 
 describe('renderTemplate', () => {
+  // B-1188 hotfix (2026-10-21): the gke probe/reap templates gained {worker_ref} but this renderer did not
+  // know it, so every live probe/reap threw "unknown placeholder" and the row was skipped every pass. Render
+  // EVERY shipped template with exactly the vars the scheduler supplies, so a new placeholder in a built-in
+  // profile can never again outrun the renderer.
+  it.each(Object.entries(BUILTIN_PROFILES).flatMap(([name, p]) =>
+    (['launch', 'probe', 'reap'] as const).filter((k) => typeof p[k] === 'string').map((k) => [`${name}.${k}`, p[k] as string]),
+  ))('renders the built-in %s template with no unknown placeholder', (_label, tpl) => {
+    const vars = { conduction_id: 'c-1', ticket: 'B-1', run_config_json: '{}', model: 'm', worker_image: 'img', worker_ref: 'leg-c-1-1' };
+    expect(() => renderTemplate(tpl, vars)).not.toThrow();
+  });
+
+  it('{worker_ref} renders the recorded Job name, and empty when none is recorded (label-lookup fallback)', () => {
+    expect(renderTemplate('probe {conduction_id} {ticket} {worker_ref}', { conduction_id: 'c', ticket: 'B-1', worker_ref: 'leg-c-3' })).toBe('probe c B-1 leg-c-3');
+    expect(renderTemplate('probe {conduction_id} {ticket} {worker_ref}', { conduction_id: 'c', ticket: 'B-1' })).toBe('probe c B-1 ');
+  });
+
   it('substitutes BOTH placeholders, every occurrence', () => {
     expect(
       renderTemplate('run --name harmony-worker-{conduction_id} w {ticket} # {conduction_id}', {

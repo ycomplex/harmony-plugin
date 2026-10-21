@@ -37207,8 +37207,9 @@ function renderTemplate(tpl, vars) {
     if (name === "run_config_json" && vars.run_config_json !== void 0) return vars.run_config_json;
     if (name === "model" && vars.model !== void 0) return vars.model;
     if (name === "worker_image" && vars.worker_image !== void 0) return vars.worker_image;
+    if (name === "worker_ref") return vars.worker_ref ?? "";
     throw new Error(
-      `unknown placeholder {${name}} in launch-profile template \u2014 supported: {conduction_id}, {ticket}, {run_config_json}, {model}, {worker_image}`
+      `unknown placeholder {${name}} in launch-profile template \u2014 supported: {conduction_id}, {ticket}, {run_config_json}, {model}, {worker_image}, {worker_ref}`
     );
   });
 }
