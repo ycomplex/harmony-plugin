@@ -14,7 +14,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { classifyWorkerExit, isCleanRowShape, type ClassifyArgs } from '../daemon/classify.js';
-import { decideStop, STOP_GATE_ESCAPE_ENV, type StopGateRow } from './stop-gate.js';
+import { decideStop, hasLiveDeclaredWait, STOP_GATE_ESCAPE_ENV, type StopGateRow } from './stop-gate.js';
 
 const ROOT = process.cwd();
 
@@ -163,5 +163,45 @@ describe('the Stop hook is wired up and degrades safely (B-870)', () => {
       const body = readFileSync(join(ROOT, rel), 'utf8');
       expect(body, `${rel} must not set ${STOP_GATE_ESCAPE_ENV}`).not.toContain(STOP_GATE_ESCAPE_ENV);
     }
+  });
+});
+
+// B-1157: a live declared wait is sanctioned on BOTH surfaces — the gate allows the turn-end and the
+// daemon classifier holds (wait) instead of parking — and the two agree on liveness because the gate
+// imports the daemon's own liveWaitingOn. classifyCleanRowShape is untouched (no clean kind for it).
+describe('a declared external wait is honoured by BOTH the stop gate and the daemon classifier (B-1157)', () => {
+  const NOW = Date.parse('2026-10-21T12:00:00.000Z');
+  const waiting = (sinceMs: number, firstMs = sinceMs) => ({
+    waiting_on: { kind: 'ci', ref: 'pr#9', since: new Date(sinceMs).toISOString(), first_since: new Date(firstMs).toISOString() },
+  });
+  const midFlight = { workflow_state: 'Built', awaiting_human_input: false };
+  const day = 24 * 60 * 60 * 1000;
+
+  it.each([
+    ['live', waiting(NOW - 60_000), NOW - 3_600_000, true],
+    ['left over from before the leg started', waiting(NOW - 7_200_000), NOW - 3_600_000, false],
+    ['past the 24h ceiling', waiting(NOW - 60_000, NOW - day - 1), NOW - 2 * day, false],
+    ['absent', {}, NOW - 3_600_000, false],
+  ])('%s marker', (_n, field_values, legStart, live) => {
+    const row: StopGateRow = { ...midFlight, field_values };
+    const gate = decideStop({ ticket: 'B-1157', row, blocksSoFar: 0, stopHookActive: false, nowMs: NOW, legStartedAtMs: legStart });
+    expect(gate.action === 'allow').toBe(live);
+    expect(hasLiveDeclaredWait(row, { nowMs: NOW, legStartedAtMs: legStart })).toBe(live);
+    // Daemon side: the same liveness decides wait vs park.
+    const outcome = classifyWorkerExit({
+      row: midFlight,
+      nonArchivedChildCount: 0,
+      exitCode: 0,
+      progressed: false,
+      timedOut: false,
+      operatorReaped: false,
+      repoProgressed: false,
+      waitingOn: live ? { kind: 'ci', ref: 'pr#9', since: '', first_since: '' } : null,
+    } as ClassifyArgs);
+    expect(outcome.action).toBe(live ? 'wait' : 'park');
+  });
+
+  it('classifyCleanRowShape is NOT widened: a mid-flight row with a marker is still not a clean shape', () => {
+    expect(isCleanRowShape(midFlight, 0)).toBe(false);
   });
 });

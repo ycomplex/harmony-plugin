@@ -82,6 +82,32 @@ describe('decideStop — the pure decision', () => {
     expect(d.action).toBe('allow');
   });
 
+  it('B-1157: a live declared wait ends the turn uninterrupted; a stale one is still blocked', () => {
+    const now = Date.parse('2026-10-21T12:00:00.000Z');
+    const marker = (since: string) => ({
+      waiting_on: { kind: 'pr-state', ref: 'pr#7', since, first_since: since },
+    });
+    const live = decideStop({
+      ticket: 'B-1157',
+      row: { ...DIRTY_ROW, field_values: marker('2026-10-21T11:59:00.000Z') },
+      blocksSoFar: 0,
+      stopHookActive: false,
+      nowMs: now,
+      legStartedAtMs: Date.parse('2026-10-21T11:00:00.000Z'),
+    });
+    expect(live.action).toBe('allow');
+    const stale = decideStop({
+      ticket: 'B-1157',
+      row: { ...DIRTY_ROW, field_values: marker('2026-10-21T10:00:00.000Z') },
+      blocksSoFar: 0,
+      stopHookActive: false,
+      nowMs: now,
+      legStartedAtMs: Date.parse('2026-10-21T11:00:00.000Z'),
+    });
+    expect(stale.action).toBe('block');
+    expect(stale.action === 'block' ? stale.message : '').toMatch(/waiting_on/);
+  });
+
   it('AC6: the cap — two blocks, then the third attempt is allowed through with a loud line', () => {
     const seen: string[] = [];
     let blocks = 0;

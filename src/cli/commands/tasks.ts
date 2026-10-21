@@ -76,6 +76,7 @@ export function registerTaskCommands(program: Command): void {
           workflow_state?: string | null;
           awaiting_human_input?: boolean | null;
           pending_acceptance_event_id?: string | null;
+          field_values?: Record<string, unknown> | null;
         };
         let nonArchivedChildCount = 0;
         if (task.workflow_state === 'Decomposed') {
@@ -94,6 +95,8 @@ export function registerTaskCommands(program: Command): void {
           // B-797 two-step accept — the gate this field defeats even when the row otherwise looks clean.
           pending_acceptance_event_id: task.pending_acceptance_event_id ?? null,
           non_archived_child_count: nonArchivedChildCount,
+          // B-1157: the stop gate reads the declared-wait marker (field_values.waiting_on) from here.
+          field_values: task.field_values ?? null,
           clean: kind !== null,
           clean_kind: kind,
         };
