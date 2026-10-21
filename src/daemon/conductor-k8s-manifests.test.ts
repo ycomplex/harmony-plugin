@@ -77,6 +77,12 @@ describe('PriorityClass harmony-conductor (B-1186)', () => {
     expect(pc.value).toBeLessThan(2_000_000_000); // below system-cluster-critical
   });
 
+  it('the conductor container always pulls its image, so a node never starts a stale build cached under the same version tag', () => {
+    const d = one('Deployment', 'harmony-conductor');
+    const c = d.spec.template.spec.containers.find((x: { name: string }) => x.name === 'conductor');
+    expect(c.imagePullPolicy).toBe('Always');
+  });
+
   it('is named by the Deployment pod spec, and the conductor Role cannot create one (it is applied by the operator)', () => {
     const d = one('Deployment', 'harmony-conductor');
     expect(d.spec.template.spec.priorityClassName).toBe('harmony-conductor');
