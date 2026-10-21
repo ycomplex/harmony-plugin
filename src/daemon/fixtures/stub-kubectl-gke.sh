@@ -21,7 +21,11 @@ case "$all" in
     name="${args[2]}"
     case ",${STUB_MISSING_SECRETS:-}," in *",$name,"*) exit 1 ;; esac
     exit 0 ;;
-  "get storageclass "*) [ -n "${STUB_NO_TICKET_SC:-}" ] && exit 1; exit 0 ;;
+  "get storageclass "*)
+    echo "storageclass-read" >> "$STUB_LOGS/storageclass-reads"
+    if [ -n "${STUB_SC_FORBIDDEN:-}" ]; then echo 'Error from server (Forbidden): storageclasses.storage.k8s.io "harmony-ticket-disk" is forbidden: User "system:serviceaccount:harmony-conductor:harmony-conductor" cannot get resource "storageclasses"' >&2; exit 1; fi
+    if [ -n "${STUB_NO_TICKET_SC:-}" ]; then echo 'Error from server (NotFound): storageclasses.storage.k8s.io "harmony-ticket-disk" not found' >&2; exit 1; fi
+    exit 0 ;;
   "get serviceaccount "*)
     name="${args[2]}"
     case ",${STUB_MISSING_SERVICEACCOUNTS:-}," in *",$name,"*) exit 1 ;; esac

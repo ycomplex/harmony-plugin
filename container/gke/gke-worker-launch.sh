@@ -70,7 +70,7 @@ CONFIG_WORKER_IMAGE="$(harmony_config worker_image)"
 : "${HARMONY_GKE_CPU:=6}"
 : "${HARMONY_GKE_MEMORY:=20Gi}"
 : "${HARMONY_GKE_TICKET_DISK:=20Gi}"
-# HARMONY_GKE_STORAGE_CLASS: unset => harmony-ticket-disk when the cluster has it, else standard-rwo (below).
+# HARMONY_GKE_STORAGE_CLASS: set (gke.storage_class) => used as is; unset => harmony-ticket-disk unless the cluster says it is NotFound, then standard-rwo (below).
 : "${HARMONY_GKE_DEADLINE_S:=5400}"          # the Cloud Run job's task timeout
 : "${HARMONY_GKE_POLL_S:=5}"
 : "${HARMONY_GKE_JOB_TTL_S:=3600}"
@@ -159,13 +159,23 @@ LEG_SECRET="$JOB_NAME-env"
 # pinned to the leg pool's zone, so the disk is created WHILE the node scales up. standard-rwo waits for
 # the pod to land and then races the new node's disk driver ("no topology key found"; ~65 s on the
 # first GKE leg, 2026-10-20). A cluster set up before step 17 keeps working on standard-rwo.
+# B-1186: a configured class (gke.storage_class -> HARMONY_GKE_STORAGE_CLASS, which the daemon exports from the
+# config files) wins with NO cluster read. Unset: probe the class. Only a NotFound answer means "the cluster has
+# no such class" (fall back to standard-rwo); any OTHER failure (Forbidden, a refused read, a network error) says
+# nothing about the class, so keep harmony-ticket-disk — the remote conductor's RBAC cannot read the cluster-scoped
+# StorageClass, and falling back there silently put every disk on the slow class.
 if [ -z "${HARMONY_GKE_STORAGE_CLASS:-}" ]; then
-  if "${KUBECTL[@]}" get storageclass harmony-ticket-disk >/dev/null 2>&1; then
+  SC_ERR="$(mktemp)"
+  if "${KUBECTL[@]}" get storageclass harmony-ticket-disk >/dev/null 2>"$SC_ERR"; then
     HARMONY_GKE_STORAGE_CLASS=harmony-ticket-disk
-  else
+  elif grep -qiE 'NotFound|not found' "$SC_ERR"; then
     HARMONY_GKE_STORAGE_CLASS=standard-rwo
     echo "gke-worker-launch: storage class harmony-ticket-disk not found; using standard-rwo (run setup-cluster.sh to create it)" >&2
+  else
+    HARMONY_GKE_STORAGE_CLASS=harmony-ticket-disk
+    echo "gke-worker-launch: could not check storage class harmony-ticket-disk ($(head -c 200 "$SC_ERR" | tr '\n' ' ')); using harmony-ticket-disk (set gke.storage_class to silence this probe)" >&2
   fi
+  rm -f "$SC_ERR"
 fi
 
 render() {  # $1 = what: pvc | job
