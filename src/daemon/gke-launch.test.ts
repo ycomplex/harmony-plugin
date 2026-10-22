@@ -1,3 +1,4 @@
+import { channelEnv } from './fixtures/channel-env.js';
 // B-1161: the gke profile's launch / probe / reap scripts, EXECUTED against a stub `kubectl` that records
 // argv one argument per line. Real node and real bash; the mint script is a stub in a temp plugin dir.
 //
@@ -61,7 +62,7 @@ function makeWorld(extra: Record<string, string> = {}, opts: { workerImage?: str
     join(plugin, 'scripts/mint-installation-token.mjs'),
     `import { writeFileSync } from 'node:fs';
 const a = process.argv; const out = a[a.indexOf('--out') + 1];
-writeFileSync(out, 'GIT_TOKEN=${SECRET_VALUE}\\nHARMONY_RUN_CONFIG_JSON=' + a[a.indexOf('--run-config') + 1] + '\\n');
+writeFileSync(out, (process.env.STUB_CHANNEL_ENV || '') + 'GIT_TOKEN=${SECRET_VALUE}\\nHARMONY_RUN_CONFIG_JSON=' + a[a.indexOf('--run-config') + 1] + '\\n');
 `,
   );
   // `harmony config get <key>` stub
@@ -104,6 +105,14 @@ const verbs = (w: World) => calls(w).map((c) => c.join(' '));
 const read = (w: World, f: string) => (existsSync(join(w.logs, f)) ? readFileSync(join(w.logs, f), 'utf8') : '');
 const podReads = (w: World) => read(w, 'pods-reads').split('\n').filter(Boolean).length;
 const minted = (w: World) => existsSync(join(w.home, '.harmony-conductions', TICKET, CID, 'run.env'));
+
+describe.skipIf(!CAPABLE)('explicit project channel reaches the gke worker', () => {
+  it('keeps staging acknowledged through config, mint and the actual launcher secret', () => {
+    const w = makeWorld({ ...seq([COMPLETE], [CLEAN_POD]), STUB_CHANNEL_ENV: channelEnv('gke') });
+    expect(launch(w).status).toBe(0);
+    expect(read(w, 'envfile-copy')).toContain('HARMONY_PLUGIN_POSTURE=ack:staging');
+  });
+});
 
 describe.skipIf(!CAPABLE)('gke-worker-launch.sh — the ticket-disk storage class', () => {
   it('falls back to standard-rwo, with a line saying so, on a cluster without harmony-ticket-disk', () => {
