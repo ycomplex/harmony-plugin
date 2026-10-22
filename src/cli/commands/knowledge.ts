@@ -55,6 +55,8 @@ export function registerKnowledgeCommands(program: Command): void {
             { key: 'superseded_by', header: 'Superseded by', transform: (v: string | null) => v ?? '—' },
             { key: 'supersedes', header: 'Supersedes', transform: (v: string[]) => (v ?? []).join(', ') || '—' },
             { key: 'invalidations', header: 'Invalidation', transform: (links: Array<{ effective_at: string | null }> = []) => links.some(link => link.effective_at) ? 'Retired' : links.length ? 'Removal pending' : '' },
+            { key: 'rollout_state', header: 'Rollout', transform: (v: string | null) => v ?? 'unknown' },
+            { key: 'verified_against', header: 'Verification', transform: (v: unknown) => v ? JSON.stringify(v) : 'not verified' },
             {
               key: 'tags',
               header: 'Tags',
@@ -92,6 +94,9 @@ export function registerKnowledgeCommands(program: Command): void {
             { label: 'Title', value: entry.title },
             { label: 'Type', value: entry.type },
             { label: 'Status', value: entry.status },
+            { label: 'Verification', value: entry.verified_against ? JSON.stringify(entry.verified_against) : 'Not verified' },
+            { label: 'Rollout', value: entry.rollout_state ?? 'Unknown' },
+            { label: 'Open steps', value: entry.open_steps?.join('\n') || '(none)' },
             { label: 'Tags', value: entry.tags?.length ? entry.tags.join(', ') : '(none)' },
             { label: 'Project', value: entry.project_id ?? '(workspace-wide)' },
             { label: 'Updated', value: formatDate(entry.updated_at) },
@@ -156,6 +161,9 @@ export function registerKnowledgeCommands(program: Command): void {
     )
     .option('--madr <json>', 'Structured MADR body as a JSON object (full-object replace)')
     .option('--realization <state>', 'Realization state: agreed, live, deprecating, or retired')
+    .option('--verified-against <json>', 'Verification stamp {plugin_version, web_sha, at}; null to clear')
+    .option('--rollout-state <state>', 'designed, partly-live, live, retired; null to clear')
+    .option('--open-steps <json>', 'JSON array of remaining rollout steps; null to clear')
     .option('--review-by <iso>', 'ISO timestamp; freshness/decay date')
     .action(async (id, opts) => {
       const tags = opts.tags
@@ -183,6 +191,9 @@ export function registerKnowledgeCommands(program: Command): void {
             madr,
             realization: opts.realization,
             review_by: opts.reviewBy,
+            verified_against: opts.verifiedAgainst !== undefined ? JSON.parse(opts.verifiedAgainst) : undefined,
+            rollout_state: opts.rolloutState === 'null' ? null : opts.rolloutState,
+            open_steps: opts.openSteps !== undefined ? JSON.parse(opts.openSteps) : undefined,
           }),
         (entry) => `Updated knowledge entry: "${entry.title}" (${entry.id})`,
       );

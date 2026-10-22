@@ -981,6 +981,44 @@ actually recorded.
    mcp__harmony__reference_knowledge({ task_id, decision_id: <the entry's id> })
    ```
 
+**Re-check verification and rollout on changed knowledge surfaces (B-1229), after a successful deploy and before verify.**
+
+A merge alone supplies no verification evidence. Reuse this release's actual `changed_paths` and the
+B-838 contradiction candidates. Add this ticket's linked knowledge and every entry tagged
+`surface:<changed repo-relative path>` (query each exact tag with `include_superseded: true`; page until
+exhausted). Deduplicate by entry id, then `get_knowledge_entry` each full entry. This is a conservative
+candidate set, not a claim to have found untagged or aliased surfaces. Report a failed lookup as failed,
+never as an empty set.
+
+For each candidate:
+
+1. Establish what surface and environment the entry describes, and check it against the behavior
+   actually released there. Read its title as well as its body: a title naming a removed version,
+   count, mechanism or guarantee is a value-bearing claim. Surface a stale title in the release trail
+   and verify brief; amend that factual title/body only after checking the current behavior, retaining
+   the entry's history. A changed decision still belongs to the design gate.
+2. Record the versions actually checked: the CI-generated plugin version that runs on that surface
+   (not main's `0.0.0-dev`), the deployed web revision, and the check's ISO time. Use null for an
+   irrelevant/unavailable side, but never invent either version; at least one observed version is
+   required. Only after a real successful check call `update_knowledge_entry` with
+   `verified_against: { plugin_version, web_sha, at }` and the independently observed `rollout_state`.
+   Use `provenance: 'agent-on-behalf:<release_provenance>'` as on the other release writes.
+3. If rollout still needs a production promotion, conductor restart, cutover or other step, set
+   `rollout_state: 'partly-live'` and name every remaining action in `open_steps`. A fully live surface
+   may set `rollout_state: 'live', open_steps: []`. Designed and retired remain explicit observations.
+   Never infer rollout from Accepted/Superseded, never mark an old running fact retired merely because
+   its successor was agreed, and never stamp a production claim using staging-only evidence. Retain
+   the old verified stamp when only future behavior was checked; name that limit in the trail.
+4. Read the updated entry back and comment the entry id, check performed, observed versions, rollout
+   and open steps. Carry unchecked entries and stale titles into the verify runbook as outstanding
+   checks. A failed check must not receive a fresh stamp.
+
+The new writer fails visibly on a database predating B-1229. In that propagation window, preserve the
+successful deploy, comment the exact unsupported-write result plus the entries still owed, and carry
+“apply the web migration via the normal promotion, then re-check and re-stamp these entries” into the
+verify runbook. Do not silently drop the writes or execute a production migration out of band. The
+human verify gate must see whether the promised refresh is complete.
+
 **DRAIN the "Follow-ups rollup" buffer at the release gate + surface the audit (B-585, B-641).** If
 out-of-scope items surfaced during this run (adjacent bugs, refactors, review nits) that weren't fix-first'd
 into the PR, the rollup is a **within-run buffer** that must now be **DRAINED** — every item resolves to
