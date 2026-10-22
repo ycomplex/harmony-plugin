@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { resolveTaskId } from './resolve-task-id.js';
+import { resolveTaskId, resolveTaskIds } from './resolve-task-id.js';
 import { resolveOrCreateEntity, getWorkspaceId } from './knowledge.js';
 
 export interface WorkflowTransitionRow {
@@ -171,47 +171,89 @@ export async function referenceKnowledge(
 export const listTicketKnowledgeTool = {
   name: 'list_ticket_knowledge',
   description:
-    "List the knowledge decisions a task references (ticket_references_knowledge), each with its type + status + source_activity (the gate/skill that authored it — use this to discriminate between multiple Accepted decisions of the same type, e.g. clarify's and decompose's specification records). Ticket-scoped read for gates that must know which design sub-tracks are already Accepted for THIS ticket — query_knowledge has no ticket filter (it projects no source_task_id).",
+    "List the knowledge decisions a task references (ticket_references_knowledge), each with its type + status + source_activity (the gate/skill that authored it — use this to discriminate between multiple Accepted decisions of the same type, e.g. clarify's and decompose's specification records). Use task_id for the unchanged entry array, or task_ids (1–20 identifiers) for {tickets:[{task_id,entries}]} in first-requested order. Duplicate tickets collapse; shared entries appear under each owner; any unavailable ticket fails the whole request. Ticket-scoped read for gates that must know which design sub-tracks are already Accepted for THIS ticket — query_knowledge has no ticket filter (it projects no source_task_id).",
   inputSchema: {
     type: 'object' as const,
     properties: {
-      task_id: { type: 'string', description: 'Task identifier — UUID, number, or visual ID' },
+      task_id: { type: 'string', minLength: 1, pattern: '\\S', description: 'Single task identifier — UUID, number, or visual ID; returns the existing entry array' },
+      task_ids: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'string', minLength: 1, pattern: '\\S' }, description: 'Batch of task identifiers; returns per-ticket groups keyed by resolved UUID' },
     },
-    required: ['task_id'],
+    oneOf: [{ required: ['task_id'], not: { required: ['task_ids'] } }, { required: ['task_ids'], not: { required: ['task_id'] } }],
   },
 };
 
+interface KnowledgeReferenceRow {
+  task_id?: string;
+  decision_id: string;
+  knowledge_decisions: Record<string, unknown> | null;
+}
+
+type TicketKnowledgeEntry = Record<string, unknown> & {
+  decision_id: string;
+  affected_entities: AffectedEntityRow[];
+};
+interface TicketKnowledgeBatch { tickets: { task_id: string; entries: TicketKnowledgeEntry[] }[]; }
+interface TicketKnowledgeArgs { task_id?: string; task_ids?: string[]; }
+const KNOWLEDGE_PROJECTION = 'decision_id, knowledge_decisions(id, type, status, title, domain, source_activity, content)';
+const KNOWLEDGE_PAGE_SIZE = 500;
+
+export function listTicketKnowledge(client: SupabaseClient, projectId: string, args: { task_id: string }): Promise<TicketKnowledgeEntry[]>;
+export function listTicketKnowledge(client: SupabaseClient, projectId: string, args: { task_ids: string[] }): Promise<TicketKnowledgeBatch>;
+export function listTicketKnowledge(client: SupabaseClient, projectId: string, args: TicketKnowledgeArgs): Promise<TicketKnowledgeEntry[] | TicketKnowledgeBatch>;
 export async function listTicketKnowledge(
   client: SupabaseClient,
   projectId: string,
-  args: { task_id: string },
-) {
-  const id = await resolveTaskId(client, projectId, args.task_id);
-  // Embed the parent decision via the FK ticket_references_knowledge.decision_id -> knowledge_decisions.id.
-  // knowledge_decisions RLS applies to the embed; ticket_references_knowledge is members-rw (P2 plan A6).
-  // B-838: `content` is ALSO projected — the contradiction detector's FLOOR read reuses this exact
-  // function (rather than reimplementing the query) and needs each entry's body to extract candidate
-  // recorded values from. Purely additive: every existing caller ignores the extra key.
-  const { data, error } = await client
-    .from('ticket_references_knowledge')
-    .select('decision_id, knowledge_decisions(id, type, status, title, domain, source_activity, content)')
-    .eq('task_id', id);
-  if (error) throw error;
-  // PostgREST types the embed as an array, but the decision_id->id FK is to-one so it returns a single
-  // object (or null) at runtime — cast through unknown to the real shape.
-  const rows = (data ?? []) as unknown as {
-    decision_id: string;
-    knowledge_decisions: Record<string, unknown> | null;
-  }[];
-  // B-977 (AC1): surface each decision's affected entities (decision_affects_entity) alongside it —
-  // the "affecting decision" half of the entity-edges read surface. Fetched separately (rather than a
-  // doubly-nested embed) and merged in JS, one query for the whole batch.
-  const affectedByDecision = await fetchAffectedEntities(client, rows.map((r) => r.decision_id));
-  return rows.map((r) => ({
-    decision_id: r.decision_id,
-    ...(r.knowledge_decisions ?? {}),
-    affected_entities: affectedByDecision[r.decision_id] ?? [],
-  }));
+  args: TicketKnowledgeArgs,
+): Promise<TicketKnowledgeEntry[] | TicketKnowledgeBatch> {
+  const single = args.task_id !== undefined;
+  const batch = args.task_ids !== undefined;
+  if (single === batch) throw new Error('Provide exactly one of task_id or task_ids.');
+  const inputs = single ? [args.task_id] : args.task_ids;
+  if (!Array.isArray(inputs) || inputs.length < 1 || inputs.length > 20 ||
+      inputs.some(input => typeof input !== 'string' || !input.trim())) {
+    throw new Error('Provide a non-blank task_id or task_ids containing 1–20 non-blank ticket identifiers.');
+  }
+  // The shared resolver passes UUIDs through. Verify existence AND current-project membership
+  // for every resolved ID before reading any knowledge, including on the legacy single path.
+  const resolved = single
+    ? [await resolveTaskId(client, projectId, inputs[0]!)]
+    : await resolveTaskIds(client, projectId, inputs as string[]);
+  const ids = [...new Set(resolved.map(id => id.toLowerCase()))];
+  const { data: tasks, error: taskError } = await client.from('tasks')
+    .select('id').eq('project_id', projectId).in('id', ids);
+  if (taskError) throw taskError;
+  const found = new Set((tasks ?? []).map((task: { id: string }) => task.id.toLowerCase()));
+  if (ids.some(id => !found.has(id))) throw new Error('One or more requested tickets were not found in this project.');
+
+  const rows: KnowledgeReferenceRow[] = [];
+  if (single) {
+    // Preserve the legacy projection and query ordering for existing callers.
+    const { data, error } = await client.from('ticket_references_knowledge')
+      .select(KNOWLEDGE_PROJECTION).eq('task_id', ids[0]);
+    if (error) throw error;
+    rows.push(...(data ?? []) as unknown as KnowledgeReferenceRow[]);
+  } else {
+    // Page rather than sharing one PostgREST row limit across all requested tickets.
+    for (let offset = 0; ; ) {
+      const { data, error } = await client.from('ticket_references_knowledge')
+        .select(`task_id, ${KNOWLEDGE_PROJECTION}`).in('task_id', ids)
+        .order('task_id').order('decision_id').range(offset, offset + KNOWLEDGE_PAGE_SIZE - 1);
+      if (error) throw error;
+      if (!data?.length) break;
+      rows.push(...data as unknown as KnowledgeReferenceRow[]);
+      offset += data.length;
+    }
+  }
+  const affected = await fetchAffectedEntities(client, rows.map(row => row.decision_id), batch);
+  const projectEntry = (row: KnowledgeReferenceRow): TicketKnowledgeEntry => ({
+    decision_id: row.decision_id,
+    ...(row.knowledge_decisions ?? {}),
+    affected_entities: affected[row.decision_id] ?? [],
+  });
+  if (single) return rows.map(projectEntry);
+  const groups = new Map(ids.map(id => [id, [] as TicketKnowledgeEntry[]]));
+  for (const row of rows) groups.get(row.task_id!)?.push(projectEntry(row));
+  return { tickets: ids.map(task_id => ({ task_id, entries: groups.get(task_id)! })) };
 }
 
 // ---------------------------------------------------------------------------
@@ -219,19 +261,39 @@ export async function listTicketKnowledge(
 // ---------------------------------------------------------------------------
 
 export interface AffectedEntityRow { entity_id: string; name: string; kind: string; }
+type EntityEdge = { decision_id: string; entity_id: string; knowledge_entities: { name?: string; kind?: string } | null };
 
 async function fetchAffectedEntities(
   client: SupabaseClient,
   decisionIds: string[],
+  paged = false,
 ): Promise<Record<string, AffectedEntityRow[]>> {
   if (decisionIds.length === 0) return {};
-  const { data, error } = await client
-    .from('decision_affects_entity')
-    .select('decision_id, entity_id, knowledge_entities(name, kind)')
-    .in('decision_id', decisionIds);
-  if (error) throw error;
+  const rows: EntityEdge[] = [];
+  if (!paged) {
+    // Keep existing single-ticket behavior and entity order.
+    const { data, error } = await client.from('decision_affects_entity')
+      .select('decision_id, entity_id, knowledge_entities(name, kind)').in('decision_id', decisionIds);
+    if (error) throw error;
+    rows.push(...(data ?? []) as EntityEdge[]);
+  } else {
+    const unique = [...new Set(decisionIds)];
+    // Bound URL size as well as paging the response; shared decisions are fetched only once.
+    for (let start = 0; start < unique.length; start += 100) {
+      for (let offset = 0; ; ) {
+        const { data, error } = await client.from('decision_affects_entity')
+          .select('decision_id, entity_id, knowledge_entities(name, kind)')
+          .in('decision_id', unique.slice(start, start + 100))
+          .order('decision_id').order('entity_id').range(offset, offset + KNOWLEDGE_PAGE_SIZE - 1);
+        if (error) throw error;
+        if (!data?.length) break;
+        rows.push(...data as EntityEdge[]);
+        offset += data.length;
+      }
+    }
+  }
   const map: Record<string, AffectedEntityRow[]> = {};
-  for (const row of (data ?? []) as Array<{ decision_id: string; entity_id: string; knowledge_entities: { name?: string; kind?: string } | null }>) {
+  for (const row of rows) {
     const entity = row.knowledge_entities;
     if (!entity?.name) continue;
     const list = map[row.decision_id] ?? (map[row.decision_id] = []);
