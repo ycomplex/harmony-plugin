@@ -335,72 +335,11 @@ describe('queryKnowledge', () => {
     }
   });
 
-  it('uses the RRF rpc path when a search query is given (semantic)', async () => {
-    const wsChain: any = {};
-    wsChain.select = vi.fn().mockReturnValue(wsChain);
-    wsChain.eq = vi.fn().mockReturnValue(wsChain);
-    wsChain.single = vi.fn().mockResolvedValue({ data: { workspace_id: WORKSPACE_ID }, error: null });
-    wsChain.neq = vi.fn().mockReturnValue(wsChain);
-    wsChain.in = vi.fn().mockReturnValue(wsChain);
-    wsChain.limit = vi.fn().mockResolvedValue({ data: [], error: null });
-    wsChain.order = vi.fn().mockReturnValue(wsChain);
-    wsChain.range = vi.fn().mockResolvedValue({ data: [{ id: 'd1', superseded_by: null }], error: null });
-    const client: any = {
-      from: vi.fn().mockReturnValue(wsChain),
-      functions: { invoke: vi.fn().mockResolvedValue({ data: { embedding: [0.1, 0.2] }, error: null }) },
-      rpc: rrfMock({
-        data: [{ id: 'd1', title: 'auth', type: 'architecture', status: 'Accepted', domain: ['engineering'], tags: [], project_id: PROJECT_ID, updated_at: '2026-05-29T00:00:00Z' }],
-        error: null,
-      }),
-    };
-    const result = await queryKnowledge(client, PROJECT_ID, { search: 'session security', domain: ['engineering'] });
-    expect(client.functions.invoke).toHaveBeenCalledWith('embed-knowledge', { body: { text: 'session security' } });
-    expect(client.rpc).toHaveBeenCalledWith('knowledge_search_rrf', expect.objectContaining({
-      _workspace_id: WORKSPACE_ID, _project_id: PROJECT_ID, _query_embedding: '[0.1,0.2]',
-      _query_text: 'session security', _domain: ['engineering'],
-      _match_limit: null,
-    }), {});
-    const rpcArg = client.rpc.mock.calls[0][1];
-    expect(rpcArg).not.toHaveProperty('_k');
-    expect(result[0]).toMatchObject({ id: 'd1', title: 'auth', type: 'architecture', status: 'Accepted', domain: ['engineering'] });
-  });
-
-  it('rejects search combined with un-honorable filters (no silent drop)', async () => {
+  it('keeps historical expansion and pagination list-only', async () => {
     const { client } = buildWorkspaceAndQueryClient({ data: [] });
-    await expect(
-      queryKnowledge(client, PROJECT_ID, { search: 'auth', include_superseded: true }),
-    ).rejects.toThrow(/cannot be combined with/);
-    await expect(
-      queryKnowledge(client, PROJECT_ID, { search: 'auth', as_of: '2026-01-01T00:00:00Z' }),
-    ).rejects.toThrow(/as_of/);
-  });
-
-  it('allows search combined with domain + limit', async () => {
-    const wsChain: any = {};
-    wsChain.select = vi.fn().mockReturnValue(wsChain);
-    wsChain.eq = vi.fn().mockReturnValue(wsChain);
-    wsChain.single = vi.fn().mockResolvedValue({ data: { workspace_id: WORKSPACE_ID }, error: null });
-    const client: any = {
-      from: vi.fn().mockReturnValue(wsChain),
-      functions: { invoke: vi.fn().mockResolvedValue({ data: { embedding: [0.1, 0.2] }, error: null }) },
-      rpc: rrfMock({ data: [], error: null }),
-    };
-    await queryKnowledge(client, PROJECT_ID, { search: 'auth', domain: ['engineering'], limit: 5 });
-    expect(client.rpc).toHaveBeenCalledWith('knowledge_search_rrf', expect.objectContaining({ _match_limit: null, _domain: ['engineering'] }), {});
-  });
-
-  it('passes _query_embedding null when embedding fails (trigram-only degrade)', async () => {
-    const wsChain: any = {};
-    wsChain.select = vi.fn().mockReturnValue(wsChain);
-    wsChain.eq = vi.fn().mockReturnValue(wsChain);
-    wsChain.single = vi.fn().mockResolvedValue({ data: { workspace_id: WORKSPACE_ID }, error: null });
-    const client: any = {
-      from: vi.fn().mockReturnValue(wsChain),
-      functions: { invoke: vi.fn().mockResolvedValue({ data: null, error: { message: 'down' } }) },
-      rpc: rrfMock({ data: [], error: null }),
-    };
-    await queryKnowledge(client, PROJECT_ID, { search: 'auth' });
-    expect(client.rpc).toHaveBeenCalledWith('knowledge_search_rrf', expect.objectContaining({ _query_embedding: null, _query_text: 'auth', _domain: null }), {});
+    for (const extra of [{ include_superseded: true }, { as_of: '2026-01-01' }, { offset: 1 }]) {
+      await expect(queryKnowledge(client, PROJECT_ID, { search: 'auth', ...extra })).rejects.toThrow(/Search cannot combine/);
+    }
   });
 
   it('passes limit and offset to .range()', async () => {

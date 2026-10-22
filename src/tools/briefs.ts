@@ -2531,13 +2531,17 @@ async function withContradictionSignal(
   const floorAccepted = floorRows.filter((r) => r.status === 'Accepted');
 
   // TIER: bounded, content-matched search over ALL Accepted knowledge (NOT restricted to FLOOR).
-  let tierRows: Array<{ id?: string; title?: string }> = [];
+  let tierRows: Array<{ id?: string; title?: string }>;
+  let tierIncomplete: boolean;
   try {
-    tierRows = (await queryKnowledge(client, projectId, {
+    const searched = await queryKnowledge(client, projectId, {
       search: searchTerms.join(' '),
       limit: TIER_CANDIDATE_LIMIT,
-    })) as typeof tierRows;
+    });
+    tierRows = Array.isArray(searched) ? searched : [...searched.matches.filter(r => r.source_kind === 'knowledge'), ...searched.unscored_matches];
+    tierIncomplete = Array.isArray(searched) ? false : searched.incomplete;
   } catch {
+    tierIncomplete = true;
     tierRows = []; // degrade — a TIER search failure must not break the release brief
   }
   const tierIds = tierRows.map((r) => r.id).filter((id): id is string => typeof id === 'string');
@@ -2575,7 +2579,7 @@ async function withContradictionSignal(
         : `${entries.length} Accepted entr${entries.length === 1 ? 'y' : 'ies'} touched by this diff`,
     entries,
   };
-  if (parsed.truncated) signal.truncated = parsed.truncated;
+  if (parsed.truncated || tierIncomplete) signal.truncated = [parsed.truncated, tierIncomplete ? 'TIER search coverage incomplete' : null].filter(Boolean).join('; ');
   return { ...doc, frame: { ...doc.frame, contradiction_signal: signal } };
 }
 

@@ -112,6 +112,9 @@ export function registerKnowledgeCommands(program: Command): void {
       (v: string, prev: string[]) => [...prev, v],
       [] as string[],
     )
+    .option('--domain <domain>', 'Filter any domain (repeat)', (v: string, prev: string[]) => [...prev, v], [] as string[])
+    .option('--context-tag <tag>', 'Relevant context tag for suggestions (repeat)', (v: string, prev: string[]) => [...prev, v], [] as string[])
+    .option('--limit <n>', 'Max results', Number)
     .option('--search <text>', 'Search term matched against title and content')
     .option('--question-state <state>', 'Filter-only: open, parked or decided; search combination requires B-1223')
     .option('--definitions-only', 'Return only current term definitions', false)
@@ -124,6 +127,9 @@ export function registerKnowledgeCommands(program: Command): void {
           queryKnowledge(ctx.client, ctx.projectId, {
             scope: opts.scope,
             definitions_only: opts.definitionsOnly,
+            domain: opts.domain?.length ? opts.domain : undefined,
+            context_tags: opts.contextTag,
+            limit: opts.limit,
             type: opts.type,
             status: opts.status,
             tags: opts.tag && opts.tag.length > 0 ? opts.tag : undefined,
@@ -133,7 +139,7 @@ export function registerKnowledgeCommands(program: Command): void {
             question_state: opts.questionState,
           }),
         (data) =>
-          formatTable(data, [
+          Array.isArray(data) ? formatTable(data, [
             {
               key: 'id',
               header: 'ID',
@@ -166,7 +172,7 @@ export function registerKnowledgeCommands(program: Command): void {
               header: 'Updated',
               transform: (v: string) => formatDate(v),
             },
-          ]),
+          ]) : JSON.stringify(data, null, 2),
       );
     });
 

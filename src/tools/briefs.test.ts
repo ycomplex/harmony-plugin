@@ -4255,6 +4255,7 @@ describe('B-876 gate frame', () => {
       const projectsChain: any = {};
       projectsChain.select = vi.fn(() => projectsChain);
       projectsChain.eq = vi.fn(() => projectsChain);
+      projectsChain.abortSignal = vi.fn(() => projectsChain);
       projectsChain.single = vi.fn(async () => ({ data: { workspace_id: 'ws-1' }, error: null }));
 
       const floorChain: any = {};
@@ -4269,11 +4270,12 @@ describe('B-876 gate frame', () => {
       contentChain.select = vi.fn(() => contentChain);
       contentChain.eq = vi.fn(() => contentChain);
       contentChain.neq = vi.fn(() => contentChain);
+      contentChain.abortSignal = vi.fn(() => contentChain);
       contentChain.order = vi.fn(() => contentChain);
       contentChain.range = vi.fn(async () => ({ data: opts.tierSummaryRows ?? [], error: null }));
       contentChain.in = vi.fn(() => ({
         then: (resolve: (value: unknown) => unknown) => Promise.resolve({ data: opts.tierContentRows ?? [], error: null }).then(resolve),
-        limit: vi.fn(async () => ({ data: [], error: null })),
+        limit: vi.fn(() => ({ abortSignal: () => Promise.resolve({ data: [], error: null }) })),
       }));
 
       const client: any = {
@@ -4290,6 +4292,9 @@ describe('B-876 gate frame', () => {
         update: genericChain.update,
         functions: { invoke: vi.fn(async () => ({ data: null, error: { message: 'down' } })) },
         rpc: vi.fn((name: string) => {
+          if (name === 'knowledge_search_scored') {
+            return { abortSignal: () => Promise.resolve({ data: (opts.tierSummaryRows ?? []).map((r: any, i: number) => ({candidate:{...r,source_kind:'knowledge'},signal_rank:i+1,overflow:false})), error:null }) };
+          }
           if (name === 'knowledge_search_rrf') {
             let bookkeeping = false;
             const query: any = {};
@@ -4404,7 +4409,7 @@ describe('B-876 gate frame', () => {
       expect(signal.entries).toEqual([
         { entry_id: 'dec-2', title: 'Unlinked but touched entry', state: 'fires-and-contradicted', matched_values: [B754], source: 'tier' },
       ]);
-      expect((client.rpc as any).mock.calls.some((c: any[]) => c[0] === 'knowledge_search_rrf')).toBe(true);
+      expect((client.rpc as any).mock.calls.some((c: any[]) => c[0] === 'knowledge_search_scored')).toBe(true);
     });
 
     it('OVERWRITES whatever the doc authored on frame.contradiction_signal', async () => {

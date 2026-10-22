@@ -25,7 +25,7 @@ const fixture = readFileSync(resolve(webRoot, 'supabase/tests/b1224_bookkeeping.
 const { queryKnowledge } = await import(pathToFileURL(resolve(bundle)));
 const client = createClient(status.API_URL, status.SERVICE_ROLE_KEY, { auth: { persistSession: false } });
 // Deterministic embedding exercises real SQL's vector AND lexical arms without an external AI call.
-client.functions.invoke = async () => ({ data: { embedding: [1, ...Array(1535).fill(0)] }, error: null });
+Object.defineProperty(client, 'functions', { value: { invoke: async () => ({ data: { embedding: [1, ...Array(1535).fill(0)] }, error: null }) } });
 const project = '00000000-0000-0000-0000-000001224020';
 const id = n => `00000000-0000-0000-0000-00000122410${n}`;
 try {
@@ -33,9 +33,9 @@ try {
   for (const [name, definition] of [['legacy', legacy], ['migrated', original]]) {
     sql(definition);
     const query = args => queryKnowledge(client, project, args);
-    assert.deepEqual((await query({ search: 'quasar', limit: 1 })).map(r => r.id), [id(2)]);
-    assert.deepEqual((await query({ search: 'quasar', limit: 4 })).map(r => r.id), [id(2), id(4), id(1), id(3)]);
-    assert.deepEqual((await query({ search: 'quasar', limit: 4, include_bookkeeping: false })).map(r => r.id), [id(2), id(4)]);
+    assert.deepEqual((await query({ search: 'quasar', limit: 1 })).matches.map(r => r.id), [id(2)]);
+    assert.deepEqual((await query({ search: 'quasar', limit: 4 })).matches.map(r => r.id), [id(2), id(4), id(1), id(3)]);
+    assert.deepEqual((await query({ search: 'quasar', limit: 4, include_bookkeeping: false })).matches.map(r => r.id), [id(2), id(4)]);
     assert.deepEqual((await query({ offset: 1, limit: 2 })).map(r => r.id), [id(4), id(1)]);
     assert.deepEqual((await query({ offset: 3, limit: 2 })).map(r => r.id), [id(3)]);
     assert.deepEqual((await query({ offset: 1, limit: 2, include_bookkeeping: false })).map(r => r.id), [id(4)]);
