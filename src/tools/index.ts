@@ -1,3 +1,4 @@
+import { surfaceRecordTools, captureSurfaceRecord, readSurfaceRecords } from './surface-records.js';
 import { featureAccountTools, createFeatureAccount, readFeatureAccounts, previewFeatureAmendment, proposeFeatureAmendment, applyFeatureAmendment } from './feature-accounts.js';
 import { sourceTools, publishSourceInventory, readSourceInventory, comparePublishedCoverage } from './knowledge-sources.js';
 import { saveKnowledgeQuestionTool, saveKnowledgeQuestion, previewKnowledgeQuestionsTool, previewKnowledgeQuestions, importKnowledgeQuestionsTool, importKnowledgeQuestions } from './knowledge-questions.js';
@@ -169,6 +170,7 @@ export {
 export function registerTools(disabledFeatures?: Record<string, boolean>) {
   const tools = [
     ...featureAccountTools,
+    ...surfaceRecordTools,
     // Core tools (always visible)
     getProjectTool, listTasksTool, getTaskTool, createTaskTool, updateTaskTool,
     bulkCreateTasksTool, bulkUpdateTasksTool, queryTasksTool, searchTasksTool,
@@ -298,6 +300,8 @@ export async function handleToolCall(
       case 'bulk_update_tasks':
         result = await bulkUpdateTasks(client, projectId, args as any);
         break;
+      case 'capture_surface_record': result = await captureSurfaceRecord(client,projectId,args); break;
+      case 'read_surface_records': result = await readSurfaceRecords(client,projectId,args); break;
       case 'create_feature_account': result = await createFeatureAccount(client,projectId,args); break;
       case 'read_feature_accounts': result = await readFeatureAccounts(client,projectId,args); break;
       case 'preview_feature_amendment': result = await previewFeatureAmendment(client,projectId,args); break;

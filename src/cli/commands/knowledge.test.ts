@@ -1,3 +1,8 @@
+import { captureSurfaceRecord, readSurfaceRecords } from '../../tools/surface-records.js';
+import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+vi.mock('../../tools/surface-records.js', () => ({ captureSurfaceRecord: vi.fn().mockResolvedValue({changed:true}), readSurfaceRecords: vi.fn().mockResolvedValue({availability:'available',records:[]}) }));
 import { readFeatureAccounts, applyFeatureAmendment } from '../../tools/feature-accounts.js';
 import { publishDefinition } from '../../tools/knowledge-definitions.js';
 vi.mock('../../tools/knowledge-definitions.js', () => ({ publishDefinition: vi.fn().mockResolvedValue({ id: 'definition', current_revision: 'revision' }) }));
@@ -116,5 +121,21 @@ describe('definition CLI controls', () => {
     const program = new Command(); registerKnowledgeCommands(program);
     await program.parseAsync(['knowledge', 'publish-definition', '--concept', 'concept', '--expected-revision', 'null', '--source', 'source', '--wording', 'Meaning.', '--metadata', '{"ticket":"B-1226"}'], { from: 'user' });
     expect(publishDefinition).toHaveBeenLastCalledWith('client', 'project', expect.objectContaining({ concept_id: 'concept', expected_revision: null, source_decision_id: 'source', wording: 'Meaning.', metadata: { ticket: 'B-1226' } }));
+  });
+});
+
+describe('knowledge surfaces CLI',()=>{
+  it('reads with the same owner and component identity',async()=>{
+    const program=new Command();registerKnowledgeCommands(program);
+    await program.parseAsync(['knowledge','surfaces','read','--surface','Views','--component','web/src/Views.tsx'],{from:'user'});
+    expect(readSurfaceRecords).toHaveBeenCalledWith('client','project',{owner_surface:'Views',component_ref:'web/src/Views.tsx'});
+  });
+  it('passes a JSON capture to the shared writer',async()=>{
+    const dir=mkdtempSync(join(tmpdir(),'surface-cli-'));const args={owner_surface:'Views',labels:['Name']};
+    try { const file=join(dir,'capture.json');writeFileSync(file,JSON.stringify(args));
+      const program=new Command();registerKnowledgeCommands(program);
+      await program.parseAsync(['knowledge','surfaces','capture','--file',file],{from:'user'});
+      expect(captureSurfaceRecord).toHaveBeenCalledWith('client','project',args);
+    } finally {rmSync(dir,{recursive:true,force:true});}
   });
 });

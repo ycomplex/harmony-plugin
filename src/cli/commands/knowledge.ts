@@ -1,3 +1,4 @@
+import { captureSurfaceRecord, readSurfaceRecords } from '../../tools/surface-records.js';
 import { createFeatureAccount, readFeatureAccounts, previewFeatureAmendment, proposeFeatureAmendment, applyFeatureAmendment } from '../../tools/feature-accounts.js';
 import { registerSourceCommands } from './knowledge-sources.js';
 import { readFile } from 'node:fs/promises';
@@ -21,6 +22,40 @@ import { formatTable, formatDetail, formatDate } from '../formatter.js';
 export function registerKnowledgeCommands(program: Command): void {
   const knowledge = program.command('knowledge').description('Manage workspace knowledge base');
 
+  const surfaces = knowledge
+    .command("surfaces")
+    .description(
+      "Observed component wording, separate from account text and decisions",
+    );
+  surfaces
+    .command("read")
+    .requiredOption("--surface <surface>")
+    .option("--component <ref>")
+    .action(async (opts) => {
+      await runCommand(
+        program.opts(),
+        (ctx) =>
+          readSurfaceRecords(ctx.client, ctx.projectId, {
+            owner_surface: opts.surface,
+            component_ref: opts.component,
+          }),
+        (data) => JSON.stringify(data, null, 2),
+      );
+    });
+  surfaces
+    .command("capture")
+    .requiredOption(
+      "--file <path>",
+      "JSON capture: owner_surface, component_ref, labels/buttons/headings, source_kind/locator/fingerprint",
+    )
+    .action(async (opts) => {
+      const args: unknown = JSON.parse(readFileSync(opts.file, "utf8"));
+      await runCommand(
+        program.opts(),
+        (ctx) => captureSurfaceRecord(ctx.client, ctx.projectId, args),
+        (data) => JSON.stringify(data, null, 2),
+      );
+    });
   const accounts = knowledge.command('accounts').description('Live feature accounts and pending clause amendments');
   accounts.command('list').option('--surface <surface>').option('--account <id>').option('--history-limit <n>').option('--history-before <n>').action(async opts => {
     await runCommand(program.opts(), ctx => readFeatureAccounts(ctx.client,ctx.projectId,{owner_surface:opts.surface,account_id:opts.account,history_limit:opts.historyLimit ? Number(opts.historyLimit) : undefined,history_before:opts.historyBefore ? Number(opts.historyBefore) : undefined}), data => JSON.stringify(data,null,2));
