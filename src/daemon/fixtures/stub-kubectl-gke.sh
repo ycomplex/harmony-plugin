@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ONE write per call: the launcher pipes two kubectl processes together, and two appends in flight would interleave.
-printf '%s\n--END--\n' "$(printf '%s\n' "$@")" >> "$STUB_LOGS/kubectl.log"
+node -e 'require("fs").appendFileSync(process.env.STUB_LOGS + "/kubectl.log", process.argv.slice(1).join("\n") + "\n--END--\n")' -- "$@"
 args=("$@")
 # drop the leading -n <ns> / --context <c>
 while [ "${args[0]:-}" = "-n" ] || [ "${args[0]:-}" = "--context" ]; do args=("${args[@]:2}"); done

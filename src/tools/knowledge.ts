@@ -1,3 +1,4 @@
+import { projectSupersession } from './knowledge-supersession.js';
 import { BOOKKEEPING_TAG, SUBSTANTIVE_TAG_FILTER, bookkeepingPage } from './knowledge-bookkeeping.js';
 import { claimFields, encodeClaim, editedClaimContent, claimContent, matchedPassage, proposeClaim } from './knowledge-claim.js';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -21,6 +22,8 @@ export interface KnowledgeEntrySummary {
   tags: string[];
   project_id: string | null;
   updated_at: string;
+  superseded_by?: string | null;
+  supersedes?: string[];
 }
 
 export interface KnowledgeEntryFull {
@@ -104,7 +107,7 @@ const ENTITY_COLS = 'id, workspace_id, project_id, kind, name, description, meta
 export const queryKnowledgeTool = {
   name: 'query_knowledge',
   description:
-    'Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Check this before making significant implementation choices. Defaults to "Accepted" entries only, with explicitly marked bookkeeping ranked last; include_bookkeeping:false excludes it before pagination. When `search` is given, retrieval is semantic (RRF) and composes with `domain`, `limit` and `include_bookkeeping`; the other structured filters (`type`, `status`, `tags`, `as_of`, `include_superseded`, `offset`) apply to the non-search structured path only.',
+    'Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Results include nullable superseded_by and inverse supersedes UUIDs; matching successors precede replaced entries. Check this before making significant implementation choices. Defaults to "Accepted" entries only, with explicitly marked bookkeeping ranked last; include_bookkeeping:false excludes it before pagination. When `search` is given, retrieval is semantic (RRF) and composes with `domain`, `limit` and `include_bookkeeping`; the other structured filters (`type`, `status`, `tags`, `as_of`, `include_superseded`, `offset`) apply to the non-search structured path only.',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -428,11 +431,13 @@ export async function queryKnowledge(
       query = bookkeeping ? query.contains('tags', [BOOKKEEPING_TAG]) : query.or(SUBSTANTIVE_TAG_FILTER);
       return query.range(offset, offset + limit - 1);
     }, args);
-    return (data ?? []).map((d: any) => ({
+    const matches = (data ?? []).map((d: any) => ({
       id: d.id, title: d.title, type: d.type, status: d.status,
       ...claimFields(d), snippet: matchedPassage(d.content ?? '', args.search!),
       domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at,
     })) as KnowledgeEntrySummary[];
+    if (!matches.length) return [];
+    return hydrateSupersession(client, workspaceId, projectId, matches);
   }
 
   // Structured retrieval uses the same class boundary and applies every filter before pagination.
@@ -451,7 +456,25 @@ export async function queryKnowledge(
     return query.order('type', { ascending: true }).order('id', { ascending: true })
       .range(offset, offset + limit - 1);
   }, args);
-  return rows.map(d => ({ id: d.id, title: d.title, type: d.type, status: d.status, domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d) }));
+  // B-1136 claim fields first, then B-1230 page-bounded supersession hydration (both page-local).
+  return hydrateSupersession(client, workspaceId, projectId, rows.map(d => ({ id: d.id, title: d.title, type: d.type, status: d.status, domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d) })));
+}
+
+// Hydrate only returned IDs, in batches below PostgREST's row cap. Never scan the corpus
+// or pull a successor into the caller's page; precedence applies only to returned rows.
+async function hydrateSupersession(client: SupabaseClient, workspaceId: string, projectId: string, rows: KnowledgeEntrySummary[]) {
+  const edges: Array<{ id: string; superseded_by?: string | null }> = [];
+  for (let offset = 0; offset < rows.length; offset += 500) {
+    const ids = rows.slice(offset, offset + 500).map(row => row.id);
+    for (const column of ['id', 'superseded_by']) {
+      const { data, error } = await client.from('knowledge_decisions').select('id, superseded_by')
+        .eq('workspace_id', workspaceId).eq('project_id', projectId)
+        .neq('type', 'intent').in(column, ids).limit(500);
+      if (error) throw new Error(error.message);
+      edges.push(...(data ?? []));
+    }
+  }
+  return projectSupersession(rows, edges);
 }
 
 // ---------------------------------------------------------------------------

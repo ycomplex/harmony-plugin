@@ -225,6 +225,20 @@ describe('migrate', () => {
 });
 
 describe('doctor', () => {
+  it.each(['staging', 'prod'])('%s has an informational staging note only when selected', (channel) => {
+    writeFileSync(join(home, 'conductor-host.json'), j(hostOk));
+    const project = write('project.json', { ...projectGke, channel });
+    const r = runDoctor(deps({ HARMONY_CONDUCTOR_PROJECT_FILE: project }));
+    expect(r.exitCode).toBe(0);
+    expect((r.data as { issues: unknown[] }).issues).toEqual([]);
+    const notes = (r.data as { notes: string[] }).notes;
+    expect(notes).toHaveLength(channel === 'staging' ? 1 : 0);
+    if (channel === 'staging') {
+      expect(r.lines.join('\n')).toContain('NOTE: The conductor and its workers run pre-release plugin code');
+      expect(notes[0]).toContain('prod is the normal choice');
+    } else expect(r.lines.join('\n')).not.toContain('pre-release plugin code');
+  });
+
   it('lists EVERY issue, not just the first, and exits 1', () => {
     // channel missing, gke needs cluster/location/gcp.project, host needs plugin_dir + github_app
     write('conductor-host.json', { version: 1 });

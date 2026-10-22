@@ -52,6 +52,8 @@ export function registerKnowledgeCommands(program: Command): void {
             { key: 'snippet', header: 'Matched passage', width: 60 },
             { key: 'type', header: 'Type', width: 14 },
             { key: 'status', header: 'Status', width: 12 },
+            { key: 'superseded_by', header: 'Superseded by', transform: (v: string | null) => v ?? '—' },
+            { key: 'supersedes', header: 'Supersedes', transform: (v: string[]) => (v ?? []).join(', ') || '—' },
             {
               key: 'tags',
               header: 'Tags',

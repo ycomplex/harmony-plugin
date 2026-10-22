@@ -4,7 +4,7 @@ import { renderBrief, renderEntry, withDerivedEntryContent, type BriefDoc } from
 import { encodeClaim } from './knowledge-claim.js';
 function mock(row: any) {
  const chain: any = {};
- for (const name of ['select','eq','neq','order','range','single','update','or','contains']) chain[name] = vi.fn().mockReturnValue(chain);
+ for (const name of ['select','eq','neq','order','range','single','update','or','contains','in','limit']) chain[name] = vi.fn().mockReturnValue(chain);
  chain.then = (resolve: any) => Promise.resolve({ data: row, error: null }).then(resolve);
  chain.single.mockResolvedValue({ data: row, error: null });
  const ws: any = { select: vi.fn().mockReturnThis(), eq: vi.fn().mockReturnThis(), single: vi.fn().mockResolvedValue({ data: { workspace_id: 'ws' }, error: null }) };
