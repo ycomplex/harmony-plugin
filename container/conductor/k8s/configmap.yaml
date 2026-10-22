@@ -42,7 +42,7 @@ data:
   conductor-project.json: |
     {
       "version": 1,
-      "channel": "staging",
+      "channel": "prod",
       "profile": "gke",
       "gcp": {
         "project": "harmony-conductor",

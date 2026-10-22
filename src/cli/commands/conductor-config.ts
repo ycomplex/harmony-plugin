@@ -440,12 +440,16 @@ export function runDoctor(deps: ConductorCliDeps, opts: { config?: string } = {}
   let conflicts: Conflict[] = [];
   let legacyInUse: string[] = [];
   let evaluated = false;
+  const notes: string[] = [];
   let dep = null as ReturnType<typeof loadLegacy>;
   try {
     dep = loadLegacy();
     const ev = evaluateConductorConfig({ env, existsSync: deps.existsSync, readFileSync: deps.readFileSync, warn: () => {}, loadLegacy: () => dep });
     if (ev) {
       evaluated = true;
+      if (ev.merged.channel === 'staging') {
+        notes.push('The conductor and its workers run pre-release plugin code (channel: staging). prod is the normal choice for projects other than Harmony’s own deployment.');
+      }
       issues = ev.issues;
       warnings = ev.warnings.filter((w) => !w.startsWith('deprecated:'));
       const profileName = ev.merged.profile ?? Object.keys(dep?.profiles ?? {}).find((n) => n === 'cloud' || n === 'gke');
@@ -497,6 +501,7 @@ export function runDoctor(deps: ConductorCliDeps, opts: { config?: string } = {}
   if (!evaluated && issues.length === 0) {
     lines.push('', 'No project file, snapshot or host file exists: nothing to validate. The conductor runs on the legacy files exactly as before.');
   }
+  for (const note of notes) lines.push('', `NOTE: ${note}`);
   lines.push('', `ISSUES (${issues.length})`);
   if (issues.length === 0) lines.push('  (none)');
   for (const i of issues) lines.push(`  ${formatConfigIssue(i)}`);
@@ -527,6 +532,7 @@ export function runDoctor(deps: ConductorCliDeps, opts: { config?: string } = {}
       conflicts,
       legacy_in_use: legacyInUse,
       warnings,
+      notes,
       hot_keys: hot,
       restart_keys: restart,
     },

@@ -35916,7 +35916,7 @@ function validateMerged(merged, env2 = {}) {
   const issues = [];
   const need = (file, key, problem, fix) => issues.push({ file, key, problem, fix });
   if (!merged.channel) {
-    need(PROJECT_FILE_LABEL, "channel", "required key is missing", 'add "channel": "staging" (or "prod") to .harmony/conductor.json');
+    need(PROJECT_FILE_LABEL, "channel", "required key is missing", 'add "channel": "prod" (or "staging" for pre-release code) to .harmony/conductor.json');
   }
   if (merged.supabase_url !== void 0 && merged.target !== "custom") {
     need(PROJECT_FILE_LABEL, "supabase_url", SUPABASE_URL_NEEDS_CUSTOM, 'add "target": "custom" or remove supabase_url');
@@ -46932,6 +46932,7 @@ function runDoctor(deps, opts = {}) {
   let conflicts = [];
   let legacyInUse = [];
   let evaluated = false;
+  const notes = [];
   let dep = null;
   try {
     dep = loadLegacy();
@@ -46939,6 +46940,9 @@ function runDoctor(deps, opts = {}) {
     }, loadLegacy: () => dep });
     if (ev) {
       evaluated = true;
+      if (ev.merged.channel === "staging") {
+        notes.push("The conductor and its workers run pre-release plugin code (channel: staging). prod is the normal choice for projects other than Harmony\u2019s own deployment.");
+      }
       issues = ev.issues;
       warnings = ev.warnings.filter((w) => !w.startsWith("deprecated:"));
       const profileName = ev.merged.profile ?? Object.keys(dep?.profiles ?? {}).find((n) => n === "cloud" || n === "gke");
@@ -46981,6 +46985,7 @@ function runDoctor(deps, opts = {}) {
   if (!evaluated && issues.length === 0) {
     lines.push("", "No project file, snapshot or host file exists: nothing to validate. The conductor runs on the legacy files exactly as before.");
   }
+  for (const note of notes) lines.push("", `NOTE: ${note}`);
   lines.push("", `ISSUES (${issues.length})`);
   if (issues.length === 0) lines.push("  (none)");
   for (const i of issues) lines.push(`  ${formatConfigIssue(i)}`);
@@ -47010,6 +47015,7 @@ function runDoctor(deps, opts = {}) {
       conflicts,
       legacy_in_use: legacyInUse,
       warnings,
+      notes,
       hot_keys: hot,
       restart_keys: restart
     }

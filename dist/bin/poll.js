@@ -30296,7 +30296,7 @@ function validateMerged(merged, env = {}) {
   const issues = [];
   const need = (file, key, problem, fix) => issues.push({ file, key, problem, fix });
   if (!merged.channel) {
-    need(PROJECT_FILE_LABEL, "channel", "required key is missing", 'add "channel": "staging" (or "prod") to .harmony/conductor.json');
+    need(PROJECT_FILE_LABEL, "channel", "required key is missing", 'add "channel": "prod" (or "staging" for pre-release code) to .harmony/conductor.json');
   }
   if (merged.supabase_url !== void 0 && merged.target !== "custom") {
     need(PROJECT_FILE_LABEL, "supabase_url", SUPABASE_URL_NEEDS_CUSTOM, 'add "target": "custom" or remove supabase_url');
