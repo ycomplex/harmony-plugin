@@ -1,9 +1,9 @@
 ---
 name: start-work
 description: Use when the user wants to start working on a task, feature, or bug fix. Triggers on phrases like "work on", "start", "pick up", "implement", "fix", or any mention of a Harmony task ID (e.g., B-123). Also use when the user says "let's do X" or describes work they want to begin. In manual-mode projects this is the entry point for new development work — it behaves exactly as before. In opinionated-mode projects, /harmony-conduct is the entry point that drives the whole lifecycle; this skill implements the planning + building gates the conduct loop delegates to, and can be invoked directly to run just those gates.
-capabilities: harmony-mcp read write edit shell forbid:harmony-mcp:record_decision forbid:harmony-mcp:supersede_decision forbid:harmony-mcp:update_knowledge_entry
+capabilities: harmony-mcp read write edit shell forbid:harmony-mcp:record_decision forbid:harmony-mcp:supersede_decision
 allowed-tools: mcp__harmony__* Read Grep Glob Write Edit Bash
-disallowed-tools: mcp__harmony__record_decision mcp__harmony__supersede_decision mcp__harmony__update_knowledge_entry
+disallowed-tools: mcp__harmony__record_decision mcp__harmony__supersede_decision
 ---
 
 # Start Work
@@ -363,6 +363,14 @@ whenever a ticket is scoped *relative to* "how it works today" (a fix / refineme
 claim), **READ the current code to confirm that baseline before building** — the spec's premise about the
 status quo is frequently wrong, and the build gate is where to catch it (sharpens `a58907f1` — plans grounded
 against real code, never from memory).
+
+**Record behaviour settled beyond design before filing release (B-1143).** Follow
+`skills/harmony-shared/knowledge-discipline.md` §Record behaviour settled during build: compare each
+resolved AC with the Accepted design, write and read back any additional behaviour using
+`update_knowledge_entry`, then carry the actual destinations in `frame.settled_beyond_design` (or
+explicit `[]`). This narrowly permits recording build observations; it does not permit redesigning
+or superseding decisions. If a delegated builder reports the behaviours, this session performs the
+knowledge writes before composing the release brief.
 
 **When the tests pass, PRODUCE THE ARTEFACT — the ordered commit→push→verify→PR→record step (B-722,
 NON-OPTIONAL).** A build is not done when its tests pass; it is done when the tested work exists as a

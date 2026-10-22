@@ -5409,3 +5409,37 @@ describe('reshapeBrief is the sole caller of submit_brief_command (B-898 residua
     expect(hits[briefsFile]).toBe(1);
   });
 });
+
+// B-1143: explicit settlement reports render, legacy releases remain byte-compatible, and the
+// empty-report advisory is on the compose result while the brief still persists successfully.
+describe('release build-settlement report', () => {
+  const releaseFrame = (): Extract<GateFrame, {kind:'release'}> => ({
+    kind: 'release', act: { repos: ['harmony-plugin'], pr_count: 1, lands_in: 'staging', atomicity: 'single', irreversible: [] },
+    unproven: [], evidence_status: { proven_by_run: 4, walk_at_verify: 0, unproven: 0, total: 4 }, risk_classes: [],
+  });
+  it('renders behaviour, criterion, and the actual knowledge destination', () => {
+    const frame = { ...releaseFrame(), settled_beyond_design: [{ behaviour: 'Keeps stale selection', ac: 'AC1', knowledge_entry_id: 'entry-1' }] } as GateFrame;
+    expect(renderBrief(baseDoc({ frame }))).toContain('Keeps stale selection — criterion: AC1 — knowledge entry: entry-1');
+  });
+  it('distinguishes explicit none from a legacy omitted report', () => {
+    expect(renderBrief(baseDoc({ frame: { ...releaseFrame(), settled_beyond_design: [] } as GateFrame }))).toContain('None — this build settled no behaviour');
+    expect(renderBrief(baseDoc({ frame: releaseFrame() as GateFrame }))).not.toContain('Settled beyond design');
+  });
+  it('composes and persists an explicit empty report with a matching-surface warning', async () => {
+    const c = makeClient([{ data: { field_values: {} } }, { data: null }, { data: { id: 'brief' } }, { data: null }]);
+    const priorFrom = c.from;
+    const surface: any = {};
+    for (const m of ['select', 'eq', 'overlaps']) surface[m] = vi.fn(() => surface);
+    surface.limit = vi.fn(async () => ({ data: [{ id: 'entry', title: 'Current state' }], error: null }));
+    const project: any = {};
+    project.select = vi.fn(() => project); project.eq = vi.fn(() => project);
+    project.single = vi.fn(async () => ({ data: { workspace_id: 'workspace' } }));
+    c.from = vi.fn((table: string) => table === 'projects' ? project : table === 'knowledge_decisions' ? surface : priorFrom(table));
+    const result = await composeBrief(c, PROJECT_ID, USER_ID, { task_id: 'task-1', reason: 'release-decision-pending', pending_activity: null,
+      doc: baseDoc({ frame: { ...releaseFrame(), settled_beyond_design: [] } as GateFrame }), changed_paths: ['src/settings.ts'] });
+    expect(result.lint.ok).toBe(true);
+    expect(result.lint.warnings.join(' ')).toContain('settled_beyond_design is empty');
+    expect(c.insert).toHaveBeenCalled();
+    expect(result.brief).toMatchObject({ id: 'brief' });
+  });
+});
