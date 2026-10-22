@@ -1,3 +1,4 @@
+import { saveKnowledgeQuestionTool, saveKnowledgeQuestion, previewKnowledgeQuestionsTool, previewKnowledgeQuestions, importKnowledgeQuestionsTool, importKnowledgeQuestions } from './knowledge-questions.js';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { getProjectTool, getProject } from './project.js';
 import { listEpicsTool, listEpics, createEpicTool, createEpic, updateEpicTool, updateEpic } from './epics.js';
@@ -171,6 +172,7 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
     listActivityTool,
     listWorkflowTransitionsTool,
     listMembersTool,
+    saveKnowledgeQuestionTool, previewKnowledgeQuestionsTool, importKnowledgeQuestionsTool,
     queryKnowledgeTool, searchTicketIntentsTool, getKnowledgeEntryTool, createKnowledgeEntryTool, updateKnowledgeEntryTool, supersedeKnowledgeEntryTool,
     recordDecisionTool, supersedeDecisionTool, queryFactsTool, assertFactTool, invalidateFactTool, queryEntitiesTool,
     createEntityTool, updateEntityTool, reconcileEntityTool,
@@ -218,6 +220,7 @@ export async function handleToolCall(
 ) {
   try {
     let result: unknown;
+    const diagnostics: string[] = [];
     switch (name) {
       case 'get_project':
         result = await getProject(client, projectId);
@@ -291,8 +294,17 @@ export async function handleToolCall(
       case 'bulk_update_tasks':
         result = await bulkUpdateTasks(client, projectId, args as any);
         break;
+      case 'save_knowledge_question':
+        result = await saveKnowledgeQuestion(client, projectId, args as any);
+        break;
+      case 'preview_knowledge_questions':
+        result = await previewKnowledgeQuestions(client, projectId, args as any);
+        break;
+      case 'import_knowledge_questions':
+        result = await importKnowledgeQuestions(client, projectId, args as any);
+        break;
       case 'query_knowledge':
-        result = await queryKnowledge(client, projectId, args as any);
+        result = await queryKnowledge(client, projectId, args as any, message => diagnostics.push(message));
         break;
       case 'search_ticket_intents':
         result = await searchTicketIntents(client, projectId, args as any);
@@ -469,7 +481,8 @@ export async function handleToolCall(
     // record; reads pass through) + compact JSON for ALL tool results. Both apply ONLY at this
     // MCP boundary — the CLI and in-process callers use the handler functions directly and keep
     // full-fidelity results. Do NOT strip nulls: `pending_resolution: null` is the poll signal.
-    return { content: [{ type: 'text' as const, text: JSON.stringify(projectAck(name, result, args)) }] };
+    return { content: [{ type: 'text' as const, text: JSON.stringify(projectAck(name, result, args)) },
+      ...diagnostics.map(text => ({ type: 'text' as const, text }))] };
   } catch (err: any) {
     const message = err.message ?? 'Unknown error';
     if (message.includes('permission denied') || message.includes('RLS')) {

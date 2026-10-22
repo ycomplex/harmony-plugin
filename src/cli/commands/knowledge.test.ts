@@ -2,6 +2,13 @@ import { Command } from 'commander';
 import { describe, it, expect, vi } from 'vitest';
 import { registerKnowledgeCommands } from './knowledge.js';
 import { updateKnowledgeEntry, queryKnowledge } from '../../tools/knowledge.js';
+import { saveKnowledgeQuestion, previewKnowledgeQuestions } from '../../tools/knowledge-questions.js';
+
+vi.mock('../../tools/knowledge-questions.js', () => ({
+  saveKnowledgeQuestion: vi.fn().mockResolvedValue({ id: 'q', question_state: 'open' }),
+  previewKnowledgeQuestions: vi.fn().mockResolvedValue({ entries: [{ approved: false }] }),
+  importKnowledgeQuestions: vi.fn(),
+}));
 
 vi.mock('../../tools/knowledge.js', () => ({
   queryKnowledge: vi.fn(), getKnowledgeEntry: vi.fn(), createKnowledgeEntry: vi.fn(),
@@ -46,6 +53,23 @@ describe('knowledge list human output', () => {
     expect(output.text).toContain('Supersedes');
     expect(output.text).toContain('old-id');
     expect(output.text).toContain('new-id');
-    expect(queryKnowledge).toHaveBeenCalledWith('client', 'project', expect.objectContaining({ include_superseded: true }));
+    expect(queryKnowledge).toHaveBeenCalledWith('client', 'project', expect.objectContaining({ include_superseded: true }), expect.any(Function));
+  });
+});
+
+describe('knowledge questions commands', () => {
+  it('passes explicit scope and optimistic lifecycle controls to the shared writer', async () => {
+    const program = new Command(); registerKnowledgeCommands(program);
+    await program.parseAsync(['knowledge', 'questions', 'save', '--id', 'q', '--state', 'decided',
+      '--expected-updated-at', '2026-10-22T00:00:00Z', '--decision', 'd'], { from: 'user' });
+    expect(saveKnowledgeQuestion).toHaveBeenCalledWith('client', 'project', expect.objectContaining({
+      question_id: 'q', state: 'decided', expected_updated_at: '2026-10-22T00:00:00Z', resulting_decision_id: 'd',
+    }));
+  });
+  it('preview invokes only the read-only handler', async () => {
+    const program = new Command(); registerKnowledgeCommands(program);
+    await program.parseAsync(['knowledge', 'questions', 'preview', 'm'], { from: 'user' });
+    expect(previewKnowledgeQuestions).toHaveBeenCalledWith('client', 'project', { milestone_id: 'm' });
+    expect(output.text).toContain('"approved": false');
   });
 });

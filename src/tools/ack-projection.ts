@@ -181,6 +181,7 @@ export const ackProjections: Record<string, AckProjection> = {
   },
 
   // ——— knowledge entries / decisions / facts / entities ———
+  save_knowledge_question: result => pick(result, ['id', 'status', 'updated_at', 'question_state', 'answer', 'resulting_decision_id']),
   create_knowledge_entry: knowledgeCreatedAck,
   record_decision: knowledgeCreatedAck,
   update_knowledge_entry: (result, args) => {
@@ -329,6 +330,7 @@ export const ackProjections: Record<string, AckProjection> = {
  * annotated pass-throughs (value = why), so the pin test can prove every write tool was decided.
  */
 export const ACK_PASS_THROUGH: Record<string, string> = {
+  import_knowledge_questions: 'Server-computed per-source-key outcome and created question ids; no imported prose is echoed.',
   resolve_brief:
     'RPC result is already a compact state-confirming ack ({task_id, brief_id, workflow_state, brief_status, command, idempotent}); skills read workflow_state off it. ' +
     'B-883: when the caller supplied a remark, the ack additionally carries `remark_recorded` (true when it landed, false when the database predated the p_remark parameter and the call was retried without it) — the caller must be able to see that a supplied remark was dropped, so this flag is part of the ack, not something to strip.',

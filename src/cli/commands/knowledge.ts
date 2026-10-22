@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises';
+import { saveKnowledgeQuestion, previewKnowledgeQuestions, importKnowledgeQuestions } from '../../tools/knowledge-questions.js';
 import { Command } from 'commander';
 import {
   queryKnowledge,
@@ -13,6 +15,31 @@ import { formatTable, formatDetail, formatDate } from '../formatter.js';
 export function registerKnowledgeCommands(program: Command): void {
   const knowledge = program.command('knowledge').description('Manage workspace knowledge base');
 
+  const questions = knowledge.command('questions').description('Manage unresolved knowledge; question state never implies shipped behaviour');
+  questions.command('save').requiredOption('--state <state>', 'open, parked or decided')
+    .option('--id <id>', 'Existing question UUID').option('--expected-updated-at <timestamp>', 'Fresh read timestamp for changes')
+    .option('--title <title>').option('--content <content>').option('--scope <scope>', 'product or deployment; required for creates')
+    .option('--decision <id>', 'Accepted resulting decision in this project').option('--reopen', 'Explicitly reopen a decided question')
+    .option('--domain <domains>', 'Comma-separated subject domains; defaults to product on create')
+    .option('--provenance <value>', 'Declare how this write was authorized')
+    .action(async opts => runCommand(program.opts(), ctx => saveKnowledgeQuestion(ctx.client, ctx.projectId, {
+      question_id: opts.id, expected_updated_at: opts.expectedUpdatedAt, title: opts.title, content: opts.content,
+      state: opts.state, scope: opts.scope, resulting_decision_id: opts.decision, reopen: opts.reopen,
+      domain: opts.domain?.split(',').map((value: string) => value.trim()).filter(Boolean), provenance: opts.provenance,
+    }), data => JSON.stringify(data, null, 2)));
+  questions.command('preview').argument('<milestone-id>').description('Read-only manifest; review historical themes and mark chosen items approved:true')
+    .action(async id => runCommand(program.opts(), ctx => previewKnowledgeQuestions(ctx.client, ctx.projectId, { milestone_id: id }),
+      data => JSON.stringify(data, null, 2)));
+  questions.command('import').argument('<manifest-file>').description('Explicitly apply approved entries from a reviewed manifest')
+    .option('--provenance <value>', 'Declare how this import was authorized')
+    .action(async (file, opts) => {
+      const manifest = JSON.parse(await readFile(file, 'utf8'));
+      await runCommand(program.opts(), ctx => importKnowledgeQuestions(ctx.client, ctx.projectId, {
+        manifest, provenance: opts.provenance,
+      }), data => JSON.stringify(data, null, 2));
+    });
+
+
   knowledge
     .command('list')
     .description('List knowledge entries with optional filters')
@@ -25,6 +52,7 @@ export function registerKnowledgeCommands(program: Command): void {
       [] as string[],
     )
     .option('--search <text>', 'Search term matched against title and content')
+    .option('--question-state <state>', 'Only questions in open, parked or decided state')
     .option('--all', 'Include superseded entries', false)
     .option('--no-bookkeeping', 'Exclude explicitly marked procedural gate records')
     .action(async (opts) => {
@@ -38,7 +66,8 @@ export function registerKnowledgeCommands(program: Command): void {
             search: opts.search,
             include_superseded: opts.all,
             include_bookkeeping: opts.bookkeeping,
-          }),
+            question_state: opts.questionState,
+          }, message => console.error(message)),
         (data) =>
           formatTable(data, [
             {
@@ -52,6 +81,9 @@ export function registerKnowledgeCommands(program: Command): void {
             { key: 'snippet', header: 'Matched passage', width: 60 },
             { key: 'type', header: 'Type', width: 14 },
             { key: 'status', header: 'Status', width: 12 },
+            { key: 'question_state', header: 'Question', width: 10 },
+            { key: 'answer', header: 'Answer', width: 24 },
+            { key: 'resulting_decision_id', header: 'Resulting decision', width: 36 },
             { key: 'superseded_by', header: 'Superseded by', transform: (v: string | null) => v ?? '—' },
             { key: 'supersedes', header: 'Supersedes', transform: (v: string[]) => (v ?? []).join(', ') || '—' },
             {
@@ -94,6 +126,9 @@ export function registerKnowledgeCommands(program: Command): void {
             { label: 'Tags', value: entry.tags?.length ? entry.tags.join(', ') : '(none)' },
             { label: 'Project', value: entry.project_id ?? '(workspace-wide)' },
             { label: 'Updated', value: formatDate(entry.updated_at) },
+            { label: 'Question', value: entry.question_state ?? '(not a question)' },
+            { label: 'Answer', value: entry.answer ?? '' },
+            { label: 'Resulting decision', value: entry.resulting_decision_id ?? '' },
             { label: 'Content', value: entry.content },
           ]),
       );

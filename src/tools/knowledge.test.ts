@@ -224,6 +224,27 @@ function rrfMock(response: { data: any[]; error?: any }) {
 }
 
 describe('queryKnowledge', () => {
+  it('keeps ordinary empty results and explicitly reports missing question coverage', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: [] });
+    const missing = rrfMock({ data: [], error: { code: 'PGRST202', message: 'knowledge_question_search missing' } });
+    const legacy = rrfMock({ data: [] });
+    client.rpc = vi.fn().mockImplementation((name, ...args) => name === 'knowledge_question_search' ? missing(name, ...args) : legacy(name, ...args));
+    const diagnostic = vi.fn();
+    await expect(queryKnowledge(client, PROJECT_ID, { search: 'topic' }, diagnostic)).resolves.toEqual([]);
+    expect(diagnostic).toHaveBeenCalledTimes(1);
+    expect(diagnostic.mock.calls[0][0]).toContain('Question coverage unavailable');
+    expect(legacy).toHaveBeenCalled();
+  });
+
+  it('never drops requested filters or treats authorization as an older schema', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: [] });
+    client.rpc = rrfMock({ data: [], error: { code: 'PGRST202', message: 'missing capability' } });
+    await expect(queryKnowledge(client, PROJECT_ID, { search: 'topic', type: 'specification' })).rejects.toThrow('no constraints were dropped');
+    expect(client.rpc).toHaveBeenCalledTimes(1);
+    client.rpc = rrfMock({ data: [], error: { code: '42501', message: 'permission denied' } });
+    await expect(queryKnowledge(client, PROJECT_ID, { search: 'topic' })).rejects.toThrow('permission denied');
+    expect(client.rpc).toHaveBeenCalledTimes(1);
+  });
   it('applies default filters (status=accepted, no type/tags) and scopes to token project', async () => {
     const { client, wsChain, secondChain } = buildWorkspaceAndQueryClient({
       data: sampleSummaries,
@@ -299,7 +320,7 @@ describe('queryKnowledge', () => {
     };
     const result = await queryKnowledge(client, PROJECT_ID, { search: 'session security', domain: ['engineering'] });
     expect(client.functions.invoke).toHaveBeenCalledWith('embed-knowledge', { body: { text: 'session security' } });
-    expect(client.rpc).toHaveBeenCalledWith('knowledge_search_rrf', expect.objectContaining({
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_question_search', expect.objectContaining({
       _workspace_id: WORKSPACE_ID, _project_id: PROJECT_ID, _query_embedding: '[0.1,0.2]',
       _query_text: 'session security', _domain: ['engineering'],
       _match_limit: null,
@@ -315,8 +336,8 @@ describe('queryKnowledge', () => {
       queryKnowledge(client, PROJECT_ID, { search: 'auth', include_superseded: true }),
     ).rejects.toThrow(/cannot be combined with/);
     await expect(
-      queryKnowledge(client, PROJECT_ID, { search: 'auth', type: 'architecture' }),
-    ).rejects.toThrow(/type/);
+      queryKnowledge(client, PROJECT_ID, { search: 'auth', as_of: '2026-01-01T00:00:00Z' }),
+    ).rejects.toThrow(/as_of/);
   });
 
   it('allows search combined with domain + limit', async () => {
@@ -330,7 +351,7 @@ describe('queryKnowledge', () => {
       rpc: rrfMock({ data: [], error: null }),
     };
     await queryKnowledge(client, PROJECT_ID, { search: 'auth', domain: ['engineering'], limit: 5 });
-    expect(client.rpc).toHaveBeenCalledWith('knowledge_search_rrf', expect.objectContaining({ _match_limit: null, _domain: ['engineering'] }), {});
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_question_search', expect.objectContaining({ _match_limit: null, _domain: ['engineering'] }), {});
   });
 
   it('passes _query_embedding null when embedding fails (trigram-only degrade)', async () => {
@@ -344,7 +365,7 @@ describe('queryKnowledge', () => {
       rpc: rrfMock({ data: [], error: null }),
     };
     await queryKnowledge(client, PROJECT_ID, { search: 'auth' });
-    expect(client.rpc).toHaveBeenCalledWith('knowledge_search_rrf', expect.objectContaining({ _query_embedding: null, _query_text: 'auth', _domain: null }), {});
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_question_search', expect.objectContaining({ _query_embedding: null, _query_text: 'auth', _domain: null }), {});
   });
 
   it('passes limit and offset to .range()', async () => {

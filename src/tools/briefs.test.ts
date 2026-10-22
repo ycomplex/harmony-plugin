@@ -4290,7 +4290,7 @@ describe('B-876 gate frame', () => {
         update: genericChain.update,
         functions: { invoke: vi.fn(async () => ({ data: null, error: { message: 'down' } })) },
         rpc: vi.fn((name: string) => {
-          if (name === 'knowledge_search_rrf') {
+          if (name === 'knowledge_search_rrf' || name === 'knowledge_question_search') {
             let bookkeeping = false;
             const query: any = {};
             query.select = vi.fn(() => query);
@@ -4404,7 +4404,7 @@ describe('B-876 gate frame', () => {
       expect(signal.entries).toEqual([
         { entry_id: 'dec-2', title: 'Unlinked but touched entry', state: 'fires-and-contradicted', matched_values: [B754], source: 'tier' },
       ]);
-      expect((client.rpc as any).mock.calls.some((c: any[]) => c[0] === 'knowledge_search_rrf')).toBe(true);
+      expect((client.rpc as any).mock.calls.some((c: any[]) => c[0] === 'knowledge_question_search')).toBe(true);
     });
 
     it('OVERWRITES whatever the doc authored on frame.contradiction_signal', async () => {
