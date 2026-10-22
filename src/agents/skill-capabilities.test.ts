@@ -34,7 +34,7 @@ const BASELINE: Record<string, { allowed: string; disallowed?: string }> = {
   'harmony-visual-handoff': { allowed: 'mcp__harmony__* Read Grep Glob WebSearch WebFetch Write Bash(open *) Bash(mkdir *)' },
   'start-work': {
     allowed: 'mcp__harmony__* Read Grep Glob Write Edit Bash',
-    disallowed: 'mcp__harmony__record_decision mcp__harmony__supersede_decision mcp__harmony__update_knowledge_entry',
+    disallowed: 'mcp__harmony__record_decision mcp__harmony__supersede_decision',
   },
 };
 
