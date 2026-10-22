@@ -36330,12 +36330,12 @@ function loadDeploymentConfig(opts = {}) {
 function loadLegacyDeploymentConfig(opts = {}) {
   const env2 = opts.env ?? process.env;
   const exists = opts.existsSync ?? existsSync;
-  const readFile = opts.readFileSync ?? ((p) => readFileSync(p, "utf8"));
+  const readFile2 = opts.readFileSync ?? ((p) => readFileSync(p, "utf8"));
   const path3 = resolveDeploymentConfigPath({ configPath: opts.configPath, env: env2 });
   if (!exists(path3)) return null;
   let raw;
   try {
-    raw = readFile(path3);
+    raw = readFile2(path3);
   } catch (err) {
     throw new Error(
       `could not read deployment config at ${path3}: ${err instanceof Error ? err.message : String(err)}`,
@@ -36565,6 +36565,158 @@ async function resolveTaskIds(client, projectId, inputs) {
   return classified.map((c) => c.kind === "uuid" ? c.id : idByNumber.get(c.taskNumber));
 }
 
+// src/tools/knowledge-questions.ts
+import { createHash } from "node:crypto";
+
+// src/tools/provenance.ts
+var PROVENANCE_HUMAN_IN_SESSION = "human-in-session";
+var PROVENANCE_AGENT_SYNTHESIZED = "agent-synthesized";
+var PROVENANCE_WEB_ONLY = "human-in-browser";
+var PROVENANCE_AGENT_ON_BEHALF = "agent-on-behalf";
+var PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION = `${PROVENANCE_AGENT_ON_BEHALF}:${PROVENANCE_HUMAN_IN_SESSION}`;
+var PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER = `${PROVENANCE_AGENT_ON_BEHALF}:${PROVENANCE_WEB_ONLY}`;
+var PROVENANCE_HUMAN_RECORDED = "human-recorded";
+var PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED = `${PROVENANCE_AGENT_ON_BEHALF}:${PROVENANCE_HUMAN_RECORDED}`;
+var AGENT_ON_BEHALF_CLOSED_SUFFIXES = [
+  PROVENANCE_HUMAN_IN_SESSION,
+  PROVENANCE_WEB_ONLY,
+  PROVENANCE_HUMAN_RECORDED
+];
+function guardKnowledgeWriteProvenance(provenance) {
+  if (provenance === null || provenance === void 0) return;
+  if (provenance === PROVENANCE_WEB_ONLY) {
+    throw new Error(
+      `provenance '${PROVENANCE_WEB_ONLY}' is the web client's alone \u2014 the plugin is never the browser, and accepting it here would let an agent claim a human clicked. Use '${PROVENANCE_HUMAN_IN_SESSION}' when the human decided in this session, or '${PROVENANCE_AGENT_ON_BEHALF}:<human-provenance>' when an agent is writing on a human's already-made decision (accepted: '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION}', '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER}', or '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED}').`
+    );
+  }
+  if (provenance.startsWith(`${PROVENANCE_AGENT_ON_BEHALF}:`)) {
+    const suffix = provenance.slice(PROVENANCE_AGENT_ON_BEHALF.length + 1);
+    if (AGENT_ON_BEHALF_CLOSED_SUFFIXES.includes(suffix)) return;
+    throw new Error(
+      `invalid provenance '${provenance}' \u2014 '${PROVENANCE_AGENT_ON_BEHALF}:' accepts only '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION}', '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER}', or '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED}', never any other suffix \u2014 an unrecognised suffix would render as an unattributed/unrecognised tag forever.`
+    );
+  }
+}
+
+// src/tools/knowledge-questions.ts
+function questionProjection(row) {
+  const q = row?.madr?.question;
+  if (q?.version !== 1 || !["open", "parked", "decided"].includes(q.state)) return {};
+  return {
+    question_state: q.state,
+    question_scope: q.scope,
+    answer: q.state === "decided" ? "decided; see resulting decision" : "not yet decided",
+    resulting_decision_id: q.state === "decided" ? row?.superseded_by ?? null : null
+  };
+}
+function missingQuestionCapability(error) {
+  return error?.code === "PGRST202" || error?.code === "42883" && /knowledge_question_(save|import)/.test(error.message ?? "");
+}
+async function saveKnowledgeQuestion(client, projectId, args) {
+  if (!["open", "parked", "decided"].includes(args.state)) throw new Error("state must be open, parked or decided");
+  guardKnowledgeWriteProvenance(args.provenance);
+  let content = args.content;
+  if (!args.question_id) {
+    content = claimContent(args.title ?? "", content ?? "", args.claim);
+  } else if (content !== void 0 || args.claim !== void 0) {
+    const current = await client.from("knowledge_decisions").select("*").eq("project_id", projectId).eq("id", args.question_id).single();
+    if (current.error) throw new Error(current.error.message);
+    content = editedClaimContent(current.data, { title: args.title, content, claim: args.claim });
+  }
+  const { data, error } = await client.rpc("knowledge_question_save", {
+    p_project_id: projectId,
+    p_title: args.title ?? null,
+    p_content: content ?? null,
+    p_state: args.state,
+    p_scope: args.scope ?? null,
+    p_question_id: args.question_id ?? null,
+    p_expected_updated_at: args.expected_updated_at ?? null,
+    p_decision_id: args.resulting_decision_id ?? null,
+    p_domain: args.domain ?? null,
+    p_reopen: args.reopen ?? false,
+    p_provenance: args.provenance ?? null,
+    p_conduction_id: getConductionId() ?? null,
+    p_leg: getLeg() ?? null
+  });
+  if (missingQuestionCapability(error)) throw new Error("Question management unavailable: apply the B-1242 database capability. No question was saved.");
+  if (error) throw new Error(error.message);
+  await embedQuestion(client, projectId, data);
+  return { ...data, ...claimFields(data), ...questionProjection(data) };
+}
+async function embedQuestion(client, projectId, data) {
+  try {
+    const embedded = await client.functions.invoke("embed-knowledge", { body: { text: `${data.title}
+${data.content}` }, timeout: 2e3 });
+    if (!embedded.error && Array.isArray(embedded.data?.embedding)) {
+      await client.from("knowledge_decisions").update({ embedding: `[${embedded.data.embedding.join(",")}]` }).eq("project_id", projectId).eq("id", data.id);
+    }
+  } catch {
+  }
+}
+function milestoneQuestionPreview(projectId, milestone) {
+  const source = milestone.description ?? "";
+  const excerpts = source.split("\n").filter((line) => /^\s*[-*]\s+\S/.test(line));
+  const used = /* @__PURE__ */ new Set();
+  return {
+    version: 1,
+    project_id: projectId,
+    milestone_id: milestone.id,
+    source_name: milestone.name,
+    source_fingerprint: createHash("md5").update(source).digest("hex"),
+    warnings: ["Historical milestone prose may include themes that have since been decided. Review every source excerpt against current knowledge; approve only unresolved themes. Nothing is written by preview."],
+    entries: excerpts.map((source_excerpt) => {
+      const text = source_excerpt.replace(/^\s*[-*]\s+/, "");
+      const key = text.match(/^[A-Z][A-Z0-9]*-\d+\b/)?.[0] ?? createHash("sha256").update(text).digest("hex").slice(0, 24);
+      if (used.has(key)) throw new Error(`Duplicate theme key ${key}; review the milestone before importing`);
+      used.add(key);
+      return {
+        key,
+        title: `Open question: ${text.slice(0, 160)}`,
+        content: encodeClaim(
+          `Not yet decided. Proposed from milestone \u201C${milestone.name}\u201D; this is not evidence of shipped behaviour.
+
+${source_excerpt}`,
+          `Theme ${key} is proposed as an unresolved question, subject to review.`,
+          "derived"
+        ),
+        source_excerpt,
+        state: "parked",
+        scope: "product",
+        domain: ["product"],
+        approved: false
+      };
+    })
+  };
+}
+async function previewKnowledgeQuestions(client, projectId, args) {
+  const { data, error } = await client.from("milestones").select("id, name, description").eq("project_id", projectId).eq("id", args.milestone_id).single();
+  if (error) throw new Error(error.message);
+  return milestoneQuestionPreview(projectId, data);
+}
+async function importKnowledgeQuestions(client, projectId, args) {
+  guardKnowledgeWriteProvenance(args.provenance);
+  if (args.manifest.project_id !== projectId) throw new Error("Manifest belongs to another project");
+  const manifest = { ...args.manifest, entries: args.manifest.entries.map((entry) => ({
+    ...entry,
+    content: decodeClaim(entry.content).claim ? entry.content : claimContent(entry.title, entry.content)
+  })) };
+  const { data, error } = await client.rpc("knowledge_question_import", {
+    p_project_id: projectId,
+    p_manifest: manifest,
+    p_provenance: args.provenance ?? null,
+    p_conduction_id: getConductionId() ?? null,
+    p_leg: getLeg() ?? null
+  });
+  if (missingQuestionCapability(error)) throw new Error("Question import unavailable: apply the B-1242 database capability. Nothing was imported.");
+  if (error) throw new Error(error.message);
+  for (const result of data.results ?? []) {
+    if (result.outcome !== "created") continue;
+    const entry = manifest.entries.find((item) => item.key === result.key);
+    if (entry) await embedQuestion(client, projectId, { ...entry, id: result.id });
+  }
+  return data;
+}
+
 // src/tools/knowledge-metadata.ts
 import { existsSync as existsSync2, readFileSync as readFileSync2 } from "node:fs";
 import { basename as basename2, dirname, join as join3 } from "node:path";
@@ -36658,36 +36810,6 @@ function repositoryPrefix(repo) {
   if (!/^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(prefix))
     throw new Error("Invalid repository prefix");
   return prefix;
-}
-
-// src/tools/provenance.ts
-var PROVENANCE_HUMAN_IN_SESSION = "human-in-session";
-var PROVENANCE_AGENT_SYNTHESIZED = "agent-synthesized";
-var PROVENANCE_WEB_ONLY = "human-in-browser";
-var PROVENANCE_AGENT_ON_BEHALF = "agent-on-behalf";
-var PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION = `${PROVENANCE_AGENT_ON_BEHALF}:${PROVENANCE_HUMAN_IN_SESSION}`;
-var PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER = `${PROVENANCE_AGENT_ON_BEHALF}:${PROVENANCE_WEB_ONLY}`;
-var PROVENANCE_HUMAN_RECORDED = "human-recorded";
-var PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED = `${PROVENANCE_AGENT_ON_BEHALF}:${PROVENANCE_HUMAN_RECORDED}`;
-var AGENT_ON_BEHALF_CLOSED_SUFFIXES = [
-  PROVENANCE_HUMAN_IN_SESSION,
-  PROVENANCE_WEB_ONLY,
-  PROVENANCE_HUMAN_RECORDED
-];
-function guardKnowledgeWriteProvenance(provenance) {
-  if (provenance === null || provenance === void 0) return;
-  if (provenance === PROVENANCE_WEB_ONLY) {
-    throw new Error(
-      `provenance '${PROVENANCE_WEB_ONLY}' is the web client's alone \u2014 the plugin is never the browser, and accepting it here would let an agent claim a human clicked. Use '${PROVENANCE_HUMAN_IN_SESSION}' when the human decided in this session, or '${PROVENANCE_AGENT_ON_BEHALF}:<human-provenance>' when an agent is writing on a human's already-made decision (accepted: '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION}', '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER}', or '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED}').`
-    );
-  }
-  if (provenance.startsWith(`${PROVENANCE_AGENT_ON_BEHALF}:`)) {
-    const suffix = provenance.slice(PROVENANCE_AGENT_ON_BEHALF.length + 1);
-    if (AGENT_ON_BEHALF_CLOSED_SUFFIXES.includes(suffix)) return;
-    throw new Error(
-      `invalid provenance '${provenance}' \u2014 '${PROVENANCE_AGENT_ON_BEHALF}:' accepts only '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION}', '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER}', or '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED}', never any other suffix \u2014 an unrecognised suffix would render as an unattributed/unrecognised tag forever.`
-    );
-  }
 }
 
 // src/tools/knowledge-definitions.ts
@@ -36999,6 +37121,9 @@ function toBaseStatus(status) {
 }
 async function queryKnowledge(client, projectId, args) {
   const workspaceId = await getWorkspaceId(client, projectId);
+  if (args.question_state && !["open", "parked", "decided"].includes(args.question_state)) {
+    throw new Error("question_state must be open, parked or decided");
+  }
   if (args.scope !== void 0) {
     if (!["product", "deployment"].includes(args.scope)) throw new Error("scope must be product or deployment");
     if (!await metadataCapable(client)) throw new Error("Scope filtering unavailable until the schema is promoted; no unfiltered results returned.");
@@ -37009,6 +37134,9 @@ async function queryKnowledge(client, projectId, args) {
   if (args.limit === 0) return [];
   if (args.search) {
     const incompatible = [];
+    if (args.question_state) {
+      throw new Error("query_knowledge: search + question_state is unavailable until B-1223 shared ranking; omit search for structured question filtering");
+    }
     if (args.status) incompatible.push("status");
     if (args.include_superseded) incompatible.push("include_superseded");
     if (args.type) incompatible.push("type");
@@ -37077,6 +37205,7 @@ async function queryKnowledge(client, projectId, args) {
       type: d.type,
       status: d.status,
       ...d.scope !== void 0 ? { scope: d.scope } : {},
+      ...questionProjection(d),
       ...claimFields(d),
       snippet: matchedPassage(d.content ?? "", args.search),
       domain: d.domain,
@@ -37088,21 +37217,24 @@ async function queryKnowledge(client, projectId, args) {
       open_steps: d.open_steps ?? null
     }));
     if (!matches.length) return prepend([]);
+    const questionRank = (row) => Number(row.tags?.includes(BOOKKEEPING_TAG) ?? false) * 2 + (row.question_state === "open" || row.question_state === "parked" ? 0 : 1);
+    matches.sort((left, right) => questionRank(left) - questionRank(right));
     return prepend(await withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, matches)));
   }
   const rows = await bookkeepingPage(({ bookkeeping, offset, limit, count }) => {
     let query = client.from("knowledge_decisions").select("*", count ? { count: "exact" } : {}).eq("workspace_id", workspaceId).eq("project_id", projectId);
     if (args.scope) query = query.eq("scope", args.scope);
     if (args.status) query = query.eq("status", args.status);
-    else if (!args.include_superseded) query = query.eq("status", "Accepted");
+    else if (!args.include_superseded) query = query.eq("status", args.question_state === "decided" ? "Superseded" : "Accepted");
     if (args.type) query = query.eq("type", args.type);
+    if (args.question_state) query = query.eq("source_activity", "knowledge-question").eq("madr->question->>state", args.question_state);
     if (args.domain && args.domain.length > 0) query = query.overlaps("domain", args.domain);
     if (args.as_of) query = query.lte("valid_from", args.as_of);
     if (args.tags && args.tags.length > 0) query = query.contains("tags", args.tags);
     query = bookkeeping ? query.contains("tags", [BOOKKEEPING_TAG]) : query.or(SUBSTANTIVE_TAG_FILTER);
     return query.order("type", { ascending: true }).order("id", { ascending: true }).range(offset, offset + limit - 1);
   }, decisionArgs);
-  return prepend(await withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, rows.map((d) => ({ id: d.id, title: d.title, type: d.type, status: d.status, ...d.scope !== void 0 ? { scope: d.scope } : {}, domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d), verified_against: d.verified_against ?? null, rollout_state: d.rollout_state ?? null, open_steps: d.open_steps ?? null })))));
+  return prepend(await withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, rows.map((d) => ({ id: d.id, title: d.title, type: d.type, status: d.status, ...d.scope !== void 0 ? { scope: d.scope } : {}, domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d), ...questionProjection(d), verified_against: d.verified_against ?? null, rollout_state: d.rollout_state ?? null, open_steps: d.open_steps ?? null })))));
 }
 async function hydrateSupersession(client, workspaceId, projectId, rows) {
   const edges = [];
@@ -37133,7 +37265,7 @@ async function getKnowledgeEntry(client, projectId, args) {
   }
   const { data, error } = await query.single();
   if (error) throw error;
-  return (await withInvalidations(client, [{ ...data, ...claimFields(data), verified_against: data.verified_against ?? null, rollout_state: data.rollout_state ?? null, open_steps: data.open_steps ?? null }]))[0];
+  return (await withInvalidations(client, [{ ...data, ...claimFields(data), ...questionProjection(data), verified_against: data.verified_against ?? null, rollout_state: data.rollout_state ?? null, open_steps: data.open_steps ?? null }]))[0];
 }
 async function createKnowledgeEntry(client, projectId, userId, args) {
   if (!args.title?.trim()) {
@@ -37756,10 +37888,10 @@ function getLeg(env2 = process.env) {
   return Number.isInteger(n) && n >= 0 ? n : void 0;
 }
 function getRunConfig(env2 = process.env, deps = {}) {
-  const readFile = deps.readFileSync ?? ((p) => nodeReadFileSync(p, "utf8"));
+  const readFile2 = deps.readFileSync ?? ((p) => nodeReadFileSync(p, "utf8"));
   const path3 = envValue(env2, "HARMONY_RUN_CONFIG_PATH");
   if (path3) {
-    return RunConfigSchema.parse(JSON.parse(readFile(path3)));
+    return RunConfigSchema.parse(JSON.parse(readFile2(path3)));
   }
   const inline = envValue(env2, "HARMONY_RUN_CONFIG_JSON");
   if (inline) {
@@ -43495,6 +43627,7 @@ function registerBulkCommands(program3) {
 }
 
 // src/cli/commands/knowledge.ts
+import { readFile } from "node:fs/promises";
 import { readFileSync as readFileSync4, writeFileSync } from "node:fs";
 
 // src/tools/knowledge-repair.ts
@@ -43698,12 +43831,38 @@ async function tagReleasedKnowledge(client, projectId, taskId, repo, pr) {
 // src/cli/commands/knowledge.ts
 function registerKnowledgeCommands(program3) {
   const knowledge = program3.command("knowledge").description("Manage workspace knowledge base");
+  const questions = knowledge.command("questions").description("Manage unresolved knowledge; question state never implies shipped behaviour");
+  questions.command("save").requiredOption("--state <state>", "open, parked or decided").option("--claim <claim>", "Authored one-sentence claim; omitted claims remain derived proposals").option("--id <id>", "Existing question UUID").option("--expected-updated-at <timestamp>", "Fresh read timestamp for changes").option("--title <title>").option("--content <content>").option("--scope <scope>", "product or deployment; required for creates").option("--decision <id>", "Accepted resulting decision in this project").option("--reopen", "Explicitly reopen a decided question").option("--domain <domains>", "Comma-separated subject domains; defaults to product on create").option("--provenance <value>", "Declare how this write was authorized").action(async (opts) => runCommand(program3.opts(), (ctx) => saveKnowledgeQuestion(ctx.client, ctx.projectId, {
+    question_id: opts.id,
+    expected_updated_at: opts.expectedUpdatedAt,
+    title: opts.title,
+    content: opts.content,
+    state: opts.state,
+    scope: opts.scope,
+    claim: opts.claim,
+    resulting_decision_id: opts.decision,
+    reopen: opts.reopen,
+    domain: opts.domain?.split(",").map((value) => value.trim()).filter(Boolean),
+    provenance: opts.provenance
+  }), (data) => JSON.stringify(data, null, 2)));
+  questions.command("preview").argument("<milestone-id>").description("Read-only manifest; review historical themes and mark chosen items approved:true").action(async (id) => runCommand(
+    program3.opts(),
+    (ctx) => previewKnowledgeQuestions(ctx.client, ctx.projectId, { milestone_id: id }),
+    (data) => JSON.stringify(data, null, 2)
+  ));
+  questions.command("import").argument("<manifest-file>").description("Explicitly apply approved entries from a reviewed manifest").option("--provenance <value>", "Declare how this import was authorized").action(async (file, opts) => {
+    const manifest = JSON.parse(await readFile(file, "utf8"));
+    await runCommand(program3.opts(), (ctx) => importKnowledgeQuestions(ctx.client, ctx.projectId, {
+      manifest,
+      provenance: opts.provenance
+    }), (data) => JSON.stringify(data, null, 2));
+  });
   knowledge.command("list").description("List knowledge entries with optional filters").option("--scope <scope>", "Product or deployment scope; fails visibly when unavailable").option("--type <type>", "Filter by type (e.g. architecture, business, convention, specification)").option("--status <status>", "Filter by status").option(
     "--tag <tag>",
     "Filter by tag (repeat for multiple)",
     (v, prev) => [...prev, v],
     []
-  ).option("--search <text>", "Search term matched against title and content").option("--definitions-only", "Return only current term definitions", false).option("--all", "Include superseded entries", false).option("--no-bookkeeping", "Exclude explicitly marked procedural gate records").action(async (opts) => {
+  ).option("--search <text>", "Search term matched against title and content").option("--question-state <state>", "Filter-only: open, parked or decided; search combination requires B-1223").option("--definitions-only", "Return only current term definitions", false).option("--all", "Include superseded entries", false).option("--no-bookkeeping", "Exclude explicitly marked procedural gate records").action(async (opts) => {
     await runCommand(
       program3.opts(),
       async (ctx) => queryKnowledge(ctx.client, ctx.projectId, {
@@ -43714,7 +43873,8 @@ function registerKnowledgeCommands(program3) {
         tags: opts.tag && opts.tag.length > 0 ? opts.tag : void 0,
         search: opts.search,
         include_superseded: opts.all,
-        include_bookkeeping: opts.bookkeeping
+        include_bookkeeping: opts.bookkeeping,
+        question_state: opts.questionState
       }),
       (data) => formatTable(data, [
         {
@@ -43729,6 +43889,9 @@ function registerKnowledgeCommands(program3) {
         { key: "snippet", header: "Matched passage", width: 60 },
         { key: "type", header: "Type (advisory)", width: 16 },
         { key: "status", header: "Status", width: 12 },
+        { key: "question_state", header: "Question", width: 10 },
+        { key: "answer", header: "Answer", width: 24 },
+        { key: "resulting_decision_id", header: "Resulting decision", width: 36 },
         { key: "superseded_by", header: "Superseded by", transform: (v) => v ?? "\u2014" },
         { key: "supersedes", header: "Supersedes", transform: (v) => (v ?? []).join(", ") || "\u2014" },
         { key: "invalidations", header: "Invalidation", transform: (links = []) => links.some((link) => link.effective_at) ? "Retired" : links.length ? "Removal pending" : "" },
@@ -43798,6 +43961,9 @@ function registerKnowledgeCommands(program3) {
         { label: "Tags", value: entry.tags?.length ? entry.tags.join(", ") : "(none)" },
         { label: "Project", value: entry.project_id ?? "(workspace-wide)" },
         { label: "Updated", value: formatDate(entry.updated_at) },
+        { label: "Question", value: entry.question_state ?? "(not a question)" },
+        { label: "Answer", value: entry.answer ?? "" },
+        { label: "Resulting decision", value: entry.resulting_decision_id ?? "" },
         { label: "Removal capability", value: entry.invalidations_available === false ? "unavailable" : "available" },
         { label: "Invalidators", value: (entry.invalidations ?? []).map((link) => `${link.invalidator_title} (${link.invalidator_id}): ${link.effective_at ? "retired" : "removal agreed, not yet effective"}`).join("\n") || "(none)" },
         ...entry.invalidation_rollout_available === false ? [{ label: "Rollout capability", value: "unavailable; no retirement inferred" }] : [],
@@ -45206,7 +45372,7 @@ function buildMigration(input) {
 }
 
 // src/config/conductor-project-source.ts
-import { createHash } from "node:crypto";
+import { createHash as createHash2 } from "node:crypto";
 import { chmodSync, mkdirSync, readFileSync as readFileSync6, renameSync, rmSync, writeFileSync as writeFileSync2 } from "node:fs";
 import { dirname as dirname3 } from "node:path";
 
@@ -45228,7 +45394,7 @@ function buildAppJwt(appId, privateKey, nowSeconds) {
 function createGithubTokenProvider(deps) {
   const { env: env2 } = deps;
   const fetchImpl = deps.fetchImpl ?? fetch;
-  const readFile = deps.readFile ?? ((p) => readFileSync5(p, "utf8"));
+  const readFile2 = deps.readFile ?? ((p) => readFileSync5(p, "utf8"));
   const now = deps.now ?? Date.now;
   const api = env2.GITHUB_API_URL || GITHUB_API_DEFAULT;
   const appId = env2.HARMONY_APP_ID || deps.appOverride?.app_id;
@@ -45242,7 +45408,7 @@ function createGithubTokenProvider(deps) {
   return async () => {
     if (hasApp) {
       if (cached && cached.expiresAtMs - TOKEN_REFRESH_MARGIN_MS > now()) return cached.token;
-      const privateKey = keyPath ? readFile(keyPath) : keyInline.includes("\\n") ? keyInline.replace(/\\n/g, "\n") : keyInline;
+      const privateKey = keyPath ? readFile2(keyPath) : keyInline.includes("\\n") ? keyInline.replace(/\\n/g, "\n") : keyInline;
       const jwt = buildAppJwt(appId, privateKey, Math.floor(now() / 1e3));
       const res = await fetchImpl(`${api}/app/installations/${installationId}/access_tokens`, {
         method: "POST",
@@ -45268,7 +45434,7 @@ function createGithubTokenProvider(deps) {
 var REQUEST_TIMEOUT_MS2 = 1e4;
 function gitBlobSha(text) {
   const body = Buffer.from(text, "utf8");
-  return createHash("sha1").update(`blob ${body.length}\0`).update(body).digest("hex");
+  return createHash2("sha1").update(`blob ${body.length}\0`).update(body).digest("hex");
 }
 var encodePath = (p) => p.split("/").map(encodeURIComponent).join("/");
 async function fetchProjectFile(input) {
@@ -48932,7 +49098,7 @@ import { mkdirSync as mkdirSync6, readFileSync as readFileSync13, renameSync as 
 import { dirname as dirname8 } from "node:path";
 
 // src/config/notify-sync.ts
-import { createHash as createHash2 } from "node:crypto";
+import { createHash as createHash3 } from "node:crypto";
 var NOTIFY_SYNC_CACHE_RELATIVE_PATH = ".harmony/.notify-sync.json";
 function notifySyncCachePath(projectRoot) {
   return `${projectRoot}/${NOTIFY_SYNC_CACHE_RELATIVE_PATH}`;
@@ -48956,7 +49122,7 @@ function normalizeNotifyDeclaration(entries) {
   return [...byEndpoint.entries()].map(([endpoint_url, transitions]) => ({ endpoint_url, transitions: [...transitions].sort() })).sort((a, b) => a.endpoint_url < b.endpoint_url ? -1 : a.endpoint_url > b.endpoint_url ? 1 : 0);
 }
 function hashNotifyDeclaration(subscriptions) {
-  return createHash2("sha256").update(`v${NORMALIZATION_VERSION}
+  return createHash3("sha256").update(`v${NORMALIZATION_VERSION}
 ${JSON.stringify(subscriptions)}`).digest("hex");
 }
 function readCachedHash(io, path3) {

@@ -22745,6 +22745,48 @@ async function resolveTaskIds(client, projectId, inputs) {
   return classified.map((c) => c.kind === "uuid" ? c.id : idByNumber.get(c.taskNumber));
 }
 
+// src/tools/provenance.ts
+var PROVENANCE_HUMAN_IN_SESSION = "human-in-session";
+var PROVENANCE_AGENT_SYNTHESIZED = "agent-synthesized";
+var PROVENANCE_WEB_ONLY = "human-in-browser";
+var PROVENANCE_AGENT_ON_BEHALF = "agent-on-behalf";
+var PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION = `${PROVENANCE_AGENT_ON_BEHALF}:${PROVENANCE_HUMAN_IN_SESSION}`;
+var PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER = `${PROVENANCE_AGENT_ON_BEHALF}:${PROVENANCE_WEB_ONLY}`;
+var PROVENANCE_HUMAN_RECORDED = "human-recorded";
+var PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED = `${PROVENANCE_AGENT_ON_BEHALF}:${PROVENANCE_HUMAN_RECORDED}`;
+var AGENT_ON_BEHALF_CLOSED_SUFFIXES = [
+  PROVENANCE_HUMAN_IN_SESSION,
+  PROVENANCE_WEB_ONLY,
+  PROVENANCE_HUMAN_RECORDED
+];
+function guardKnowledgeWriteProvenance(provenance) {
+  if (provenance === null || provenance === void 0) return;
+  if (provenance === PROVENANCE_WEB_ONLY) {
+    throw new Error(
+      `provenance '${PROVENANCE_WEB_ONLY}' is the web client's alone \u2014 the plugin is never the browser, and accepting it here would let an agent claim a human clicked. Use '${PROVENANCE_HUMAN_IN_SESSION}' when the human decided in this session, or '${PROVENANCE_AGENT_ON_BEHALF}:<human-provenance>' when an agent is writing on a human's already-made decision (accepted: '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION}', '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER}', or '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED}').`
+    );
+  }
+  if (provenance.startsWith(`${PROVENANCE_AGENT_ON_BEHALF}:`)) {
+    const suffix = provenance.slice(PROVENANCE_AGENT_ON_BEHALF.length + 1);
+    if (AGENT_ON_BEHALF_CLOSED_SUFFIXES.includes(suffix)) return;
+    throw new Error(
+      `invalid provenance '${provenance}' \u2014 '${PROVENANCE_AGENT_ON_BEHALF}:' accepts only '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION}', '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER}', or '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED}', never any other suffix \u2014 an unrecognised suffix would render as an unattributed/unrecognised tag forever.`
+    );
+  }
+}
+
+// src/tools/knowledge-questions.ts
+function questionProjection(row) {
+  const q = row?.madr?.question;
+  if (q?.version !== 1 || !["open", "parked", "decided"].includes(q.state)) return {};
+  return {
+    question_state: q.state,
+    question_scope: q.scope,
+    answer: q.state === "decided" ? "decided; see resulting decision" : "not yet decided",
+    resulting_decision_id: q.state === "decided" ? row?.superseded_by ?? null : null
+  };
+}
+
 // src/tools/knowledge-metadata.ts
 import { existsSync as existsSync2, readFileSync as readFileSync3 } from "node:fs";
 import { basename as basename2, dirname as dirname2, join as join4 } from "node:path";
@@ -22814,36 +22856,6 @@ function repositoryPrefix(repo) {
   if (!/^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(prefix))
     throw new Error("Invalid repository prefix");
   return prefix;
-}
-
-// src/tools/provenance.ts
-var PROVENANCE_HUMAN_IN_SESSION = "human-in-session";
-var PROVENANCE_AGENT_SYNTHESIZED = "agent-synthesized";
-var PROVENANCE_WEB_ONLY = "human-in-browser";
-var PROVENANCE_AGENT_ON_BEHALF = "agent-on-behalf";
-var PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION = `${PROVENANCE_AGENT_ON_BEHALF}:${PROVENANCE_HUMAN_IN_SESSION}`;
-var PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER = `${PROVENANCE_AGENT_ON_BEHALF}:${PROVENANCE_WEB_ONLY}`;
-var PROVENANCE_HUMAN_RECORDED = "human-recorded";
-var PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED = `${PROVENANCE_AGENT_ON_BEHALF}:${PROVENANCE_HUMAN_RECORDED}`;
-var AGENT_ON_BEHALF_CLOSED_SUFFIXES = [
-  PROVENANCE_HUMAN_IN_SESSION,
-  PROVENANCE_WEB_ONLY,
-  PROVENANCE_HUMAN_RECORDED
-];
-function guardKnowledgeWriteProvenance(provenance) {
-  if (provenance === null || provenance === void 0) return;
-  if (provenance === PROVENANCE_WEB_ONLY) {
-    throw new Error(
-      `provenance '${PROVENANCE_WEB_ONLY}' is the web client's alone \u2014 the plugin is never the browser, and accepting it here would let an agent claim a human clicked. Use '${PROVENANCE_HUMAN_IN_SESSION}' when the human decided in this session, or '${PROVENANCE_AGENT_ON_BEHALF}:<human-provenance>' when an agent is writing on a human's already-made decision (accepted: '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION}', '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER}', or '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED}').`
-    );
-  }
-  if (provenance.startsWith(`${PROVENANCE_AGENT_ON_BEHALF}:`)) {
-    const suffix = provenance.slice(PROVENANCE_AGENT_ON_BEHALF.length + 1);
-    if (AGENT_ON_BEHALF_CLOSED_SUFFIXES.includes(suffix)) return;
-    throw new Error(
-      `invalid provenance '${provenance}' \u2014 '${PROVENANCE_AGENT_ON_BEHALF}:' accepts only '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION}', '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER}', or '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED}', never any other suffix \u2014 an unrecognised suffix would render as an unattributed/unrecognised tag forever.`
-    );
-  }
 }
 
 // src/tools/knowledge-definitions.ts
@@ -23092,6 +23104,9 @@ async function embedText(client, text) {
 }
 async function queryKnowledge(client, projectId, args) {
   const workspaceId = await getWorkspaceId(client, projectId);
+  if (args.question_state && !["open", "parked", "decided"].includes(args.question_state)) {
+    throw new Error("question_state must be open, parked or decided");
+  }
   if (args.scope !== void 0) {
     if (!["product", "deployment"].includes(args.scope)) throw new Error("scope must be product or deployment");
     if (!await metadataCapable(client)) throw new Error("Scope filtering unavailable until the schema is promoted; no unfiltered results returned.");
@@ -23102,6 +23117,9 @@ async function queryKnowledge(client, projectId, args) {
   if (args.limit === 0) return [];
   if (args.search) {
     const incompatible = [];
+    if (args.question_state) {
+      throw new Error("query_knowledge: search + question_state is unavailable until B-1223 shared ranking; omit search for structured question filtering");
+    }
     if (args.status) incompatible.push("status");
     if (args.include_superseded) incompatible.push("include_superseded");
     if (args.type) incompatible.push("type");
@@ -23170,6 +23188,7 @@ async function queryKnowledge(client, projectId, args) {
       type: d.type,
       status: d.status,
       ...d.scope !== void 0 ? { scope: d.scope } : {},
+      ...questionProjection(d),
       ...claimFields(d),
       snippet: matchedPassage(d.content ?? "", args.search),
       domain: d.domain,
@@ -23181,21 +23200,24 @@ async function queryKnowledge(client, projectId, args) {
       open_steps: d.open_steps ?? null
     }));
     if (!matches.length) return prepend([]);
+    const questionRank = (row) => Number(row.tags?.includes(BOOKKEEPING_TAG) ?? false) * 2 + (row.question_state === "open" || row.question_state === "parked" ? 0 : 1);
+    matches.sort((left, right) => questionRank(left) - questionRank(right));
     return prepend(await withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, matches)));
   }
   const rows = await bookkeepingPage(({ bookkeeping, offset, limit, count }) => {
     let query = client.from("knowledge_decisions").select("*", count ? { count: "exact" } : {}).eq("workspace_id", workspaceId).eq("project_id", projectId);
     if (args.scope) query = query.eq("scope", args.scope);
     if (args.status) query = query.eq("status", args.status);
-    else if (!args.include_superseded) query = query.eq("status", "Accepted");
+    else if (!args.include_superseded) query = query.eq("status", args.question_state === "decided" ? "Superseded" : "Accepted");
     if (args.type) query = query.eq("type", args.type);
+    if (args.question_state) query = query.eq("source_activity", "knowledge-question").eq("madr->question->>state", args.question_state);
     if (args.domain && args.domain.length > 0) query = query.overlaps("domain", args.domain);
     if (args.as_of) query = query.lte("valid_from", args.as_of);
     if (args.tags && args.tags.length > 0) query = query.contains("tags", args.tags);
     query = bookkeeping ? query.contains("tags", [BOOKKEEPING_TAG]) : query.or(SUBSTANTIVE_TAG_FILTER);
     return query.order("type", { ascending: true }).order("id", { ascending: true }).range(offset, offset + limit - 1);
   }, decisionArgs);
-  return prepend(await withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, rows.map((d) => ({ id: d.id, title: d.title, type: d.type, status: d.status, ...d.scope !== void 0 ? { scope: d.scope } : {}, domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d), verified_against: d.verified_against ?? null, rollout_state: d.rollout_state ?? null, open_steps: d.open_steps ?? null })))));
+  return prepend(await withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, rows.map((d) => ({ id: d.id, title: d.title, type: d.type, status: d.status, ...d.scope !== void 0 ? { scope: d.scope } : {}, domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d), ...questionProjection(d), verified_against: d.verified_against ?? null, rollout_state: d.rollout_state ?? null, open_steps: d.open_steps ?? null })))));
 }
 async function hydrateSupersession(client, workspaceId, projectId, rows) {
   const edges = [];
