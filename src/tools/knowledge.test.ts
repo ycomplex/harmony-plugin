@@ -756,6 +756,44 @@ describe('createKnowledgeEntry', () => {
 // ---------------------------------------------------------------------------
 
 describe('updateKnowledgeEntry', () => {
+  it.each(['prepend_section', 'append_section'] as const)('merges %s in the database and embeds the complete returned content', async (content_mode) => {
+    const merged = { ...sampleFullEntry, content: 'new section\n\nexisting dated history' };
+    const { client } = buildEmbedAwareClient({ rpcResult: { data: merged } });
+    await updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', content: 'new section', content_mode });
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_amend_knowledge_entry', expect.objectContaining({
+      p_content: 'new section', p_content_mode: content_mode, p_allow_shrink: false,
+    }));
+    expect(client.functions.invoke).toHaveBeenCalledWith('embed-knowledge', { body: { text: `${merged.title}\n${merged.content}` } });
+  });
+
+  it('passes an explicit destructive rewrite override', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: sampleFullEntry });
+    await updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', content: 'deliberate', allow_shrink: true });
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_amend_knowledge_entry', expect.objectContaining({ p_content_mode: 'replace', p_allow_shrink: true }));
+  });
+
+  it('fails closed when the database operation is absent, without an unsafe fallback', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: null, error: { code: 'PGRST202', message: 'missing' } });
+    await expect(updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', content: 'new' })).rejects.toThrow('apply the B-1111 database migration');
+    expect(client.rpc).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces lost-section refusal without embedding or retrying', async () => {
+    const { client } = buildEmbedAwareClient({ rpcResult: { data: null, error: { code: '22023', message: 'Knowledge replacement refused: ### Amended 2026-09-10', hint: 'Use prepend_section or allow_shrink: true' } } });
+    await expect(updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', content: 'only new section' })).rejects.toThrow('### Amended 2026-09-10\nUse prepend_section or allow_shrink: true');
+    expect(client.functions.invoke).not.toHaveBeenCalled();
+    expect(client.rpc).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { content_mode: 'prepend_section' as const },
+    { allow_shrink: false },
+    { content: ' ', content_mode: 'append_section' as const },
+  ])('rejects invalid amendment inputs before writing: %j', async (patch) => {
+    const { client } = buildWorkspaceAndQueryClient({ data: sampleFullEntry });
+    await expect(updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', ...patch })).rejects.toThrow();
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
   const updatedEntry = {
     ...sampleFullEntry,
     title: 'Updated Title',
@@ -793,7 +831,7 @@ describe('updateKnowledgeEntry', () => {
       title: 'Use TypeScript strict mode',
       content: 'new content',
     });
-    expect(client.rpc).toHaveBeenCalledWith('knowledge_update_knowledge_entry', expect.objectContaining({
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_amend_knowledge_entry', expect.objectContaining({
       p_project_id: PROJECT_ID, p_title: 'Use TypeScript strict mode', p_content: 'new content',
     }));
   });
@@ -807,7 +845,7 @@ describe('updateKnowledgeEntry', () => {
       status: 'accepted',
       tags: ['new-tag'],
     });
-    expect(client.rpc).toHaveBeenCalledWith('knowledge_update_knowledge_entry', expect.objectContaining({
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_amend_knowledge_entry', expect.objectContaining({
       p_content: 'new content',
       p_type: 'business',
       p_status: 'Accepted',   // base table speaks v1 vocab; legacy lowercase is normalized up

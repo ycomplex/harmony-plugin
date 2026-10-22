@@ -36741,6 +36741,19 @@ async function updateKnowledgeEntry(client, projectId, args) {
   if (!args.entry_id && !args.title) {
     throw new Error("Either entry_id or title must be provided to identify the entry");
   }
+  const mode = args.content_mode ?? "replace";
+  if (!["replace", "prepend_section", "append_section"].includes(mode)) {
+    throw new Error("content_mode must be replace, prepend_section or append_section");
+  }
+  if (args.allow_shrink !== void 0 && typeof args.allow_shrink !== "boolean") {
+    throw new Error("allow_shrink must be a boolean");
+  }
+  if (args.content === void 0 && (args.content_mode !== void 0 || args.allow_shrink !== void 0)) {
+    throw new Error("content is required with content_mode or allow_shrink");
+  }
+  if (mode !== "replace" && !args.content?.trim()) {
+    throw new Error("Amendment section must not be blank");
+  }
   const hasUpdates = args.new_title !== void 0 || args.content !== void 0 || args.type !== void 0 || args.status !== void 0 || args.tags !== void 0 || args.domain !== void 0 || args.madr !== void 0 || args.realization !== void 0 || args.review_by !== void 0;
   if (!hasUpdates) {
     throw new Error("At least one field to update must be provided");
@@ -36748,7 +36761,8 @@ async function updateKnowledgeEntry(client, projectId, args) {
   const workspaceId = await getWorkspaceId(client, projectId);
   const newTitle = args.new_title !== void 0 ? normalizeHtmlEntities(args.new_title.trim()) : void 0;
   guardKnowledgeWriteProvenance(args.provenance);
-  const { data, error } = await client.rpc("knowledge_update_knowledge_entry", {
+  const contentWrite = args.content !== void 0;
+  const { data, error } = await client.rpc(contentWrite ? "knowledge_amend_knowledge_entry" : "knowledge_update_knowledge_entry", {
     p_project_id: projectId,
     p_entry_id: args.entry_id ?? null,
     p_title: args.title ?? null,
@@ -36766,9 +36780,16 @@ async function updateKnowledgeEntry(client, projectId, args) {
     p_review_by: args.review_by ?? null,
     p_provenance: args.provenance ?? null,
     p_conduction_id: getConductionId() ?? null,
-    p_leg: getLeg() ?? null
+    p_leg: getLeg() ?? null,
+    ...contentWrite ? { p_content_mode: mode, p_allow_shrink: args.allow_shrink ?? false } : {}
   });
   if (error) {
+    if (contentWrite && (error.code === "PGRST202" || error.code === "42883")) {
+      throw new Error("Knowledge content update unavailable: apply the B-1111 database migration before using content updates. No content was replaced.");
+    }
+    if (contentWrite && error.code === "22023") {
+      throw new Error([error.message, error.hint].filter(Boolean).join("\n"));
+    }
     if (error.code === "23505") {
       throw new Error(
         `A knowledge entry titled "${newTitle ?? ""}" already exists in this project`
@@ -42972,7 +42993,7 @@ function registerKnowledgeCommands(program3) {
       (entry) => `Created knowledge entry: "${entry.title}" (${entry.id})`
     );
   });
-  knowledge.command("update").description("Update an existing knowledge entry").argument("<id>", "Entry UUID").option("--title <title>", "New title").option("--content <content>", "New markdown content").option("--type <type>", "New entry type").option("--status <status>", "New status").option("--tags <tags>", "Comma-separated list of tags (replaces existing tags)").option(
+  knowledge.command("update").description("Update an existing knowledge entry").argument("<id>", "Entry UUID").option("--title <title>", "New title").option("--content <content>", "New markdown content").option("--content-mode <mode>", "replace, prepend_section, or append_section").option("--allow-shrink", "Explicitly permit a destructive shorter replacement").option("--type <type>", "New entry type").option("--status <status>", "New status").option("--tags <tags>", "Comma-separated list of tags (replaces existing tags)").option(
     "--domain <domain>",
     "Domain (repeat for multiple): engineering, operations, data, product, customer, process",
     (v, prev) => [...prev, v],
@@ -42987,6 +43008,8 @@ function registerKnowledgeCommands(program3) {
         entry_id: id,
         new_title: opts.title,
         content: opts.content,
+        content_mode: opts.contentMode,
+        allow_shrink: opts.allowShrink,
         type: opts.type,
         status: opts.status,
         tags,
