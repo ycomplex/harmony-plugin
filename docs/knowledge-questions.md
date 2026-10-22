@@ -4,6 +4,10 @@ A question is an existing specification entry with versioned `madr.question`
 metadata. `question_state` is **open**, **parked**, or **decided**. Acceptance
 acknowledges that the question exists; it does not supply an answer. A question
 never claims that its theme shipped. Its realization stays `agreed`.
+Question writes use the shared portable claim envelope. Pass `--claim` to author
+a one-sentence claim; omitted claims are explicitly derived proposals. Import
+previews carry derived claims and retain their source excerpts. Content edits
+preserve an existing authored claim unless explicitly replaced.
 
 Create a question with explicit scope. Subject domains default to `product`;
 pass `--domain engineering,data` when those are the question’s subjects. Domain

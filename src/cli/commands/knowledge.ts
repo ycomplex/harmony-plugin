@@ -17,6 +17,7 @@ export function registerKnowledgeCommands(program: Command): void {
 
   const questions = knowledge.command('questions').description('Manage unresolved knowledge; question state never implies shipped behaviour');
   questions.command('save').requiredOption('--state <state>', 'open, parked or decided')
+    .option('--claim <claim>', 'Authored one-sentence claim; omitted claims remain derived proposals')
     .option('--id <id>', 'Existing question UUID').option('--expected-updated-at <timestamp>', 'Fresh read timestamp for changes')
     .option('--title <title>').option('--content <content>').option('--scope <scope>', 'product or deployment; required for creates')
     .option('--decision <id>', 'Accepted resulting decision in this project').option('--reopen', 'Explicitly reopen a decided question')
@@ -24,7 +25,7 @@ export function registerKnowledgeCommands(program: Command): void {
     .option('--provenance <value>', 'Declare how this write was authorized')
     .action(async opts => runCommand(program.opts(), ctx => saveKnowledgeQuestion(ctx.client, ctx.projectId, {
       question_id: opts.id, expected_updated_at: opts.expectedUpdatedAt, title: opts.title, content: opts.content,
-      state: opts.state, scope: opts.scope, resulting_decision_id: opts.decision, reopen: opts.reopen,
+      state: opts.state, scope: opts.scope, claim: opts.claim, resulting_decision_id: opts.decision, reopen: opts.reopen,
       domain: opts.domain?.split(',').map((value: string) => value.trim()).filter(Boolean), provenance: opts.provenance,
     }), data => JSON.stringify(data, null, 2)));
   questions.command('preview').argument('<milestone-id>').description('Read-only manifest; review historical themes and mark chosen items approved:true')

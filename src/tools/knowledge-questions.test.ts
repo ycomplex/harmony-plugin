@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { milestoneQuestionPreview, questionProjection, saveKnowledgeQuestion, importKnowledgeQuestions,
   previewKnowledgeQuestions, missingQuestionCapability } from './knowledge-questions.js';
+import { decodeClaim } from './knowledge-claim.js';
 
 beforeEach(() => { delete process.env.HARMONY_CONDUCTION_ID; delete process.env.HARMONY_LEG; });
 const milestone = { id: 'milestone', name: 'Future themes', description: '- QA-1 — multi daemon routing\n- A second theme\n\nMoved out: a shipped feature' };
@@ -23,6 +24,7 @@ describe('reviewed milestone import', () => {
     expect(first.entries).toHaveLength(2);
     expect(first.entries[0]).toMatchObject({ key: 'QA-1', approved: false, state: 'parked', scope: 'product', source_excerpt: '- QA-1 — multi daemon routing' });
     expect(first.entries[0].content).toContain('not evidence of shipped');
+    expect(decodeClaim(first.entries[0].content)).toMatchObject({ claim_source: 'derived' });
     expect(first.warnings[0]).toContain('since been decided');
     expect(second.project_id).toBe('project-b');
     expect(second.entries).toEqual(first.entries);
