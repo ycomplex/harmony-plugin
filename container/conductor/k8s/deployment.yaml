@@ -78,7 +78,7 @@ spec:
               value: us-central1-docker.pkg.dev/harmony-conductor/harmony-workers/harmony-conductor
             # The update channel: prod, or ack:staging. Registry rows and `update` read it.
             - name: HARMONY_PLUGIN_POSTURE
-              value: ack:staging
+              value: prod
             - name: HARMONY_READY_FILE
               value: /tmp/harmony-ready
             # Writable (emptyDir): the project-file snapshot and logs. The ConfigMap is read-only at /etc/harmony.

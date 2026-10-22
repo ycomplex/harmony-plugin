@@ -146,7 +146,7 @@ describe('Deployment harmony-conductor', () => {
     expect(env).toMatchObject({
       HARMONY_CONDUCTOR_REMOTE: '1',
       HARMONY_CONDUCTOR_IMAGE: 'us-central1-docker.pkg.dev/harmony-conductor/harmony-workers/harmony-conductor',
-      HARMONY_PLUGIN_POSTURE: 'ack:staging',
+      HARMONY_PLUGIN_POSTURE: 'prod',
       HARMONY_HOME: '/var/harmony',
       HARMONY_CONDUCTOR_HOST_FILE: '/etc/harmony/conductor-host.json',
     });
@@ -237,5 +237,15 @@ describe('CronJob harmony-sweep', () => {
     expect(c.args[c.args.indexOf('--namespace') + 1]).toBe('harmony-legs');
     expect(existsSync(fileURLToPath(new URL('../../container/gke/sweep-ticket-disks.sh', import.meta.url)))).toBe(true);
     expect(c.workingDir).toBe('/opt/harmony-plugin');
+  });
+});
+
+describe('production defaults for copied deployments', () => {
+  it('keeps the seed project, standalone example and pod posture on production', () => {
+    const config = one('ConfigMap');
+    const seed = JSON.parse(config.data['conductor-project.json']);
+    expect(seed.channel).toBe('prod');
+    const example = JSON.parse(readFileSync(join(dir, '../../conductor.project.example.json'), 'utf8'));
+    expect(example.channel).toBe('prod');
   });
 });

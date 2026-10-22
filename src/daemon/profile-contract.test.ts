@@ -1,3 +1,4 @@
+import { channelEnv } from './fixtures/channel-env.js';
 // B-696 cross-file drift guard: the shipped launch-profile template must speak the container
 // ENTRYPOINT's mode contract. provision.sh dispatches on its FIRST argument (`shell | headless
 // <prompt>`), so the token right after the image name in the launch template MUST be one of
@@ -2247,6 +2248,11 @@ describe.skipIf(!SUBPROCESS_CAPABLE)('cloud-worker-launch.sh + cloud-worker-reap
       return readFileSync(outFile, 'utf8');
     }
 
+    it('a staging project explicitly reaches the Cloud Run worker env through config and mint', () => {
+      const output = runWriteExecEnvFile(channelEnv('cloud'));
+      expect(output).toContain('HARMONY_PLUGIN_POSTURE: "ack:staging"');
+    });
+
     it('produces HARMONY_PLUGIN_POSTURE: "ack:main" in the output YAML when the fixture minted env-file carries the posture', () => {
       const output = runWriteExecEnvFile(
         ['GIT_TOKEN=ghs_dummytoken', 'HARMONY_PLUGIN_POSTURE=ack:main', ''].join('\n'),
@@ -2704,11 +2710,20 @@ describe.skipIf(!SUBPROCESS_CAPABLE)('entrypoint.sh: nested workspace-mirror clo
     // B-814: this used to be two flat top-level lines; it is now the shared plugin_ref_from_posture()
     // helper (also used by the repos[] branch's is_plugin entry, see below) called from the fallback.
     expect(script).toMatch(/^plugin_ref_from_posture\(\) \{$/m);
-    // B-1007: the default moved main -> staging (main is source-only; a worker must clone a ref
-    // that carries a built dist/). The ack:-stripping shape is unchanged.
-    expect(script).toMatch(/local posture="\$\{HARMONY_PLUGIN_POSTURE:-staging\}"/);
+    // B-1222: production is the default; explicit acknowledged staging remains supported.
+    expect(script).toMatch(/local posture="\$\{HARMONY_PLUGIN_POSTURE:-prod\}"/);
     expect(script).toMatch(/printf '%s' "\$\{posture#ack:\}"/);
     expect(script).toMatch(/^export PLUGIN_REF="\$\(plugin_ref_from_posture\)"$/m);
+  });
+
+  it('executes the entrypoint ref selector with unset and explicit staging postures', () => {
+    const start = script.indexOf('plugin_ref_from_posture() {');
+    const end = script.indexOf('\n}', start);
+    const fn = script.slice(start, end + 2);
+    const env = { ...process.env };
+    delete env.HARMONY_PLUGIN_POSTURE;
+    expect(execFileSync('bash', ['-c', fn + '\nplugin_ref_from_posture'], { env, encoding: 'utf8' })).toBe('prod');
+    expect(execFileSync('bash', ['-c', fn + '\nplugin_ref_from_posture'], { env: { ...env, HARMONY_PLUGIN_POSTURE: 'ack:staging' }, encoding: 'utf8' })).toBe('staging');
   });
 
   it('hands off to provision.sh at its new nested location', () => {
@@ -3071,7 +3086,7 @@ describe('provision.sh: HARMONY_PLUGIN_POSTURE parsing + ref/target fidelity fai
   const script = readFileSync(provisionPath, 'utf8');
 
   it('parses HARMONY_PLUGIN_POSTURE into {ref, acked} ONCE, via a case statement on the ack: prefix', () => {
-    expect(script).toContain('PLUGIN_POSTURE="${HARMONY_PLUGIN_POSTURE:-staging}"');
+    expect(script).toContain('PLUGIN_POSTURE="${HARMONY_PLUGIN_POSTURE:-prod}"');
     expect(script).toMatch(/case "\$PLUGIN_POSTURE" in/);
     expect(script).toMatch(/ack:\*\)/);
     expect(script).toMatch(/PLUGIN_REF="\$\{PLUGIN_POSTURE#ack:\}"/);
@@ -3123,7 +3138,7 @@ describe.skipIf(!SUBPROCESS_CAPABLE)('provision.sh: EXECUTED HARMONY_PLUGIN_POST
 
   /** Extract the real parsing block (assignment through the closing `esac`), verbatim. */
   function extractParsingBlock(): string {
-    const at = script.indexOf('PLUGIN_POSTURE="${HARMONY_PLUGIN_POSTURE:-staging}"');
+    const at = script.indexOf('PLUGIN_POSTURE="${HARMONY_PLUGIN_POSTURE:-prod}"');
     expect(at).toBeGreaterThanOrEqual(0);
     const end = script.indexOf('esac', at);
     expect(end).toBeGreaterThan(at);
@@ -3166,8 +3181,8 @@ describe.skipIf(!SUBPROCESS_CAPABLE)('provision.sh: EXECUTED HARMONY_PLUGIN_POST
     expect(runParse('main')).toEqual({ ref: 'main', acked: '0' });
   });
 
-  it('unset HARMONY_PLUGIN_POSTURE defaults to ref=staging, unacknowledged (B-1007: the CI-generated branch — the only non-prod ref carrying a built dist/)', () => {
-    expect(runParse(undefined)).toEqual({ ref: 'staging', acked: '0' });
+  it('unset HARMONY_PLUGIN_POSTURE defaults to production (B-1222)', () => {
+    expect(runParse(undefined)).toEqual({ ref: 'prod', acked: '0' });
   });
 
   // B-1007: the new default ref, in both postures.
@@ -3181,19 +3196,14 @@ describe.skipIf(!SUBPROCESS_CAPABLE)('provision.sh: EXECUTED HARMONY_PLUGIN_POST
 });
 
 // ------------------------------------------------------------------------------------------------
-// B-1007: the cloud-worker posture default moved from `main` to `staging` (main is SOURCE ONLY —
-// provision.sh shims the CLI off the COMMITTED dist before any agent exists to run `npm ci`, so a
-// dist-less ref cannot boot a worker). That is a RENAME OF THE DEFAULT ONLY. The block below
-// EXECUTES provision.sh's real ahead-of-prod guard — extracted verbatim, never retyped — to prove
-// the B-383 invariant still fails closed exactly as before: an UNACKED non-prod ref (the new
-// default included) still refuses a prod-target headless run, and only an explicit `ack:` passes.
-
-describe.skipIf(!SUBPROCESS_CAPABLE)('provision.sh: B-383 ahead-of-prod guard UNCHANGED by the B-1007 default rename (EXECUTED)', () => {
+// B-1222: production is now the unset default. The ahead-of-prod guard still
+// rejects explicit unacknowledged non-prod refs and accepts acknowledged staging.
+describe.skipIf(!SUBPROCESS_CAPABLE)('provision.sh: B-383 ahead-of-prod guard with the production default (EXECUTED)', () => {
   const script = readFileSync(provisionPath, 'utf8');
 
   /** The posture PARSING block (assignment through its closing `esac`), verbatim. */
   function parsingBlock(): string {
-    const at = script.indexOf('PLUGIN_POSTURE="${HARMONY_PLUGIN_POSTURE:-staging}"');
+    const at = script.indexOf('PLUGIN_POSTURE="${HARMONY_PLUGIN_POSTURE:-prod}"');
     expect(at).toBeGreaterThanOrEqual(0);
     const end = script.indexOf('esac', at);
     expect(end).toBeGreaterThan(at);
@@ -3239,11 +3249,8 @@ describe.skipIf(!SUBPROCESS_CAPABLE)('provision.sh: B-383 ahead-of-prod guard UN
     }
   }
 
-  it('prod target + the NEW unset default (staging, unacked) still REFUSES — the guard did not loosen', () => {
-    const result = runGuard('prod', undefined);
-    expect(result.code).toBe(1);
-    expect(result.stderr).toContain('Refusing to start');
-    expect(result.stderr).toContain('B-383');
+  it('prod target + unset posture uses production without an acknowledgment', () => {
+    expect(runGuard('prod', undefined).code).toBe(0);
   });
 
   it('prod target + a bare "staging" (unacked) still REFUSES', () => {

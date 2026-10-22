@@ -17,6 +17,8 @@ import {
   resetConductorWarningDedupe,
   resolveConfigRepo,
   validateProjectFileText,
+  validateMerged,
+  type ConductorConfig,
   type ConductorLoadOptions,
 } from './conductor-config.js';
 import type { DeploymentConfig } from './deployment-config.js';
@@ -712,5 +714,14 @@ describe('B-1183 project-file keys: projection into the merged DeploymentConfig'
   it('project < host: a host override of target wins', () => {
     const r = load({ [P.project]: { ...full, target: 'custom' }, [P.host]: { ...host, target: 'custom', supabase_url: 'https://host' } }, { HARMONY_CONDUCTOR_PROJECT_FILE: P.project, HARMONY_APP_PRIVATE_KEY: 'k' });
     expect(r?.deploymentConfig.env?.HARMONY_SUPABASE_URL).toBe('https://host');
+  });
+});
+
+// B-1222: the missing-channel hint must lead new operators toward production.
+describe('production-first guidance', () => {
+  it('suggests prod before the opt-in staging channel', () => {
+    const issue = validateMerged({ version: 1 } as ConductorConfig).find((i) => i.key === 'channel');
+    expect(issue?.fix).toContain('add "channel": "prod"');
+    expect(issue?.fix).toContain('staging');
   });
 });

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "channel": "staging",
+  "channel": "prod",
   "profile": "gke",
   "gcp": { "project": "my-gcp-project", "region": "us-east1" },
   "gke": {
