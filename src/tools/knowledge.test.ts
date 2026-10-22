@@ -25,6 +25,13 @@ import {
   queryFacts,
 } from './knowledge.js';
 
+// Existing knowledge tests isolate their original read/write contracts; the new RPC boundary is
+// exercised with real handlers in knowledge-invalidations.integration.test.ts.
+vi.mock('./knowledge-invalidations.js', async importOriginal => ({
+  ...await importOriginal<typeof import('./knowledge-invalidations.js')>(),
+  withInvalidations: async (_client: unknown, entries: unknown[]) => entries,
+}));
+
 const PROJECT_ID = 'proj-abc-123';
 const WORKSPACE_ID = 'ws-xyz-456';
 const USER_ID = 'user-abc-123';

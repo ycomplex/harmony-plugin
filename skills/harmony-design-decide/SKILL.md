@@ -502,3 +502,23 @@ multi-clause Accepted decision, especially on a Verified ticket) → `update_kno
 "REVISED by <ticket>" banner and **keep status Accepted** (no Stale cascade onto dependents). If it **retires**
 the governing decision wholesale → `supersede_decision`. Present amend-in-place vs supersede as the human's
 explicit choice. The full reconciliation recipe lives in `harmony-stale-patch` §3 (b460 / b581 / `f80ce0f6`).
+
+
+## Removal declarations (B-1231)
+
+When a design removes a mechanism, check or guarantee, author `doc.removes` as one
+`{ claim: "what is removed", invalidates: ["affected knowledge-entry UUID", ...] }` per removal.
+Read the affected entries first. Every removal names at least one existing entry in the same project;
+self-links, missing targets and empty lists are rejected at acceptance in both browser and agent routes.
+No removals: omit the field or use `[]`; existing briefs retain their behavior.
+
+The brief displays these declarations before acceptance. Acceptance records durable invalidator links
+and flags the old entries as “removal agreed, not yet effective”. Only the invalidator's explicit
+`rollout_state: live` on the environment of record retires them automatically. `Verified`, decision
+acceptance and `realization` never stand in for production cutover. Missing rollout support stays
+pending and is reported. Before the enforcement migration is available, removal writes fail visibly.
+
+For a policy-only removal with nothing to deploy, a HUMAN may explicitly choose
+`removal_policy_only: true` plus `removal_effective_on_accept: true` on the brief. This writes the same
+live rollout state at acceptance; the default is false. An agent-synthesized acceptance cannot make
+that choice. Clause amendments remain the separate B-1138 contract; preserve affected entry prose.

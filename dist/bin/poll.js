@@ -30727,6 +30727,17 @@ function encodeClaim(content, claim, source = "authored") {
 ${stripClaim(content)}`;
 }
 
+// src/tools/knowledge-invalidations.ts
+function removalLines(doc) {
+  if (!doc.removes?.length) return [];
+  return [
+    "**Removals and affected knowledge:**",
+    ...doc.removes.map((removal) => `- ${removal.claim} \u2014 invalidates: ${removal.invalidates.join(", ")}`),
+    doc.removal_effective_on_accept ? "Explicit policy cutover: this human acceptance marks the removal live and retires affected entries." : "Removal agreed, not yet effective until the invalidator rollout state is live.",
+    ""
+  ];
+}
+
 // src/tools/knowledge-bookkeeping.ts
 var BOOKKEEPING_TAG = "harmony:bookkeeping";
 var SUBSTANTIVE_TAG_FILTER = `tags.is.null,tags.not.cs.{${BOOKKEEPING_TAG}}`;
@@ -31772,6 +31783,7 @@ function renderBrief(doc, decisionRef, ctx) {
     if (recommend) out.push(recommend, "");
   }
   if (frame && frame.kind !== "clarify" && frame.kind !== "release") out.push(...renderFrame(frame), "");
+  out.push(...removalLines(doc));
   if (ctx) {
     if (ctx.accept) {
       out.push(
@@ -31875,6 +31887,7 @@ function renderEntry(doc, ctx) {
   }
   const changes = revisionLines(doc);
   if (changes.length) out.push("**Changed in the final round:**", ...markAll(changes), "");
+  out.push(...markAll(removalLines(doc)));
   const body = out.join("\n").trimEnd();
   return doc.claim ? encodeClaim(body, doc.claim, doc.claim_source ?? "authored") : body;
 }
@@ -31913,6 +31926,9 @@ var composeBriefTool = {
             }
           },
           research: { type: "array", items: { type: "string" }, description: "Research prompts \u2014 required + surfaced up front when load_bearing_gap, never buried" },
+          removes: { type: "array", items: { type: "object", required: ["claim", "invalidates"], properties: { claim: { type: "string" }, invalidates: { type: "array", minItems: 1, items: { type: "string" } } } }, description: "Design-only removals: name every falsified knowledge-entry UUID. Enforced at acceptance." },
+          removal_policy_only: { type: "boolean", description: "True only for a policy removal with nothing to deploy." },
+          removal_effective_on_accept: { type: "boolean", description: "Explicit HUMAN policy cutover choice; defaults false, never auto-approved." },
           load_bearing_gap: { type: "boolean", description: "true when a load-bearing knowledge gap blocks a substantive decision (forces research-first)" },
           tail: { type: "string", description: "Optional custom command tail line; defaults to the standard one" },
           frame: {

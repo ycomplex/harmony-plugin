@@ -1,4 +1,5 @@
 import { encodeClaim, isSingleSentenceShaped, proposeClaim } from './knowledge-claim.js';
+import { validateRemovals, requireRemovalCapability, removalLines, type RemovalDeclaration } from './knowledge-invalidations.js';
 // P3: Brief substrate + command set (gate-ui-conductor §3, §4). The structured doc is canonical; the
 // Markdown blob is DERIVED by renderBrief(). The §3.2 disciplines are a mechanical lint over the same
 // canonical doc — so what's checked is exactly what's rendered.
@@ -305,6 +306,9 @@ export interface BriefDoc {
   claim?: string;
   /** Mechanical provenance of a compatibility proposal; explicit claim authorship resets it. */
   claim_source?: 'authored' | 'derived';
+  removes?: RemovalDeclaration[];
+  removal_policy_only?: boolean;
+  removal_effective_on_accept?: boolean;
   decide: string;
   recommend?: { text: string; confidence?: 'high' | 'medium' | 'low'; cede?: boolean };
   why?: string[];
@@ -1021,6 +1025,8 @@ export function renderBrief(doc: BriefDoc, decisionRef?: DecisionRef | null, ctx
   // revision block (which sits directly under On-accept) can never float above the frame.
   if (frame && frame.kind !== 'clarify' && frame.kind !== 'release') out.push(...renderFrame(frame), '');
 
+  out.push(...removalLines(doc));
+
   // B-874 — the spine line: what accepting this brief DOES to the ticket, stated in the brief itself.
   // It sits directly under the recommendation and above the reasoning, because it is the consequence the
   // human is actually ratifying. Only emitted when the caller supplied compose-time context: a 1-/2-arg
@@ -1254,6 +1260,7 @@ export function renderEntry(doc: BriefDoc, ctx?: EntryRenderContext): string {
   const changes = revisionLines(doc);
   if (changes.length) out.push('**Changed in the final round:**', ...markAll(changes), '');
 
+  out.push(...markAll(removalLines(doc)));
   const body = out.join('\n').trimEnd();
   return doc.claim ? encodeClaim(body, doc.claim, doc.claim_source ?? 'authored') : body;
 }
@@ -2794,6 +2801,8 @@ export async function composeBrief(
     mergedDoc.claim = claim?.trim().replace(/\s+/g, ' ');
     mergedDoc.claim_source = explicit !== undefined || inherited ? 'authored' : 'derived';
   }
+  validateRemovals(mergedDoc, args.reason);
+  await requireRemovalCapability(client, mergedDoc);
   // B-1158: refuse malformed supplied/inherited frames before any derivation can render or persist them.
   validateBriefFrame(mergedDoc.frame, FRAME_KIND_FOR_REASON[args.reason]);
   // The prior round's diff-derived classes, and ONLY on the revision path — `undefined` on a first
@@ -3259,6 +3268,9 @@ export const composeBriefTool = {
             },
           },
           research: { type: 'array', items: { type: 'string' }, description: 'Research prompts — required + surfaced up front when load_bearing_gap, never buried' },
+          removes: { type: 'array', items: { type: 'object', required: ['claim', 'invalidates'], properties: { claim: { type: 'string' }, invalidates: { type: 'array', minItems: 1, items: { type: 'string' } } } }, description: 'Design-only removals: name every falsified knowledge-entry UUID. Enforced at acceptance.' },
+          removal_policy_only: { type: 'boolean', description: 'True only for a policy removal with nothing to deploy.' },
+          removal_effective_on_accept: { type: 'boolean', description: 'Explicit HUMAN policy cutover choice; defaults false, never auto-approved.' },
           load_bearing_gap: { type: 'boolean', description: 'true when a load-bearing knowledge gap blocks a substantive decision (forces research-first)' },
           tail: { type: 'string', description: 'Optional custom command tail line; defaults to the standard one' },
           frame: {
@@ -3987,7 +3999,7 @@ export async function resolveBrief(
   const taskId = await resolveTaskId(client, projectId, args.task_id);
   // Unique-lookup guard (partial unique index): exactly one active brief, or none.
   const { data: active, error: lookupErr } = await client
-    .from('briefs').select('id')
+    .from('briefs').select('id, doc')
     .eq('task_id', taskId).eq('status', 'active').maybeSingle();
   if (lookupErr) throw new Error(lookupErr.message);
 
@@ -4020,6 +4032,14 @@ export async function resolveBrief(
       }
     }
     throw new Error(`no active brief for task ${args.task_id}`);
+  }
+
+  if (args.command === 'accept') {
+    const doc = (active as { doc?: BriefDoc }).doc ?? {};
+    await requireRemovalCapability(client, doc);
+    if ('removal_effective_on_accept' in doc && doc.removal_effective_on_accept && provenance.startsWith('agent-synthesized')) {
+      throw new Error('policy removal effectivity requires an explicit human accept');
+    }
   }
 
   const rpcArgs = {

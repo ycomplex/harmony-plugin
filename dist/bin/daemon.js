@@ -22777,6 +22777,62 @@ function projectSupersession(entries, edges) {
   return output;
 }
 
+// src/tools/knowledge-invalidations.ts
+function validateRemovals(doc, reason) {
+  for (const field of ["removal_policy_only", "removal_effective_on_accept"]) {
+    if (doc[field] !== void 0 && typeof doc[field] !== "boolean") throw new Error(`${field} must be boolean`);
+  }
+  if (doc.removal_effective_on_accept === true && (doc.removal_policy_only !== true || !Array.isArray(doc.removes) || !doc.removes.length)) {
+    throw new Error("effective-on-accept requires a policy-only removal declaration");
+  }
+  if (doc.removes === void 0) return;
+  if (!Array.isArray(doc.removes)) throw new Error("removes must be an array");
+  if (doc.removes.length && reason && reason !== "design-decision-draft") throw new Error("removes requires a design decision");
+  for (const removal of doc.removes) {
+    if (!removal || typeof removal.claim !== "string" || !removal.claim.trim() || !Array.isArray(removal.invalidates) || !removal.invalidates.length || !removal.invalidates.every((id) => typeof id === "string" && /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id))) {
+      throw new Error("each removal needs a claim and nonempty invalidates knowledge-entry UUIDs");
+    }
+  }
+}
+async function readInvalidations(client, ids) {
+  const { data, error } = await client.rpc("read_knowledge_invalidations", { p_entry_ids: ids });
+  if (error) {
+    if (error.code === "PGRST202" || error.code === "42883") {
+      return { available: false, rollout_available: false, links: [] };
+    }
+    throw new Error(`Cannot read removal invalidations: ${error.message}`);
+  }
+  if (!data || data.available !== true || !Array.isArray(data.links)) {
+    throw new Error("Invalid removal capability response");
+  }
+  return data;
+}
+async function requireRemovalCapability(client, doc) {
+  validateRemovals(doc);
+  if (!doc.removes?.length) return;
+  const capability = await readInvalidations(client, []);
+  if (!capability.available) throw new Error("Removal enforcement capability unavailable: deploy the web migration before composing or accepting removals");
+}
+async function withInvalidations(client, entries) {
+  if (!entries.length) return entries;
+  const read = await readInvalidations(client, entries.map((entry) => entry.id));
+  return entries.map((entry) => ({
+    ...entry,
+    invalidations_available: read.available,
+    invalidation_rollout_available: read.rollout_available,
+    invalidations: read.links.filter((link) => link.affected_id === entry.id)
+  }));
+}
+function removalLines(doc) {
+  if (!doc.removes?.length) return [];
+  return [
+    "**Removals and affected knowledge:**",
+    ...doc.removes.map((removal) => `- ${removal.claim} \u2014 invalidates: ${removal.invalidates.join(", ")}`),
+    doc.removal_effective_on_accept ? "Explicit policy cutover: this human acceptance marks the removal live and retires affected entries." : "Removal agreed, not yet effective until the invalidator rollout state is live.",
+    ""
+  ];
+}
+
 // src/tools/knowledge-bookkeeping.ts
 var BOOKKEEPING_TAG = "harmony:bookkeeping";
 function bookkeepingTags(tags = []) {
@@ -22963,7 +23019,7 @@ async function queryKnowledge(client, projectId, args) {
       updated_at: d.updated_at
     }));
     if (!matches.length) return [];
-    return hydrateSupersession(client, workspaceId, projectId, matches);
+    return withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, matches));
   }
   const rows = await bookkeepingPage(({ bookkeeping, offset, limit, count }) => {
     let query = client.from("knowledge_decisions").select("*", count ? { count: "exact" } : {}).eq("workspace_id", workspaceId).eq("project_id", projectId);
@@ -22976,7 +23032,7 @@ async function queryKnowledge(client, projectId, args) {
     query = bookkeeping ? query.contains("tags", [BOOKKEEPING_TAG]) : query.or(SUBSTANTIVE_TAG_FILTER);
     return query.order("type", { ascending: true }).order("id", { ascending: true }).range(offset, offset + limit - 1);
   }, args);
-  return hydrateSupersession(client, workspaceId, projectId, rows.map((d) => ({ id: d.id, title: d.title, type: d.type, status: d.status, domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d) })));
+  return withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, rows.map((d) => ({ id: d.id, title: d.title, type: d.type, status: d.status, domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d) }))));
 }
 async function hydrateSupersession(client, workspaceId, projectId, rows) {
   const edges = [];
@@ -33372,6 +33428,7 @@ function renderBrief(doc, decisionRef, ctx) {
     if (recommend) out.push(recommend, "");
   }
   if (frame && frame.kind !== "clarify" && frame.kind !== "release") out.push(...renderFrame(frame), "");
+  out.push(...removalLines(doc));
   if (ctx) {
     if (ctx.accept) {
       out.push(
@@ -33475,6 +33532,7 @@ function renderEntry(doc, ctx) {
   }
   const changes = revisionLines(doc);
   if (changes.length) out.push("**Changed in the final round:**", ...markAll(changes), "");
+  out.push(...markAll(removalLines(doc)));
   const body = out.join("\n").trimEnd();
   return doc.claim ? encodeClaim(body, doc.claim, doc.claim_source ?? "authored") : body;
 }
@@ -34154,6 +34212,8 @@ async function composeBrief(client, projectId, userId, args) {
     mergedDoc.claim = claim?.trim().replace(/\s+/g, " ");
     mergedDoc.claim_source = explicit !== void 0 || inherited ? "authored" : "derived";
   }
+  validateRemovals(mergedDoc, args.reason);
+  await requireRemovalCapability(client, mergedDoc);
   validateBriefFrame(mergedDoc.frame, FRAME_KIND_FOR_REASON[args.reason]);
   const priorRiskClasses = priorDoc?.frame?.kind === "release" ? priorDoc.frame.risk_classes : void 0;
   const pendingActivity = typeof args.pending_activity === "string" && args.pending_activity.trim().toLowerCase() === "null" ? null : args.pending_activity;
@@ -34407,6 +34467,9 @@ var composeBriefTool = {
             }
           },
           research: { type: "array", items: { type: "string" }, description: "Research prompts \u2014 required + surfaced up front when load_bearing_gap, never buried" },
+          removes: { type: "array", items: { type: "object", required: ["claim", "invalidates"], properties: { claim: { type: "string" }, invalidates: { type: "array", minItems: 1, items: { type: "string" } } } }, description: "Design-only removals: name every falsified knowledge-entry UUID. Enforced at acceptance." },
+          removal_policy_only: { type: "boolean", description: "True only for a policy removal with nothing to deploy." },
+          removal_effective_on_accept: { type: "boolean", description: "Explicit HUMAN policy cutover choice; defaults false, never auto-approved." },
           load_bearing_gap: { type: "boolean", description: "true when a load-bearing knowledge gap blocks a substantive decision (forces research-first)" },
           tail: { type: "string", description: "Optional custom command tail line; defaults to the standard one" },
           frame: {
@@ -34621,7 +34684,7 @@ async function resolveBrief(client, projectId, args) {
     );
   }
   const taskId = await resolveTaskId(client, projectId, args.task_id);
-  const { data: active, error: lookupErr } = await client.from("briefs").select("id").eq("task_id", taskId).eq("status", "active").maybeSingle();
+  const { data: active, error: lookupErr } = await client.from("briefs").select("id, doc").eq("task_id", taskId).eq("status", "active").maybeSingle();
   if (lookupErr) throw new Error(lookupErr.message);
   if (!active) {
     if (args.command === "accept") {
@@ -34635,6 +34698,13 @@ async function resolveBrief(client, projectId, args) {
       }
     }
     throw new Error(`no active brief for task ${args.task_id}`);
+  }
+  if (args.command === "accept") {
+    const doc = active.doc ?? {};
+    await requireRemovalCapability(client, doc);
+    if ("removal_effective_on_accept" in doc && doc.removal_effective_on_accept && provenance.startsWith("agent-synthesized")) {
+      throw new Error("policy removal effectivity requires an explicit human accept");
+    }
   }
   const rpcArgs = {
     _brief_id: active.id,
