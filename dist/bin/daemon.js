@@ -3983,8 +3983,8 @@ var require_RealtimeChannel = __commonJS({
       }
       /** @internal */
       _notThisChannelEvent(event, ref) {
-        const { close, error, leave, join: join6 } = constants_1.CHANNEL_EVENTS;
-        const events2 = [close, error, leave, join6];
+        const { close, error, leave, join: join7 } = constants_1.CHANNEL_EVENTS;
+        const events2 = [close, error, leave, join7];
         return ref && events2.includes(event) && ref !== this.joinPush.ref;
       }
       /** @internal */
@@ -22745,6 +22745,77 @@ async function resolveTaskIds(client, projectId, inputs) {
   return classified.map((c) => c.kind === "uuid" ? c.id : idByNumber.get(c.taskNumber));
 }
 
+// src/tools/knowledge-metadata.ts
+import { existsSync as existsSync2, readFileSync as readFileSync3 } from "node:fs";
+import { basename as basename2, dirname as dirname2, join as join4 } from "node:path";
+async function metadataCapable(client) {
+  const { data, error } = await client.rpc("knowledge_metadata_capable");
+  if (error) {
+    if (["PGRST202", "42883"].includes(error.code)) return false;
+    throw new Error(error.message);
+  }
+  if (data === true || data === false) return data;
+  throw new Error(
+    "Invalid knowledge metadata capability response; legacy fallback refused."
+  );
+}
+async function metadataRpc(client, operation, scope, args) {
+  const capable = await metadataCapable(client);
+  if (scope !== void 0 && !["product", "deployment"].includes(scope))
+    throw new Error("scope must be product or deployment");
+  if (scope !== void 0 && !capable)
+    throw new Error(
+      "Knowledge scope unavailable until the schema is promoted; nothing was saved."
+    );
+  if (capable && (operation === "knowledge_record_decision" || operation === "knowledge_supersede_knowledge_entry" || operation === "knowledge_supersede_decision" && args.p_type) && !scope)
+    throw new Error(
+      "New knowledge requires product or deployment scope. Separate mixed claims."
+    );
+  const result = await client.rpc(
+    capable ? `${operation}_metadata` : operation,
+    { ...args, ...capable ? { p_scope: scope ?? null } : {} }
+  );
+  if (result.error?.details)
+    result.error.message += `
+${result.error.details}`;
+  return result;
+}
+function surfaceTags(paths) {
+  return [
+    ...new Set(
+      paths.map((path2) => path2.replace(/^\.\//, "")).filter(
+        (path2) => /^[A-Za-z0-9_.-]+\//.test(path2) && !path2.split("/").some((part) => part === ".." || part === "")
+      ).map((path2) => `surface:${path2.slice(0, path2.lastIndexOf("/"))}`)
+    )
+  ].sort();
+}
+function repositoryPrefix(repo) {
+  let directory = process.cwd();
+  for (; ; ) {
+    const file = join4(directory, ".harmony", "conductor.json");
+    if (existsSync2(file)) {
+      const config = JSON.parse(readFileSync3(file, "utf8"));
+      const match = (config.repos ?? []).find((item) => {
+        const name = String(item.url ?? "").replace(/\.git$/, "").replace(/^.*github\.com[/:]/, "");
+        return name === repo || name.split("/").pop() === repo;
+      });
+      if (match) {
+        const prefix2 = basename2(match.path);
+        if (!/^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(prefix2))
+          throw new Error("Invalid declared repository directory");
+        return prefix2;
+      }
+    }
+    const parent = dirname2(directory);
+    if (parent === directory) break;
+    directory = parent;
+  }
+  const prefix = repo.split("/").pop();
+  if (!/^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(prefix))
+    throw new Error("Invalid repository prefix");
+  return prefix;
+}
+
 // src/tools/provenance.ts
 var PROVENANCE_HUMAN_IN_SESSION = "human-in-session";
 var PROVENANCE_AGENT_SYNTHESIZED = "agent-synthesized";
@@ -23021,6 +23092,10 @@ async function embedText(client, text) {
 }
 async function queryKnowledge(client, projectId, args) {
   const workspaceId = await getWorkspaceId(client, projectId);
+  if (args.scope !== void 0) {
+    if (!["product", "deployment"].includes(args.scope)) throw new Error("scope must be product or deployment");
+    if (!await metadataCapable(client)) throw new Error("Scope filtering unavailable until the schema is promoted; no unfiltered results returned.");
+  }
   if (args.definitions_only && (args.type || args.status || args.tags?.length || args.as_of || args.include_superseded)) {
     throw new Error("definitions_only supports search, domain, limit and offset; ordinary decision filters are not definition filters");
   }
@@ -23044,7 +23119,7 @@ async function queryKnowledge(client, projectId, args) {
     if (!definitions.available) throw new Error("Definitions are not available in this environment yet.");
     return definitions.definitions;
   }
-  const includeDefinitions = !args.type && !args.status && !args.tags?.length && !args.as_of && !args.include_superseded;
+  const includeDefinitions = !args.type && !args.status && !args.tags?.length && !args.as_of && !args.include_superseded && args.scope !== "deployment";
   const prepend = async (entries) => {
     if (!includeDefinitions) return entries;
     const ids = args.search ? [...new Set(definitions.definitions.flatMap((d) => d.refinements.map((r) => r.id)))] : [];
@@ -23077,7 +23152,8 @@ async function queryKnowledge(client, projectId, args) {
   if (args.search) {
     const queryEmbedding = await embedText(client, args.search);
     const data = await bookkeepingPage(({ bookkeeping, offset, limit, count }) => truthCompatibleRead((extraColumns) => {
-      let query = client.rpc("knowledge_search_rrf", {
+      let query = client.rpc(args.scope ? "knowledge_search_rrf_metadata" : "knowledge_search_rrf", {
+        ...args.scope ? { _scope: args.scope } : {},
         _workspace_id: workspaceId,
         _project_id: projectId,
         _query_embedding: queryEmbedding,
@@ -23093,6 +23169,7 @@ async function queryKnowledge(client, projectId, args) {
       title: d.title,
       type: d.type,
       status: d.status,
+      ...d.scope !== void 0 ? { scope: d.scope } : {},
       ...claimFields(d),
       snippet: matchedPassage(d.content ?? "", args.search),
       domain: d.domain,
@@ -23108,6 +23185,7 @@ async function queryKnowledge(client, projectId, args) {
   }
   const rows = await bookkeepingPage(({ bookkeeping, offset, limit, count }) => {
     let query = client.from("knowledge_decisions").select("*", count ? { count: "exact" } : {}).eq("workspace_id", workspaceId).eq("project_id", projectId);
+    if (args.scope) query = query.eq("scope", args.scope);
     if (args.status) query = query.eq("status", args.status);
     else if (!args.include_superseded) query = query.eq("status", "Accepted");
     if (args.type) query = query.eq("type", args.type);
@@ -23117,7 +23195,7 @@ async function queryKnowledge(client, projectId, args) {
     query = bookkeeping ? query.contains("tags", [BOOKKEEPING_TAG]) : query.or(SUBSTANTIVE_TAG_FILTER);
     return query.order("type", { ascending: true }).order("id", { ascending: true }).range(offset, offset + limit - 1);
   }, decisionArgs);
-  return prepend(await withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, rows.map((d) => ({ id: d.id, title: d.title, type: d.type, status: d.status, domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d), verified_against: d.verified_against ?? null, rollout_state: d.rollout_state ?? null, open_steps: d.open_steps ?? null })))));
+  return prepend(await withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, rows.map((d) => ({ id: d.id, title: d.title, type: d.type, status: d.status, ...d.scope !== void 0 ? { scope: d.scope } : {}, domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d), verified_against: d.verified_against ?? null, rollout_state: d.rollout_state ?? null, open_steps: d.open_steps ?? null })))));
 }
 async function hydrateSupersession(client, workspaceId, projectId, rows) {
   const edges = [];
@@ -23191,7 +23269,7 @@ ${content}`);
     realization = "agreed";
   }
   guardKnowledgeWriteProvenance(args.provenance);
-  const { data, error } = await client.rpc("knowledge_record_decision", {
+  const { data, error } = await metadataRpc(client, "knowledge_record_decision", args.scope, {
     p_project_id: projectId,
     p_title: title,
     p_type: args.type,
@@ -23820,10 +23898,10 @@ async function resolveModelCatalog(client) {
 }
 
 // src/bin/daemon.ts
-import { existsSync as existsSync3, readFileSync as readFileSync6, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "node:fs";
+import { existsSync as existsSync4, readFileSync as readFileSync7, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "node:fs";
 import { exec, spawn } from "node:child_process";
 import { hostname } from "node:os";
-import { dirname as dirname4, join as join5 } from "node:path";
+import { dirname as dirname5, join as join6 } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 import { randomUUID } from "node:crypto";
 
@@ -32279,10 +32357,16 @@ ${result.error.issues.map((issue) => `- doc.frame${issue.path.map((p) => typeof 
 
 // src/tools/build-settlement.ts
 async function settlementWarning(client, projectId, doc, changedPaths) {
-  if (doc.frame?.kind !== "release" || doc.frame.settled_beyond_design?.length !== 0) return;
-  const tags = [...new Set((changedPaths ?? []).filter(Boolean).map((path2) => `surface:${path2.replace(/^\.\//, "")}`))];
-  if (!tags.length) return;
+  if (doc.frame?.kind !== "release" || doc.frame.settled_beyond_design?.length !== 0)
+    return;
   try {
+    const repos = doc.frame.act?.repos ?? [];
+    const prefix = repos.length === 1 ? repositoryPrefix(repos[0]) : void 0;
+    const paths = (changedPaths ?? []).map(
+      (path2) => /^[^/]+\//.test(path2.replace(/^\.\//, "")) && (path2.startsWith(`${prefix}/`) || repos.length !== 1) || !prefix ? path2 : `${prefix}/${path2.replace(/^\.\//, "")}`
+    );
+    const tags = surfaceTags(paths);
+    if (!tags.length) return;
     const workspaceId = await getWorkspaceId(client, projectId);
     const { data, error } = await client.from("knowledge_decisions").select("id, title, tags").eq("workspace_id", workspaceId).eq("project_id", projectId).eq("status", "Accepted").overlaps("tags", tags).limit(20);
     if (error) throw error;
@@ -32535,8 +32619,8 @@ function basenameOf(path2) {
   const idx = path2.lastIndexOf("/");
   return idx === -1 ? path2 : path2.slice(idx + 1);
 }
-function tokenizeBasename(basename2) {
-  const spaced = basename2.replace(/([a-zA-Z])([0-9])/g, "$1 $2").replace(/([0-9])([a-zA-Z])/g, "$1 $2").replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[-_.]+/g, " ");
+function tokenizeBasename(basename3) {
+  const spaced = basename3.replace(/([a-zA-Z])([0-9])/g, "$1 $2").replace(/([0-9])([a-zA-Z])/g, "$1 $2").replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[-_.]+/g, " ");
   return spaced.split(/\s+/).filter((t) => t.length > 0);
 }
 function authBasenameHit(path2) {
@@ -32833,7 +32917,7 @@ function firstToken(command) {
 function looksLikeScriptPath(token) {
   return token.includes("/");
 }
-function validateSteps(file, extensionPoint, steps, projectRoot, existsSync4) {
+function validateSteps(file, extensionPoint, steps, projectRoot, existsSync5) {
   if (!steps) return void 0;
   for (const step of steps) {
     if (isAgentTaskStep(step)) {
@@ -32846,7 +32930,7 @@ function validateSteps(file, extensionPoint, steps, projectRoot, existsSync4) {
     const token = firstToken(step.run);
     if (looksLikeScriptPath(token)) {
       const resolved = nodeResolve(projectRoot, token);
-      if (!existsSync4(resolved)) {
+      if (!existsSync5(resolved)) {
         return {
           file,
           reason: "missing-script",
@@ -32858,11 +32942,11 @@ function validateSteps(file, extensionPoint, steps, projectRoot, existsSync4) {
   return void 0;
 }
 function loadProjectManifest(projectRoot, deps = {}) {
-  const existsSync4 = deps.existsSync ?? nodeExistsSync2;
-  const readFileSync7 = deps.readFileSync ?? ((p) => nodeReadFileSync2(p, "utf8"));
+  const existsSync5 = deps.existsSync ?? nodeExistsSync2;
+  const readFileSync8 = deps.readFileSync ?? ((p) => nodeReadFileSync2(p, "utf8"));
   const file = nodeJoin(projectRoot, PROJECT_MANIFEST_RELATIVE_PATH);
-  if (!existsSync4(file)) return { kind: "absent" };
-  const raw = readFileSync7(file);
+  if (!existsSync5(file)) return { kind: "absent" };
+  const raw = readFileSync8(file);
   let parsed;
   try {
     parsed = (0, import_yaml.parse)(raw);
@@ -32957,17 +33041,17 @@ function loadProjectManifest(projectRoot, deps = {}) {
     };
   }
   const stepErrors = {};
-  const buildErr = validateSteps(file, "build.before_pr", manifest.build?.before_pr, projectRoot, existsSync4);
+  const buildErr = validateSteps(file, "build.before_pr", manifest.build?.before_pr, projectRoot, existsSync5);
   if (buildErr) stepErrors["build.before_pr"] = buildErr;
   const releaseErr = validateSteps(
     file,
     "release.before_merge",
     manifest.release?.before_merge,
     projectRoot,
-    existsSync4
+    existsSync5
   );
   if (releaseErr) stepErrors["release.before_merge"] = releaseErr;
-  const verifyErr = validateSteps(file, "verify.before_ack", manifest.verify?.before_ack, projectRoot, existsSync4);
+  const verifyErr = validateSteps(file, "verify.before_ack", manifest.verify?.before_ack, projectRoot, existsSync5);
   if (verifyErr) stepErrors["verify.before_ack"] = verifyErr;
   return { kind: "ok", file, manifest, stepErrors };
 }
@@ -34098,7 +34182,7 @@ function withDerivedEntryContent(doc, reason, decisionRef, ctx) {
   if (!decisionRef?.id) return doc;
   const others = (doc.payload ?? []).filter((p) => p.write_kind !== "knowledge_entry_content");
   const ref = slugRef("entry", decisionRef.id);
-  const stub = { write_kind: "knowledge_entry_content", ref, entry_id: decisionRef.id };
+  const stub = { write_kind: "knowledge_entry_content", ref, entry_id: decisionRef.id, ...doc.knowledge_scope ? { scope: doc.knowledge_scope } : {} };
   const staged = { ...doc, payload: [...others, stub] };
   const content = renderEntry(staged, { ...ctx, decisionRef });
   const title = deriveEntryTitle(staged, reason, { ...ctx, decisionRef });
@@ -34579,6 +34663,7 @@ var composeBriefTool = {
                 target_child_ref: { type: "string", description: "ac_transfer only \u2014 the destination child_ticket item's own `ref` from this SAME payload" },
                 from_ac_id: { type: ["string", "null"], description: "ac_transfer only \u2014 the parent AC's own id being removed; omit only for the rare copy-not-move case" },
                 label_name: { type: "string", description: "label_add only (B-688) \u2014 the label to add; defaults to 'decision-only' when omitted (the only real-world caller today)" },
+                scope: { type: "string", enum: ["product", "deployment"], description: "Accepted applicability metadata, applied in the same ledgered transaction." },
                 entry_id: { type: ["string", "null"], description: "knowledge_entry_content only (B-843) \u2014 the target knowledge entry; omit to let the DB resolve it from this brief's own decision_ref (the normal case)" }
               },
               required: ["write_kind", "ref"]
@@ -35387,6 +35472,9 @@ async function applyAcceptanceEventPayload(client, event) {
         result = data;
       } else if (item.write_kind === "knowledge_entry_content") {
         if (!item.content) throw new Error(`knowledge_entry_content item '${item.ref}' is missing content \u2014 the payload CARRIES the entry text; it is never synthesized from doc fields`);
+        const metadata = item.scope !== void 0;
+        if (metadata && !await metadataCapable(client)) throw new Error("Accepted scope metadata unavailable until the schema is promoted; acceptance remains pending.");
+        const operation = metadata ? "consume_knowledge_entry_content_write_metadata" : "consume_knowledge_entry_content_write";
         let includeTitle = true;
         let includeTags = true;
         const callArgs = () => ({
@@ -35394,11 +35482,12 @@ async function applyAcceptanceEventPayload(client, event) {
           _external_ref: item.ref,
           _content: item.content,
           _entry_id: item.entry_id ?? null,
+          ...metadata ? { _scope: item.scope } : {},
           ...includeTitle ? { _title: item.title ?? null } : {},
           ...includeTags ? { _tags: item.tags ?? null } : {}
         });
-        let { data, error } = await client.rpc("consume_knowledge_entry_content_write", callArgs());
-        for (let round = 0; round < 2 && error; round++) {
+        let { data, error } = await client.rpc(operation, callArgs());
+        for (let round = 0; round < 2 && error && !metadata; round++) {
           if (includeTags && isMissingTagsParam(error.message)) {
             includeTags = false;
           } else if (includeTitle && isMissingTitleParam(error.message)) {
@@ -35406,7 +35495,7 @@ async function applyAcceptanceEventPayload(client, event) {
           } else {
             break;
           }
-          ({ data, error } = await client.rpc("consume_knowledge_entry_content_write", callArgs()));
+          ({ data, error } = await client.rpc(operation, callArgs()));
         }
         if (error) {
           if (isMissingRelationOrFunction(error)) throw new WriteKindSubstrateAbsentError("knowledge_entry_content");
@@ -36458,7 +36547,7 @@ async function runRecordedWalkDrainPass(deps) {
 
 // src/config/github-app-token.ts
 import { createSign } from "node:crypto";
-import { readFileSync as readFileSync3 } from "node:fs";
+import { readFileSync as readFileSync4 } from "node:fs";
 var GITHUB_API_DEFAULT = "https://api.github.com";
 var REQUEST_TIMEOUT_MS = 1e4;
 var TOKEN_REFRESH_MARGIN_MS = 5 * 6e4;
@@ -36474,7 +36563,7 @@ function buildAppJwt(appId, privateKey, nowSeconds) {
 function createGithubTokenProvider(deps) {
   const { env } = deps;
   const fetchImpl = deps.fetchImpl ?? fetch;
-  const readFile = deps.readFile ?? ((p) => readFileSync3(p, "utf8"));
+  const readFile = deps.readFile ?? ((p) => readFileSync4(p, "utf8"));
   const now = deps.now ?? Date.now;
   const api = env.GITHUB_API_URL || GITHUB_API_DEFAULT;
   const appId = env.HARMONY_APP_ID || deps.appOverride?.app_id;
@@ -37712,7 +37801,7 @@ function shouldInspectWorkerImage(profile) {
 
 // src/config/conductor-secrets.ts
 import { execFile } from "node:child_process";
-import { readFileSync as readFileSync4 } from "node:fs";
+import { readFileSync as readFileSync5 } from "node:fs";
 
 // src/daemon/conductor-remote.ts
 var REMOTE_ENV = "HARMONY_CONDUCTOR_REMOTE";
@@ -37807,7 +37896,7 @@ async function resolveConductorSecrets(deps) {
   const result = { resolved: [], skipped: [] };
   const remote = isRemoteConductor(deps.env);
   const hostPath = resolveConductorPaths(deps.env).hostFile;
-  const read = deps.readFile ?? ((p) => readFileSync4(p, "utf8"));
+  const read = deps.readFile ?? ((p) => readFileSync5(p, "utf8"));
   let text;
   try {
     text = read(hostPath);
@@ -37864,9 +37953,9 @@ var execFileSecretExec = (file, args) => new Promise((resolve) => {
 });
 
 // src/daemon/conductor-logger.ts
-import { appendFileSync, existsSync as existsSync2, mkdirSync, renameSync, statSync, unlinkSync } from "node:fs";
+import { appendFileSync, existsSync as existsSync3, mkdirSync, renameSync, statSync, unlinkSync } from "node:fs";
 import { homedir as homedir3 } from "node:os";
-import { dirname as dirname2, join as join4 } from "node:path";
+import { dirname as dirname3, join as join5 } from "node:path";
 
 // src/daemon/log-shipper.ts
 import { execFile as execFile2 } from "node:child_process";
@@ -38049,7 +38138,7 @@ var realFs = {
   statSync: (p) => statSync(p),
   renameSync,
   unlinkSync,
-  existsSync: existsSync2,
+  existsSync: existsSync3,
   mkdirSync: (p) => void mkdirSync(p, { recursive: true })
 };
 function createRotatingFile(path2, opts = {}) {
@@ -38071,7 +38160,7 @@ function createRotatingFile(path2, opts = {}) {
       try {
         if (size === void 0) {
           try {
-            fs.mkdirSync(dirname2(path2));
+            fs.mkdirSync(dirname3(path2));
           } catch {
           }
           size = fs.existsSync(path2) ? fs.statSync(path2).size : 0;
@@ -38086,7 +38175,7 @@ function createRotatingFile(path2, opts = {}) {
   };
 }
 function resolveConductorLogPath(env) {
-  return env.HARMONY_CONDUCTOR_LOG || join4(env.HARMONY_HOME || join4(homedir3(), ".harmony"), "logs", "conductor.log");
+  return env.HARMONY_CONDUCTOR_LOG || join5(env.HARMONY_HOME || join5(homedir3(), ".harmony"), "logs", "conductor.log");
 }
 var LEADING_TICKET = /^([A-Za-z][A-Za-z0-9]*-\d+)\b/;
 var CONDUCTION_ID = /\bconduction ([0-9a-f]{8}-[0-9a-f-]{27})/;
@@ -38705,8 +38794,8 @@ import { existsSync as fsExistsSync2, readFileSync as fsReadFileSync2 } from "no
 
 // src/config/conductor-project-source.ts
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync as mkdirSync2, readFileSync as readFileSync5, renameSync as renameSync2, rmSync, writeFileSync } from "node:fs";
-import { dirname as dirname3 } from "node:path";
+import { chmodSync, mkdirSync as mkdirSync2, readFileSync as readFileSync6, renameSync as renameSync2, rmSync, writeFileSync } from "node:fs";
+import { dirname as dirname4 } from "node:path";
 var REQUEST_TIMEOUT_MS4 = 1e4;
 function gitBlobSha(text) {
   const body = Buffer.from(text, "utf8");
@@ -38762,13 +38851,13 @@ async function fetchProjectFile(input) {
 }
 function readSnapshot(path2) {
   try {
-    return parseSnapshotText(readFileSync5(path2, "utf8"));
+    return parseSnapshotText(readFileSync6(path2, "utf8"));
   } catch {
     return null;
   }
 }
 function writeSnapshot(path2, snap) {
-  mkdirSync2(dirname3(path2), { recursive: true });
+  mkdirSync2(dirname4(path2), { recursive: true });
   const tmp = `${path2}.${process.pid}.${Date.now().toString(36)}.tmp`;
   try {
     writeFileSync(tmp, `${JSON.stringify(snap, null, 2)}
@@ -40932,7 +41021,7 @@ async function main() {
     }
     config = loadDaemonConfig(
       process.env,
-      (p) => readFileSync6(p, "utf8"),
+      (p) => readFileSync7(p, "utf8"),
       namedProfile ? { profileOverride: namedProfile } : {}
     );
   } catch (err) {
@@ -41117,8 +41206,8 @@ ${err instanceof Error ? err.message : String(err)}
       holderId: leaseHolder,
       configPath: daemonArgv.config,
       spawnRestarter: (args) => {
-        const harmonyBin = join5(dirname4(fileURLToPath2(import.meta.url)), "harmony.js");
-        if (!existsSync3(harmonyBin)) throw new Error(`${harmonyBin} does not exist`);
+        const harmonyBin = join6(dirname5(fileURLToPath2(import.meta.url)), "harmony.js");
+        if (!existsSync4(harmonyBin)) throw new Error(`${harmonyBin} does not exist`);
         const child = spawn(process.execPath, [harmonyBin, ...args], { detached: true, stdio: "ignore", env: process.env });
         child.on("error", () => {
         });

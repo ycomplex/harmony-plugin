@@ -10752,8 +10752,8 @@ var require_RealtimeChannel = __commonJS({
       }
       /** @internal */
       _notThisChannelEvent(event, ref) {
-        const { close, error: error2, leave, join: join5 } = constants_1.CHANNEL_EVENTS;
-        const events2 = [close, error2, leave, join5];
+        const { close, error: error2, leave, join: join6 } = constants_1.CHANNEL_EVENTS;
+        const events2 = [close, error2, leave, join6];
         return ref && events2.includes(event) && ref !== this.joinPush.ref;
       }
       /** @internal */
@@ -43594,6 +43594,115 @@ async function createAuthenticatedClient(auth2) {
   });
 }
 
+// src/tools/knowledge-metadata.ts
+import { existsSync, readFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
+async function metadataCapable(client) {
+  const { data, error: error2 } = await client.rpc("knowledge_metadata_capable");
+  if (error2) {
+    if (["PGRST202", "42883"].includes(error2.code)) return false;
+    throw new Error(error2.message);
+  }
+  if (data === true || data === false) return data;
+  throw new Error(
+    "Invalid knowledge metadata capability response; legacy fallback refused."
+  );
+}
+async function metadataRpc(client, operation, scope, args) {
+  const capable = await metadataCapable(client);
+  if (scope !== void 0 && !["product", "deployment"].includes(scope))
+    throw new Error("scope must be product or deployment");
+  if (scope !== void 0 && !capable)
+    throw new Error(
+      "Knowledge scope unavailable until the schema is promoted; nothing was saved."
+    );
+  if (capable && (operation === "knowledge_record_decision" || operation === "knowledge_supersede_knowledge_entry" || operation === "knowledge_supersede_decision" && args.p_type) && !scope)
+    throw new Error(
+      "New knowledge requires product or deployment scope. Separate mixed claims."
+    );
+  const result = await client.rpc(
+    capable ? `${operation}_metadata` : operation,
+    { ...args, ...capable ? { p_scope: scope ?? null } : {} }
+  );
+  if (result.error?.details)
+    result.error.message += `
+${result.error.details}`;
+  return result;
+}
+async function listKnowledgeTags(client, projectId) {
+  if (!await metadataCapable(client))
+    throw new Error(
+      "Project tag vocabulary unavailable until the schema is promoted."
+    );
+  const { data, error: error2 } = await client.rpc("knowledge_list_tags", {
+    p_project_id: projectId
+  });
+  if (error2) throw new Error(error2.message);
+  return data;
+}
+async function registerKnowledgeTag(client, projectId, name, description) {
+  if (!await metadataCapable(client))
+    throw new Error(
+      "Project tag vocabulary unavailable until the schema is promoted."
+    );
+  const { data, error: error2 } = await client.rpc("knowledge_register_tag", {
+    p_project_id: projectId,
+    p_name: name,
+    p_description: description
+  });
+  if (error2) throw new Error(error2.message);
+  return data;
+}
+function surfaceTags(paths) {
+  return [
+    ...new Set(
+      paths.map((path3) => path3.replace(/^\.\//, "")).filter(
+        (path3) => /^[A-Za-z0-9_.-]+\//.test(path3) && !path3.split("/").some((part) => part === ".." || part === "")
+      ).map((path3) => `surface:${path3.slice(0, path3.lastIndexOf("/"))}`)
+    )
+  ].sort();
+}
+var listKnowledgeTagsTool = {
+  name: "list_knowledge_tags",
+  description: "List the project authored tag vocabulary. Generated ticket/surface namespaces are reserved. Type is advisory.",
+  inputSchema: { type: "object", properties: {} }
+};
+var registerKnowledgeTagTool = {
+  name: "register_knowledge_tag",
+  description: "Explicitly register an authored project tag, separately from entry saves. Existing knowledge writers may register tags.",
+  inputSchema: {
+    type: "object",
+    properties: { name: { type: "string" }, description: { type: "string" } },
+    required: ["name", "description"]
+  }
+};
+function repositoryPrefix(repo) {
+  let directory = process.cwd();
+  for (; ; ) {
+    const file = join(directory, ".harmony", "conductor.json");
+    if (existsSync(file)) {
+      const config2 = JSON.parse(readFileSync(file, "utf8"));
+      const match = (config2.repos ?? []).find((item) => {
+        const name = String(item.url ?? "").replace(/\.git$/, "").replace(/^.*github\.com[/:]/, "");
+        return name === repo || name.split("/").pop() === repo;
+      });
+      if (match) {
+        const prefix2 = basename(match.path);
+        if (!/^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(prefix2))
+          throw new Error("Invalid declared repository directory");
+        return prefix2;
+      }
+    }
+    const parent = dirname(directory);
+    if (parent === directory) break;
+    directory = parent;
+  }
+  const prefix = repo.split("/").pop();
+  if (!/^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(prefix))
+    throw new Error("Invalid repository prefix");
+  return prefix;
+}
+
 // src/tools/provenance.ts
 var PROVENANCE_HUMAN_IN_SESSION = "human-in-session";
 var PROVENANCE_AGENT_SYNTHESIZED = "agent-synthesized";
@@ -43714,19 +43823,19 @@ function proposeClaim(content) {
 }
 
 // src/tools/environment.ts
-import { readFileSync as readFileSync2 } from "node:fs";
-import { dirname, join as join3 } from "node:path";
+import { readFileSync as readFileSync3 } from "node:fs";
+import { dirname as dirname2, join as join4 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/config/deployment-config.ts
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync as existsSync2, readFileSync as readFileSync2 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
-import { join as join2 } from "node:path";
+import { join as join3 } from "node:path";
 
 // src/config/conductor-config.ts
 import { existsSync as fsExistsSync, readFileSync as fsReadFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename as basename2, join as join2 } from "node:path";
 
 // src/config/deployment-shared-schemas.ts
 var RequiredToolsSchema = external_exports.object({
@@ -43758,11 +43867,11 @@ var WORKER_IMAGE_DEFAULT = "harmony-build-env";
 
 // src/config/conductor-config.ts
 function resolveConductorPaths(env = process.env) {
-  const home = env.HARMONY_HOME || join(homedir(), ".harmony");
+  const home = env.HARMONY_HOME || join2(homedir(), ".harmony");
   return {
     home,
-    hostFile: env.HARMONY_CONDUCTOR_HOST_FILE || join(home, "conductor-host.json"),
-    snapshotFile: env.HARMONY_CONDUCTOR_SNAPSHOT_FILE || join(home, "conductor-snapshot.json"),
+    hostFile: env.HARMONY_CONDUCTOR_HOST_FILE || join2(home, "conductor-host.json"),
+    snapshotFile: env.HARMONY_CONDUCTOR_SNAPSHOT_FILE || join2(home, "conductor-snapshot.json"),
     projectFile: env.HARMONY_CONDUCTOR_PROJECT_FILE || void 0
   };
 }
@@ -44399,7 +44508,7 @@ function evaluateConductorConfig(opts = {}) {
   let projectLayer;
   let projectFailed = false;
   if (paths.projectFile) {
-    const label = basename(paths.projectFile);
+    const label = basename2(paths.projectFile);
     if (!exists(paths.projectFile)) {
       projectFailed = true;
       issues.push({ file: label, key: "(file)", problem: `not found at ${paths.projectFile}`, fix: "create it, or unset HARMONY_CONDUCTOR_PROJECT_FILE" });
@@ -44613,7 +44722,7 @@ function resolveDeploymentConfigPath(opts) {
   const env = opts?.env ?? process.env;
   if (opts?.configPath) return opts.configPath;
   if (env.HARMONY_DEPLOYMENT_CONFIG) return env.HARMONY_DEPLOYMENT_CONFIG;
-  return join2(homedir2(), ".harmony", "deployment.json");
+  return join3(homedir2(), ".harmony", "deployment.json");
 }
 function loadDeploymentConfig(opts = {}) {
   const conductor = loadConductorConfigSync({
@@ -44628,8 +44737,8 @@ function loadDeploymentConfig(opts = {}) {
 }
 function loadLegacyDeploymentConfig(opts = {}) {
   const env = opts.env ?? process.env;
-  const exists = opts.existsSync ?? existsSync;
-  const readFile = opts.readFileSync ?? ((p) => readFileSync(p, "utf8"));
+  const exists = opts.existsSync ?? existsSync2;
+  const readFile = opts.readFileSync ?? ((p) => readFileSync2(p, "utf8"));
   const path3 = resolveDeploymentConfigPath({ configPath: opts.configPath, env });
   if (!exists(path3)) return null;
   let raw;
@@ -44677,7 +44786,7 @@ function resolveKnownRefs(env) {
 }
 function readManifestVersion(manifestPath) {
   try {
-    const parsed = JSON.parse(readFileSync2(manifestPath, "utf8"));
+    const parsed = JSON.parse(readFileSync3(manifestPath, "utf8"));
     return typeof parsed.version === "string" ? parsed.version : null;
   } catch {
     return null;
@@ -44686,14 +44795,14 @@ function readManifestVersion(manifestPath) {
 function resolvePluginVersion(env, moduleUrl) {
   const root = env.CLAUDE_PLUGIN_ROOT;
   if (root) {
-    const version4 = readManifestVersion(join3(root, ".claude-plugin", "plugin.json"));
+    const version4 = readManifestVersion(join4(root, ".claude-plugin", "plugin.json"));
     if (version4 !== null) return version4;
   }
   try {
-    let dir = dirname(fileURLToPath(moduleUrl));
+    let dir = dirname2(fileURLToPath(moduleUrl));
     for (let i = 0; i < 3; i++) {
-      dir = dirname(dir);
-      const version4 = readManifestVersion(join3(dir, ".claude-plugin", "plugin.json"));
+      dir = dirname2(dir);
+      const version4 = readManifestVersion(join4(dir, ".claude-plugin", "plugin.json"));
       if (version4 !== null) return version4;
     }
   } catch {
@@ -45079,14 +45188,14 @@ var FACT_COLS = "id, workspace_id, project_id, subject_entity_id, predicate, obj
 var ENTITY_COLS = "id, workspace_id, project_id, kind, name, description, metadata, created_at";
 var queryKnowledgeTool = {
   name: "query_knowledge",
-  description: 'Find current term definitions first, then linked refinements and ordinary decisions. definitions_only returns full quotable current definitions; unavailable storage is reported explicitly. Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Results include nullable superseded_by and inverse supersedes UUIDs; matching successors precede replaced entries. Check this before making significant implementation choices. Defaults to "Accepted" entries only, with explicitly marked bookkeeping ranked last; include_bookkeeping:false excludes it before pagination. When `search` is given, retrieval is semantic (RRF) and composes with `domain`, `limit` and `include_bookkeeping`; the other structured filters (`type`, `status`, `tags`, `as_of`, `include_superseded`, `offset`) apply to the non-search structured path only.',
+  description: 'Find current term definitions first, then linked refinements and ordinary decisions. definitions_only returns full quotable current definitions; unavailable storage is reported explicitly. Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Results include nullable superseded_by and inverse supersedes UUIDs; matching successors precede replaced entries. Check this before making significant implementation choices. Defaults to "Accepted" entries only, with explicitly marked bookkeeping ranked last; include_bookkeeping:false excludes it before pagination. When `search` is given, retrieval is semantic (RRF) and composes with `domain`, `limit` and `include_bookkeeping`; the other structured filters (`type`, `status`, `tags`, `as_of`, `include_superseded`, `offset`) apply to the non-search structured path only. Optional scope (product | deployment) filters by declared scope when the metadata schema is present; unsupported scope filtering fails explicitly.',
   inputSchema: {
     type: "object",
     properties: {
       definitions_only: { type: "boolean", description: "Return only current accepted term definitions; unavailable storage is reported explicitly" },
       type: {
         type: "string",
-        description: 'Filter by entry type (e.g. "architecture", "business", "convention", "specification"). (structured-filter path; not combinable with `search`)'
+        description: 'Filter by advisory authoring classification, not verified semantic content (e.g. "architecture", "business", "convention", "specification"). (structured-filter path; not combinable with `search`)'
       },
       status: {
         type: "string",
@@ -45101,6 +45210,7 @@ var queryKnowledgeTool = {
         type: "string",
         description: "ISO timestamp \u2014 return entries valid at or before this instant (temporal query). (structured-filter path; not combinable with `search`)"
       },
+      scope: { type: "string", enum: ["product", "deployment"], description: "Product behaviour or deployment operations. Explicit filters exclude unresolved legacy scope and fail visibly before schema promotion." },
       tags: {
         type: "array",
         items: { type: "string" },
@@ -45143,12 +45253,13 @@ var createKnowledgeEntryTool = {
       content: { type: "string", description: "Markdown content of the entry" },
       type: {
         type: "string",
-        description: 'Entry type: "architecture", "business", "convention", or "specification"'
+        description: 'Advisory authoring classification, not verified: "architecture", "business", "convention", or "specification"'
       },
       status: {
         type: "string",
         description: 'Status override. Default: "draft".'
       },
+      scope: { type: "string", enum: ["product", "deployment"], description: "Product behaviour or this deployment operations. Required for new entries once metadata is available. Mixed claims must be separated." },
       tags: {
         type: "array",
         items: { type: "string" },
@@ -45177,6 +45288,7 @@ var updateKnowledgeEntryTool = {
       allow_shrink: { type: "boolean", description: "Explicitly permit a deliberate shorter replacement that drops dated amendment sections. Default false." },
       type: { type: "string", description: "New entry type" },
       status: { type: "string", description: "New status: Asserted, Accepted, Superseded, or Archived (legacy lowercase draft/accepted/superseded also accepted)" },
+      scope: { type: "string", enum: ["product", "deployment"], description: "Product behaviour or this deployment operations. Required for new entries once metadata is available. Mixed claims must be separated." },
       tags: {
         type: "array",
         items: { type: "string" },
@@ -45217,6 +45329,7 @@ var supersedeKnowledgeEntryTool = {
       new_title: { type: "string", description: "Title for the replacement entry" },
       new_content: { type: "string", description: "Content for the replacement entry" },
       type: { type: "string", description: "Type for the replacement (defaults to type of superseded entry)" },
+      scope: { type: "string", enum: ["product", "deployment"], description: "Product behaviour or this deployment operations. Required for new entries once metadata is available. Mixed claims must be separated." },
       tags: {
         type: "array",
         items: { type: "string" },
@@ -45284,6 +45397,10 @@ function toBaseStatus(status) {
 }
 async function queryKnowledge(client, projectId, args) {
   const workspaceId = await getWorkspaceId(client, projectId);
+  if (args.scope !== void 0) {
+    if (!["product", "deployment"].includes(args.scope)) throw new Error("scope must be product or deployment");
+    if (!await metadataCapable(client)) throw new Error("Scope filtering unavailable until the schema is promoted; no unfiltered results returned.");
+  }
   if (args.definitions_only && (args.type || args.status || args.tags?.length || args.as_of || args.include_superseded)) {
     throw new Error("definitions_only supports search, domain, limit and offset; ordinary decision filters are not definition filters");
   }
@@ -45307,7 +45424,7 @@ async function queryKnowledge(client, projectId, args) {
     if (!definitions.available) throw new Error("Definitions are not available in this environment yet.");
     return definitions.definitions;
   }
-  const includeDefinitions = !args.type && !args.status && !args.tags?.length && !args.as_of && !args.include_superseded;
+  const includeDefinitions = !args.type && !args.status && !args.tags?.length && !args.as_of && !args.include_superseded && args.scope !== "deployment";
   const prepend = async (entries) => {
     if (!includeDefinitions) return entries;
     const ids2 = args.search ? [...new Set(definitions.definitions.flatMap((d) => d.refinements.map((r) => r.id)))] : [];
@@ -45340,7 +45457,8 @@ async function queryKnowledge(client, projectId, args) {
   if (args.search) {
     const queryEmbedding = await embedText(client, args.search);
     const data = await bookkeepingPage(({ bookkeeping, offset, limit, count }) => truthCompatibleRead((extraColumns) => {
-      let query = client.rpc("knowledge_search_rrf", {
+      let query = client.rpc(args.scope ? "knowledge_search_rrf_metadata" : "knowledge_search_rrf", {
+        ...args.scope ? { _scope: args.scope } : {},
         _workspace_id: workspaceId,
         _project_id: projectId,
         _query_embedding: queryEmbedding,
@@ -45356,6 +45474,7 @@ async function queryKnowledge(client, projectId, args) {
       title: d.title,
       type: d.type,
       status: d.status,
+      ...d.scope !== void 0 ? { scope: d.scope } : {},
       ...claimFields(d),
       snippet: matchedPassage(d.content ?? "", args.search),
       domain: d.domain,
@@ -45371,6 +45490,7 @@ async function queryKnowledge(client, projectId, args) {
   }
   const rows = await bookkeepingPage(({ bookkeeping, offset, limit, count }) => {
     let query = client.from("knowledge_decisions").select("*", count ? { count: "exact" } : {}).eq("workspace_id", workspaceId).eq("project_id", projectId);
+    if (args.scope) query = query.eq("scope", args.scope);
     if (args.status) query = query.eq("status", args.status);
     else if (!args.include_superseded) query = query.eq("status", "Accepted");
     if (args.type) query = query.eq("type", args.type);
@@ -45380,7 +45500,7 @@ async function queryKnowledge(client, projectId, args) {
     query = bookkeeping ? query.contains("tags", [BOOKKEEPING_TAG]) : query.or(SUBSTANTIVE_TAG_FILTER);
     return query.order("type", { ascending: true }).order("id", { ascending: true }).range(offset, offset + limit - 1);
   }, decisionArgs);
-  return prepend(await withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, rows.map((d) => ({ id: d.id, title: d.title, type: d.type, status: d.status, domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d), verified_against: d.verified_against ?? null, rollout_state: d.rollout_state ?? null, open_steps: d.open_steps ?? null })))));
+  return prepend(await withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, rows.map((d) => ({ id: d.id, title: d.title, type: d.type, status: d.status, ...d.scope !== void 0 ? { scope: d.scope } : {}, domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d), verified_against: d.verified_against ?? null, rollout_state: d.rollout_state ?? null, open_steps: d.open_steps ?? null })))));
 }
 async function hydrateSupersession(client, workspaceId, projectId, rows) {
   const edges = [];
@@ -45457,7 +45577,11 @@ async function createKnowledgeEntry(client, projectId, userId, args) {
   const title = normalizeHtmlEntities(args.title.trim());
   const claimedContent = claimContent(title, normalizeHtmlEntities(args.content ?? ""), args.claim === void 0 ? void 0 : normalizeHtmlEntities(args.claim));
   const workspaceId = await getWorkspaceId(client, projectId);
+  const capable = await metadataCapable(client);
+  if (args.scope && !capable) throw new Error("Knowledge scope unavailable until the schema is promoted; nothing was saved.");
+  if (capable && !args.scope) throw new Error("New knowledge requires product or deployment scope.");
   const record2 = {
+    ...capable ? { scope: args.scope } : {},
     workspace_id: workspaceId,
     project_id: projectId,
     title: normalizeHtmlEntities(args.title.trim()),
@@ -45502,7 +45626,7 @@ async function updateKnowledgeEntry(client, projectId, args) {
   }
   const truthPatch = truthStatePatch(args);
   const hasTruthUpdates = Object.keys(truthPatch).length > 0;
-  const hasUpdates = args.claim !== void 0 || hasTruthUpdates || args.new_title !== void 0 || args.content !== void 0 || args.type !== void 0 || args.status !== void 0 || args.tags !== void 0 || args.domain !== void 0 || args.madr !== void 0 || args.realization !== void 0 || args.review_by !== void 0;
+  const hasUpdates = args.scope !== void 0 || args.claim !== void 0 || hasTruthUpdates || args.new_title !== void 0 || args.content !== void 0 || args.type !== void 0 || args.status !== void 0 || args.tags !== void 0 || args.domain !== void 0 || args.madr !== void 0 || args.realization !== void 0 || args.review_by !== void 0;
   if (!hasUpdates) {
     throw new Error("At least one field to update must be provided");
   }
@@ -45528,7 +45652,7 @@ async function updateKnowledgeEntry(client, projectId, args) {
   const newTitle = args.new_title !== void 0 ? normalizeHtmlEntities(args.new_title.trim()) : void 0;
   guardKnowledgeWriteProvenance(args.provenance);
   const contentWrite = args.content !== void 0 || args.claim !== void 0;
-  const { data, error: error2 } = await client.rpc(hasTruthUpdates ? "knowledge_amend_entry_truth" : contentWrite ? "knowledge_amend_knowledge_entry" : "knowledge_update_knowledge_entry", {
+  const rpcArgs = {
     p_project_id: projectId,
     p_entry_id: args.entry_id ?? null,
     p_title: args.title ?? null,
@@ -45549,7 +45673,9 @@ async function updateKnowledgeEntry(client, projectId, args) {
     p_leg: getLeg() ?? null,
     ...contentWrite || hasTruthUpdates ? { p_content_mode: mode, p_allow_shrink: args.allow_shrink ?? false } : {},
     ...hasTruthUpdates ? { p_truth_state: truthPatch, p_acting_task_id: args.acting_task_id ?? null } : {}
-  });
+  };
+  if (hasTruthUpdates && args.scope !== void 0) throw new Error("scope cannot be combined with a verification/rollout write in one update; send them as two updates. No fields were changed.");
+  const { data, error: error2 } = hasTruthUpdates ? await client.rpc("knowledge_amend_entry_truth", rpcArgs) : await metadataRpc(client, contentWrite ? "knowledge_amend_knowledge_entry" : "knowledge_update_knowledge_entry", args.scope, rpcArgs);
   if (error2) {
     if (hasTruthUpdates && ["PGRST202", "42883", "42703", "PGRST204"].includes(error2.code ?? "")) {
       throw new Error("Knowledge verification/rollout update unavailable: apply the B-1229 database migration first. No fields were changed.");
@@ -45633,7 +45759,7 @@ ${content}`);
     realization = "agreed";
   }
   guardKnowledgeWriteProvenance(args.provenance);
-  const { data, error: error2 } = await client.rpc("knowledge_record_decision", {
+  const { data, error: error2 } = await metadataRpc(client, "knowledge_record_decision", args.scope, {
     p_project_id: projectId,
     p_title: title,
     p_type: args.type,
@@ -45680,7 +45806,7 @@ async function supersedeDecision(client, projectId, userId, args) {
     affectedIds.push(await resolveOrCreateEntity(client, workspaceId, projectId, name));
   }
   guardKnowledgeWriteProvenance(args.provenance);
-  const { data, error: error2 } = await client.rpc("knowledge_supersede_decision", {
+  const { data, error: error2 } = await metadataRpc(client, "knowledge_supersede_decision", args.scope, {
     p_old_decision_id: args.old_decision_id,
     p_project_id: projectId,
     p_type: args.type ?? null,
@@ -45703,6 +45829,7 @@ var supersedeDecisionTool = {
   inputSchema: {
     type: "object",
     properties: {
+      scope: { type: "string", enum: ["product", "deployment"], description: "Required applicability for a new successor on a metadata-capable schema." },
       claim: { type: "string", description: "One-sentence authored claim for a new replacement entry" },
       old_decision_id: { type: "string", description: "UUID of the decision being superseded" },
       type: { type: "string", description: "Type for the replacement decision. Omit BOTH type and title to retire the decision without a successor (retire-mode)." },
@@ -45719,12 +45846,12 @@ var supersedeDecisionTool = {
 };
 var recordDecisionTool = {
   name: "record_decision",
-  description: 'Record a knowledge decision produced by a gate/skill. Author ONE ATOMIC claim, not a document \u2014 shape the `content` as Decision \xB7 Why \xB7 How-to-apply \xB7 Scope. Pick the NARROWEST fitting `type` (product-design / technical-design / ux-ui-design for the design sub-tracks, or architecture / business / convention / specification / deferral) and multi-tag every `domain` a querying skill would filter on (engineering, operations, data, product, customer, process). Lifecycle: enters "Asserted" by default and a HUMAN promotes it to "Accepted" \u2014 never pre-mark a replacement Accepted before the decision is made. To retire an entry, SUPERSEDE it (do not edit it into irrelevance); for an in-part repair use update_knowledge_entry plus a dated banner. Migration window: supersede the old decision at decision-time, keep the old fact valid until cutover, and mark in-flight state with `realization`. Elicitation claims (B-645): a claim mined from an elicitation exchange sets `claim_provenance` + `underwriting_brief_id` so brief resolution disposes it mechanically (accept promotes human-grounded claims, defer archives; force-quit claims never promote at their own brief\'s accept).',
+  description: 'Record a knowledge decision produced by a gate/skill. Type is an advisory authoring classification, not verified semantic content. Author ONE ATOMIC claim, not a document \u2014 shape the `content` as Decision \xB7 Why \xB7 How-to-apply \xB7 Scope. Pick the NARROWEST fitting `type` (product-design / technical-design / ux-ui-design for the design sub-tracks, or architecture / business / convention / specification / deferral) and multi-tag every `domain` a querying skill would filter on (engineering, operations, data, product, customer, process). Lifecycle: enters "Asserted" by default and a HUMAN promotes it to "Accepted" \u2014 never pre-mark a replacement Accepted before the decision is made. To retire an entry, SUPERSEDE it (do not edit it into irrelevance); for an in-part repair use update_knowledge_entry plus a dated banner. Migration window: supersede the old decision at decision-time, keep the old fact valid until cutover, and mark in-flight state with `realization`. Elicitation claims (B-645): a claim mined from an elicitation exchange sets `claim_provenance` + `underwriting_brief_id` so brief resolution disposes it mechanically (accept promotes human-grounded claims, defer archives; force-quit claims never promote at their own brief\'s accept).',
   inputSchema: {
     type: "object",
     properties: {
       claim: { type: "string", description: "Authored one-sentence claim, at most 50 words; omission derives an unconfirmed proposal during rollout" },
-      type: { type: "string", description: "product-design | technical-design | ux-ui-design | architecture | business | convention | specification | deferral" },
+      type: { type: "string", description: "Advisory authoring classification, not verified: product-design | technical-design | ux-ui-design | architecture | business | convention | specification | deferral" },
       title: { type: "string", description: "Decision title (unique within the project)" },
       content: { type: "string", description: "Optional human-readable markdown body" },
       madr: { type: "object", description: "Structured MADR body: { context, decision_drivers, considered_options, decision_outcome, consequences }" },
@@ -45735,6 +45862,7 @@ var recordDecisionTool = {
       source_type: { type: "string", description: "ticket | adr | manual | inferred | research (default 'manual')" },
       source_id: { type: "string", description: "Pointer back to the producing ticket/source" },
       source_activity: { type: "string", description: "The gate/skill that authored it (e.g. design-decide, clarify)" },
+      scope: { type: "string", enum: ["product", "deployment"], description: "Product behaviour or this deployment operations. Required for new entries once metadata is available. Mixed claims must be separated." },
       tags: { type: "array", items: { type: "string" }, description: "Optional tags" },
       source_task_id: { type: "string", description: "Task that triggered this decision" },
       review_by: { type: "string", description: "ISO timestamp; freshness/decay date. Researched knowledge sets this ~90 days out so Drift-Risk/review_by resurfacing fires." },
@@ -46028,7 +46156,7 @@ async function supersedeKnowledgeEntry(client, projectId, userId, args) {
   const content = claimContent(normalizeHtmlEntities(args.new_title), normalizeHtmlEntities(args.new_content), args.new_claim === void 0 ? void 0 : normalizeHtmlEntities(args.new_claim));
   const workspaceId = await getWorkspaceId(client, projectId);
   guardKnowledgeWriteProvenance(args.provenance);
-  const { data, error: error2 } = await client.rpc("knowledge_supersede_knowledge_entry", {
+  const { data, error: error2 } = await metadataRpc(client, "knowledge_supersede_knowledge_entry", args.scope, {
     p_project_id: projectId,
     p_new_title: normalizeHtmlEntities(args.new_title),
     p_new_content: content,
@@ -46967,10 +47095,16 @@ ${result.error.issues.map((issue2) => `- doc.frame${issue2.path.map((p) => typeo
 
 // src/tools/build-settlement.ts
 async function settlementWarning(client, projectId, doc, changedPaths) {
-  if (doc.frame?.kind !== "release" || doc.frame.settled_beyond_design?.length !== 0) return;
-  const tags = [...new Set((changedPaths ?? []).filter(Boolean).map((path3) => `surface:${path3.replace(/^\.\//, "")}`))];
-  if (!tags.length) return;
+  if (doc.frame?.kind !== "release" || doc.frame.settled_beyond_design?.length !== 0)
+    return;
   try {
+    const repos = doc.frame.act?.repos ?? [];
+    const prefix = repos.length === 1 ? repositoryPrefix(repos[0]) : void 0;
+    const paths = (changedPaths ?? []).map(
+      (path3) => /^[^/]+\//.test(path3.replace(/^\.\//, "")) && (path3.startsWith(`${prefix}/`) || repos.length !== 1) || !prefix ? path3 : `${prefix}/${path3.replace(/^\.\//, "")}`
+    );
+    const tags = surfaceTags(paths);
+    if (!tags.length) return;
     const workspaceId = await getWorkspaceId(client, projectId);
     const { data, error: error2 } = await client.from("knowledge_decisions").select("id, title, tags").eq("workspace_id", workspaceId).eq("project_id", projectId).eq("status", "Accepted").overlaps("tags", tags).limit(20);
     if (error2) throw error2;
@@ -47223,8 +47357,8 @@ function basenameOf(path3) {
   const idx = path3.lastIndexOf("/");
   return idx === -1 ? path3 : path3.slice(idx + 1);
 }
-function tokenizeBasename(basename3) {
-  const spaced = basename3.replace(/([a-zA-Z])([0-9])/g, "$1 $2").replace(/([0-9])([a-zA-Z])/g, "$1 $2").replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[-_.]+/g, " ");
+function tokenizeBasename(basename4) {
+  const spaced = basename4.replace(/([a-zA-Z])([0-9])/g, "$1 $2").replace(/([0-9])([a-zA-Z])/g, "$1 $2").replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[-_.]+/g, " ");
   return spaced.split(/\s+/).filter((t) => t.length > 0);
 }
 function authBasenameHit(path3) {
@@ -47521,7 +47655,7 @@ function firstToken(command) {
 function looksLikeScriptPath(token) {
   return token.includes("/");
 }
-function validateSteps(file, extensionPoint, steps, projectRoot, existsSync2) {
+function validateSteps(file, extensionPoint, steps, projectRoot, existsSync3) {
   if (!steps) return void 0;
   for (const step of steps) {
     if (isAgentTaskStep(step)) {
@@ -47534,7 +47668,7 @@ function validateSteps(file, extensionPoint, steps, projectRoot, existsSync2) {
     const token = firstToken(step.run);
     if (looksLikeScriptPath(token)) {
       const resolved = nodeResolve(projectRoot, token);
-      if (!existsSync2(resolved)) {
+      if (!existsSync3(resolved)) {
         return {
           file,
           reason: "missing-script",
@@ -47546,11 +47680,11 @@ function validateSteps(file, extensionPoint, steps, projectRoot, existsSync2) {
   return void 0;
 }
 function loadProjectManifest(projectRoot, deps = {}) {
-  const existsSync2 = deps.existsSync ?? nodeExistsSync2;
-  const readFileSync3 = deps.readFileSync ?? ((p) => nodeReadFileSync2(p, "utf8"));
+  const existsSync3 = deps.existsSync ?? nodeExistsSync2;
+  const readFileSync4 = deps.readFileSync ?? ((p) => nodeReadFileSync2(p, "utf8"));
   const file = nodeJoin(projectRoot, PROJECT_MANIFEST_RELATIVE_PATH);
-  if (!existsSync2(file)) return { kind: "absent" };
-  const raw = readFileSync3(file);
+  if (!existsSync3(file)) return { kind: "absent" };
+  const raw = readFileSync4(file);
   let parsed;
   try {
     parsed = (0, import_yaml.parse)(raw);
@@ -47645,17 +47779,17 @@ function loadProjectManifest(projectRoot, deps = {}) {
     };
   }
   const stepErrors = {};
-  const buildErr = validateSteps(file, "build.before_pr", manifest.build?.before_pr, projectRoot, existsSync2);
+  const buildErr = validateSteps(file, "build.before_pr", manifest.build?.before_pr, projectRoot, existsSync3);
   if (buildErr) stepErrors["build.before_pr"] = buildErr;
   const releaseErr = validateSteps(
     file,
     "release.before_merge",
     manifest.release?.before_merge,
     projectRoot,
-    existsSync2
+    existsSync3
   );
   if (releaseErr) stepErrors["release.before_merge"] = releaseErr;
-  const verifyErr = validateSteps(file, "verify.before_ack", manifest.verify?.before_ack, projectRoot, existsSync2);
+  const verifyErr = validateSteps(file, "verify.before_ack", manifest.verify?.before_ack, projectRoot, existsSync3);
   if (verifyErr) stepErrors["verify.before_ack"] = verifyErr;
   return { kind: "ok", file, manifest, stepErrors };
 }
@@ -48791,7 +48925,7 @@ function withDerivedEntryContent(doc, reason, decisionRef, ctx) {
   if (!decisionRef?.id) return doc;
   const others = (doc.payload ?? []).filter((p) => p.write_kind !== "knowledge_entry_content");
   const ref = slugRef("entry", decisionRef.id);
-  const stub = { write_kind: "knowledge_entry_content", ref, entry_id: decisionRef.id };
+  const stub = { write_kind: "knowledge_entry_content", ref, entry_id: decisionRef.id, ...doc.knowledge_scope ? { scope: doc.knowledge_scope } : {} };
   const staged = { ...doc, payload: [...others, stub] };
   const content = renderEntry(staged, { ...ctx, decisionRef });
   const title = deriveEntryTitle(staged, reason, { ...ctx, decisionRef });
@@ -49272,6 +49406,7 @@ var composeBriefTool = {
                 target_child_ref: { type: "string", description: "ac_transfer only \u2014 the destination child_ticket item's own `ref` from this SAME payload" },
                 from_ac_id: { type: ["string", "null"], description: "ac_transfer only \u2014 the parent AC's own id being removed; omit only for the rare copy-not-move case" },
                 label_name: { type: "string", description: "label_add only (B-688) \u2014 the label to add; defaults to 'decision-only' when omitted (the only real-world caller today)" },
+                scope: { type: "string", enum: ["product", "deployment"], description: "Accepted applicability metadata, applied in the same ledgered transaction." },
                 entry_id: { type: ["string", "null"], description: "knowledge_entry_content only (B-843) \u2014 the target knowledge entry; omit to let the DB resolve it from this brief's own decision_ref (the normal case)" }
               },
               required: ["write_kind", "ref"]
@@ -52350,6 +52485,9 @@ async function applyAcceptanceEventPayload(client, event) {
         result = data;
       } else if (item.write_kind === "knowledge_entry_content") {
         if (!item.content) throw new Error(`knowledge_entry_content item '${item.ref}' is missing content \u2014 the payload CARRIES the entry text; it is never synthesized from doc fields`);
+        const metadata = item.scope !== void 0;
+        if (metadata && !await metadataCapable(client)) throw new Error("Accepted scope metadata unavailable until the schema is promoted; acceptance remains pending.");
+        const operation = metadata ? "consume_knowledge_entry_content_write_metadata" : "consume_knowledge_entry_content_write";
         let includeTitle = true;
         let includeTags = true;
         const callArgs = () => ({
@@ -52357,11 +52495,12 @@ async function applyAcceptanceEventPayload(client, event) {
           _external_ref: item.ref,
           _content: item.content,
           _entry_id: item.entry_id ?? null,
+          ...metadata ? { _scope: item.scope } : {},
           ...includeTitle ? { _title: item.title ?? null } : {},
           ...includeTags ? { _tags: item.tags ?? null } : {}
         });
-        let { data, error: error2 } = await client.rpc("consume_knowledge_entry_content_write", callArgs());
-        for (let round = 0; round < 2 && error2; round++) {
+        let { data, error: error2 } = await client.rpc(operation, callArgs());
+        for (let round = 0; round < 2 && error2 && !metadata; round++) {
           if (includeTags && isMissingTagsParam(error2.message)) {
             includeTags = false;
           } else if (includeTitle && isMissingTitleParam(error2.message)) {
@@ -52369,7 +52508,7 @@ async function applyAcceptanceEventPayload(client, event) {
           } else {
             break;
           }
-          ({ data, error: error2 } = await client.rpc("consume_knowledge_entry_content_write", callArgs()));
+          ({ data, error: error2 } = await client.rpc(operation, callArgs()));
         }
         if (error2) {
           if (isMissingRelationOrFunction(error2)) throw new WriteKindSubstrateAbsentError("knowledge_entry_content");
@@ -54213,6 +54352,7 @@ var ackProjections = {
   },
   // ——— knowledge entries / decisions / facts / entities ———
   create_knowledge_entry: knowledgeCreatedAck,
+  register_knowledge_tag: (result) => pick2(result, ["project_id", "name"]),
   record_decision: knowledgeCreatedAck,
   update_knowledge_entry: (result, args) => {
     if (!isRecord(result)) return result;
@@ -55087,6 +55227,8 @@ function registerTools(disabledFeatures) {
     listActivityTool,
     listWorkflowTransitionsTool,
     listMembersTool,
+    listKnowledgeTagsTool,
+    registerKnowledgeTagTool,
     publishDefinitionTool,
     queryKnowledgeTool,
     searchTicketIntentsTool,
@@ -55214,6 +55356,12 @@ async function handleToolCall(name, args, client, projectId, userId) {
         break;
       case "bulk_update_tasks":
         result = await bulkUpdateTasks(client, projectId, args);
+        break;
+      case "list_knowledge_tags":
+        result = await listKnowledgeTags(client, projectId);
+        break;
+      case "register_knowledge_tag":
+        result = await registerKnowledgeTag(client, projectId, args.name, args.description);
         break;
       case "publish_definition":
         result = await publishDefinition(client, projectId, args);

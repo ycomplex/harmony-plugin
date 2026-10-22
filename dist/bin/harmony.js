@@ -7276,8 +7276,8 @@ var require_RealtimeChannel = __commonJS({
       }
       /** @internal */
       _notThisChannelEvent(event, ref) {
-        const { close, error, leave, join: join13 } = constants_1.CHANNEL_EVENTS;
-        const events2 = [close, error, leave, join13];
+        const { close, error, leave, join: join14 } = constants_1.CHANNEL_EVENTS;
+        const events2 = [close, error, leave, join14];
         return ref && events2.includes(event) && ref !== this.joinPush.ref;
       }
       /** @internal */
@@ -31329,8 +31329,8 @@ async function createAuthenticatedClient(auth) {
 }
 
 // src/tools/environment.ts
-import { readFileSync as readFileSync2 } from "node:fs";
-import { dirname, join as join3 } from "node:path";
+import { readFileSync as readFileSync3 } from "node:fs";
+import { dirname as dirname2, join as join4 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/config/deployment-config.ts
@@ -36565,6 +36565,101 @@ async function resolveTaskIds(client, projectId, inputs) {
   return classified.map((c) => c.kind === "uuid" ? c.id : idByNumber.get(c.taskNumber));
 }
 
+// src/tools/knowledge-metadata.ts
+import { existsSync as existsSync2, readFileSync as readFileSync2 } from "node:fs";
+import { basename as basename2, dirname, join as join3 } from "node:path";
+async function metadataCapable(client) {
+  const { data, error } = await client.rpc("knowledge_metadata_capable");
+  if (error) {
+    if (["PGRST202", "42883"].includes(error.code)) return false;
+    throw new Error(error.message);
+  }
+  if (data === true || data === false) return data;
+  throw new Error(
+    "Invalid knowledge metadata capability response; legacy fallback refused."
+  );
+}
+async function metadataRpc(client, operation, scope, args) {
+  const capable = await metadataCapable(client);
+  if (scope !== void 0 && !["product", "deployment"].includes(scope))
+    throw new Error("scope must be product or deployment");
+  if (scope !== void 0 && !capable)
+    throw new Error(
+      "Knowledge scope unavailable until the schema is promoted; nothing was saved."
+    );
+  if (capable && (operation === "knowledge_record_decision" || operation === "knowledge_supersede_knowledge_entry" || operation === "knowledge_supersede_decision" && args.p_type) && !scope)
+    throw new Error(
+      "New knowledge requires product or deployment scope. Separate mixed claims."
+    );
+  const result = await client.rpc(
+    capable ? `${operation}_metadata` : operation,
+    { ...args, ...capable ? { p_scope: scope ?? null } : {} }
+  );
+  if (result.error?.details)
+    result.error.message += `
+${result.error.details}`;
+  return result;
+}
+async function listKnowledgeTags(client, projectId) {
+  if (!await metadataCapable(client))
+    throw new Error(
+      "Project tag vocabulary unavailable until the schema is promoted."
+    );
+  const { data, error } = await client.rpc("knowledge_list_tags", {
+    p_project_id: projectId
+  });
+  if (error) throw new Error(error.message);
+  return data;
+}
+async function registerKnowledgeTag(client, projectId, name, description) {
+  if (!await metadataCapable(client))
+    throw new Error(
+      "Project tag vocabulary unavailable until the schema is promoted."
+    );
+  const { data, error } = await client.rpc("knowledge_register_tag", {
+    p_project_id: projectId,
+    p_name: name,
+    p_description: description
+  });
+  if (error) throw new Error(error.message);
+  return data;
+}
+function surfaceTags(paths) {
+  return [
+    ...new Set(
+      paths.map((path3) => path3.replace(/^\.\//, "")).filter(
+        (path3) => /^[A-Za-z0-9_.-]+\//.test(path3) && !path3.split("/").some((part) => part === ".." || part === "")
+      ).map((path3) => `surface:${path3.slice(0, path3.lastIndexOf("/"))}`)
+    )
+  ].sort();
+}
+function repositoryPrefix(repo) {
+  let directory = process.cwd();
+  for (; ; ) {
+    const file = join3(directory, ".harmony", "conductor.json");
+    if (existsSync2(file)) {
+      const config = JSON.parse(readFileSync2(file, "utf8"));
+      const match = (config.repos ?? []).find((item) => {
+        const name = String(item.url ?? "").replace(/\.git$/, "").replace(/^.*github\.com[/:]/, "");
+        return name === repo || name.split("/").pop() === repo;
+      });
+      if (match) {
+        const prefix2 = basename2(match.path);
+        if (!/^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(prefix2))
+          throw new Error("Invalid declared repository directory");
+        return prefix2;
+      }
+    }
+    const parent = dirname(directory);
+    if (parent === directory) break;
+    directory = parent;
+  }
+  const prefix = repo.split("/").pop();
+  if (!/^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(prefix))
+    throw new Error("Invalid repository prefix");
+  return prefix;
+}
+
 // src/tools/provenance.ts
 var PROVENANCE_HUMAN_IN_SESSION = "human-in-session";
 var PROVENANCE_AGENT_SYNTHESIZED = "agent-synthesized";
@@ -36904,6 +36999,10 @@ function toBaseStatus(status) {
 }
 async function queryKnowledge(client, projectId, args) {
   const workspaceId = await getWorkspaceId(client, projectId);
+  if (args.scope !== void 0) {
+    if (!["product", "deployment"].includes(args.scope)) throw new Error("scope must be product or deployment");
+    if (!await metadataCapable(client)) throw new Error("Scope filtering unavailable until the schema is promoted; no unfiltered results returned.");
+  }
   if (args.definitions_only && (args.type || args.status || args.tags?.length || args.as_of || args.include_superseded)) {
     throw new Error("definitions_only supports search, domain, limit and offset; ordinary decision filters are not definition filters");
   }
@@ -36927,7 +37026,7 @@ async function queryKnowledge(client, projectId, args) {
     if (!definitions.available) throw new Error("Definitions are not available in this environment yet.");
     return definitions.definitions;
   }
-  const includeDefinitions = !args.type && !args.status && !args.tags?.length && !args.as_of && !args.include_superseded;
+  const includeDefinitions = !args.type && !args.status && !args.tags?.length && !args.as_of && !args.include_superseded && args.scope !== "deployment";
   const prepend = async (entries) => {
     if (!includeDefinitions) return entries;
     const ids = args.search ? [...new Set(definitions.definitions.flatMap((d) => d.refinements.map((r) => r.id)))] : [];
@@ -36960,7 +37059,8 @@ async function queryKnowledge(client, projectId, args) {
   if (args.search) {
     const queryEmbedding = await embedText(client, args.search);
     const data = await bookkeepingPage(({ bookkeeping, offset, limit, count }) => truthCompatibleRead((extraColumns) => {
-      let query = client.rpc("knowledge_search_rrf", {
+      let query = client.rpc(args.scope ? "knowledge_search_rrf_metadata" : "knowledge_search_rrf", {
+        ...args.scope ? { _scope: args.scope } : {},
         _workspace_id: workspaceId,
         _project_id: projectId,
         _query_embedding: queryEmbedding,
@@ -36976,6 +37076,7 @@ async function queryKnowledge(client, projectId, args) {
       title: d.title,
       type: d.type,
       status: d.status,
+      ...d.scope !== void 0 ? { scope: d.scope } : {},
       ...claimFields(d),
       snippet: matchedPassage(d.content ?? "", args.search),
       domain: d.domain,
@@ -36991,6 +37092,7 @@ async function queryKnowledge(client, projectId, args) {
   }
   const rows = await bookkeepingPage(({ bookkeeping, offset, limit, count }) => {
     let query = client.from("knowledge_decisions").select("*", count ? { count: "exact" } : {}).eq("workspace_id", workspaceId).eq("project_id", projectId);
+    if (args.scope) query = query.eq("scope", args.scope);
     if (args.status) query = query.eq("status", args.status);
     else if (!args.include_superseded) query = query.eq("status", "Accepted");
     if (args.type) query = query.eq("type", args.type);
@@ -37000,7 +37102,7 @@ async function queryKnowledge(client, projectId, args) {
     query = bookkeeping ? query.contains("tags", [BOOKKEEPING_TAG]) : query.or(SUBSTANTIVE_TAG_FILTER);
     return query.order("type", { ascending: true }).order("id", { ascending: true }).range(offset, offset + limit - 1);
   }, decisionArgs);
-  return prepend(await withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, rows.map((d) => ({ id: d.id, title: d.title, type: d.type, status: d.status, domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d), verified_against: d.verified_against ?? null, rollout_state: d.rollout_state ?? null, open_steps: d.open_steps ?? null })))));
+  return prepend(await withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, rows.map((d) => ({ id: d.id, title: d.title, type: d.type, status: d.status, ...d.scope !== void 0 ? { scope: d.scope } : {}, domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d), verified_against: d.verified_against ?? null, rollout_state: d.rollout_state ?? null, open_steps: d.open_steps ?? null })))));
 }
 async function hydrateSupersession(client, workspaceId, projectId, rows) {
   const edges = [];
@@ -37040,7 +37142,11 @@ async function createKnowledgeEntry(client, projectId, userId, args) {
   const title = normalizeHtmlEntities(args.title.trim());
   const claimedContent = claimContent(title, normalizeHtmlEntities(args.content ?? ""), args.claim === void 0 ? void 0 : normalizeHtmlEntities(args.claim));
   const workspaceId = await getWorkspaceId(client, projectId);
+  const capable = await metadataCapable(client);
+  if (args.scope && !capable) throw new Error("Knowledge scope unavailable until the schema is promoted; nothing was saved.");
+  if (capable && !args.scope) throw new Error("New knowledge requires product or deployment scope.");
   const record = {
+    ...capable ? { scope: args.scope } : {},
     workspace_id: workspaceId,
     project_id: projectId,
     title: normalizeHtmlEntities(args.title.trim()),
@@ -37085,7 +37191,7 @@ async function updateKnowledgeEntry(client, projectId, args) {
   }
   const truthPatch = truthStatePatch(args);
   const hasTruthUpdates = Object.keys(truthPatch).length > 0;
-  const hasUpdates = args.claim !== void 0 || hasTruthUpdates || args.new_title !== void 0 || args.content !== void 0 || args.type !== void 0 || args.status !== void 0 || args.tags !== void 0 || args.domain !== void 0 || args.madr !== void 0 || args.realization !== void 0 || args.review_by !== void 0;
+  const hasUpdates = args.scope !== void 0 || args.claim !== void 0 || hasTruthUpdates || args.new_title !== void 0 || args.content !== void 0 || args.type !== void 0 || args.status !== void 0 || args.tags !== void 0 || args.domain !== void 0 || args.madr !== void 0 || args.realization !== void 0 || args.review_by !== void 0;
   if (!hasUpdates) {
     throw new Error("At least one field to update must be provided");
   }
@@ -37111,7 +37217,7 @@ async function updateKnowledgeEntry(client, projectId, args) {
   const newTitle = args.new_title !== void 0 ? normalizeHtmlEntities(args.new_title.trim()) : void 0;
   guardKnowledgeWriteProvenance(args.provenance);
   const contentWrite = args.content !== void 0 || args.claim !== void 0;
-  const { data, error } = await client.rpc(hasTruthUpdates ? "knowledge_amend_entry_truth" : contentWrite ? "knowledge_amend_knowledge_entry" : "knowledge_update_knowledge_entry", {
+  const rpcArgs = {
     p_project_id: projectId,
     p_entry_id: args.entry_id ?? null,
     p_title: args.title ?? null,
@@ -37132,7 +37238,9 @@ async function updateKnowledgeEntry(client, projectId, args) {
     p_leg: getLeg() ?? null,
     ...contentWrite || hasTruthUpdates ? { p_content_mode: mode, p_allow_shrink: args.allow_shrink ?? false } : {},
     ...hasTruthUpdates ? { p_truth_state: truthPatch, p_acting_task_id: args.acting_task_id ?? null } : {}
-  });
+  };
+  if (hasTruthUpdates && args.scope !== void 0) throw new Error("scope cannot be combined with a verification/rollout write in one update; send them as two updates. No fields were changed.");
+  const { data, error } = hasTruthUpdates ? await client.rpc("knowledge_amend_entry_truth", rpcArgs) : await metadataRpc(client, contentWrite ? "knowledge_amend_knowledge_entry" : "knowledge_update_knowledge_entry", args.scope, rpcArgs);
   if (error) {
     if (hasTruthUpdates && ["PGRST202", "42883", "42703", "PGRST204"].includes(error.code ?? "")) {
       throw new Error("Knowledge verification/rollout update unavailable: apply the B-1229 database migration first. No fields were changed.");
@@ -37216,7 +37324,7 @@ ${content}`);
     realization = "agreed";
   }
   guardKnowledgeWriteProvenance(args.provenance);
-  const { data, error } = await client.rpc("knowledge_record_decision", {
+  const { data, error } = await metadataRpc(client, "knowledge_record_decision", args.scope, {
     p_project_id: projectId,
     p_title: title,
     p_type: args.type,
@@ -37254,7 +37362,7 @@ async function supersedeKnowledgeEntry(client, projectId, userId, args) {
   const content = claimContent(normalizeHtmlEntities(args.new_title), normalizeHtmlEntities(args.new_content), args.new_claim === void 0 ? void 0 : normalizeHtmlEntities(args.new_claim));
   const workspaceId = await getWorkspaceId(client, projectId);
   guardKnowledgeWriteProvenance(args.provenance);
-  const { data, error } = await client.rpc("knowledge_supersede_knowledge_entry", {
+  const { data, error } = await metadataRpc(client, "knowledge_supersede_knowledge_entry", args.scope, {
     p_project_id: projectId,
     p_new_title: normalizeHtmlEntities(args.new_title),
     p_new_content: content,
@@ -37920,7 +38028,7 @@ function resolveKnownRefs(env2) {
 }
 function readManifestVersion(manifestPath) {
   try {
-    const parsed = JSON.parse(readFileSync2(manifestPath, "utf8"));
+    const parsed = JSON.parse(readFileSync3(manifestPath, "utf8"));
     return typeof parsed.version === "string" ? parsed.version : null;
   } catch {
     return null;
@@ -37929,14 +38037,14 @@ function readManifestVersion(manifestPath) {
 function resolvePluginVersion(env2, moduleUrl) {
   const root = env2.CLAUDE_PLUGIN_ROOT;
   if (root) {
-    const version4 = readManifestVersion(join3(root, ".claude-plugin", "plugin.json"));
+    const version4 = readManifestVersion(join4(root, ".claude-plugin", "plugin.json"));
     if (version4 !== null) return version4;
   }
   try {
-    let dir = dirname(fileURLToPath(moduleUrl));
+    let dir = dirname2(fileURLToPath(moduleUrl));
     for (let i = 0; i < 3; i++) {
-      dir = dirname(dir);
-      const version4 = readManifestVersion(join3(dir, ".claude-plugin", "plugin.json"));
+      dir = dirname2(dir);
+      const version4 = readManifestVersion(join4(dir, ".claude-plugin", "plugin.json"));
       if (version4 !== null) return version4;
     }
   } catch {
@@ -38364,10 +38472,16 @@ ${result.error.issues.map((issue) => `- doc.frame${issue.path.map((p) => typeof 
 
 // src/tools/build-settlement.ts
 async function settlementWarning(client, projectId, doc, changedPaths) {
-  if (doc.frame?.kind !== "release" || doc.frame.settled_beyond_design?.length !== 0) return;
-  const tags = [...new Set((changedPaths ?? []).filter(Boolean).map((path3) => `surface:${path3.replace(/^\.\//, "")}`))];
-  if (!tags.length) return;
+  if (doc.frame?.kind !== "release" || doc.frame.settled_beyond_design?.length !== 0)
+    return;
   try {
+    const repos = doc.frame.act?.repos ?? [];
+    const prefix = repos.length === 1 ? repositoryPrefix(repos[0]) : void 0;
+    const paths = (changedPaths ?? []).map(
+      (path3) => /^[^/]+\//.test(path3.replace(/^\.\//, "")) && (path3.startsWith(`${prefix}/`) || repos.length !== 1) || !prefix ? path3 : `${prefix}/${path3.replace(/^\.\//, "")}`
+    );
+    const tags = surfaceTags(paths);
+    if (!tags.length) return;
     const workspaceId = await getWorkspaceId(client, projectId);
     const { data, error } = await client.from("knowledge_decisions").select("id, title, tags").eq("workspace_id", workspaceId).eq("project_id", projectId).eq("status", "Accepted").overlaps("tags", tags).limit(20);
     if (error) throw error;
@@ -38620,8 +38734,8 @@ function basenameOf(path3) {
   const idx = path3.lastIndexOf("/");
   return idx === -1 ? path3 : path3.slice(idx + 1);
 }
-function tokenizeBasename(basename4) {
-  const spaced = basename4.replace(/([a-zA-Z])([0-9])/g, "$1 $2").replace(/([0-9])([a-zA-Z])/g, "$1 $2").replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[-_.]+/g, " ");
+function tokenizeBasename(basename5) {
+  const spaced = basename5.replace(/([a-zA-Z])([0-9])/g, "$1 $2").replace(/([0-9])([a-zA-Z])/g, "$1 $2").replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[-_.]+/g, " ");
   return spaced.split(/\s+/).filter((t) => t.length > 0);
 }
 function authBasenameHit(path3) {
@@ -38863,7 +38977,7 @@ function firstToken(command) {
 function looksLikeScriptPath(token) {
   return token.includes("/");
 }
-function validateSteps(file, extensionPoint, steps, projectRoot, existsSync5) {
+function validateSteps(file, extensionPoint, steps, projectRoot, existsSync6) {
   if (!steps) return void 0;
   for (const step of steps) {
     if (isAgentTaskStep(step)) {
@@ -38876,7 +38990,7 @@ function validateSteps(file, extensionPoint, steps, projectRoot, existsSync5) {
     const token = firstToken(step.run);
     if (looksLikeScriptPath(token)) {
       const resolved = nodeResolve(projectRoot, token);
-      if (!existsSync5(resolved)) {
+      if (!existsSync6(resolved)) {
         return {
           file,
           reason: "missing-script",
@@ -38888,11 +39002,11 @@ function validateSteps(file, extensionPoint, steps, projectRoot, existsSync5) {
   return void 0;
 }
 function loadProjectManifest(projectRoot, deps = {}) {
-  const existsSync5 = deps.existsSync ?? nodeExistsSync2;
-  const readFileSync13 = deps.readFileSync ?? ((p) => nodeReadFileSync2(p, "utf8"));
+  const existsSync6 = deps.existsSync ?? nodeExistsSync2;
+  const readFileSync15 = deps.readFileSync ?? ((p) => nodeReadFileSync2(p, "utf8"));
   const file = nodeJoin2(projectRoot, PROJECT_MANIFEST_RELATIVE_PATH);
-  if (!existsSync5(file)) return { kind: "absent" };
-  const raw = readFileSync13(file);
+  if (!existsSync6(file)) return { kind: "absent" };
+  const raw = readFileSync15(file);
   let parsed;
   try {
     parsed = (0, import_yaml.parse)(raw);
@@ -38987,17 +39101,17 @@ function loadProjectManifest(projectRoot, deps = {}) {
     };
   }
   const stepErrors = {};
-  const buildErr = validateSteps(file, "build.before_pr", manifest.build?.before_pr, projectRoot, existsSync5);
+  const buildErr = validateSteps(file, "build.before_pr", manifest.build?.before_pr, projectRoot, existsSync6);
   if (buildErr) stepErrors["build.before_pr"] = buildErr;
   const releaseErr = validateSteps(
     file,
     "release.before_merge",
     manifest.release?.before_merge,
     projectRoot,
-    existsSync5
+    existsSync6
   );
   if (releaseErr) stepErrors["release.before_merge"] = releaseErr;
-  const verifyErr = validateSteps(file, "verify.before_ack", manifest.verify?.before_ack, projectRoot, existsSync5);
+  const verifyErr = validateSteps(file, "verify.before_ack", manifest.verify?.before_ack, projectRoot, existsSync6);
   if (verifyErr) stepErrors["verify.before_ack"] = verifyErr;
   return { kind: "ok", file, manifest, stepErrors };
 }
@@ -40143,7 +40257,7 @@ function withDerivedEntryContent(doc, reason, decisionRef, ctx) {
   if (!decisionRef?.id) return doc;
   const others = (doc.payload ?? []).filter((p) => p.write_kind !== "knowledge_entry_content");
   const ref = slugRef("entry", decisionRef.id);
-  const stub = { write_kind: "knowledge_entry_content", ref, entry_id: decisionRef.id };
+  const stub = { write_kind: "knowledge_entry_content", ref, entry_id: decisionRef.id, ...doc.knowledge_scope ? { scope: doc.knowledge_scope } : {} };
   const staged = { ...doc, payload: [...others, stub] };
   const content = renderEntry(staged, { ...ctx, decisionRef });
   const title = deriveEntryTitle(staged, reason, { ...ctx, decisionRef });
@@ -40624,6 +40738,7 @@ var composeBriefTool = {
                 target_child_ref: { type: "string", description: "ac_transfer only \u2014 the destination child_ticket item's own `ref` from this SAME payload" },
                 from_ac_id: { type: ["string", "null"], description: "ac_transfer only \u2014 the parent AC's own id being removed; omit only for the rare copy-not-move case" },
                 label_name: { type: "string", description: "label_add only (B-688) \u2014 the label to add; defaults to 'decision-only' when omitted (the only real-world caller today)" },
+                scope: { type: "string", enum: ["product", "deployment"], description: "Accepted applicability metadata, applied in the same ledgered transaction." },
                 entry_id: { type: ["string", "null"], description: "knowledge_entry_content only (B-843) \u2014 the target knowledge entry; omit to let the DB resolve it from this brief's own decision_ref (the normal case)" }
               },
               required: ["write_kind", "ref"]
@@ -41676,6 +41791,9 @@ async function applyAcceptanceEventPayload(client, event) {
         result = data;
       } else if (item.write_kind === "knowledge_entry_content") {
         if (!item.content) throw new Error(`knowledge_entry_content item '${item.ref}' is missing content \u2014 the payload CARRIES the entry text; it is never synthesized from doc fields`);
+        const metadata = item.scope !== void 0;
+        if (metadata && !await metadataCapable(client)) throw new Error("Accepted scope metadata unavailable until the schema is promoted; acceptance remains pending.");
+        const operation = metadata ? "consume_knowledge_entry_content_write_metadata" : "consume_knowledge_entry_content_write";
         let includeTitle = true;
         let includeTags = true;
         const callArgs = () => ({
@@ -41683,11 +41801,12 @@ async function applyAcceptanceEventPayload(client, event) {
           _external_ref: item.ref,
           _content: item.content,
           _entry_id: item.entry_id ?? null,
+          ...metadata ? { _scope: item.scope } : {},
           ...includeTitle ? { _title: item.title ?? null } : {},
           ...includeTags ? { _tags: item.tags ?? null } : {}
         });
-        let { data, error } = await client.rpc("consume_knowledge_entry_content_write", callArgs());
-        for (let round = 0; round < 2 && error; round++) {
+        let { data, error } = await client.rpc(operation, callArgs());
+        for (let round = 0; round < 2 && error && !metadata; round++) {
           if (includeTags && isMissingTagsParam(error.message)) {
             includeTags = false;
           } else if (includeTitle && isMissingTitleParam(error.message)) {
@@ -41695,7 +41814,7 @@ async function applyAcceptanceEventPayload(client, event) {
           } else {
             break;
           }
-          ({ data, error } = await client.rpc("consume_knowledge_entry_content_write", callArgs()));
+          ({ data, error } = await client.rpc(operation, callArgs()));
         }
         if (error) {
           if (isMissingRelationOrFunction(error)) throw new WriteKindSubstrateAbsentError("knowledge_entry_content");
@@ -43376,9 +43495,210 @@ function registerBulkCommands(program3) {
 }
 
 // src/cli/commands/knowledge.ts
+import { readFileSync as readFileSync4, writeFileSync } from "node:fs";
+
+// src/tools/knowledge-repair.ts
+import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+function verifiedPrPaths(repo, number) {
+  if (!/^[-\w]+\/[-\w.]+$/.test(repo) || !Number.isSafeInteger(number) || number < 1)
+    throw new Error("Invalid PR identity");
+  const pr = JSON.parse(
+    execFileSync(
+      "gh",
+      [
+        "pr",
+        "view",
+        String(number),
+        "--repo",
+        repo,
+        "--json",
+        "state,files,url"
+      ],
+      { encoding: "utf8" }
+    )
+  );
+  if (pr.state !== "MERGED") throw new Error(`PR ${pr.url} is not merged`);
+  const prefix = repositoryPrefix(repo);
+  const pages = execFileSync(
+    "gh",
+    [
+      "api",
+      "--paginate",
+      `repos/${repo}/pulls/${number}/files`,
+      "--jq",
+      ".[].filename"
+    ],
+    { encoding: "utf8" }
+  );
+  return {
+    repo,
+    number,
+    paths: pages.trim().split("\n").filter(Boolean).map((p) => `${prefix}/${p}`)
+  };
+}
+async function previewMetadataRepair(client, projectId) {
+  if (!await metadataCapable(client))
+    throw new Error("Metadata repair unavailable until schema promotion.");
+  const { data, error } = await client.rpc("knowledge_metadata_preview", {
+    p_project_id: projectId
+  });
+  if (error) throw new Error(error.message);
+  const entries = [];
+  for (const d of data ?? []) {
+    const text = `${d.title}
+${d.content}`;
+    const operations = /promote-prod|container\/|\.github\/workflows|staging.*(?:job|host)|\bdeployment\b/i.test(
+      text
+    );
+    const product = /\b(user|reader|author|product)\b/i.test(text);
+    const prs = [];
+    const { data: refs, error: refsError } = await client.from("ticket_references_knowledge").select("task_id").eq("decision_id", d.id);
+    if (refsError) throw new Error(refsError.message);
+    const taskIds = [
+      .../* @__PURE__ */ new Set([
+        ...d.source_task_id ? [d.source_task_id] : [],
+        ...(refs ?? []).map((ref) => ref.task_id)
+      ])
+    ];
+    for (const taskId of taskIds) {
+      const { data: task, error: taskError } = await client.from("tasks").select("field_values").eq("id", taskId).eq("project_id", projectId).maybeSingle();
+      if (taskError) throw new Error(taskError.message);
+      for (const ref of [
+        task?.field_values?.build_pr,
+        task?.field_values?.prerequisite_pr
+      ]) {
+        const match = ref?.pr_url?.match(
+          /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)$/
+        );
+        if (!match || prs.some(
+          (pr) => pr.repo === match[1] && pr.number === Number(match[2])
+        ))
+          continue;
+        try {
+          prs.push(verifiedPrPaths(match[1], Number(match[2])));
+        } catch (e) {
+          prs.push({
+            repo: match[1],
+            number: Number(match[2]),
+            paths: [],
+            unavailable: e.message
+          });
+        }
+      }
+    }
+    entries.push({
+      id: d.id,
+      fingerprint: d.fingerprint,
+      title: d.title,
+      content: d.content,
+      current_scope: d.scope ?? null,
+      reviewed: false,
+      scope: d.scope ?? (operations && !product ? "deployment" : null),
+      evidence: operations ? [
+        "Deployment path or operation mentioned; review the claim before assigning scope."
+      ] : [],
+      state: operations && product ? "mixed" : operations ? "proposed" : "uncertain",
+      surfaces: surfaceTags(
+        prs.filter((pr) => !pr.unavailable).flatMap((pr) => pr.paths)
+      ),
+      prs,
+      tags_before: d.tags?.length ?? 0
+    });
+  }
+  return {
+    version: 1,
+    project_id: projectId,
+    manifest_id: randomUUID(),
+    entries,
+    counts: {
+      entries: entries.length,
+      product_before: entries.filter((e) => e.current_scope === "product").length,
+      deployment_before: entries.filter((e) => e.current_scope === "deployment").length,
+      unresolved_before: entries.filter((e) => !e.current_scope).length,
+      proposed: entries.filter((e) => e.scope).length,
+      mixed: entries.filter((e) => e.state === "mixed").length,
+      uncertain: entries.filter((e) => e.state === "uncertain").length,
+      missing_pr: entries.filter((e) => !e.prs.some((pr) => !pr.unavailable)).length,
+      tags_before: entries.reduce((n, e) => n + e.tags_before, 0)
+    }
+  };
+}
+async function applyMetadataRepair(client, projectId, manifest) {
+  if (manifest.version !== 1 || manifest.project_id !== projectId)
+    throw new Error("Manifest does not belong to this project");
+  if (!await metadataCapable(client))
+    throw new Error("Metadata repair unavailable until schema promotion.");
+  const counts = {
+    applied: 0,
+    replayed: 0,
+    skipped: 0,
+    missing_pr: 0,
+    tags_before: 0,
+    tags_after: 0,
+    product_after: 0,
+    deployment_after: 0,
+    unresolved_after: 0
+  };
+  for (const item of manifest.entries) {
+    if (!item.reviewed) {
+      counts.skipped++;
+      continue;
+    }
+    const paths = item.prs.filter((pr) => !pr.unavailable).flatMap((pr) => verifiedPrPaths(pr.repo, pr.number).paths);
+    if (!paths.length) counts.missing_pr++;
+    const { data, error } = await client.rpc(
+      "knowledge_apply_metadata_repair",
+      {
+        p_project_id: projectId,
+        p_manifest_id: manifest.manifest_id,
+        p_entry_id: item.id,
+        p_fingerprint: item.fingerprint,
+        p_scope: item.scope,
+        p_surface_tags: surfaceTags(paths)
+      }
+    );
+    if (error) throw new Error(`${item.id}: ${error.message}`);
+    if (data?.applied) {
+      counts.applied++;
+      counts.tags_before += data.tags_before ?? 0;
+      counts.tags_after += data.tags_after ?? 0;
+      if (data.scope === "product") counts.product_after++;
+      else if (data.scope === "deployment") counts.deployment_after++;
+      else counts.unresolved_after++;
+    } else counts.replayed++;
+  }
+  return counts;
+}
+async function tagReleasedKnowledge(client, projectId, taskId, repo, pr) {
+  const evidence = verifiedPrPaths(repo, pr);
+  const tags = surfaceTags(evidence.paths);
+  const { data: refs, error } = await client.from("ticket_references_knowledge").select("decision_id").eq("task_id", taskId);
+  if (error) throw new Error(error.message);
+  let tagged = 0;
+  for (const ref of refs ?? []) {
+    const { data: rows, error: readError } = await client.from("knowledge_decisions").select("id,tags").eq("project_id", projectId).eq("id", ref.decision_id);
+    if (readError) throw new Error(readError.message);
+    const entry = (rows ?? []).find((d) => d.id === ref.decision_id);
+    if (!entry) continue;
+    const { error: writeError } = await client.rpc(
+      "knowledge_update_knowledge_entry",
+      {
+        p_project_id: projectId,
+        p_entry_id: entry.id,
+        p_tags: [.../* @__PURE__ */ new Set([...entry.tags ?? [], ...tags])]
+      }
+    );
+    if (writeError) throw new Error(writeError.message);
+    tagged++;
+  }
+  return { available: true, tagged, tags };
+}
+
+// src/cli/commands/knowledge.ts
 function registerKnowledgeCommands(program3) {
   const knowledge = program3.command("knowledge").description("Manage workspace knowledge base");
-  knowledge.command("list").description("List knowledge entries with optional filters").option("--type <type>", "Filter by type (e.g. architecture, business, convention, specification)").option("--status <status>", "Filter by status").option(
+  knowledge.command("list").description("List knowledge entries with optional filters").option("--scope <scope>", "Product or deployment scope; fails visibly when unavailable").option("--type <type>", "Filter by type (e.g. architecture, business, convention, specification)").option("--status <status>", "Filter by status").option(
     "--tag <tag>",
     "Filter by tag (repeat for multiple)",
     (v, prev) => [...prev, v],
@@ -43387,6 +43707,7 @@ function registerKnowledgeCommands(program3) {
     await runCommand(
       program3.opts(),
       async (ctx) => queryKnowledge(ctx.client, ctx.projectId, {
+        scope: opts.scope,
         definitions_only: opts.definitionsOnly,
         type: opts.type,
         status: opts.status,
@@ -43406,7 +43727,7 @@ function registerKnowledgeCommands(program3) {
         { key: "claim", header: "Claim", width: 60 },
         { key: "claim_source", header: "Claim source" },
         { key: "snippet", header: "Matched passage", width: 60 },
-        { key: "type", header: "Type", width: 14 },
+        { key: "type", header: "Type (advisory)", width: 16 },
         { key: "status", header: "Status", width: 12 },
         { key: "superseded_by", header: "Superseded by", transform: (v) => v ?? "\u2014" },
         { key: "supersedes", header: "Supersedes", transform: (v) => (v ?? []).join(", ") || "\u2014" },
@@ -43426,6 +43747,25 @@ function registerKnowledgeCommands(program3) {
         }
       ])
     );
+  });
+  knowledge.command("preview-metadata-repair").argument("<file>").action(async (file) => {
+    await runCommand(program3.opts(), async (ctx) => {
+      const manifest = await previewMetadataRepair(ctx.client, ctx.projectId);
+      writeFileSync(file, JSON.stringify(manifest, null, 2));
+      return manifest.counts;
+    }, (data) => JSON.stringify(data, null, 2));
+  });
+  knowledge.command("apply-metadata-repair").argument("<reviewed-file>").action(async (file) => {
+    await runCommand(program3.opts(), (ctx) => applyMetadataRepair(ctx.client, ctx.projectId, JSON.parse(readFileSync4(file, "utf8"))), (data) => JSON.stringify(data, null, 2));
+  });
+  knowledge.command("tag-release").requiredOption("--task <uuid>", "Ticket UUID").requiredOption("--repo <owner/name>", "PR repository").requiredOption("--pr <number>", "Merged PR number").action(async (opts) => {
+    await runCommand(program3.opts(), (ctx) => tagReleasedKnowledge(ctx.client, ctx.projectId, opts.task, opts.repo, Number(opts.pr)), (data) => JSON.stringify(data, null, 2));
+  });
+  knowledge.command("tags").action(async () => {
+    await runCommand(program3.opts(), (ctx) => listKnowledgeTags(ctx.client, ctx.projectId), (data) => JSON.stringify(data, null, 2));
+  });
+  knowledge.command("register-tag").argument("<name>").argument("<description>").action(async (name, description) => {
+    await runCommand(program3.opts(), (ctx) => registerKnowledgeTag(ctx.client, ctx.projectId, name, description), (data) => JSON.stringify(data, null, 2));
   });
   knowledge.command("publish-definition").requiredOption("--concept <uuid>").requiredOption("--expected-revision <uuid-or-null>").requiredOption("--source <uuid>").requiredOption("--wording <text>").option("--metadata <json>", "Source references", "{}").option("--provenance <value>", "Knowledge-write provenance").action(async (opts) => {
     await runCommand(program3.opts(), (ctx) => publishDefinition(ctx.client, ctx.projectId, {
@@ -43450,7 +43790,7 @@ function registerKnowledgeCommands(program3) {
       (entry) => formatDetail([
         { label: "ID", value: entry.id },
         { label: "Title", value: entry.title },
-        { label: "Type", value: entry.type },
+        { label: "Type (advisory)", value: entry.type },
         { label: "Status", value: entry.status },
         { label: "Verification", value: entry.verified_against ? JSON.stringify(entry.verified_against) : "Not verified" },
         { label: "Rollout", value: entry.rollout_state ?? "Unknown" },
@@ -43465,11 +43805,12 @@ function registerKnowledgeCommands(program3) {
       ])
     );
   });
-  knowledge.command("create").description("Create a new knowledge entry").requiredOption("--title <title>", "Entry title").requiredOption("--claim <claim>", "One-sentence claim").requiredOption("--content <content>", "Markdown content of the entry").requiredOption("--type <type>", "Entry type: architecture, business, convention, or specification").option("--status <status>", "Status override (default: draft)").option("--tags <tags>", "Comma-separated list of tags").option("--source-task <id>", "Task ID that triggered this knowledge entry").action(async (opts) => {
+  knowledge.command("create").option("--scope <scope>", "Required new-entry product or deployment scope").description("Create a new knowledge entry").requiredOption("--title <title>", "Entry title").requiredOption("--claim <claim>", "One-sentence claim").requiredOption("--content <content>", "Markdown content of the entry").requiredOption("--type <type>", "Entry type: architecture, business, convention, or specification").option("--status <status>", "Status override (default: draft)").option("--tags <tags>", "Comma-separated list of tags").option("--source-task <id>", "Task ID that triggered this knowledge entry").action(async (opts) => {
     const tags = opts.tags ? opts.tags.split(",").map((t) => t.trim()).filter(Boolean) : void 0;
     await runCommand(
       program3.opts(),
       async (ctx) => createKnowledgeEntry(ctx.client, ctx.projectId, ctx.userId, {
+        scope: opts.scope,
         title: opts.title,
         content: opts.content,
         claim: opts.claim,
@@ -43481,7 +43822,7 @@ function registerKnowledgeCommands(program3) {
       (entry) => `Created knowledge entry: "${entry.title}" (${entry.id})`
     );
   });
-  knowledge.command("update").description("Update an existing knowledge entry").argument("<id>", "Entry UUID").option("--title <title>", "New title").option("--claim <claim>", "Authored claim; explicitly confirms a legacy proposal").option("--content <content>", "New markdown content").option("--content-mode <mode>", "replace, prepend_section, or append_section").option("--allow-shrink", "Explicitly permit a destructive shorter replacement").option("--type <type>", "New entry type").option("--status <status>", "New status").option("--tags <tags>", "Comma-separated list of tags (replaces existing tags)").option(
+  knowledge.command("update").option("--scope <scope>", "Product or deployment scope; requires metadata capability").description("Update an existing knowledge entry").argument("<id>", "Entry UUID").option("--title <title>", "New title").option("--claim <claim>", "Authored claim; explicitly confirms a legacy proposal").option("--content <content>", "New markdown content").option("--content-mode <mode>", "replace, prepend_section, or append_section").option("--allow-shrink", "Explicitly permit a destructive shorter replacement").option("--type <type>", "New entry type").option("--status <status>", "New status").option("--tags <tags>", "Comma-separated list of tags (replaces existing tags)").option(
     "--domain <domain>",
     "Domain (repeat for multiple): engineering, operations, data, product, customer, process",
     (v, prev) => [...prev, v],
@@ -43494,6 +43835,7 @@ function registerKnowledgeCommands(program3) {
       program3.opts(),
       async (ctx) => updateKnowledgeEntry(ctx.client, ctx.projectId, {
         entry_id: id,
+        scope: opts.scope,
         new_title: opts.title,
         content: opts.content,
         content_mode: opts.contentMode,
@@ -43514,12 +43856,13 @@ function registerKnowledgeCommands(program3) {
       (entry) => `Updated knowledge entry: "${entry.title}" (${entry.id})`
     );
   });
-  knowledge.command("supersede").description("Supersede an existing knowledge entry with a new replacement").argument("<id>", "UUID of the entry to supersede").requiredOption("--title <title>", "Title for the replacement entry").requiredOption("--claim <claim>", "Authored claim for the replacement").requiredOption("--content <content>", "Content for the replacement entry").option("--type <type>", "Type for the replacement (defaults to type of superseded entry)").option("--tags <tags>", "Comma-separated tags for the replacement").action(async (id, opts) => {
+  knowledge.command("supersede").option("--scope <scope>", "Required applicability of a new successor").description("Supersede an existing knowledge entry with a new replacement").argument("<id>", "UUID of the entry to supersede").requiredOption("--title <title>", "Title for the replacement entry").requiredOption("--claim <claim>", "Authored claim for the replacement").requiredOption("--content <content>", "Content for the replacement entry").option("--type <type>", "Type for the replacement (defaults to type of superseded entry)").option("--tags <tags>", "Comma-separated tags for the replacement").action(async (id, opts) => {
     const tags = opts.tags ? opts.tags.split(",").map((t) => t.trim()).filter(Boolean) : void 0;
     await runCommand(
       program3.opts(),
       async (ctx) => supersedeKnowledgeEntry(ctx.client, ctx.projectId, ctx.userId, {
         entry_id: id,
+        scope: opts.scope,
         new_title: opts.title,
         new_content: opts.content,
         new_claim: opts.claim,
@@ -44743,8 +45086,8 @@ function registerConfigCommands(program3) {
 
 // src/cli/commands/conductor-config.ts
 import { execFile } from "node:child_process";
-import { chmodSync as chmodSync3, existsSync as fsExistsSync3, mkdirSync as mkdirSync3, readFileSync as fsReadFileSync3, writeFileSync as writeFileSync3 } from "node:fs";
-import { dirname as dirname5, resolve as resolve3 } from "node:path";
+import { chmodSync as chmodSync3, existsSync as fsExistsSync3, mkdirSync as mkdirSync3, readFileSync as fsReadFileSync3, writeFileSync as writeFileSync4 } from "node:fs";
+import { dirname as dirname6, resolve as resolve3 } from "node:path";
 
 // src/config/conductor-migrate.ts
 var DEFAULT_SECRET_NAMES = {
@@ -44864,12 +45207,12 @@ function buildMigration(input) {
 
 // src/config/conductor-project-source.ts
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync as readFileSync4, renameSync, rmSync, writeFileSync } from "node:fs";
-import { dirname as dirname2 } from "node:path";
+import { chmodSync, mkdirSync, readFileSync as readFileSync6, renameSync, rmSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { dirname as dirname3 } from "node:path";
 
 // src/config/github-app-token.ts
 import { createSign } from "node:crypto";
-import { readFileSync as readFileSync3 } from "node:fs";
+import { readFileSync as readFileSync5 } from "node:fs";
 var GITHUB_API_DEFAULT = "https://api.github.com";
 var REQUEST_TIMEOUT_MS = 1e4;
 var TOKEN_REFRESH_MARGIN_MS = 5 * 6e4;
@@ -44885,7 +45228,7 @@ function buildAppJwt(appId, privateKey, nowSeconds) {
 function createGithubTokenProvider(deps) {
   const { env: env2 } = deps;
   const fetchImpl = deps.fetchImpl ?? fetch;
-  const readFile = deps.readFile ?? ((p) => readFileSync3(p, "utf8"));
+  const readFile = deps.readFile ?? ((p) => readFileSync5(p, "utf8"));
   const now = deps.now ?? Date.now;
   const api = env2.GITHUB_API_URL || GITHUB_API_DEFAULT;
   const appId = env2.HARMONY_APP_ID || deps.appOverride?.app_id;
@@ -44977,16 +45320,16 @@ async function fetchProjectFile(input) {
 }
 function readSnapshot(path3) {
   try {
-    return parseSnapshotText(readFileSync4(path3, "utf8"));
+    return parseSnapshotText(readFileSync6(path3, "utf8"));
   } catch {
     return null;
   }
 }
 function writeSnapshot(path3, snap) {
-  mkdirSync(dirname2(path3), { recursive: true });
+  mkdirSync(dirname3(path3), { recursive: true });
   const tmp = `${path3}.${process.pid}.${Date.now().toString(36)}.tmp`;
   try {
-    writeFileSync(tmp, `${JSON.stringify(snap, null, 2)}
+    writeFileSync2(tmp, `${JSON.stringify(snap, null, 2)}
 `, { mode: 384 });
     chmodSync(tmp, 384);
     renameSync(tmp, path3);
@@ -45048,7 +45391,7 @@ ${new ConductorConfigError(v.issues).message}`);
 }
 
 // src/cli/commands/conductor-lifecycle.ts
-import { dirname as dirname4, join as join9 } from "node:path";
+import { dirname as dirname5, join as join10 } from "node:path";
 
 // src/daemon/conductor-board.ts
 var holderPrefix = (host, pid) => `${host}:${pid}:`;
@@ -45090,7 +45433,7 @@ function classifyLeases(rows, host, runningPid, freshMs, nowMs) {
 }
 
 // src/daemon/conductor-process.ts
-import { basename as basename2, isAbsolute, join as join4, resolve } from "node:path";
+import { basename as basename3, isAbsolute, join as join5, resolve } from "node:path";
 function parsePsOutput(text) {
   const out = [];
   for (const line of text.split("\n")) {
@@ -45127,7 +45470,7 @@ function tokenizeArgs(args) {
   if (has2 || cur) tokens.push(cur);
   return tokens;
 }
-var isNode = (exe) => /^(node|nodejs)(\d+(\.\d+)*)?$/.test(basename2(exe));
+var isNode = (exe) => /^(node|nodejs)(\d+(\.\d+)*)?$/.test(basename3(exe));
 function scriptOf(argv) {
   if (argv.length < 2 || !isNode(argv[0])) return null;
   const valued = /* @__PURE__ */ new Set(["-r", "--require", "--import", "--loader", "--experimental-loader", "-e", "--eval", "-p", "--print"]);
@@ -45158,7 +45501,7 @@ function daemonCandidates(procs) {
   return out;
 }
 function matchConductors(procs, opts) {
-  const want = resolve(join4(opts.pluginDir, "dist", "bin", "daemon.js"));
+  const want = resolve(join5(opts.pluginDir, "dist", "bin", "daemon.js"));
   const out = [];
   for (const c of daemonCandidates(procs)) {
     let script;
@@ -45179,7 +45522,7 @@ function needsCwd(procs) {
 }
 
 // src/daemon/supervisor-control.ts
-import { join as join5 } from "node:path";
+import { join as join6 } from "node:path";
 
 // src/daemon/supervisor.ts
 var LAUNCHD_SERVICE_NAME = "com.ycomplex.harmony-daemon";
@@ -45187,9 +45530,9 @@ var LAUNCHD_SERVICE_NAME = "com.ycomplex.harmony-daemon";
 // src/daemon/supervisor-control.ts
 var LAUNCHD_LABEL = LAUNCHD_SERVICE_NAME;
 var SYSTEMD_UNIT = "harmony-conductor.service";
-var agentPlistPath = (home) => join5(home, "Library", "LaunchAgents", `${LAUNCHD_LABEL}.plist`);
+var agentPlistPath = (home) => join6(home, "Library", "LaunchAgents", `${LAUNCHD_LABEL}.plist`);
 var daemonPlistPath = () => `/Library/LaunchDaemons/${LAUNCHD_LABEL}.plist`;
-var systemdUnitPath = (home) => join5(home, ".config", "systemd", "user", SYSTEMD_UNIT);
+var systemdUnitPath = (home) => join6(home, ".config", "systemd", "user", SYSTEMD_UNIT);
 var launchdTarget = (kind, uid) => kind === "launchd-agent" ? `gui/${uid}/${LAUNCHD_LABEL}` : `system/${LAUNCHD_LABEL}`;
 async function detectSupervisorState(deps) {
   if (deps.platform === "darwin") {
@@ -45241,7 +45584,7 @@ function fillTemplate(template, values) {
   });
 }
 var xmlEscape = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
-var launcherPath = (pluginDir) => join5(pluginDir, "container", "conductor-launch.sh");
+var launcherPath = (pluginDir) => join6(pluginDir, "container", "conductor-launch.sh");
 function renderLaunchdPlist(template, o) {
   const args = ["/bin/bash", launcherPath(o.pluginDir), ...o.launcherArgs];
   return fillTemplate(template, {
@@ -45296,13 +45639,13 @@ var Out = class {
 var EXIT = { ok: 0, failure: 1, usage: 2, inFlight: 3, notAdopted: 4 };
 
 // src/cli/commands/conductor-registry-cli.ts
-import { join as join8 } from "node:path";
+import { join as join9 } from "node:path";
 
 // src/cli/commands/conductor-preflight.ts
-import { basename as basename3, join as join7 } from "node:path";
+import { basename as basename4, join as join8 } from "node:path";
 
 // src/config/conductor-secrets.ts
-import { readFileSync as readFileSync5 } from "node:fs";
+import { readFileSync as readFileSync7 } from "node:fs";
 
 // src/daemon/conductor-remote.ts
 var REMOTE_ENV = "HARMONY_CONDUCTOR_REMOTE";
@@ -45330,7 +45673,7 @@ async function resolveConductorSecrets(deps) {
   const result = { resolved: [], skipped: [] };
   const remote = isRemoteConductor(deps.env);
   const hostPath = resolveConductorPaths(deps.env).hostFile;
-  const read = deps.readFile ?? ((p) => readFileSync5(p, "utf8"));
+  const read = deps.readFile ?? ((p) => readFileSync7(p, "utf8"));
   let text;
   try {
     text = read(hostPath);
@@ -45381,7 +45724,7 @@ async function resolveConductorSecrets(deps) {
 
 // src/config/gcp-project.ts
 import { existsSync as fsExistsSync2, readFileSync as fsReadFileSync2 } from "node:fs";
-import { join as join6 } from "node:path";
+import { join as join7 } from "node:path";
 var GCP_PROJECT_UNSET = 'no GCP project is configured: set "gcp": { "project": "<gcp-project-id>" } in .harmony/conductor.json (or in ~/.harmony/conductor-host.json)';
 function resolveGcpProject(deps) {
   const exported = deps.env.CLOUDSDK_CORE_PROJECT;
@@ -45405,7 +45748,7 @@ function resolveGcpProject(deps) {
   }
   if (merged?.gcp?.project) return merged.gcp.project;
   try {
-    const local = join6(deps.cwd ?? process.cwd(), CONDUCTOR_PROJECT_PATH);
+    const local = join7(deps.cwd ?? process.cwd(), CONDUCTOR_PROJECT_PATH);
     if (exists(local)) {
       const v = validateProjectFileText(CONDUCTOR_PROJECT_PATH, read(local));
       if (v.ok) return v.value.gcp?.project;
@@ -45429,8 +45772,8 @@ async function sourceEnvFile(deps, file) {
 }
 async function loadSettings(deps, opts = {}) {
   const paths = resolveConductorPaths(deps.env);
-  const envPath = join7(paths.home, "conductor.env");
-  const legacyPath = join7(paths.home, "daemon.env");
+  const envPath = join8(paths.home, "conductor.env");
+  const legacyPath = join8(paths.home, "daemon.env");
   let envFile = null;
   const fileEnv = {};
   let envFileError;
@@ -45504,9 +45847,9 @@ async function authPluginFix(deps, env2) {
     if (r.code === 0) root = r.stdout.trim();
   } catch {
   }
-  if (!root || !deps.existsSync(join7(root, "bin", AUTH_PLUGIN))) return install;
-  const ext = basename3(env2.SHELL ?? "") === "zsh" ? "zsh" : "bash";
-  return `${AUTH_PLUGIN} is installed at ${join7(root, "bin")} but is not on PATH (\`gcloud components install\` reports up to date and does not add it): run \`source ${join7(root, `path.${ext}.inc`)}\` and add that line to your shell profile`;
+  if (!root || !deps.existsSync(join8(root, "bin", AUTH_PLUGIN))) return install;
+  const ext = basename4(env2.SHELL ?? "") === "zsh" ? "zsh" : "bash";
+  return `${AUTH_PLUGIN} is installed at ${join8(root, "bin")} but is not on PATH (\`gcloud components install\` reports up to date and does not add it): run \`source ${join8(root, `path.${ext}.inc`)}\` and add that line to your shell profile`;
 }
 function missingTokenReason(deps, s) {
   const hostFile = s.paths.hostFile;
@@ -45614,7 +45957,7 @@ var failedNames = (checks) => checks.filter((c) => !c.ok).map((c) => c.name);
 var REGISTRY_ABSENT = "registry not deployed on this project";
 function pluginVersion(deps, pluginDir) {
   try {
-    const v = JSON.parse(deps.readFileSync(join8(pluginDir, ".claude-plugin", "plugin.json"))).version;
+    const v = JSON.parse(deps.readFileSync(join9(pluginDir, ".claude-plugin", "plugin.json"))).version;
     return v || "unknown";
   } catch {
     return "unknown";
@@ -45863,9 +46206,9 @@ async function runStopRemote(deps, opts = {}, onLine) {
 
 // src/cli/commands/conductor-lifecycle-deps.ts
 import { spawn } from "node:child_process";
-import { chmodSync as chmodSync2, closeSync, existsSync as existsSync2, mkdirSync as mkdirSync2, openSync, readFileSync as readFileSync6, readlinkSync, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "node:fs";
+import { chmodSync as chmodSync2, closeSync, existsSync as existsSync3, mkdirSync as mkdirSync2, openSync, readFileSync as readFileSync8, readlinkSync, rmSync as rmSync2, writeFileSync as writeFileSync3 } from "node:fs";
 import { homedir as homedir3, hostname, userInfo } from "node:os";
-import { dirname as dirname3, resolve as resolve2 } from "node:path";
+import { dirname as dirname4, resolve as resolve2 } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // src/cli/commands/conductions.ts
@@ -46317,7 +46660,7 @@ function defaultLifecycleDeps() {
       }
     })(),
     home: homedir3(),
-    cliPluginDir: resolve2(dirname3(fileURLToPath2(import.meta.url)), "..", ".."),
+    cliPluginDir: resolve2(dirname4(fileURLToPath2(import.meta.url)), "..", ".."),
     hostname: () => hostname(),
     now: () => Date.now(),
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
@@ -46344,7 +46687,7 @@ function defaultLifecycleDeps() {
       }
     },
     spawnDetached: (file, args, o) => {
-      mkdirSync2(dirname3(o.logPath), { recursive: true });
+      mkdirSync2(dirname4(o.logPath), { recursive: true });
       const fd = openSync(o.logPath, "a");
       try {
         const child = spawn(file, args, {
@@ -46360,10 +46703,10 @@ function defaultLifecycleDeps() {
         closeSync(fd);
       }
     },
-    existsSync: existsSync2,
-    readFileSync: (p) => readFileSync6(p, "utf8"),
+    existsSync: existsSync3,
+    readFileSync: (p) => readFileSync8(p, "utf8"),
     writeFileSync: (p, text, mode) => {
-      writeFileSync2(p, text, { mode });
+      writeFileSync3(p, text, { mode });
       chmodSync2(p, mode);
     },
     mkdirSync: (p) => {
@@ -46413,7 +46756,7 @@ function timingFromEnv(env2) {
     freshMs: n("HARMONY_SWITCH_FRESH_S", 120) * 1e3
   };
 }
-var logPathOf = (s) => join9(s.paths.home, "conductor.out.log");
+var logPathOf = (s) => join10(s.paths.home, "conductor.out.log");
 async function findConductors(deps, s) {
   const procs = await deps.listProcesses();
   const cwdByPid = /* @__PURE__ */ new Map();
@@ -46659,29 +47002,29 @@ async function runStart(deps, opts = {}, onLine) {
   let unitPath;
   let cmds;
   try {
-    deps.mkdirSync(dirname4(logPath));
+    deps.mkdirSync(dirname5(logPath));
     if (deps.platform === "darwin") {
-      const template = deps.readFileSync(join9(s.pluginDir, LAUNCHD_TEMPLATE));
+      const template = deps.readFileSync(join10(s.pluginDir, LAUNCHD_TEMPLATE));
       if (mode === "at-boot") {
         kind = "launchd-daemon";
         unitPath = daemonPlistPath();
-        const staged = join9(s.paths.home, "conductor-launchd.plist.staged");
+        const staged = join10(s.paths.home, "conductor-launchd.plist.staged");
         deps.writeFileSync(staged, renderLaunchdPlist(template, { ...renderOpts, userName: deps.username }), 420);
         cmds = installCommands(kind, deps.uid, { agentPlist: unitPath, staged });
         out.line(`Installing a LaunchDaemon (${unitPath}) that starts at boot as ${deps.username}; sudo will ask for your password once.`);
       } else {
         kind = "launchd-agent";
         unitPath = agentPlistPath(deps.home);
-        deps.mkdirSync(dirname4(unitPath));
+        deps.mkdirSync(dirname5(unitPath));
         deps.writeFileSync(unitPath, renderLaunchdPlist(template, renderOpts), 420);
         cmds = installCommands(kind, deps.uid, { agentPlist: unitPath });
         out.line(`Installed the LaunchAgent ${unitPath}.`);
       }
     } else {
-      const template = deps.readFileSync(join9(s.pluginDir, SYSTEMD_TEMPLATE));
+      const template = deps.readFileSync(join10(s.pluginDir, SYSTEMD_TEMPLATE));
       kind = "systemd-user";
       unitPath = systemdUnitPath(deps.home);
-      deps.mkdirSync(dirname4(unitPath));
+      deps.mkdirSync(dirname5(unitPath));
       deps.writeFileSync(unitPath, renderSystemdUnit(template, renderOpts), 420);
       cmds = installCommands(kind, deps.uid, { agentPlist: unitPath });
       out.line(`Installed the systemd user unit ${unitPath}.`);
@@ -46693,7 +47036,7 @@ async function runStart(deps, opts = {}, onLine) {
   if (!await runSupervisorCommands(deps, cmds, out)) {
     return out.result(EXIT.failure, { error: out.errLines[0], started: false, supervisor: kind });
   }
-  if (mode === "at-boot") deps.rmSync(join9(s.paths.home, "conductor-launchd.plist.staged"));
+  if (mode === "at-boot") deps.rmSync(join10(s.paths.home, "conductor-launchd.plist.staged"));
   const deadline = deps.now() + 3e4;
   let started = [];
   while (deps.now() < deadline) {
@@ -46903,8 +47246,8 @@ async function restartLocal(deps, opts, onLine, ctx) {
       return out.result(EXIT.failure, { error: out.errLines[0], signalled: false, plugin_version_before: versionBefore });
     }
     versionAfter = pluginVersion(deps, s.pluginDir);
-    if (!deps.existsSync(join9(s.pluginDir, "dist", "bin", "daemon.js"))) {
-      out.err(`after the pull ${join9(s.pluginDir, "dist", "bin", "daemon.js")} does not exist \u2014 the channel branch carries no built bundle. The running conductor was left untouched.`);
+    if (!deps.existsSync(join10(s.pluginDir, "dist", "bin", "daemon.js"))) {
+      out.err(`after the pull ${join10(s.pluginDir, "dist", "bin", "daemon.js")} does not exist \u2014 the channel branch carries no built bundle. The running conductor was left untouched.`);
       return out.result(EXIT.failure, { error: out.errLines[0], signalled: false, plugin_version_before: versionBefore });
     }
     out.line(versionAfter === versionBefore ? `  plugin ${versionBefore} (already the channel's latest)` : `  plugin ${versionBefore} -> ${versionAfter}`);
@@ -47174,11 +47517,11 @@ async function runMigrate(deps, opts) {
     if (existing.length && !opts.force) {
       return fail(`refusing to overwrite ${existing.join(", ")} (pass --force to replace it; nothing was written)`);
     }
-    mkdirSync3(dirname5(outProject), { recursive: true });
-    writeFileSync3(outProject, projectText, { mode: 420 });
+    mkdirSync3(dirname6(outProject), { recursive: true });
+    writeFileSync4(outProject, projectText, { mode: 420 });
     written.push(outProject);
-    mkdirSync3(dirname5(outHost), { recursive: true });
-    writeFileSync3(outHost, hostText, { mode: 384 });
+    mkdirSync3(dirname6(outHost), { recursive: true });
+    writeFileSync4(outHost, hostText, { mode: 384 });
     chmodSync3(outHost, 384);
     written.push(outHost);
   }
@@ -47412,7 +47755,7 @@ import { execFile as execFile2 } from "node:child_process";
 
 // src/daemon/conductor-logger.ts
 import { homedir as homedir4 } from "node:os";
-import { dirname as dirname6, join as join10 } from "node:path";
+import { dirname as dirname7, join as join11 } from "node:path";
 
 // src/daemon/log-shipper.ts
 var PERMISSION_RETRY_MS = 5 * 6e4;
@@ -47422,7 +47765,7 @@ var TOKEN_TTL_MS = 50 * 6e4;
 var ROTATE_BYTES = 10 * 1024 * 1024;
 var ROTATE_KEEP = 5;
 function resolveConductorLogPath(env2) {
-  return env2.HARMONY_CONDUCTOR_LOG || join10(env2.HARMONY_HOME || join10(homedir4(), ".harmony"), "logs", "conductor.log");
+  return env2.HARMONY_CONDUCTOR_LOG || join11(env2.HARMONY_HOME || join11(homedir4(), ".harmony"), "logs", "conductor.log");
 }
 
 // src/cli/commands/conductor-logs.ts
@@ -47700,7 +48043,7 @@ function encodeNulArgv(argv) {
 }
 
 // src/cli/commands/agent.ts
-import { existsSync as existsSync4, mkdirSync as mkdirSync5, readFileSync as readFileSync8, renameSync as renameSync2, writeFileSync as writeFileSync5 } from "node:fs";
+import { existsSync as existsSync5, mkdirSync as mkdirSync5, readFileSync as readFileSync10, renameSync as renameSync2, writeFileSync as writeFileSync6 } from "node:fs";
 
 // src/agents/codex-provision.ts
 import {
@@ -47708,19 +48051,19 @@ import {
   constants as fsConstants,
   chmodSync as chmodSync4,
   copyFileSync,
-  existsSync as existsSync3,
+  existsSync as existsSync4,
   lstatSync,
   mkdirSync as mkdirSync4,
-  readFileSync as readFileSync7,
+  readFileSync as readFileSync9,
   readdirSync,
   readlinkSync as readlinkSync2,
   statSync,
   symlinkSync,
   unlinkSync,
-  writeFileSync as writeFileSync4,
+  writeFileSync as writeFileSync5,
   appendFileSync
 } from "node:fs";
-import { join as join11, resolve as resolve4 } from "node:path";
+import { join as join12, resolve as resolve4 } from "node:path";
 
 // src/agents/hooks.ts
 var HARMONY_HOOKS = {
@@ -47833,31 +48176,31 @@ function collectInstructionSources(input) {
   const ws = resolve4(input.workspaceDir);
   const plugin = resolve4(input.pluginDir);
   const candidates = [
-    { label: "workspace/CLAUDE.md", path: join11(ws, "CLAUDE.md") },
-    { label: "plugin/CLAUDE.md", path: join11(plugin, "CLAUDE.md") },
-    { label: "web/CLAUDE.md", path: join11(ws, "web", "CLAUDE.md") }
+    { label: "workspace/CLAUDE.md", path: join12(ws, "CLAUDE.md") },
+    { label: "plugin/CLAUDE.md", path: join12(plugin, "CLAUDE.md") },
+    { label: "web/CLAUDE.md", path: join12(ws, "web", "CLAUDE.md") }
   ];
   for (const p of input.extraRepoPaths ?? []) {
     const abs = resolve4(p);
-    candidates.push({ label: `${abs.replace(/^\/+/, "")}/CLAUDE.md`, path: join11(abs, "CLAUDE.md") });
+    candidates.push({ label: `${abs.replace(/^\/+/, "")}/CLAUDE.md`, path: join12(abs, "CLAUDE.md") });
   }
   const seen = /* @__PURE__ */ new Set();
   const out = [];
   for (const c of candidates) {
     if (seen.has(c.path) || !isFile(c.path)) continue;
     seen.add(c.path);
-    out.push({ label: c.label, content: readFileSync7(c.path, "utf8") });
+    out.push({ label: c.label, content: readFileSync9(c.path, "utf8") });
   }
   return out;
 }
 function collectSkillCapabilities(pluginDir) {
-  const root = join11(resolve4(pluginDir), "skills");
-  if (!existsSync3(root)) return [];
+  const root = join12(resolve4(pluginDir), "skills");
+  if (!existsSync4(root)) return [];
   const out = [];
   for (const name of readdirSync(root).sort()) {
-    const file = join11(root, name, "SKILL.md");
+    const file = join12(root, name, "SKILL.md");
     if (!isFile(file)) continue;
-    const value = capabilitiesFromSkillMd(readFileSync7(file, "utf8"));
+    const value = capabilitiesFromSkillMd(readFileSync9(file, "utf8"));
     if (value === void 0) continue;
     const parsed = parseCapabilities(value);
     if (!parsed.ok) throw new Error(`skills/${name}/SKILL.md capabilities: ${parsed.problems.join("; ")}`);
@@ -47872,21 +48215,21 @@ function codexOverlayFor(pluginDir) {
 ${rules}` : CODEX_WORKER_OVERLAY;
 }
 function excludeFromGit(workspaceDir, entries) {
-  const gitDir = join11(workspaceDir, ".git");
-  if (!existsSync3(gitDir)) return;
-  const infoDir = join11(gitDir, "info");
+  const gitDir = join12(workspaceDir, ".git");
+  if (!existsSync4(gitDir)) return;
+  const infoDir = join12(gitDir, "info");
   mkdirSync4(infoDir, { recursive: true });
-  const excludePath = join11(infoDir, "exclude");
-  const current = existsSync3(excludePath) ? readFileSync7(excludePath, "utf8") : "";
+  const excludePath = join12(infoDir, "exclude");
+  const current = existsSync4(excludePath) ? readFileSync9(excludePath, "utf8") : "";
   const have = new Set(current.split("\n"));
   const missing = entries.filter((e) => !have.has(e));
   if (missing.length) appendFileSync(excludePath, (current === "" || current.endsWith("\n") ? "" : "\n") + missing.join("\n") + "\n");
 }
 function linkSkills(workspaceDir, pluginDir) {
-  const link = join11(workspaceDir, CODEX_SKILLS_LINK);
-  const target = join11(resolve4(pluginDir), "skills");
-  if (!existsSync3(target)) throw new Error(`skills directory not found at ${target}`);
-  mkdirSync4(join11(workspaceDir, ".agents"), { recursive: true });
+  const link = join12(workspaceDir, CODEX_SKILLS_LINK);
+  const target = join12(resolve4(pluginDir), "skills");
+  if (!existsSync4(target)) throw new Error(`skills directory not found at ${target}`);
+  mkdirSync4(join12(workspaceDir, ".agents"), { recursive: true });
   let st;
   try {
     st = lstatSync(link);
@@ -47905,7 +48248,7 @@ function installAuth(authFile, codexHome) {
   if (!isFile(authFile)) {
     throw new Error(`the Codex login-cache file is missing at ${authFile} (HARMONY_CODEX_AUTH_FILE) \u2014 mount it, see container/README.md "Codex credential runbook"`);
   }
-  const dest = join11(codexHome, CODEX_AUTH_FILE_NAME);
+  const dest = join12(codexHome, CODEX_AUTH_FILE_NAME);
   if (resolve4(authFile) !== resolve4(dest)) {
     copyFileSync(authFile, dest);
   }
@@ -47944,19 +48287,19 @@ function provisionCodex(input) {
   const agentsMd = renderCodexAgentsMd(sources, codexOverlayFor(input.pluginDir));
   const problems = verifyCodexAgentsMd(agentsMd, sources);
   if (problems.length) throw new Error(`AGENTS.md preflight failed: ${problems.join("; ")}`);
-  const agentsMdPath = join11(workspaceDir, "AGENTS.md");
-  if (existsSync3(agentsMdPath) && !readFileSync7(agentsMdPath, "utf8").startsWith(GENERATED_AGENTS_HEADER)) {
+  const agentsMdPath = join12(workspaceDir, "AGENTS.md");
+  if (existsSync4(agentsMdPath) && !readFileSync9(agentsMdPath, "utf8").startsWith(GENERATED_AGENTS_HEADER)) {
     throw new Error(`${agentsMdPath} exists and is not a generated file \u2014 refusing to overwrite a repository's own AGENTS.md`);
   }
   preflightHookScripts(resolve4(input.pluginDir));
   mkdirSync4(codexHome, { recursive: true });
   const config = renderCodexConfig(HARMONY_MCP_CONNECTION, { pluginRoot: resolve4(input.pluginDir) });
-  const configPath = join11(codexHome, config.fileName);
-  writeFileSync4(configPath, config.content, { mode: 420 });
+  const configPath = join12(codexHome, config.fileName);
+  writeFileSync5(configPath, config.content, { mode: 420 });
   const hooks = renderCodexHooks(resolve4(input.pluginDir));
-  const hooksPath = join11(codexHome, hooks.fileName);
-  writeFileSync4(hooksPath, hooks.content, { mode: 420 });
-  writeFileSync4(agentsMdPath, agentsMd);
+  const hooksPath = join12(codexHome, hooks.fileName);
+  writeFileSync5(hooksPath, hooks.content, { mode: 420 });
+  writeFileSync5(agentsMdPath, agentsMd);
   const skillsLink = linkSkills(workspaceDir, input.pluginDir);
   excludeFromGit(workspaceDir, ["AGENTS.md", ".agents/"]);
   const authInstalledAt = installAuth(input.authFile, codexHome);
@@ -47973,7 +48316,7 @@ function provisionCodex(input) {
 
 // src/cli/commands/agent.ts
 import { homedir as homedir5 } from "node:os";
-import { join as join12 } from "node:path";
+import { join as join13 } from "node:path";
 function launchRunConfig() {
   try {
     return getRunConfig();
@@ -48055,7 +48398,7 @@ function registerAgentCommands(program3) {
       const r = provisionCodex({
         pluginDir: opts.pluginDir,
         workspaceDir: opts.workspace,
-        codexHome: opts.codexHome || process.env.CODEX_HOME || join12(homedir5(), ".codex"),
+        codexHome: opts.codexHome || process.env.CODEX_HOME || join13(homedir5(), ".codex"),
         authFile,
         extraRepoPaths: opts.extraRepo
       });
@@ -48085,7 +48428,7 @@ function registerAgentCommands(program3) {
   ).argument("<stdout-file>").action((file) => {
     let text = "";
     try {
-      text = readFileSync8(file, "utf8");
+      text = readFileSync10(file, "utf8");
     } catch {
       process.exit(1);
     }
@@ -48099,7 +48442,7 @@ function registerAgentCommands(program3) {
   ).requiredOption("--dir <dir>", "The conduction's Codex sessions folder").requiredOption("--stdout-file <file>", "The codex invocation's stdout capture").option("--model <model>", "The model the invocation ran on").action((opts) => {
     let text = "";
     try {
-      text = readFileSync8(opts.stdoutFile, "utf8");
+      text = readFileSync10(opts.stdoutFile, "utf8");
     } catch {
       process.exit(1);
     }
@@ -48107,9 +48450,9 @@ function registerAgentCommands(program3) {
     if (!id) process.exit(1);
     try {
       mkdirSync5(opts.dir, { recursive: true });
-      const target = join12(opts.dir, CODEX_THREAD_FILE_NAME);
+      const target = join13(opts.dir, CODEX_THREAD_FILE_NAME);
       const tmp = `${target}.tmp-${process.pid}`;
-      writeFileSync5(tmp, `${JSON.stringify(buildCodexThreadRecord(id, opts.model))}
+      writeFileSync6(tmp, `${JSON.stringify(buildCodexThreadRecord(id, opts.model))}
 `);
       renameSync2(tmp, target);
     } catch (err) {
@@ -48122,10 +48465,10 @@ function registerAgentCommands(program3) {
   agent.command("read-thread").description(
     `Print the thread id from a ${CODEX_THREAD_FILE_NAME} file and exit 0 \u2014 ONLY when the file names agent "codex" and a well-formed id; otherwise print nothing and exit 1.`
   ).argument("<thread-file>").action((file) => {
-    if (!existsSync4(file)) process.exit(1);
+    if (!existsSync5(file)) process.exit(1);
     let text = "";
     try {
-      text = readFileSync8(file, "utf8");
+      text = readFileSync10(file, "utf8");
     } catch {
       process.exit(1);
     }
@@ -48137,7 +48480,7 @@ function registerAgentCommands(program3) {
 }
 
 // src/cli/commands/leg-cost.ts
-import { readFileSync as readFileSync9 } from "node:fs";
+import { readFileSync as readFileSync11 } from "node:fs";
 
 // src/tools/leg-cost-record.ts
 var LEG_COST_COLS = "id, conduction_id, task_id, leg_key, gate, model, invocation_index, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_creation_1h_input_tokens, cache_creation_5m_input_tokens, thinking_tokens, total_cost_usd, cost_source, num_turns, duration_ms, duration_api_ms, session_id, is_error, service_tier, created_at";
@@ -48379,7 +48722,7 @@ function registerLegCostCommands(program3) {
       }
       let captured;
       try {
-        captured = readFileSync9(opts.file, "utf8");
+        captured = readFileSync11(opts.file, "utf8");
       } catch (err) {
         console.error(
           `harmony leg-cost record: WARNING \u2014 could not read the capture file ${opts.file} (${err?.message ?? String(err)}); nothing recorded`
@@ -48444,7 +48787,7 @@ function registerLegCostCommands(program3) {
 }
 
 // src/cli/commands/leg-output.ts
-import { readFileSync as readFileSync10 } from "node:fs";
+import { readFileSync as readFileSync12 } from "node:fs";
 
 // src/tools/leg-output-record.ts
 var LEG_OUTPUT_TAIL_BYTES = 64 * 1024;
@@ -48530,7 +48873,7 @@ async function getClient2() {
 var SOURCES = ["worker", "launcher"];
 function readCapture(path3) {
   try {
-    return readFileSync10(path3, "utf8");
+    return readFileSync12(path3, "utf8");
   } catch (err) {
     console.error(
       `harmony leg-output record: WARNING \u2014 could not read the capture file ${path3} (${err?.message ?? String(err)}); it contributes nothing to this row`
@@ -48584,9 +48927,9 @@ function registerLegOutputCommands(program3) {
 }
 
 // src/cli/commands/gates.ts
-import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync as mkdirSync6, readFileSync as readFileSync11, renameSync as renameSync3, writeFileSync as writeFileSync6 } from "node:fs";
-import { dirname as dirname7 } from "node:path";
+import { execFileSync as execFileSync2, spawnSync } from "node:child_process";
+import { mkdirSync as mkdirSync6, readFileSync as readFileSync13, renameSync as renameSync3, writeFileSync as writeFileSync7 } from "node:fs";
+import { dirname as dirname8 } from "node:path";
 
 // src/config/notify-sync.ts
 import { createHash as createHash2 } from "node:crypto";
@@ -48867,7 +49210,7 @@ function registerGatesCommands(program3) {
       },
       notifySync: productionNotifySyncIO(),
       writeMarker: (marker) => writeGateEvidenceMarker(process.cwd(), marker),
-      resolveHeadSha: () => execFileSync("git", ["rev-parse", "HEAD"], { cwd: process.cwd(), encoding: "utf8" }).trim(),
+      resolveHeadSha: () => execFileSync2("git", ["rev-parse", "HEAD"], { cwd: process.cwd(), encoding: "utf8" }).trim(),
       log: (line) => console.log(line),
       error: (line) => console.error(line)
     });
@@ -48876,9 +49219,9 @@ function registerGatesCommands(program3) {
 }
 function writeGateEvidenceMarker(projectRoot, marker) {
   const filePath = gateEvidenceMarkerPath(projectRoot, marker.extension_point);
-  mkdirSync6(dirname7(filePath), { recursive: true });
+  mkdirSync6(dirname8(filePath), { recursive: true });
   const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  writeFileSync6(tmpPath, `${JSON.stringify(marker, null, 2)}
+  writeFileSync7(tmpPath, `${JSON.stringify(marker, null, 2)}
 `, "utf8");
   renameSync3(tmpPath, filePath);
 }
@@ -48899,22 +49242,22 @@ function productionNotifySyncIO() {
     },
     readCache: (path3) => {
       try {
-        return readFileSync11(path3, "utf8");
+        return readFileSync13(path3, "utf8");
       } catch {
         return null;
       }
     },
     writeCache: (path3, contents) => {
-      mkdirSync6(dirname7(path3), { recursive: true });
+      mkdirSync6(dirname8(path3), { recursive: true });
       const tmpPath = `${path3}.tmp-${process.pid}-${Date.now()}`;
-      writeFileSync6(tmpPath, contents, "utf8");
+      writeFileSync7(tmpPath, contents, "utf8");
       renameSync3(tmpPath, path3);
     }
   };
 }
 
 // src/cli/commands/notify.ts
-import { readFileSync as readFileSync12 } from "node:fs";
+import { readFileSync as readFileSync14 } from "node:fs";
 function errorMessage(err) {
   const message = err?.message;
   return message && message.trim() ? message.trim() : String(err);
@@ -49005,7 +49348,7 @@ function productionDeps() {
 }
 function readSecretFromStdin() {
   try {
-    return readFileSync12(0, "utf8");
+    return readFileSync14(0, "utf8");
   } catch {
     return "";
   }
@@ -49985,7 +50328,7 @@ function registerRecordCommand(program3) {
 }
 
 // src/cli/commands/fasttrack.ts
-import { execFileSync as execFileSync2 } from "node:child_process";
+import { execFileSync as execFileSync3 } from "node:child_process";
 function resolveScopeBudget(projectRoot) {
   const result = loadProjectManifest(projectRoot);
   if (result.kind !== "ok") return DEFAULT_SCOPE_BUDGET;
@@ -50023,7 +50366,7 @@ function registerFasttrackCommands(program3) {
     const budget = resolveScopeBudget(projectRoot);
     let raw;
     try {
-      raw = execFileSync2("git", ["diff", "--numstat", `${opts.base}...HEAD`], {
+      raw = execFileSync3("git", ["diff", "--numstat", `${opts.base}...HEAD`], {
         cwd: projectRoot,
         encoding: "utf8"
       });

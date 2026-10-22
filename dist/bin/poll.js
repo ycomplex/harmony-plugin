@@ -31953,6 +31953,7 @@ var composeBriefTool = {
                 target_child_ref: { type: "string", description: "ac_transfer only \u2014 the destination child_ticket item's own `ref` from this SAME payload" },
                 from_ac_id: { type: ["string", "null"], description: "ac_transfer only \u2014 the parent AC's own id being removed; omit only for the rare copy-not-move case" },
                 label_name: { type: "string", description: "label_add only (B-688) \u2014 the label to add; defaults to 'decision-only' when omitted (the only real-world caller today)" },
+                scope: { type: "string", enum: ["product", "deployment"], description: "Accepted applicability metadata, applied in the same ledgered transaction." },
                 entry_id: { type: ["string", "null"], description: "knowledge_entry_content only (B-843) \u2014 the target knowledge entry; omit to let the DB resolve it from this brief's own decision_ref (the normal case)" }
               },
               required: ["write_kind", "ref"]
