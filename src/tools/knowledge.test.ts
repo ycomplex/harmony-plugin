@@ -98,19 +98,20 @@ function buildWorkspaceAndQueryClient(secondResponse: { data: any; error?: any }
   wsChain.eq = vi.fn().mockReturnValue(wsChain);
   wsChain.single = vi.fn().mockResolvedValue({ data: sampleWorkspaceRow, error: null });
 
+  let bookkeeping = false;
   const secondChain: any = {};
   secondChain.select = vi.fn().mockReturnValue(secondChain);
   secondChain.insert = vi.fn().mockReturnValue(secondChain);
   secondChain.update = vi.fn().mockReturnValue(secondChain);
   secondChain.eq = vi.fn().mockReturnValue(secondChain);
-  secondChain.contains = vi.fn().mockReturnValue(secondChain);
+  secondChain.contains = vi.fn().mockImplementation((field, value) => { if (field === 'tags' && value.includes('harmony:bookkeeping')) bookkeeping = true; return secondChain; });
   secondChain.overlaps = vi.fn().mockReturnValue(secondChain);
   secondChain.lte = vi.fn().mockReturnValue(secondChain);
-  secondChain.or = vi.fn().mockReturnValue(secondChain);
+  secondChain.or = vi.fn().mockImplementation(() => { bookkeeping = false; return secondChain; });
   secondChain.order = vi.fn().mockReturnValue(secondChain);
   secondChain.range = vi
     .fn()
-    .mockResolvedValue({ data: secondResponse.data, error: secondResponse.error ?? null });
+    .mockImplementation(() => ({ data: Array.isArray(secondResponse.data) ? secondResponse.data.filter(d => (d.tags?.includes('harmony:bookkeeping') ?? false) === bookkeeping) : secondResponse.data, error: secondResponse.error ?? null, count: Array.isArray(secondResponse.data) ? secondResponse.data.length : 0 }));
   secondChain.single = vi
     .fn()
     .mockResolvedValue({ data: secondResponse.data, error: secondResponse.error ?? null });
@@ -200,6 +201,21 @@ function buildEmbedAwareClient(opts: {
 // queryKnowledge
 // ---------------------------------------------------------------------------
 
+function rrfMock(response: { data: any[]; error?: any }) {
+  return vi.fn().mockImplementation(() => {
+    let bookkeeping = false;
+    const query: any = {};
+    query.select = vi.fn().mockReturnValue(query);
+    query.or = vi.fn().mockImplementation(() => { bookkeeping = false; return query; });
+    query.contains = vi.fn().mockImplementation(() => { bookkeeping = true; return query; });
+    query.range = vi.fn().mockImplementation((start, end) => Promise.resolve({
+      data: response.data.filter(d => (d.tags?.includes('harmony:bookkeeping') ?? false) === bookkeeping).slice(start, end + 1),
+      error: response.error ?? null,
+    }));
+    return query;
+  });
+}
+
 describe('queryKnowledge', () => {
   it('applies default filters (status=accepted, no type/tags) and scopes to token project', async () => {
     const { client, wsChain, secondChain } = buildWorkspaceAndQueryClient({
@@ -264,7 +280,7 @@ describe('queryKnowledge', () => {
     const client: any = {
       from: vi.fn().mockReturnValue(wsChain),
       functions: { invoke: vi.fn().mockResolvedValue({ data: { embedding: [0.1, 0.2] }, error: null }) },
-      rpc: vi.fn().mockResolvedValue({
+      rpc: rrfMock({
         data: [{ id: 'd1', title: 'auth', type: 'architecture', status: 'Accepted', domain: ['engineering'], tags: [], project_id: PROJECT_ID, updated_at: '2026-05-29T00:00:00Z' }],
         error: null,
       }),
@@ -274,8 +290,8 @@ describe('queryKnowledge', () => {
     expect(client.rpc).toHaveBeenCalledWith('knowledge_search_rrf', expect.objectContaining({
       _workspace_id: WORKSPACE_ID, _project_id: PROJECT_ID, _query_embedding: '[0.1,0.2]',
       _query_text: 'session security', _domain: ['engineering'],
-      _match_limit: 50,
-    }));
+      _match_limit: null,
+    }), {});
     const rpcArg = client.rpc.mock.calls[0][1];
     expect(rpcArg).not.toHaveProperty('_k');
     expect(result[0]).toMatchObject({ id: 'd1', title: 'auth', type: 'architecture', status: 'Accepted', domain: ['engineering'] });
@@ -299,10 +315,10 @@ describe('queryKnowledge', () => {
     const client: any = {
       from: vi.fn().mockReturnValue(wsChain),
       functions: { invoke: vi.fn().mockResolvedValue({ data: { embedding: [0.1, 0.2] }, error: null }) },
-      rpc: vi.fn().mockResolvedValue({ data: [], error: null }),
+      rpc: rrfMock({ data: [], error: null }),
     };
     await queryKnowledge(client, PROJECT_ID, { search: 'auth', domain: ['engineering'], limit: 5 });
-    expect(client.rpc).toHaveBeenCalledWith('knowledge_search_rrf', expect.objectContaining({ _match_limit: 5, _domain: ['engineering'] }));
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_search_rrf', expect.objectContaining({ _match_limit: null, _domain: ['engineering'] }), {});
   });
 
   it('passes _query_embedding null when embedding fails (trigram-only degrade)', async () => {
@@ -313,10 +329,10 @@ describe('queryKnowledge', () => {
     const client: any = {
       from: vi.fn().mockReturnValue(wsChain),
       functions: { invoke: vi.fn().mockResolvedValue({ data: null, error: { message: 'down' } }) },
-      rpc: vi.fn().mockResolvedValue({ data: [], error: null }),
+      rpc: rrfMock({ data: [], error: null }),
     };
     await queryKnowledge(client, PROJECT_ID, { search: 'auth' });
-    expect(client.rpc).toHaveBeenCalledWith('knowledge_search_rrf', expect.objectContaining({ _query_embedding: null, _query_text: 'auth', _domain: null }));
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_search_rrf', expect.objectContaining({ _query_embedding: null, _query_text: 'auth', _domain: null }), {});
   });
 
   it('passes limit and offset to .range()', async () => {

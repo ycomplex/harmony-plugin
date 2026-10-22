@@ -1,3 +1,4 @@
+import { BOOKKEEPING_TAG, SUBSTANTIVE_TAG_FILTER, bookkeepingPage } from './knowledge-bookkeeping.js';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { normalizeHtmlEntities } from './text-normalize.js';
 import { getConductionId, getLeg } from '../config/run-config.js';
@@ -95,7 +96,7 @@ const ENTITY_COLS = 'id, workspace_id, project_id, kind, name, description, meta
 export const queryKnowledgeTool = {
   name: 'query_knowledge',
   description:
-    'Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Check this before making significant implementation choices. Defaults to "Accepted" entries only. When `search` is given, retrieval is semantic (RRF) and composes only with `domain` (+ `limit`); the other structured filters (`type`, `status`, `tags`, `as_of`, `include_superseded`, `offset`) apply to the non-search structured path only.',
+    'Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Check this before making significant implementation choices. Defaults to "Accepted" entries only, with explicitly marked bookkeeping ranked last; include_bookkeeping:false excludes it before pagination. When `search` is given, retrieval is semantic (RRF) and composes only with `domain` (+ `limit`); the other structured filters (`type`, `status`, `tags`, `as_of`, `include_superseded`, `offset`) apply to the non-search structured path only.',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -125,6 +126,7 @@ export const queryKnowledgeTool = {
         type: 'string',
         description: 'Free-text search query — hybrid semantic + trigram retrieval, ranked by relevance (RRF). Composes only with `domain` and `limit`.',
       },
+      include_bookkeeping: { type: 'boolean', description: 'Include explicitly marked procedural gate records after substantive knowledge (default true). False excludes them before pagination.' },
       include_superseded: {
         type: 'boolean',
         description: 'When true and no explicit status given, return all statuses including superseded. Default false. (structured-filter path; not combinable with `search`)',
@@ -365,6 +367,7 @@ export interface QueryKnowledgeArgs {
   tags?: string[];
   search?: string;
   include_superseded?: boolean;
+  include_bookkeeping?: boolean;
   limit?: number;
   offset?: number;
 }
@@ -397,44 +400,42 @@ export async function queryKnowledge(
       );
     }
     const queryEmbedding = await embedText(client, args.search);   // may be null -> fn degrades to trigram-only
-    const { data, error } = await (client as any).rpc('knowledge_search_rrf', {
-      _workspace_id: workspaceId,
-      _project_id: projectId,
-      _query_embedding: queryEmbedding,
-      _query_text: args.search,
-      _domain: args.domain && args.domain.length > 0 ? args.domain : null,
-      _match_limit: args.limit ?? 50,
-    });
-    if (error) throw new Error(error.message);
+    const data = await bookkeepingPage<any>(({ bookkeeping, offset, limit, count }) => {
+      // NULL disables the RPC's INNER limit. PostgREST then filters the SETOF rows before its
+      // outer range; a finite inner limit would lose substantive hits on an older deployment.
+      let query = (client as any).rpc('knowledge_search_rrf', {
+        _workspace_id: workspaceId,
+        _project_id: projectId,
+        _query_embedding: queryEmbedding,
+        _query_text: args.search,
+        _domain: args.domain && args.domain.length > 0 ? args.domain : null,
+        _match_limit: null,
+      }, count ? { count: 'exact' } : {}).select('id, title, type, status, domain, tags, project_id, updated_at');
+      query = bookkeeping ? query.contains('tags', [BOOKKEEPING_TAG]) : query.or(SUBSTANTIVE_TAG_FILTER);
+      return query.range(offset, offset + limit - 1);
+    }, args);
     return (data ?? []).map((d: any) => ({
       id: d.id, title: d.title, type: d.type, status: d.status,
       domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at,
     })) as KnowledgeEntrySummary[];
   }
 
-  // Filter-only path: structured filters over knowledge_decisions (no relevance ranking needed).
-  let query = client
-    .from('knowledge_decisions')
-    .select('id, title, type, status, domain, tags, project_id, updated_at')
-    .eq('workspace_id', workspaceId)
-    .eq('project_id', projectId);
-
-  if (args.status) {
-    query = query.eq('status', args.status);
-  } else if (!args.include_superseded) {
-    query = query.eq('status', 'Accepted');
-  }
-  if (args.type) query = query.eq('type', args.type);
-  if (args.domain && args.domain.length > 0) query = query.overlaps('domain', args.domain);
-  if (args.as_of) query = query.lte('valid_from', args.as_of);
-  if (args.tags && args.tags.length > 0) query = query.contains('tags', args.tags);
-
-  query = query.order('type', { ascending: true });
-  const limit = args.limit ?? 50;
-  const offset = args.offset ?? 0;
-  const { data, error } = await query.range(offset, offset + limit - 1);
-  if (error) throw new Error(error.message);
-  return (data ?? []) as KnowledgeEntrySummary[];
+  // Structured retrieval uses the same class boundary and applies every filter before pagination.
+  return bookkeepingPage<KnowledgeEntrySummary>(({ bookkeeping, offset, limit, count }) => {
+    let query = client.from('knowledge_decisions')
+      .select('id, title, type, status, domain, tags, project_id, updated_at', count ? { count: 'exact' } : {})
+      .eq('workspace_id', workspaceId)
+      .eq('project_id', projectId);
+    if (args.status) query = query.eq('status', args.status);
+    else if (!args.include_superseded) query = query.eq('status', 'Accepted');
+    if (args.type) query = query.eq('type', args.type);
+    if (args.domain && args.domain.length > 0) query = query.overlaps('domain', args.domain);
+    if (args.as_of) query = query.lte('valid_from', args.as_of);
+    if (args.tags && args.tags.length > 0) query = query.contains('tags', args.tags);
+    query = bookkeeping ? query.contains('tags', [BOOKKEEPING_TAG]) : query.or(SUBSTANTIVE_TAG_FILTER);
+    return query.order('type', { ascending: true }).order('id', { ascending: true })
+      .range(offset, offset + limit - 1);
+  }, args);
 }
 
 // ---------------------------------------------------------------------------

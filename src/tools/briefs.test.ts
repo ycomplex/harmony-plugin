@@ -4276,8 +4276,16 @@ describe('B-876 gate frame', () => {
         insert: genericChain.insert,
         update: genericChain.update,
         functions: { invoke: vi.fn(async () => ({ data: null, error: { message: 'down' } })) },
-        rpc: vi.fn(async (name: string) => {
-          if (name === 'knowledge_search_rrf') return { data: opts.tierSummaryRows ?? [], error: null };
+        rpc: vi.fn((name: string) => {
+          if (name === 'knowledge_search_rrf') {
+            let bookkeeping = false;
+            const query: any = {};
+            query.select = vi.fn(() => query);
+            query.or = vi.fn(() => { bookkeeping = false; return query; });
+            query.contains = vi.fn(() => { bookkeeping = true; return query; });
+            query.range = vi.fn(async () => ({ data: bookkeeping ? [] : opts.tierSummaryRows ?? [], error: null }));
+            return query;
+          }
           return { data: null, error: { code: '42883', message: `function public.${name} does not exist` } };
         }),
       };

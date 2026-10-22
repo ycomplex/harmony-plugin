@@ -1,3 +1,4 @@
+import { bookkeepingTags } from './knowledge-bookkeeping.js';
 // B-1062 — the RECORDED gate-walk core.
 //
 // `harmony record <ticket>` (CLI: src/cli/commands/record.ts, MCP: the `record` tool in
@@ -485,11 +486,13 @@ interface ComposeAndAcceptArgs {
   /** Hand-authored payload items ONLY for a reason compose_brief does NOT auto-derive
    *  (`derivesEntryContent(reason) === false`, e.g. plan-draft) — for clarify/decompose/design, leave
    *  this undefined; compose_brief derives and REPLACES anything supplied here for those three reasons. */
-  payload?: Array<{ write_kind: 'knowledge_entry_content'; ref: string; content: string; entry_id?: string | null }>;
+  payload?: Array<{ write_kind: 'knowledge_entry_content'; ref: string; content: string; entry_id?: string | null; tags?: string[] }>;
   /** B-1073 fast-track release-brief round — the bot-authored disclosure clauses from
    *  `gatherBotAuthoredReleaseClauses`, ONLY meaningful on the release reason (every other gate omits
    *  it). Rides `doc.context` exactly like finish-work's own PR-reference line (B-876). */
   context?: string[];
+  /** Explicit writer classification, also carried through the derived acceptance projection. */
+  tags?: string[];
 }
 
 /** compose_brief -> resolve_brief(accept) -> (payload-carrying reasons only) consume the deferred
@@ -510,6 +513,7 @@ async function composeAndAccept(
     decision_ref: args.decisionRef,
     doc: {
       decide: args.decide,
+      tags: args.tags,
       why: args.why,
       items: [],
       frame: args.frame,
@@ -762,6 +766,7 @@ export async function runRecordedWalk(
     const designDecision = await recordDecision(client, projectId, userId, {
       type: 'technical-design',
       title: `${args.task_id}: technical-design — no new decision needed (recorded)`,
+      tags: bookkeepingTags(),
       content: `<placeholder — one line: 'technical-design decision for ${args.task_id}; body derived from the ratified brief'>`,
       domain: ['engineering'],
       source_type: 'manual',
@@ -775,6 +780,7 @@ export async function runRecordedWalk(
       reason: GATE_REASONS.design!,
       pendingActivity: 'designing',
       decide: `Confirm ${args.task_id} needs no new design decision (recorded walk).`,
+      tags: bookkeepingTags(),
       frame: {
         kind: 'design',
         track: 'technical-design',
@@ -799,6 +805,7 @@ export async function runRecordedWalk(
     const planDecision = await recordDecision(client, projectId, userId, {
       type: 'specification',
       title: `${args.task_id}: recorded plan`,
+      tags: bookkeepingTags(),
       content: planEntryContent,
       domain: ['process'],
       source_type: 'manual',
@@ -828,6 +835,7 @@ export async function runRecordedWalk(
         ref: slugRef('plan-entry', planEntryContent),
         content: planEntryContent,
         entry_id: planDecision.id,
+        tags: bookkeepingTags(),
       }],
     });
     gates.push({ gate: 'plan', reason: GATE_REASONS.plan, landed: true });

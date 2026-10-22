@@ -1024,3 +1024,22 @@ describe('runRecordedWalk — preserves authored criteria (B-1120)', () => {
     expect(planCoverage()).toContain('did not file');
   });
 });
+
+
+describe('B-1224 recorded bookkeeping classification', () => {
+  it('marks plan/design at write time and carries tags through both acceptance payload paths', async () => {
+    const result = await runRecordedWalk(makeRichClient(), PROJECT_ID, USER_ID, eligibleArgs());
+    expect(result.status).not.toBe('refused');
+    const writes = recordDecision.mock.calls.map((call: any) => call[3]);
+    const design = writes.find((entry: any) => entry.type === 'technical-design');
+    const plan = writes.find((entry: any) => entry.source_activity === 'plan');
+    expect(design.tags).toContain('harmony:bookkeeping');
+    expect(plan.tags).toContain('harmony:bookkeeping');
+    const briefs = composeBrief.mock.calls.map((call: any) => call[3]);
+    expect(briefs.find((brief: any) => brief.reason === 'design-decision-draft').doc.tags).toContain('harmony:bookkeeping');
+    expect(briefs.find((brief: any) => brief.reason === 'plan-draft').doc.payload[0].tags).toContain('harmony:bookkeeping');
+    // B-849's shared no-split convention is reusable knowledge, not per-ticket bookkeeping.
+    expect(writes.filter((entry: any) => entry.source_activity === 'decompose')).toHaveLength(1);
+    expect(writes.find((entry: any) => entry.source_activity === 'decompose').tags).toEqual(['decompose-no-split']);
+  });
+});
