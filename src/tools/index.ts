@@ -1,4 +1,7 @@
 import { featureAccountTools, createFeatureAccount, readFeatureAccounts, previewFeatureAmendment, proposeFeatureAmendment, applyFeatureAmendment } from './feature-accounts.js';
+import { saveKnowledgeQuestionTool, saveKnowledgeQuestion, previewKnowledgeQuestionsTool, previewKnowledgeQuestions, importKnowledgeQuestionsTool, importKnowledgeQuestions } from './knowledge-questions.js';
+import { listKnowledgeTagsTool, registerKnowledgeTagTool, listKnowledgeTags, registerKnowledgeTag } from './knowledge-metadata.js';
+import { publishDefinition, publishDefinitionTool, type PublishDefinitionArgs } from './knowledge-definitions.js';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { getProjectTool, getProject } from './project.js';
 import { listEpicsTool, listEpics, createEpicTool, createEpic, updateEpicTool, updateEpic } from './epics.js';
@@ -173,7 +176,8 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
     listActivityTool,
     listWorkflowTransitionsTool,
     listMembersTool,
-    queryKnowledgeTool, searchTicketIntentsTool, getKnowledgeEntryTool, createKnowledgeEntryTool, updateKnowledgeEntryTool, supersedeKnowledgeEntryTool,
+    saveKnowledgeQuestionTool, previewKnowledgeQuestionsTool, importKnowledgeQuestionsTool,
+    listKnowledgeTagsTool, registerKnowledgeTagTool, publishDefinitionTool, queryKnowledgeTool, searchTicketIntentsTool, getKnowledgeEntryTool, createKnowledgeEntryTool, updateKnowledgeEntryTool, supersedeKnowledgeEntryTool,
     recordDecisionTool, supersedeDecisionTool, queryFactsTool, assertFactTool, invalidateFactTool, queryEntitiesTool,
     createEntityTool, updateEntityTool, reconcileEntityTool,
     composeBriefTool, getBriefTool, listBriefsTool, resolveBriefTool, reshapeBriefTool, consumeAcceptRemarkTool,
@@ -298,6 +302,24 @@ export async function handleToolCall(
       case 'preview_feature_amendment': result = await previewFeatureAmendment(client,projectId,args); break;
       case 'propose_feature_amendment': result = await proposeFeatureAmendment(client,projectId,args); break;
       case 'apply_feature_amendment': result = await applyFeatureAmendment(client,projectId,args); break;
+      case 'save_knowledge_question':
+        result = await saveKnowledgeQuestion(client, projectId, args as any);
+        break;
+      case 'preview_knowledge_questions':
+        result = await previewKnowledgeQuestions(client, projectId, args as any);
+        break;
+      case 'import_knowledge_questions':
+        result = await importKnowledgeQuestions(client, projectId, args as any);
+        break;
+      case 'list_knowledge_tags':
+        result = await listKnowledgeTags(client, projectId);
+        break;
+      case 'register_knowledge_tag':
+        result = await registerKnowledgeTag(client, projectId, args.name as string, args.description as string);
+        break;
+      case 'publish_definition':
+        result = await publishDefinition(client, projectId, args as unknown as PublishDefinitionArgs);
+        break;
       case 'query_knowledge':
         result = await queryKnowledge(client, projectId, args as any);
         break;

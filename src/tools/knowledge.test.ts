@@ -1,3 +1,10 @@
+// Legacy-contract tests intentionally run with the new capability absent; metadata tests cover both schemas.
+vi.mock('./knowledge-metadata.js', async importOriginal => ({
+ ...await importOriginal<typeof import('./knowledge-metadata.js')>(),
+ metadataCapable: async () => false,
+ metadataRpc: async (client: any, operation: string, _scope: unknown, args: unknown) => client.rpc(operation,args),
+}));
+vi.mock('./knowledge-definitions.js', async importOriginal => ({ ...await importOriginal<typeof import('./knowledge-definitions.js')>(), readDefinitions: async () => ({ available: false, definitions: [] }) }));
 import { encodeClaim } from './knowledge-claim.js';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
@@ -52,7 +59,7 @@ const sampleWorkspaceRow = { workspace_id: WORKSPACE_ID };
 
 const sampleSummaries = [
   {
-    claim: null, claim_source: null,
+    claim: null, claim_source: null, verified_against: null, rollout_state: null, open_steps: null,
     id: 'ke-1',
     title: 'Use TypeScript strict mode',
     type: 'convention',
@@ -63,7 +70,7 @@ const sampleSummaries = [
     updated_at: '2026-03-10T00:00:00Z',
   },
   {
-    claim: null, claim_source: null,
+    claim: null, claim_source: null, verified_against: null, rollout_state: null, open_steps: null,
     id: 'ke-2',
     title: 'PostgreSQL for all persistence',
     type: 'architecture',
@@ -76,7 +83,7 @@ const sampleSummaries = [
 ];
 
 const sampleFullEntry = {
-  claim: 'The team follows this recorded decision.', claim_source: 'authored',
+  claim: 'The team follows this recorded decision.', claim_source: 'authored', verified_against: null, rollout_state: null, open_steps: null,
   id: 'ke-1',
   workspace_id: WORKSPACE_ID,
   project_id: PROJECT_ID,
@@ -231,6 +238,46 @@ function rrfMock(response: { data: any[]; error?: any }) {
 }
 
 describe('queryKnowledge', () => {
+  it('refuses search plus question_state explicitly before retrieving or embedding', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: [] });
+    client.rpc = vi.fn();
+    client.functions = { invoke: vi.fn() };
+    await expect(queryKnowledge(client, PROJECT_ID, { search: 'topic', question_state: 'open' }))
+      .rejects.toThrow('B-1223');
+    expect(client.rpc).not.toHaveBeenCalled();
+    expect(client.functions.invoke).not.toHaveBeenCalled();
+  });
+
+  it('keeps ordinary empty legacy search results without probing a question RPC', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: [] });
+    client.rpc = rrfMock({ data: [] });
+    await expect(queryKnowledge(client, PROJECT_ID, { search: 'topic' })).resolves.toEqual([]);
+    expect(client.rpc.mock.calls.every(([name]: string[]) => name === 'knowledge_search_rrf')).toBe(true);
+  });
+
+  it('preserves legacy search errors without treating authorization as missing capability', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: [] });
+    client.rpc = rrfMock({ data: [], error: { code: '42501', message: 'permission denied' } });
+    await expect(queryKnowledge(client, PROJECT_ID, { search: 'topic' })).rejects.toThrow('permission denied');
+  });
+
+  it('prioritises unresolved questions only in the returned page after bookkeeping ordering', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: [] });
+    const question = (id: string, state: string, tags: string[] = []) => ({ id, tags,
+      madr: { question: { version: 1, state, scope: 'product' } } });
+    client.rpc = rrfMock({ data: [
+      { id: 'decision', tags: [] }, question('parked', 'parked'), question('open', 'open'),
+      { id: 'bookkeeping-decision', tags: ['harmony:bookkeeping'] },
+      question('bookkeeping-question', 'open', ['harmony:bookkeeping']),
+    ] });
+    const result = await queryKnowledge(client, PROJECT_ID, { search: 'topic', limit: 5 });
+    expect(result.map(row => row.id)).toEqual(['parked', 'open', 'decision', 'bookkeeping-question', 'bookkeeping-decision']);
+    expect(result[0]).toMatchObject({ question_state: 'parked', question_scope: 'product', answer: 'not yet decided' });
+    expect(result.every(row => !('score' in row))).toBe(true);
+    const limited = await queryKnowledge(client, PROJECT_ID, { search: 'topic', limit: 1 });
+    expect(limited.map(row => row.id)).toEqual(['decision']); // No before-limit guarantee.
+  });
+
   it('applies default filters (status=accepted, no type/tags) and scopes to token project', async () => {
     const { client, wsChain, secondChain } = buildWorkspaceAndQueryClient({
       data: sampleSummaries,
@@ -322,8 +369,8 @@ describe('queryKnowledge', () => {
       queryKnowledge(client, PROJECT_ID, { search: 'auth', include_superseded: true }),
     ).rejects.toThrow(/cannot be combined with/);
     await expect(
-      queryKnowledge(client, PROJECT_ID, { search: 'auth', type: 'architecture' }),
-    ).rejects.toThrow(/type/);
+      queryKnowledge(client, PROJECT_ID, { search: 'auth', as_of: '2026-01-01T00:00:00Z' }),
+    ).rejects.toThrow(/as_of/);
   });
 
   it('allows search combined with domain + limit', async () => {
@@ -590,7 +637,7 @@ describe('getKnowledgeEntry', () => {
 
 describe('createKnowledgeEntry', () => {
   const newEntry = {
-    claim: 'The team follows this recorded decision.', claim_source: 'authored',
+    claim: 'The team follows this recorded decision.', claim_source: 'authored', verified_against: null, rollout_state: null, open_steps: null,
     id: 'ke-new',
     workspace_id: WORKSPACE_ID,
     project_id: PROJECT_ID,
@@ -1699,7 +1746,7 @@ describe('updateEntity', () => {
 
 describe('resolveOrCreateEntity — B-993 HTML entity normalization + repair-at-touch', () => {
   const decisionRow = {
-    claim: null, claim_source: null,
+    claim: null, claim_source: null, verified_against: null, rollout_state: null, open_steps: null,
     id: 'dec-b993', workspace_id: WORKSPACE_ID, project_id: PROJECT_ID,
     title: 'x', content: '', type: 'business', status: 'Asserted', domain: [], confidence: 1.0,
     review_by: null, drift_risk: false, superseded_by: null, affected_entity_ids: [], madr: null,
@@ -1940,7 +1987,7 @@ describe('entity-authoring tool schemas (B-397)', () => {
 
 describe('recordDecision', () => {
   const decisionRow = {
-    claim: null, claim_source: null,
+    claim: null, claim_source: null, verified_against: null, rollout_state: null, open_steps: null,
     id: 'dec-1', workspace_id: WORKSPACE_ID, project_id: PROJECT_ID,
     title: 'Adopt RRF for hybrid search', content: '', type: 'technical-design',
     status: 'Asserted', domain: ['engineering'], confidence: 1.0, review_by: null, drift_risk: false,

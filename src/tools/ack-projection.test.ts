@@ -25,6 +25,7 @@ import { handleToolCall } from './index.js';
 const READ_TOOLS = [
   'read_feature_accounts',
   'preview_feature_amendment',
+  'preview_knowledge_questions',
   'get_project',
   'list_epics',
   'list_tasks',
@@ -40,6 +41,7 @@ const READ_TOOLS = [
   'list_workflow_transitions',
   'list_members',
   'query_knowledge',
+  'list_knowledge_tags',
   'search_ticket_intents',
   'get_knowledge_entry',
   'query_facts',
