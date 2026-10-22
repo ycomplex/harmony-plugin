@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { encodeClaim } from './knowledge-claim.js';
 import { queryKnowledge } from './knowledge.js';
 
 function clientFor(rows: Array<Record<string, unknown>>, matches: Array<Record<string, unknown>> = []) {
@@ -26,8 +27,8 @@ function clientFor(rows: Array<Record<string, unknown>>, matches: Array<Record<s
     }; return q;
   }
   const client: any = { functions: { invoke: vi.fn().mockResolvedValue({ data: null, error: null }) },
-    rpc: vi.fn((name: string) => name === 'read_knowledge_invalidations'
-      ? Promise.resolve({ data: null, error: { code: 'PGRST202', message: 'older schema' } })
+    rpc: vi.fn((name: string) => (name === 'read_knowledge_invalidations' || name === 'read_knowledge_definitions')
+      ? Promise.resolve({ data: null, error: { code: 'PGRST202', message: 'Could not find function read_knowledge_definitions' } })
       : queryFor(matches, false)),
     from: (table: string) => {
       if (table === 'projects') return { select: () => ({ eq: () => ({ single: async () => ({ data: { workspace_id: 'ws' }, error: null }) }) }) };
@@ -53,6 +54,15 @@ describe('queryKnowledge supersession contract', () => {
     const result = await queryKnowledge(client, 'p', { search: 'policy' });
     expect(result.map(e => e.id)).toEqual(['new', 'other']);
     expect(result[0].supersedes).toEqual(['old']);
+  });
+  it('keeps claims, truth state and inverse supersession together in both read paths', async () => {
+    const stamp = { plugin_version: '0.16.12', web_sha: 'abc1234', at: '2026-10-22T12:00:00Z' };
+    const row = { ...entry('new'), content: encodeClaim('A saved policy body.', 'Teams preserve this policy.'), verified_against: stamp, rollout_state: 'partly-live', open_steps: ['Promote remaining surface'] };
+    for (const args of [{}, { search: 'policy' }]) {
+      const { client } = clientFor([entry('old', 'new'), row], [row]);
+      const result = await queryKnowledge(client, 'p', args);
+      expect(result.find(e => e.id === 'new')).toMatchObject({ claim: 'Teams preserve this policy.', claim_source: 'authored', verified_against: stamp, rollout_state: 'partly-live', open_steps: ['Promote remaining surface'], supersedes: ['old'] });
+    }
   });
   it('batches large returned pages without reading unrelated rows', async () => {
     const rows = [entry('old', 'new'), ...Array.from({ length: 500 }, (_, i) => entry(`i${i}`)), entry('new')];

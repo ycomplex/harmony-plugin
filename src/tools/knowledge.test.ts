@@ -4,6 +4,7 @@ vi.mock('./knowledge-metadata.js', async importOriginal => ({
  metadataCapable: async () => false,
  metadataRpc: async (client: any, operation: string, _scope: unknown, args: unknown) => client.rpc(operation,args),
 }));
+vi.mock('./knowledge-definitions.js', async importOriginal => ({ ...await importOriginal<typeof import('./knowledge-definitions.js')>(), readDefinitions: async () => ({ available: false, definitions: [] }) }));
 import { encodeClaim } from './knowledge-claim.js';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
@@ -58,7 +59,7 @@ const sampleWorkspaceRow = { workspace_id: WORKSPACE_ID };
 
 const sampleSummaries = [
   {
-    claim: null, claim_source: null,
+    claim: null, claim_source: null, verified_against: null, rollout_state: null, open_steps: null,
     id: 'ke-1',
     title: 'Use TypeScript strict mode',
     type: 'convention',
@@ -69,7 +70,7 @@ const sampleSummaries = [
     updated_at: '2026-03-10T00:00:00Z',
   },
   {
-    claim: null, claim_source: null,
+    claim: null, claim_source: null, verified_against: null, rollout_state: null, open_steps: null,
     id: 'ke-2',
     title: 'PostgreSQL for all persistence',
     type: 'architecture',
@@ -82,7 +83,7 @@ const sampleSummaries = [
 ];
 
 const sampleFullEntry = {
-  claim: 'The team follows this recorded decision.', claim_source: 'authored',
+  claim: 'The team follows this recorded decision.', claim_source: 'authored', verified_against: null, rollout_state: null, open_steps: null,
   id: 'ke-1',
   workspace_id: WORKSPACE_ID,
   project_id: PROJECT_ID,
@@ -596,7 +597,7 @@ describe('getKnowledgeEntry', () => {
 
 describe('createKnowledgeEntry', () => {
   const newEntry = {
-    claim: 'The team follows this recorded decision.', claim_source: 'authored',
+    claim: 'The team follows this recorded decision.', claim_source: 'authored', verified_against: null, rollout_state: null, open_steps: null,
     id: 'ke-new',
     workspace_id: WORKSPACE_ID,
     project_id: PROJECT_ID,
@@ -1705,7 +1706,7 @@ describe('updateEntity', () => {
 
 describe('resolveOrCreateEntity — B-993 HTML entity normalization + repair-at-touch', () => {
   const decisionRow = {
-    claim: null, claim_source: null,
+    claim: null, claim_source: null, verified_against: null, rollout_state: null, open_steps: null,
     id: 'dec-b993', workspace_id: WORKSPACE_ID, project_id: PROJECT_ID,
     title: 'x', content: '', type: 'business', status: 'Asserted', domain: [], confidence: 1.0,
     review_by: null, drift_risk: false, superseded_by: null, affected_entity_ids: [], madr: null,
@@ -1946,7 +1947,7 @@ describe('entity-authoring tool schemas (B-397)', () => {
 
 describe('recordDecision', () => {
   const decisionRow = {
-    claim: null, claim_source: null,
+    claim: null, claim_source: null, verified_against: null, rollout_state: null, open_steps: null,
     id: 'dec-1', workspace_id: WORKSPACE_ID, project_id: PROJECT_ID,
     title: 'Adopt RRF for hybrid search', content: '', type: 'technical-design',
     status: 'Asserted', domain: ['engineering'], confidence: 1.0, review_by: null, drift_risk: false,

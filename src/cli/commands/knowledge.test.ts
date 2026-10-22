@@ -1,3 +1,5 @@
+import { publishDefinition } from '../../tools/knowledge-definitions.js';
+vi.mock('../../tools/knowledge-definitions.js', () => ({ publishDefinition: vi.fn().mockResolvedValue({ id: 'definition', current_revision: 'revision' }) }));
 import { Command } from 'commander';
 import { describe, it, expect, vi } from 'vitest';
 import { registerKnowledgeCommands } from './knowledge.js';
@@ -34,6 +36,17 @@ describe('knowledge update command', () => {
       content: 'Replacement', content_mode: undefined, allow_shrink: undefined,
     }));
   });
+  it('passes stamp, rollout and explicit clears through the shared handler', async () => {
+    const program = new Command();
+    registerKnowledgeCommands(program);
+    await program.parseAsync(['knowledge', 'update', 'entry', '--verified-against', '{"plugin_version":"0.16.8","at":"2026-10-22T12:00:00Z"}', '--rollout-state', 'partly-live', '--open-steps', '["Promote"]', '--acting-task', 'ticket-uuid'], { from: 'user' });
+    expect(updateKnowledgeEntry).toHaveBeenLastCalledWith('client', 'project', expect.objectContaining({
+      verified_against: { plugin_version: '0.16.8', at: '2026-10-22T12:00:00Z' }, rollout_state: 'partly-live', open_steps: ['Promote'], acting_task_id: 'ticket-uuid',
+    }));
+    await program.parseAsync(['knowledge', 'update', 'entry', '--verified-against', 'null', '--rollout-state', 'live', '--open-steps', '[]'], { from: 'user' });
+    expect(updateKnowledgeEntry).toHaveBeenLastCalledWith('client', 'project', expect.objectContaining({ verified_against: null, rollout_state: 'live', open_steps: [] }));
+  });
+
 });
 
 describe('knowledge list human output', () => {
@@ -47,5 +60,19 @@ describe('knowledge list human output', () => {
     expect(output.text).toContain('old-id');
     expect(output.text).toContain('new-id');
     expect(queryKnowledge).toHaveBeenCalledWith('client', 'project', expect.objectContaining({ include_superseded: true }));
+  });
+});
+
+describe('definition CLI controls', () => {
+  it('forwards definitions-only to the shared reader', async () => {
+    vi.mocked(queryKnowledge).mockResolvedValue([]);
+    const program = new Command(); registerKnowledgeCommands(program);
+    await program.parseAsync(['knowledge', 'list', '--definitions-only', '--search', 'Term'], { from: 'user' });
+    expect(queryKnowledge).toHaveBeenLastCalledWith('client', 'project', expect.objectContaining({ definitions_only: true, search: 'Term' }));
+  });
+  it('preserves the explicit accepted source and first-publication revision', async () => {
+    const program = new Command(); registerKnowledgeCommands(program);
+    await program.parseAsync(['knowledge', 'publish-definition', '--concept', 'concept', '--expected-revision', 'null', '--source', 'source', '--wording', 'Meaning.', '--metadata', '{"ticket":"B-1226"}'], { from: 'user' });
+    expect(publishDefinition).toHaveBeenLastCalledWith('client', 'project', expect.objectContaining({ concept_id: 'concept', expected_revision: null, source_decision_id: 'source', wording: 'Meaning.', metadata: { ticket: 'B-1226' } }));
   });
 });

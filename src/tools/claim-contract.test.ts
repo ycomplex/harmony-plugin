@@ -10,6 +10,8 @@ function mock(row: any, metadata: boolean | 'missing' = false) {
  const ws: any = { select: vi.fn().mockReturnThis(), eq: vi.fn().mockReturnThis(), single: vi.fn().mockResolvedValue({ data: { workspace_id: 'ws' }, error: null }) };
  const client: any = { from: vi.fn((table: string) => table === 'projects' ? ws : chain), rpc: vi.fn().mockImplementation(async (name: string) => name === 'knowledge_metadata_capable'
   ? { data: typeof metadata === 'boolean' ? metadata : null, error: metadata === 'missing' ? { code: 'PGRST202', message: 'older schema' } : null }
+  : name === 'read_knowledge_definitions'
+  ? { data: null, error: { code: 'PGRST202', message: 'Could not find function read_knowledge_definitions' } }
   : name === 'read_knowledge_invalidations'
   ? { data: null, error: { code: 'PGRST202', message: 'older schema' } } : { data: row, error: null }) };
  return { client, chain };

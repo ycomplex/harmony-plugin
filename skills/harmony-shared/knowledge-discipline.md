@@ -31,7 +31,10 @@ practice. `query_knowledge`'s `search` path returns titles ranked by relevance; 
 not the same as its content grounding your answer. Two habits close most of that gap for zero content
 cost:
 
-1. **Fetch the full body of every top hit before synthesizing from it.** `query_knowledge` results are
+1. **Fetch the full body of every decision hit before synthesizing from it.** A result with
+   `kind: "definition"` already carries its full quotable `content`, source, history and refinements.
+   Cite its stable `concept_id`; do not send its definition id to the decision-only
+   `get_knowledge_entry` tool. Ordinary `query_knowledge` decision results are
    summaries (title, type, status, tags) — never rely on a title alone to decide what an entry says or
    whether it applies. Call `get_knowledge_entry` on each candidate you intend to cite or rule out. A
    title that *sounds* relevant can turn out to be about something adjacent; a title that sounds
@@ -239,3 +242,12 @@ and omit `doc.knowledge_scope`; state that the saved applicability remains unres
 repair. This selects a legacy contract up front. It is never a retry that drops an explicit metadata
 request after refusal, and it never reports that scope was saved. Once capable, new entries always
 require scope and authored vocabulary validation.
+## Maintaining current term definitions
+
+When a decision explicitly changes a product term's meaning, show the full proposed replacement wording in that gate's brief. Do not publish proposed or unaccepted wording. An unrelated accept never rewrites definitions.
+
+After the owning gate's accept and pending acceptance-event consume finish, use the actual Accepted decision UUID as the publication source. Look up the current term with `query_knowledge({ definitions_only: true, search: "<term>" })`, retaining its `concept_id` and `current_revision`. Publish the approved full wording with `publish_definition`: existing concept UUID, expected current revision UUID, Accepted source decision UUID, source ticket/PR/commit metadata where known, and explicit refinement UUIDs. Declare the same knowledge-write provenance as the work being executed. Publication preserves the stable definition and concept references, appends immutable history and keeps existing refinement links.
+
+For a new term, follow the existing entity-birth discipline after ratification; reuse an existing concept only when the meaning matches. Ambiguous homonyms require explicit disambiguation. Pass `expected_revision: null` only for a genuinely new definition. Never create a new concept or definition merely to avoid a stale-revision refusal.
+
+A stale publication requires reading the winning wording and reviewing the conflict before another attempt. Missing definition storage leaves ordinary retrieval usable, but does not count as a completed publication. Surface the specific blocked wording and Accepted source through the owning gate's normal tracked-residue or worker-question path; never silently drop it or claim the current definition changed.

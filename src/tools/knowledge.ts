@@ -1,6 +1,8 @@
 import { metadataCapable, metadataRpc, type KnowledgeScope } from './knowledge-metadata.js';
+import { readDefinitions, type Definition } from './knowledge-definitions.js';
 import { projectSupersession } from './knowledge-supersession.js';
 import { withInvalidations, type InvalidationLink } from './knowledge-invalidations.js';
+import { truthCompatibleRead, truthStatePatch, type KnowledgeTruthState } from './knowledge-truth.js';
 import { BOOKKEEPING_TAG, SUBSTANTIVE_TAG_FILTER, bookkeepingPage } from './knowledge-bookkeeping.js';
 import { claimFields, encodeClaim, editedClaimContent, claimContent, matchedPassage, proposeClaim } from './knowledge-claim.js';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -12,7 +14,7 @@ import { guardKnowledgeWriteProvenance } from './provenance.js';
 // Interfaces
 // ---------------------------------------------------------------------------
 
-export interface KnowledgeEntrySummary {
+export interface KnowledgeEntrySummary extends KnowledgeTruthState {
   scope?: KnowledgeScope | null;
   snippet?: string | null;
   claim?: string | null;
@@ -32,7 +34,7 @@ export interface KnowledgeEntrySummary {
   supersedes?: string[];
 }
 
-export interface KnowledgeEntryFull {
+export interface KnowledgeEntryFull extends KnowledgeTruthState {
   scope?: KnowledgeScope | null;
   claim?: string | null;
   claim_source?: 'authored' | 'derived' | null;
@@ -61,7 +63,7 @@ export interface KnowledgeEntryFull {
   review_by?: string | null;
 }
 
-export interface KnowledgeDecisionFull {
+export interface KnowledgeDecisionFull extends KnowledgeTruthState {
   scope?: KnowledgeScope | null;
   claim?: string | null;
   claim_source?: 'authored' | 'derived' | null;
@@ -118,10 +120,11 @@ const ENTITY_COLS = 'id, workspace_id, project_id, kind, name, description, meta
 export const queryKnowledgeTool = {
   name: 'query_knowledge',
   description:
-    'Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Results include nullable superseded_by and inverse supersedes UUIDs; matching successors precede replaced entries. Check this before making significant implementation choices. Defaults to "Accepted" entries only, with explicitly marked bookkeeping ranked last; include_bookkeeping:false excludes it before pagination. When `search` is given, retrieval is semantic (RRF) and composes with `domain`, `limit` , `scope` and `include_bookkeeping`; the other structured filters (`type`, `status`, `tags`, `as_of`, `include_superseded`, `offset`) apply to the non-search structured path only.',
+    'Find current term definitions first, then linked refinements and ordinary decisions. definitions_only returns full quotable current definitions; unavailable storage is reported explicitly. Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Results include nullable superseded_by and inverse supersedes UUIDs; matching successors precede replaced entries. Check this before making significant implementation choices. Defaults to "Accepted" entries only, with explicitly marked bookkeeping ranked last; include_bookkeeping:false excludes it before pagination. When `search` is given, retrieval is semantic (RRF) and composes with `domain`, `limit` and `include_bookkeeping`; the other structured filters (`type`, `status`, `tags`, `as_of`, `include_superseded`, `offset`) apply to the non-search structured path only. Optional scope (product | deployment) filters by declared scope when the metadata schema is present; unsupported scope filtering fails explicitly.',
   inputSchema: {
     type: 'object' as const,
     properties: {
+      definitions_only: { type: 'boolean', description: 'Return only current accepted term definitions; unavailable storage is reported explicitly' },
       type: {
         type: 'string',
         description: 'Filter by advisory authoring classification, not verified semantic content (e.g. "architecture", "business", "convention", "specification"). (structured-filter path; not combinable with `search`)',
@@ -208,7 +211,7 @@ export const createKnowledgeEntryTool = {
 
 export const updateKnowledgeEntryTool = {
   name: 'update_knowledge_entry',
-  description: 'Update an existing knowledge entry in this project by ID or title. Use content_mode prepend_section/append_section to add only a new section while atomically preserving existing content. Shorter replacements that drop dated amendment markers are refused unless allow_shrink is explicitly true. Can also update title, type, status, tags, domain, madr, realization, or review_by.',
+  description: 'Update an existing knowledge entry in this project by ID or title. Use content_mode prepend_section/append_section to add only a new section while atomically preserving existing content. Shorter replacements that drop dated amendment markers are refused unless allow_shrink is explicitly true. Can also update title, type, status, tags, domain, madr, realization, review_by, verified_against, rollout_state or open_steps.',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -241,6 +244,10 @@ export const updateKnowledgeEntryTool = {
         enum: ['agreed', 'live', 'deprecating', 'retired'],
         description: 'Implementation/realization state (orthogonal to status); NULL ≡ live; "agreed" = decided-not-yet-built',
       },
+      acting_task_id: { type: 'string', description: 'Acting ticket UUID for a verification/rollout write. Omit to use the current conduction ticket; manual writes without a ticket record null.' },
+      verified_against: { type: ['object', 'null'], properties: { plugin_version: { type: ['string', 'null'] }, web_sha: { type: ['string', 'null'] }, at: { type: 'string' } }, required: ['at'], additionalProperties: false, description: 'Observed versions and ISO verification time; null clears verification. At least one version must be present.' },
+      rollout_state: { type: ['string', 'null'], enum: ['designed', 'partly-live', 'live', 'retired', null], description: 'Production rollout, independent of acceptance and realization. live means production; partly-live means partly in production; staging-only remains designed. null means unknown. Cutover time is the re-stamped event created_at, never verified_against.at.' },
+      open_steps: { type: ['array', 'null'], items: { type: 'string' }, description: 'Remaining rollout steps; partly-live requires at least one nonblank step. null clears the list.' },
       review_by: { type: 'string', description: 'ISO timestamp; freshness/decay date (knowledge-model-v1 §3)' },
       provenance: { type: 'string', description: 'Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>", or "agent-on-behalf:human-in-session"/"agent-on-behalf:human-in-browser"/"agent-on-behalf:human-recorded" when an agent writes on a human\'s already-made decision). Omit for NULL — the reader\'s rule then falls back to conduction-only or untracked classification. B-1021 (widened B-1062): bare "human-in-browser" is REJECTED — that value is the web client\'s alone, and "agent-on-behalf:" accepts only the three closed suffixes above.' },
     },
@@ -393,6 +400,7 @@ function toBaseStatus(status: string): string {
 
 export interface QueryKnowledgeArgs {
   scope?: KnowledgeScope;
+  definitions_only?: boolean;
   type?: string;
   status?: string;
   domain?: string[];          // NEW: filter to entries tagged with ANY of these domains
@@ -409,19 +417,18 @@ export async function queryKnowledge(
   client: SupabaseClient,
   projectId: string,
   args: QueryKnowledgeArgs,
-): Promise<KnowledgeEntrySummary[]> {
+): Promise<Array<KnowledgeEntrySummary | Definition>> {
   const workspaceId = await getWorkspaceId(client, projectId);
   if (args.scope !== undefined) {
     if (!['product', 'deployment'].includes(args.scope)) throw new Error('scope must be product or deployment');
     if (!await metadataCapable(client)) throw new Error('Scope filtering unavailable until the schema is promoted; no unfiltered results returned.');
   }
 
-  // Semantic path: a free-text query => embed it + fuse vector ⊕ trigram via RRF (Phase C).
+  if (args.definitions_only && (args.type || args.status || args.tags?.length || args.as_of || args.include_superseded)) {
+    throw new Error('definitions_only supports search, domain, limit and offset; ordinary decision filters are not definition filters');
+  }
+  if (args.limit === 0) return [];
   if (args.search) {
-    // Semantic retrieval (RRF) returns Accepted decisions ranked by relevance, optionally filtered by
-    // `domain` (+ `limit`). It does NOT yet compose with the other structured filters — reject rather than
-    // silently drop them (no silent wrong answer; e.g. search+include_superseded would otherwise return
-    // Accepted-only with no error). Composable semantic+filter search is tracked as a follow-up.
     const incompatible: string[] = [];
     if (args.status) incompatible.push('status');
     if (args.include_superseded) incompatible.push('include_superseded');
@@ -436,8 +443,45 @@ export async function queryKnowledge(
         `Omit "search" to use the structured filters.`,
       );
     }
+  }
+  const definitions = await readDefinitions(client, workspaceId, projectId, args);
+  if (args.definitions_only) {
+    if (!definitions.available) throw new Error('Definitions are not available in this environment yet.');
+    return definitions.definitions;
+  }
+  // Explicit historical/type filters remain decision-only. Default lookup gives current terms first.
+  const includeDefinitions = !args.type && !args.status && !args.tags?.length && !args.as_of && !args.include_superseded && args.scope !== 'deployment';
+  const prepend = async (entries: KnowledgeEntrySummary[]) => {
+    if (!includeDefinitions) return entries;
+    const ids = args.search ? [...new Set(definitions.definitions.flatMap(d => d.refinements.map(r => r.id)))] : [];
+    let refinements: KnowledgeEntrySummary[] = [];
+    if (ids.length) {
+      let query = client.from('knowledge_decisions').select('id,title,type,status,content,domain,tags,project_id,updated_at').eq('workspace_id', workspaceId)
+        .eq('project_id', projectId).eq('status', 'Accepted').in('id', ids);
+      if (args.domain?.length) query = query.overlaps('domain', args.domain);
+      const { data, error } = await query;
+      if (error) throw new Error(`Cannot read definition refinements: ${error.message}`);
+      refinements = await withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId,
+        (data ?? []).map(d => ({ id: d.id, title: d.title, type: d.type, status: d.status, domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d), snippet: matchedPassage(d.content ?? '', args.search!) }))));
+    }
+    const seen = new Set<string>();
+    return [...definitions.definitions, ...refinements, ...entries].filter(entry => {
+      if (seen.has(entry.id)) return false;
+      seen.add(entry.id); return true;
+    }).slice(0, args.limit ?? 50);
+  };
+  const decisionArgs = includeDefinitions && definitions.available
+    ? { ...args, offset: Math.max(0, (args.offset ?? 0) - (definitions.total_count ?? definitions.definitions.length)),
+        limit: Math.max(1, (args.limit ?? 50) - definitions.definitions.length) } : args;
+  if (includeDefinitions && definitions.definitions.length >= (args.limit ?? 50)) return definitions.definitions;
+  // Semantic path: a free-text query => embed it + fuse vector ⊕ trigram via RRF (Phase C).
+  if (args.search) {
+    // Semantic retrieval (RRF) returns Accepted decisions ranked by relevance, optionally filtered by
+    // `domain` (+ `limit`). It does NOT yet compose with the other structured filters — reject rather than
+    // silently drop them (no silent wrong answer; e.g. search+include_superseded would otherwise return
+    // Accepted-only with no error). Composable semantic+filter search is tracked as a follow-up.
     const queryEmbedding = await embedText(client, args.search);   // may be null -> fn degrades to trigram-only
-    const data = await bookkeepingPage<any>(({ bookkeeping, offset, limit, count }) => {
+    const data = await bookkeepingPage<any>(({ bookkeeping, offset, limit, count }) => truthCompatibleRead(extraColumns => {
       // NULL disables the RPC's INNER limit. PostgREST then filters the SETOF rows before its
       // outer range; a finite inner limit would lose substantive hits on an older deployment.
       let query = (client as any).rpc(args.scope ? 'knowledge_search_rrf_metadata' : 'knowledge_search_rrf', {
@@ -448,17 +492,18 @@ export async function queryKnowledge(
         _query_text: args.search,
         _domain: args.domain && args.domain.length > 0 ? args.domain : null,
         _match_limit: null,
-      }, count ? { count: 'exact' } : {}).select('*');
+      }, count ? { count: 'exact' } : {}).select('id, title, content, type, status, domain, tags, project_id, updated_at' + extraColumns);
       query = bookkeeping ? query.contains('tags', [BOOKKEEPING_TAG]) : query.or(SUBSTANTIVE_TAG_FILTER);
       return query.range(offset, offset + limit - 1);
-    }, args);
+    }), decisionArgs);
     const matches = (data ?? []).map((d: any) => ({
       id: d.id, title: d.title, type: d.type, status: d.status, ...(d.scope !== undefined ? {scope:d.scope} : {}),
       ...claimFields(d), snippet: matchedPassage(d.content ?? '', args.search!),
       domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at,
+      verified_against: d.verified_against ?? null, rollout_state: d.rollout_state ?? null, open_steps: d.open_steps ?? null,
     })) as KnowledgeEntrySummary[];
-    if (!matches.length) return [];
-    return withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, matches));
+    if (!matches.length) return prepend([]);
+    return prepend(await withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, matches)));
   }
 
   // Structured retrieval uses the same class boundary and applies every filter before pagination.
@@ -477,9 +522,9 @@ export async function queryKnowledge(
     query = bookkeeping ? query.contains('tags', [BOOKKEEPING_TAG]) : query.or(SUBSTANTIVE_TAG_FILTER);
     return query.order('type', { ascending: true }).order('id', { ascending: true })
       .range(offset, offset + limit - 1);
-  }, args);
+  }, decisionArgs);
   // B-1136 claim fields first, then B-1230 page-bounded supersession hydration (both page-local).
-  return withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, rows.map(d => ({ id: d.id, title: d.title, type: d.type, status: d.status, ...(d.scope !== undefined ? {scope:d.scope} : {}), domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d) }))));
+  return prepend(await withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, rows.map(d => ({ id: d.id, title: d.title, type: d.type, status: d.status, ...(d.scope !== undefined ? {scope:d.scope} : {}), domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d), verified_against: d.verified_against ?? null, rollout_state: d.rollout_state ?? null, open_steps: d.open_steps ?? null })))));
 }
 
 // Hydrate only returned IDs, in batches below PostgREST's row cap. Never scan the corpus
@@ -621,7 +666,7 @@ export async function getKnowledgeEntry(
 
   const { data, error } = await query.single();
   if (error) throw error;
-  return (await withInvalidations(client, [{ ...data, ...claimFields(data) } as KnowledgeEntryFull]))[0];
+  return (await withInvalidations(client, [{ ...data, ...claimFields(data), verified_against: data.verified_against ?? null, rollout_state: data.rollout_state ?? null, open_steps: data.open_steps ?? null } as KnowledgeEntryFull]))[0];
 }
 
 // ---------------------------------------------------------------------------
@@ -698,9 +743,10 @@ export async function createKnowledgeEntry(
 // Handler: updateKnowledgeEntry
 // ---------------------------------------------------------------------------
 
-export interface UpdateKnowledgeEntryArgs {
+export interface UpdateKnowledgeEntryArgs extends KnowledgeTruthState {
   scope?: KnowledgeScope;
   claim?: string;
+  acting_task_id?: string;
   entry_id?: string;
   title?: string;
   new_title?: string;
@@ -747,9 +793,12 @@ export async function updateKnowledgeEntry(
     throw new Error('Amendment section must not be blank');
   }
 
+  const truthPatch = truthStatePatch(args);
+  const hasTruthUpdates = Object.keys(truthPatch).length > 0;
   const hasUpdates =
     args.scope !== undefined ||
     args.claim !== undefined ||
+    hasTruthUpdates ||
     args.new_title !== undefined ||
     args.content !== undefined ||
     args.type !== undefined ||
@@ -791,7 +840,7 @@ export async function updateKnowledgeEntry(
   // All content writes use the locked, guarded operation. Never fall back to an
   // older unsafe replacement writer when its migration is unavailable.
   const contentWrite = args.content !== undefined || args.claim !== undefined;
-  const { data, error } = await metadataRpc(client, contentWrite ? 'knowledge_amend_knowledge_entry' : 'knowledge_update_knowledge_entry', args.scope, {
+  const rpcArgs = {
     p_project_id: projectId,
     p_entry_id: args.entry_id ?? null,
     p_title: args.title ?? null,
@@ -810,10 +859,20 @@ export async function updateKnowledgeEntry(
     p_provenance: args.provenance ?? null,
     p_conduction_id: getConductionId() ?? null,
     p_leg: getLeg() ?? null,
-    ...(contentWrite ? { p_content_mode: mode, p_allow_shrink: args.allow_shrink ?? false } : {}),
-  });
+    ...((contentWrite || hasTruthUpdates) ? { p_content_mode: mode, p_allow_shrink: args.allow_shrink ?? false } : {}),
+    ...(hasTruthUpdates ? { p_truth_state: truthPatch, p_acting_task_id: args.acting_task_id ?? null } : {}),
+  };
+  // B-1141's scope-aware *_metadata wrappers and B-1229's truth RPC are separate families; one write
+  // cannot carry both, so the combination is refused rather than silently dropping half of it.
+  if (hasTruthUpdates && args.scope !== undefined) throw new Error('scope cannot be combined with a verification/rollout write in one update; send them as two updates. No fields were changed.');
+  const { data, error } = hasTruthUpdates
+    ? await client.rpc('knowledge_amend_entry_truth', rpcArgs)
+    : await metadataRpc(client, contentWrite ? 'knowledge_amend_knowledge_entry' : 'knowledge_update_knowledge_entry', args.scope, rpcArgs);
 
   if (error) {
+    if (hasTruthUpdates && ['PGRST202', '42883', '42703', 'PGRST204'].includes(error.code ?? '')) {
+      throw new Error('Knowledge verification/rollout update unavailable: apply the B-1229 database migration first. No fields were changed.');
+    }
     if (contentWrite && (error.code === 'PGRST202' || error.code === '42883')) {
       throw new Error('Knowledge content update unavailable: apply the B-1111 database migration before using content updates. No content was replaced.');
     }

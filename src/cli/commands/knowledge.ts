@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { previewMetadataRepair, applyMetadataRepair, tagReleasedKnowledge } from '../../tools/knowledge-repair.js';
 import { listKnowledgeTags, registerKnowledgeTag } from '../../tools/knowledge-metadata.js';
+import { publishDefinition } from '../../tools/knowledge-definitions.js';
 import { Command } from 'commander';
 import {
   queryKnowledge,
@@ -29,6 +30,7 @@ export function registerKnowledgeCommands(program: Command): void {
       [] as string[],
     )
     .option('--search <text>', 'Search term matched against title and content')
+    .option('--definitions-only', 'Return only current term definitions', false)
     .option('--all', 'Include superseded entries', false)
     .option('--no-bookkeeping', 'Exclude explicitly marked procedural gate records')
     .action(async (opts) => {
@@ -37,6 +39,7 @@ export function registerKnowledgeCommands(program: Command): void {
         async (ctx) =>
           queryKnowledge(ctx.client, ctx.projectId, {
             scope: opts.scope,
+            definitions_only: opts.definitionsOnly,
             type: opts.type,
             status: opts.status,
             tags: opts.tag && opts.tag.length > 0 ? opts.tag : undefined,
@@ -52,6 +55,7 @@ export function registerKnowledgeCommands(program: Command): void {
               transform: (v: string) => v.slice(0, 8),
             },
             { key: 'title', header: 'Title', width: 40 },
+            { key: 'content', header: 'Definition', width: 60 },
             { key: 'claim', header: 'Claim', width: 60 },
             { key: 'claim_source', header: 'Claim source' },
             { key: 'snippet', header: 'Matched passage', width: 60 },
@@ -60,6 +64,8 @@ export function registerKnowledgeCommands(program: Command): void {
             { key: 'superseded_by', header: 'Superseded by', transform: (v: string | null) => v ?? '—' },
             { key: 'supersedes', header: 'Supersedes', transform: (v: string[]) => (v ?? []).join(', ') || '—' },
             { key: 'invalidations', header: 'Invalidation', transform: (links: Array<{ effective_at: string | null }> = []) => links.some(link => link.effective_at) ? 'Retired' : links.length ? 'Removal pending' : '' },
+            { key: 'rollout_state', header: 'Rollout', transform: (v: string | null) => v ?? 'unknown' },
+            { key: 'verified_against', header: 'Verification', transform: (v: unknown) => v ? JSON.stringify(v) : 'not verified' },
             {
               key: 'tags',
               header: 'Tags',
@@ -86,6 +92,14 @@ export function registerKnowledgeCommands(program: Command): void {
   });
   knowledge.command('tags').action(async () => { await runCommand(program.opts(), ctx => listKnowledgeTags(ctx.client, ctx.projectId), data => JSON.stringify(data, null, 2)); });
   knowledge.command('register-tag').argument('<name>').argument('<description>').action(async (name, description) => { await runCommand(program.opts(), ctx => registerKnowledgeTag(ctx.client, ctx.projectId, name, description), data => JSON.stringify(data, null, 2)); });
+  knowledge.command('publish-definition').requiredOption('--concept <uuid>').requiredOption('--expected-revision <uuid-or-null>')
+    .requiredOption('--source <uuid>').requiredOption('--wording <text>')
+    .option('--metadata <json>', 'Source references', '{}').option('--provenance <value>', 'Knowledge-write provenance').action(async opts => {
+      await runCommand(program.opts(), ctx => publishDefinition(ctx.client, ctx.projectId, {
+        concept_id: opts.concept, expected_revision: opts.expectedRevision === 'null' ? null : opts.expectedRevision,
+        source_decision_id: opts.source, wording: opts.wording, provenance: opts.provenance, metadata: JSON.parse(opts.metadata),
+      }), data => JSON.stringify(data, null, 2));
+    });
 
   knowledge.command('propose-claims').description('Propose missing legacy claims; dry run unless --apply').option('--apply', 'Store missing proposals as derived', false).action(async opts => {
     await runCommand(program.opts(), ctx => proposeLegacyClaims(ctx.client, ctx.projectId, opts.apply), data => JSON.stringify(data, null, 2));
@@ -109,6 +123,9 @@ export function registerKnowledgeCommands(program: Command): void {
             { label: 'Title', value: entry.title },
             { label: 'Type (advisory)', value: entry.type },
             { label: 'Status', value: entry.status },
+            { label: 'Verification', value: entry.verified_against ? JSON.stringify(entry.verified_against) : 'Not verified' },
+            { label: 'Rollout', value: entry.rollout_state ?? 'Unknown' },
+            { label: 'Open steps', value: entry.open_steps?.join('\n') || '(none)' },
             { label: 'Tags', value: entry.tags?.length ? entry.tags.join(', ') : '(none)' },
             { label: 'Project', value: entry.project_id ?? '(workspace-wide)' },
             { label: 'Updated', value: formatDate(entry.updated_at) },
@@ -176,6 +193,10 @@ export function registerKnowledgeCommands(program: Command): void {
     )
     .option('--madr <json>', 'Structured MADR body as a JSON object (full-object replace)')
     .option('--realization <state>', 'Realization state: agreed, live, deprecating, or retired')
+    .option('--acting-task <uuid>', 'Acting ticket UUID for a verification/rollout write')
+    .option('--verified-against <json>', 'Verification stamp {plugin_version, web_sha, at}; null to clear')
+    .option('--rollout-state <state>', 'Production rollout: designed (staging-only), partly-live (part in production), live (production), retired; null to clear')
+    .option('--open-steps <json>', 'JSON array of remaining rollout steps; null to clear')
     .option('--review-by <iso>', 'ISO timestamp; freshness/decay date')
     .action(async (id, opts) => {
       const tags = opts.tags
@@ -204,6 +225,10 @@ export function registerKnowledgeCommands(program: Command): void {
             madr,
             realization: opts.realization,
             review_by: opts.reviewBy,
+            acting_task_id: opts.actingTask,
+            verified_against: opts.verifiedAgainst !== undefined ? JSON.parse(opts.verifiedAgainst) : undefined,
+            rollout_state: opts.rolloutState === 'null' ? null : opts.rolloutState,
+            open_steps: opts.openSteps !== undefined ? JSON.parse(opts.openSteps) : undefined,
           }),
         (entry) => `Updated knowledge entry: "${entry.title}" (${entry.id})`,
       );
