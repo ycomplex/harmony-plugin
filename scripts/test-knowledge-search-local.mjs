@@ -59,6 +59,25 @@ try {
    assert.equal(answer.matches[0]?.title,query);assert(answer.matches[0].score>=0.0125);
  }
  console.log('PASS representative hybrid knowledge retrieval / knowledge search / time budget relevance probes');
+ Object.defineProperty(client,'functions',{configurable:true,value:{invoke:async()=>({data:{embedding:[1,...Array(1535).fill(0)]},error:null})}});
+ // End-to-end question projection and relevance priority use the same real scorer.
+ sql(`insert into public.knowledge_decisions(id,workspace_id,project_id,title,content,type,status,tags,created_by,embedding,source_activity,madr)
+ select ('00000000-0000-0000-0000-'||lpad((1223300+n)::text,12,'0'))::uuid,'${workspace}','${project}',
+ 'heliocentric question '||n,'heliocentric question','convention','Accepted',array['question-probe'],
+ '00000000-0000-0000-0000-000001223001',
+ (array[case when n=0 then 1::real else 0.8::real end,case when n=0 then 0::real else 0.6::real end]||array_fill(0::real,array[1534]))::vector(1536),
+ case when n=1 then 'knowledge-question' end,
+ case when n=1 then '{"question":{"version":1,"state":"open","scope":"product"}}'::jsonb end
+ from generate_series(0,1) n;`);
+ result=await queryKnowledge(client,project,{search:'heliocentric question',tags:['question-probe']});
+ assert.equal(result.matches[0].id,'00000000-0000-0000-0000-000001223301');
+ assert.equal(result.matches[0].answer,'not yet decided');assert.equal(result.matches[0].question_scope,'product');
+ result=await queryKnowledge(client,project,{search:'heliocentric question',scope:'product',question_state:'open'});
+ assert.equal(result.matches.length,1);assert.equal(result.matches[0].score,2/61);
+ sql(`update public.knowledge_decisions set status='Superseded',madr='{"question":{"version":1,"state":"decided","scope":"product"}}',superseded_by='00000000-0000-0000-0000-000001223300' where id='00000000-0000-0000-0000-000001223301';`);
+ result=await queryKnowledge(client,project,{search:'heliocentric question',scope:'product',question_state:'decided',status:'Superseded'});
+ assert.equal(result.matches[0].resulting_decision_id,'00000000-0000-0000-0000-000001223300');
+ console.log('PASS real scored question priority, scope/state pre-ranking, decided answer and authoritative successor');
  // Legacy deployment skew: rename capability and reload actual PostgREST schema cache.
  sql(`alter function ${signature} rename to b1223_saved_scored; notify pgrst,'reload schema';`);renamed=true;
  for(let n=0;n<30;n++) {const r=await client.rpc('knowledge_search_scored',{});if(r.error?.code==='PGRST202')break;await new Promise(r=>setTimeout(r,100));}

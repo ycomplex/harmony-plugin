@@ -2538,7 +2538,7 @@ async function withContradictionSignal(
       search: searchTerms.join(' '),
       limit: TIER_CANDIDATE_LIMIT,
     });
-    tierRows = Array.isArray(searched) ? searched : [...searched.matches.filter(r => r.source_kind === 'knowledge'), ...searched.unscored_matches];
+    tierRows = Array.isArray(searched) ? searched : [...(searched.refinements ?? []), ...searched.matches.filter(r => r.source_kind === 'knowledge'), ...searched.unscored_matches];
     tierIncomplete = Array.isArray(searched) ? false : searched.incomplete;
   } catch {
     tierIncomplete = true;
