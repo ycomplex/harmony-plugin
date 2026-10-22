@@ -4,7 +4,7 @@ import { renderBrief, renderEntry, withDerivedEntryContent, type BriefDoc } from
 import { encodeClaim } from './knowledge-claim.js';
 function mock(row: any) {
  const chain: any = {};
- for (const name of ['select','eq','neq','order','range','single','update']) chain[name] = vi.fn().mockReturnValue(chain);
+ for (const name of ['select','eq','neq','order','range','single','update','or','contains']) chain[name] = vi.fn().mockReturnValue(chain);
  chain.then = (resolve: any) => Promise.resolve({ data: row, error: null }).then(resolve);
  chain.single.mockResolvedValue({ data: row, error: null });
  const ws: any = { select: vi.fn().mockReturnThis(), eq: vi.fn().mockReturnThis(), single: vi.fn().mockResolvedValue({ data: { workspace_id: 'ws' }, error: null }) };
@@ -29,7 +29,7 @@ describe('claim contracts across surfaces', () => {
  it('keeps an old caller legacy edit compatible and marks its proposal derived', async () => {
   const { client } = mock({ id: 'entry', title: 'Teams save views.', content: 'Historical body.' });
   await updateKnowledgeEntry(client, 'proj', { entry_id: 'entry', content: 'New body.' });
-  expect(client.rpc).toHaveBeenCalledWith('knowledge_update_knowledge_entry', expect.objectContaining({
+  expect(client.rpc).toHaveBeenCalledWith('knowledge_amend_knowledge_entry', expect.objectContaining({
     p_content: encodeClaim('New body.', 'New body.', 'derived'),
   }));
  });
@@ -39,6 +39,27 @@ describe('claim contracts across surfaces', () => {
   expect(rows[0]).toMatchObject({ claim: 'Teams retain their filters.', claim_source: 'authored' });
   expect(rows[0]).not.toHaveProperty('content');
   expect(chain.eq).toHaveBeenCalledWith('workspace_id', 'ws'); expect(chain.eq).toHaveBeenCalledWith('project_id', 'proj');
+ });
+ it.each([true, false, 'missing', 'denied'])('guards claimed prepends against capability %s', async capability => {
+  const row = { id: 'entry', title: 'Teams save views.', content: encodeClaim('Old body.', 'Teams save views.') };
+  const { client } = mock(row);
+  client.rpc.mockImplementation(async (name: string) => name === 'knowledge_claim_amendment_capable'
+    ? { data: capability === true, error: typeof capability === 'string' ? { code: capability === 'missing' ? 'PGRST202' : '42501', message: capability } : null }
+    : { data: row, error: null });
+  const write = updateKnowledgeEntry(client, 'proj', { entry_id: 'entry', content: 'New section.', content_mode: 'prepend_section' });
+  if (capability === true) {
+    await write;
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_amend_knowledge_entry', expect.objectContaining({ p_content: 'New section.' }));
+  } else {
+    await expect(write).rejects.toThrow(capability === 'denied' ? 'denied' : 'claim-preserving amendment migration');
+    expect(client.rpc).toHaveBeenCalledTimes(1);
+  }
+ });
+ it.each(['prepend_section','append_section'] as const)('rejects an authored claim or nested envelope in %s', async content_mode => {
+  const { client } = mock({ id: 'entry', title: 'Teams save views.', content: 'Legacy.' });
+  await expect(updateKnowledgeEntry(client, 'proj', { entry_id: 'entry', content_mode, content: 'New.', claim: 'Teams save views.' })).rejects.toThrow('only section text');
+  await expect(updateKnowledgeEntry(client, 'proj', { entry_id: 'entry', content_mode, content: encodeClaim('New.', 'Teams save views.') })).rejects.toThrow('only section text');
+  expect(client.rpc).not.toHaveBeenCalled();
  });
  it('keeps the visible brief claim identical to the derived entry and accepted payload', () => {
   const doc: BriefDoc = { decide: 'Use saved views?', claim: 'Teams retain their saved filters.', recommend: { text: 'Use saved views.' }, items: [] };

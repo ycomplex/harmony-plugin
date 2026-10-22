@@ -780,6 +780,7 @@ describe('updateKnowledgeEntry', () => {
   it.each(['prepend_section', 'append_section'] as const)('merges %s in the database and embeds the complete returned content', async (content_mode) => {
     const merged = { ...sampleFullEntry, content: 'new section\n\nexisting dated history' };
     const { client } = buildEmbedAwareClient({ rpcResult: { data: merged } });
+    if (content_mode === 'prepend_section') client.rpc.mockResolvedValueOnce({ data: true, error: null });
     await updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', content: 'new section', content_mode });
     expect(client.rpc).toHaveBeenCalledWith('knowledge_amend_knowledge_entry', expect.objectContaining({
       p_content: 'new section', p_content_mode: content_mode, p_allow_shrink: false,
@@ -794,7 +795,7 @@ describe('updateKnowledgeEntry', () => {
   });
 
   it('fails closed when the database operation is absent, without an unsafe fallback', async () => {
-    const { client } = buildWorkspaceAndQueryClient({ data: null, error: { code: 'PGRST202', message: 'missing' } });
+    const { client } = buildEmbedAwareClient({ rpcResult: { data: null, error: { code: 'PGRST202', message: 'missing' } } });
     await expect(updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', content: 'new' })).rejects.toThrow('apply the B-1111 database migration');
     expect(client.rpc).toHaveBeenCalledTimes(1);
   });

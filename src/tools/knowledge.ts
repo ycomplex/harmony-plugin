@@ -451,7 +451,7 @@ export async function queryKnowledge(
     return query.order('type', { ascending: true }).order('id', { ascending: true })
       .range(offset, offset + limit - 1);
   }, args);
-  return rows.map(d => ({ ...d, ...claimFields(d) }));
+  return rows.map(d => ({ id: d.id, title: d.title, type: d.type, status: d.status, domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d) }));
 }
 
 // ---------------------------------------------------------------------------
@@ -719,20 +719,32 @@ export async function updateKnowledgeEntry(
   const { data: current, error: readError } = await currentQuery.single();
   if (readError) throw readError;
   if (!current) throw new Error('Knowledge entry not found');
-  const content = editedClaimContent(current, { title: args.new_title !== undefined ? normalizeHtmlEntities(args.new_title.trim()) : undefined, content: args.content !== undefined ? normalizeHtmlEntities(args.content) : undefined, claim: args.claim !== undefined ? normalizeHtmlEntities(args.claim) : undefined });
+  if (mode !== 'replace') {
+    if (args.claim !== undefined || /\*\*Claim(?: source)?:\*\*/.test(args.content!)) {
+      throw new Error('Section amendments must contain only section text; change a claim using replace mode with an explicit claim.');
+    }
+    if (mode === 'prepend_section') {
+      const capability = await client.rpc('knowledge_claim_amendment_capable');
+      if (capability.error && !['PGRST202', '42883'].includes(capability.error.code)) throw new Error(capability.error.message);
+      if (capability.error || capability.data !== true) {
+        throw new Error('Prepending knowledge requires the B-1136 claim-preserving amendment migration. Use append_section or wait for database promotion; no content was changed.');
+      }
+    }
+  }
+  const content = mode !== 'replace' ? normalizeHtmlEntities(args.content!) : editedClaimContent(current, { title: args.new_title !== undefined ? normalizeHtmlEntities(args.new_title.trim()) : undefined, content: args.content !== undefined ? normalizeHtmlEntities(args.content) : undefined, claim: args.claim !== undefined ? normalizeHtmlEntities(args.claim) : undefined });
   const newTitle = args.new_title !== undefined ? normalizeHtmlEntities(args.new_title.trim()) : undefined;
 
   // B-1021: fence out human-in-browser / validate agent-on-behalf:* before the write.
   guardKnowledgeWriteProvenance(args.provenance);
   // All content writes use the locked, guarded operation. Never fall back to an
   // older unsafe replacement writer when its migration is unavailable.
-  const contentWrite = args.content !== undefined;
+  const contentWrite = args.content !== undefined || args.claim !== undefined;
   const { data, error } = await client.rpc(contentWrite ? 'knowledge_amend_knowledge_entry' : 'knowledge_update_knowledge_entry', {
     p_project_id: projectId,
     p_entry_id: args.entry_id ?? null,
     p_title: args.title ?? null,
     p_new_title: newTitle ?? null,
-    p_content: content,
+    p_content: contentWrite ? content : null,
     p_type: args.type ?? null,
     p_status: args.status !== undefined ? toBaseStatus(args.status) : null,
     p_tags: args.tags ?? null,

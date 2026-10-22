@@ -342,9 +342,9 @@ describe('listTicketKnowledge batch contract', () => {
       { task_id: 'uuid-b-2', decision_id: 'hidden', knowledge_decisions: null },
     ], edges: [{ decision_id: 'shared', entity_id: 'e', knowledge_entities: { name: 'Feature', kind: 'feature' } }] });
     const result = await listTicketKnowledge(client, 'proj', { task_ids: ['B-2', 'B-1', 'B-3', 'B-2'] });
-    const entry = { decision_id: 'shared', ...decision, affected_entities: [{ entity_id: 'e', name: 'Feature', kind: 'feature' }] };
+    const entry = { decision_id: 'shared', ...decision, claim: null, claim_source: null, affected_entities: [{ entity_id: 'e', name: 'Feature', kind: 'feature' }] };
     expect(result).toEqual({ tickets: [
-      { task_id: 'uuid-b-2', entries: [entry, { decision_id: 'hidden', affected_entities: [] }] },
+      { task_id: 'uuid-b-2', entries: [entry, { decision_id: 'hidden', affected_entities: [], claim: null, claim_source: null }] },
       { task_id: 'uuid-b-1', entries: [entry] },
       { task_id: 'uuid-b-3', entries: [] },
     ] });
