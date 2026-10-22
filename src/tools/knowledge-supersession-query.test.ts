@@ -26,7 +26,9 @@ function clientFor(rows: Array<Record<string, unknown>>, matches: Array<Record<s
     }; return q;
   }
   const client: any = { functions: { invoke: vi.fn().mockResolvedValue({ data: null, error: null }) },
-    rpc: vi.fn(() => queryFor(matches, false)),
+    rpc: vi.fn((name: string) => name === 'read_knowledge_invalidations'
+      ? Promise.resolve({ data: null, error: { code: 'PGRST202', message: 'older schema' } })
+      : queryFor(matches, false)),
     from: (table: string) => {
       if (table === 'projects') return { select: () => ({ eq: () => ({ single: async () => ({ data: { workspace_id: 'ws' }, error: null }) }) }) };
       return queryFor(rows);

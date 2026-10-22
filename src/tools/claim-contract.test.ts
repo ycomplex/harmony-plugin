@@ -8,7 +8,8 @@ function mock(row: any) {
  chain.then = (resolve: any) => Promise.resolve({ data: row, error: null }).then(resolve);
  chain.single.mockResolvedValue({ data: row, error: null });
  const ws: any = { select: vi.fn().mockReturnThis(), eq: vi.fn().mockReturnThis(), single: vi.fn().mockResolvedValue({ data: { workspace_id: 'ws' }, error: null }) };
- const client: any = { from: vi.fn((table: string) => table === 'projects' ? ws : chain), rpc: vi.fn().mockResolvedValue({ data: row, error: null }) };
+ const client: any = { from: vi.fn((table: string) => table === 'projects' ? ws : chain), rpc: vi.fn().mockImplementation(async (name: string) => name === 'read_knowledge_invalidations'
+  ? { data: null, error: { code: 'PGRST202', message: 'older schema' } } : { data: row, error: null }) };
  return { client, chain };
 }
 describe('claim contracts across surfaces', () => {
