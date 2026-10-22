@@ -9,9 +9,9 @@ describe('supersession projection', () => {
     expect(result.find(e => e.id === 'new')).toMatchObject({ superseded_by: null, supersedes: ['middle'] });
     expect(result.find(e => e.id === 'old')).toMatchObject({ superseded_by: 'middle', supersedes: [] });
   });
-  it('does not leak a successor outside the scoped graph and tolerates absent fields', () => {
+  it('preserves an outside-page successor link and tolerates absent fields', () => {
     expect(projectSupersession([{ id: 'a' }, { id: 'b' }], [{ id: 'a', superseded_by: 'foreign' }, { id: 'b' }]))
-      .toEqual([{ id: 'a', superseded_by: null, supersedes: [] }, { id: 'b', superseded_by: null, supersedes: [] }]);
+      .toEqual([{ id: 'a', superseded_by: 'foreign', supersedes: [] }, { id: 'b', superseded_by: null, supersedes: [] }]);
   });
   it('terminates deterministically for cycles and self-links without duplicating results', () => {
     const edges = [{ id: 'a', superseded_by: 'b' }, { id: 'b', superseded_by: 'a' }, { id: 'c', superseded_by: 'c' }];

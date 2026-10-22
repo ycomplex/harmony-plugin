@@ -2,8 +2,7 @@
 export function projectSupersession<T extends { id: string }>(
   entries: T[], edges: Array<{ id: string; superseded_by?: string | null }>,
 ): Array<T & { superseded_by: string | null; supersedes: string[] }> {
-  const known = new Set(edges.map(e => e.id));
-  const successor = new Map(edges.map(e => [e.id, e.superseded_by && known.has(e.superseded_by) ? e.superseded_by : null]));
+  const successor = new Map(edges.map(e => [e.id, e.superseded_by ?? null]));
   const predecessors = new Map<string, string[]>();
   for (const [id, next] of successor) {
     if (next && next !== id) predecessors.set(next, [...(predecessors.get(next) ?? []), id]);

@@ -108,6 +108,8 @@ function buildWorkspaceAndQueryClient(secondResponse: { data: any; error?: any }
   secondChain.overlaps = vi.fn().mockReturnValue(secondChain);
   secondChain.lte = vi.fn().mockReturnValue(secondChain);
   secondChain.neq = vi.fn().mockReturnValue(secondChain);
+  secondChain.in = vi.fn().mockReturnValue(secondChain);
+  secondChain.limit = vi.fn().mockResolvedValue({ data: [], error: null });
   secondChain.or = vi.fn().mockImplementation(() => { bookkeeping = false; return secondChain; });
   secondChain.order = vi.fn().mockReturnValue(secondChain);
   secondChain.range = vi
@@ -279,6 +281,8 @@ describe('queryKnowledge', () => {
     wsChain.eq = vi.fn().mockReturnValue(wsChain);
     wsChain.single = vi.fn().mockResolvedValue({ data: { workspace_id: WORKSPACE_ID }, error: null });
     wsChain.neq = vi.fn().mockReturnValue(wsChain);
+    wsChain.in = vi.fn().mockReturnValue(wsChain);
+    wsChain.limit = vi.fn().mockResolvedValue({ data: [], error: null });
     wsChain.order = vi.fn().mockReturnValue(wsChain);
     wsChain.range = vi.fn().mockResolvedValue({ data: [{ id: 'd1', superseded_by: null }], error: null });
     const client: any = {
@@ -342,13 +346,13 @@ describe('queryKnowledge', () => {
   it('passes limit and offset to .range()', async () => {
     const { client, secondChain } = buildWorkspaceAndQueryClient({ data: [] });
     await queryKnowledge(client, PROJECT_ID, { limit: 10, offset: 20 });
-    expect(secondChain.range).toHaveBeenCalledWith(0, 499);
+    expect(secondChain.range).toHaveBeenCalledWith(20, 29);
   });
 
   it('uses default limit=50 offset=0', async () => {
     const { client, secondChain } = buildWorkspaceAndQueryClient({ data: [] });
     await queryKnowledge(client, PROJECT_ID, {});
-    expect(secondChain.range).toHaveBeenCalledWith(0, 499);
+    expect(secondChain.range).toHaveBeenCalledWith(0, 49);
   });
 
   it('throws when workspace lookup fails', async () => {

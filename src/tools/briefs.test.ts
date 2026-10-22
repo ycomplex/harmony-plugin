@@ -4271,7 +4271,10 @@ describe('B-876 gate frame', () => {
       contentChain.neq = vi.fn(() => contentChain);
       contentChain.order = vi.fn(() => contentChain);
       contentChain.range = vi.fn(async () => ({ data: opts.tierSummaryRows ?? [], error: null }));
-      contentChain.in = vi.fn(async () => ({ data: opts.tierContentRows ?? [], error: null }));
+      contentChain.in = vi.fn(() => ({
+        then: (resolve: (value: unknown) => unknown) => Promise.resolve({ data: opts.tierContentRows ?? [], error: null }).then(resolve),
+        limit: vi.fn(async () => ({ data: [], error: null })),
+      }));
 
       const client: any = {
         from: vi.fn((table: string) => {

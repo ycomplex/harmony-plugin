@@ -424,18 +424,13 @@ export async function queryKnowledge(
       domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at,
     })) as KnowledgeEntrySummary[];
     if (!matches.length) return [];
-    return projectSupersession(matches, await readSupersessionEdges(client, workspaceId, projectId));
+    return hydrateSupersession(client, workspaceId, projectId, matches);
   }
 
-  // Preserve substantive-first ranking, but collect the matching set before successor
-  // precedence and final pagination. Partition filters still run on the server.
-  if (!Number.isInteger(args.limit ?? 50) || (args.limit ?? 50) < 0 || !Number.isInteger(args.offset ?? 0) || (args.offset ?? 0) < 0) {
-    throw new Error('Knowledge limit and offset must be non-negative integers');
-  }
-  if (args.limit === 0) return [];
-  const partition = (bookkeeping: boolean) => readAllPages<KnowledgeEntrySummary>(() => {
+  // Structured retrieval uses the same class boundary and applies every filter before pagination.
+  const rows = await bookkeepingPage<KnowledgeEntrySummary>(({ bookkeeping, offset, limit, count }) => {
     let query = client.from('knowledge_decisions')
-      .select('id, title, type, status, domain, tags, project_id, updated_at')
+      .select('id, title, type, status, domain, tags, project_id, updated_at', count ? { count: 'exact' } : {})
       .eq('workspace_id', workspaceId)
       .eq('project_id', projectId);
     if (args.status) query = query.eq('status', args.status);
@@ -445,35 +440,27 @@ export async function queryKnowledge(
     if (args.as_of) query = query.lte('valid_from', args.as_of);
     if (args.tags && args.tags.length > 0) query = query.contains('tags', args.tags);
     query = bookkeeping ? query.contains('tags', [BOOKKEEPING_TAG]) : query.or(SUBSTANTIVE_TAG_FILTER);
-    return query.order('type', { ascending: true }).order('id', { ascending: true });
-  });
-  const substantive = await partition(false);
-  const rows = args.include_bookkeeping === false ? substantive : [...substantive, ...await partition(true)];
-  const ordered = projectSupersession(rows, await readSupersessionEdges(client, workspaceId, projectId));
-  const offset = args.offset ?? 0;
-  return ordered.slice(offset, offset + (args.limit ?? 50));
+    return query.order('type', { ascending: true }).order('id', { ascending: true })
+      .range(offset, offset + limit - 1);
+  }, args);
+  return hydrateSupersession(client, workspaceId, projectId, rows);
 }
 
-// Use explicit pages below the standard PostgREST cap so both matching sets and
-// relationship metadata can exceed a single server response.
-async function readAllPages<T>(makeQuery: () => any): Promise<T[]> {
-  const rows: T[] = [];
-  for (;;) {
-    const { data, error } = await makeQuery().range(rows.length, rows.length + 499);
-    if (error) throw new Error(error.message);
-    if (!data?.length) return rows;
-    rows.push(...data);
-    // A normal 500-row response can be continued; short pages are complete under PostgREST's
-    // range contract when below the explicit request size.
-    if (data.length < 500) return rows;
+// Hydrate only returned IDs, in batches below PostgREST's row cap. Never scan the corpus
+// or pull a successor into the caller's page; precedence applies only to returned rows.
+async function hydrateSupersession(client: SupabaseClient, workspaceId: string, projectId: string, rows: KnowledgeEntrySummary[]) {
+  const edges: Array<{ id: string; superseded_by?: string | null }> = [];
+  for (let offset = 0; offset < rows.length; offset += 500) {
+    const ids = rows.slice(offset, offset + 500).map(row => row.id);
+    for (const column of ['id', 'superseded_by']) {
+      const { data, error } = await client.from('knowledge_decisions').select('id, superseded_by')
+        .eq('workspace_id', workspaceId).eq('project_id', projectId)
+        .neq('type', 'intent').in(column, ids).limit(500);
+      if (error) throw new Error(error.message);
+      edges.push(...(data ?? []));
+    }
   }
-}
-
-async function readSupersessionEdges(client: SupabaseClient, workspaceId: string, projectId: string) {
-  return readAllPages<{ id: string; superseded_by?: string | null }>(() => client
-    .from('knowledge_decisions').select('id, superseded_by')
-    .eq('workspace_id', workspaceId).eq('project_id', projectId)
-    .neq('type', 'intent').order('id', { ascending: true }));
+  return projectSupersession(rows, edges);
 }
 
 // ---------------------------------------------------------------------------
