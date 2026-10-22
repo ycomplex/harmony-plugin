@@ -5,6 +5,8 @@ capabilities: harmony-mcp read write edit
 allowed-tools: mcp__harmony__* Read Grep Glob Write Edit
 ---
 
+**Knowledge claims:** Author `claim` as one quotable sentence (at most 50 words) on every `record_decision` / `create_knowledge_entry` write, and on `update_knowledge_entry` when confirming or replacing a claim. A successor uses `claim` in `supersede_decision` or `new_claim` in `supersede_knowledge_entry`; retire-only calls have no successor claim. On every entry-producing `compose_brief`, author the exact approved sentence as `doc.claim`, separately from the recommendation. Use a sentence-shaped title; compatibility-derived proposals are unconfirmed, not authored statements.
+
 > **No `disallowed-tools` here (B-1117, 2026-10-13).** This skill never edits code or runs git — that is
 > its role, stated in prose — but it no longer *revokes* Write/Edit/git: Claude Code applies an invoked
 > skill's `disallowed-tools` to the rest of the session, subagents included, so in an auto-approved run
@@ -119,7 +121,7 @@ Then write the builder's answers to **two** places:
 - The project's **own `CLAUDE.md`** (create/append via `Write`/`Edit`) — the label's meaning in prose,
   where the builder and future agents read it.
 - A **`convention` knowledge entry per semantic** via
-  `mcp__harmony__record_decision({ type: 'convention', title: "<project>: 'Deployed' means <X> here",
+  `mcp__harmony__record_decision({ claim: "<one sentence stating what this entry establishes>", type: 'convention', title: "<project>: 'Deployed' means <X> here",
   content: "...", domain: ['process'], source_activity: 'inception',
   provenance: 'human-in-session' })` — B-1000: the builder's own answer, recorded in this session.
 
@@ -468,7 +470,7 @@ Once every artifact above is present, author the project-level completion marker
 re-run fast-paths to a no-op (step 0.2):
 
 ```
-mcp__harmony__record_decision({ type: 'convention', title: "inception:scaffold-complete — <project>",
+mcp__harmony__record_decision({ claim: "<one sentence stating what this entry establishes>", type: 'convention', title: "inception:scaffold-complete — <project>",
   content: "Genesis scaffold stamped: v1+deferred milestone fence, proposition-root, S2 spine, S3 umbrellas, S4 roadmap slot, edges, persona+feature nodes.",
   status: 'Accepted', domain: ['process'], source_activity: 'inception',
   // B-1000: Day-1 inception runs directly under a human invocation.

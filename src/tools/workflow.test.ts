@@ -229,8 +229,8 @@ describe('listTicketKnowledge', () => {
     const { client } = mockTicketKnowledgeClient(rows);
     const res = await listTicketKnowledge(client, 'proj', { task_id: 'B-1' });
     expect(res).toEqual([
-      { decision_id: 'd1', id: 'd1', type: 'product-design', status: 'Accepted', title: 'PD', affected_entities: [] },
-      { decision_id: 'd2', id: 'd2', type: 'technical-design', status: 'Asserted', title: 'TD', affected_entities: [] },
+      { decision_id: 'd1', id: 'd1', type: 'product-design', status: 'Accepted', title: 'PD', claim: null, claim_source: null, affected_entities: [] },
+      { decision_id: 'd2', id: 'd2', type: 'technical-design', status: 'Asserted', title: 'TD', claim: null, claim_source: null, affected_entities: [] },
     ]);
   });
 
@@ -258,7 +258,7 @@ describe('listTicketKnowledge', () => {
     expect(selectSpy).toHaveBeenCalledWith(expect.stringContaining('source_activity'));
     // And it must flow through into the flattened row, not get dropped on the way out.
     expect(res).toEqual([
-      { decision_id: 'd1', id: 'd1', type: 'specification', status: 'Accepted', title: 'clarified intent', source_activity: 'clarify', affected_entities: [] },
+      { decision_id: 'd1', id: 'd1', type: 'specification', status: 'Accepted', title: 'clarified intent', source_activity: 'clarify', claim: null, claim_source: null, affected_entities: [] },
     ]);
   });
 
@@ -342,9 +342,9 @@ describe('listTicketKnowledge batch contract', () => {
       { task_id: 'uuid-b-2', decision_id: 'hidden', knowledge_decisions: null },
     ], edges: [{ decision_id: 'shared', entity_id: 'e', knowledge_entities: { name: 'Feature', kind: 'feature' } }] });
     const result = await listTicketKnowledge(client, 'proj', { task_ids: ['B-2', 'B-1', 'B-3', 'B-2'] });
-    const entry = { decision_id: 'shared', ...decision, affected_entities: [{ entity_id: 'e', name: 'Feature', kind: 'feature' }] };
+    const entry = { decision_id: 'shared', ...decision, claim: null, claim_source: null, affected_entities: [{ entity_id: 'e', name: 'Feature', kind: 'feature' }] };
     expect(result).toEqual({ tickets: [
-      { task_id: 'uuid-b-2', entries: [entry, { decision_id: 'hidden', affected_entities: [] }] },
+      { task_id: 'uuid-b-2', entries: [entry, { decision_id: 'hidden', affected_entities: [], claim: null, claim_source: null }] },
       { task_id: 'uuid-b-1', entries: [entry] },
       { task_id: 'uuid-b-3', entries: [] },
     ] });

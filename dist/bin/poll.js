@@ -30714,6 +30714,19 @@ import {
 // src/daemon/gate-phase.ts
 var GATES = ["clarify", "decompose", "design", "plan", "build", "release", "verify"];
 
+// src/tools/knowledge-claim.ts
+var ENVELOPE = /^\*\*Claim:\*\* ([^\n]+)\n\n\*\*Claim source:\*\* (authored|derived)\n\n/;
+function stripClaim(content = "") {
+  return content.replace(ENVELOPE, "");
+}
+function encodeClaim(content, claim, source = "authored") {
+  return `**Claim:** ${claim.trim().replace(/\s+/g, " ")}
+
+**Claim source:** ${source}
+
+${stripClaim(content)}`;
+}
+
 // src/tools/knowledge-bookkeeping.ts
 var BOOKKEEPING_TAG = "harmony:bookkeeping";
 var SUBSTANTIVE_TAG_FILTER = `tags.is.null,tags.not.cs.{${BOOKKEEPING_TAG}}`;
@@ -31747,6 +31760,7 @@ function renderBrief(doc, decisionRef, ctx) {
   const frame = doc.frame;
   if (frame?.kind === "clarify") out.push(...renderFrame(frame), "");
   out.push(`## DECIDE: ${doc.decide}`, "");
+  if (doc.claim) out.push(`**Claim:** ${doc.claim}${doc.claim_source === "derived" ? " (derived proposal)" : ""}`, "");
   if (frame?.kind === "release") out.push(...renderFrame(frame), "");
   if (doc.load_bearing_gap) {
     out.push("**Recommend:** I don't know enough yet \u2014 run the research below before deciding.", "");
@@ -31861,7 +31875,8 @@ function renderEntry(doc, ctx) {
   }
   const changes = revisionLines(doc);
   if (changes.length) out.push("**Changed in the final round:**", ...markAll(changes), "");
-  return out.join("\n").trimEnd();
+  const body = out.join("\n").trimEnd();
+  return doc.claim ? encodeClaim(body, doc.claim, doc.claim_source ?? "authored") : body;
 }
 var BRIEF_COLS = "id, task_id, reason, doc, content, expand_sections, related, pending_activity, decision_ref, status, iteration, resolved_command, resolved_detail, resolved_at, created_by, created_at, updated_at";
 var composeBriefTool = {
@@ -31877,6 +31892,7 @@ var composeBriefTool = {
         description: "The canonical structured BLUF brief. The rendered Markdown blob is derived from this.",
         properties: {
           decide: { type: "string", description: "One-line statement of the decision needed" },
+          claim: { type: "string", description: "Exact one-sentence claim stored in the derived entry; omission derives an unconfirmed first-sentence proposal with a warning" },
           recommend: { type: "object", description: '{ text, confidence?: "high" | "medium" | "low", cede?: boolean } \u2014 omit when load_bearing_gap (research-first)' },
           why: { type: "array", items: { type: "string" }, description: "2\u20133 bullets of reasoning" },
           alternatives: { type: "array", items: { type: "object" }, description: "[{ option, rejection }]" },

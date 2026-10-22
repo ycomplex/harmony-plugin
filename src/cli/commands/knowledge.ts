@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import {
   queryKnowledge,
+  proposeLegacyClaims,
   getKnowledgeEntry,
   createKnowledgeEntry,
   updateKnowledgeEntry,
@@ -46,6 +47,9 @@ export function registerKnowledgeCommands(program: Command): void {
               transform: (v: string) => v.slice(0, 8),
             },
             { key: 'title', header: 'Title', width: 40 },
+            { key: 'claim', header: 'Claim', width: 60 },
+            { key: 'claim_source', header: 'Claim source' },
+            { key: 'snippet', header: 'Matched passage', width: 60 },
             { key: 'type', header: 'Type', width: 14 },
             { key: 'status', header: 'Status', width: 12 },
             { key: 'superseded_by', header: 'Superseded by', transform: (v: string | null) => v ?? '—' },
@@ -64,6 +68,10 @@ export function registerKnowledgeCommands(program: Command): void {
           ]),
       );
     });
+
+  knowledge.command('propose-claims').description('Propose missing legacy claims; dry run unless --apply').option('--apply', 'Store missing proposals as derived', false).action(async opts => {
+    await runCommand(program.opts(), ctx => proposeLegacyClaims(ctx.client, ctx.projectId, opts.apply), data => JSON.stringify(data, null, 2));
+  });
 
   knowledge
     .command('get')
@@ -95,6 +103,7 @@ export function registerKnowledgeCommands(program: Command): void {
     .command('create')
     .description('Create a new knowledge entry')
     .requiredOption('--title <title>', 'Entry title')
+    .requiredOption('--claim <claim>', 'One-sentence claim')
     .requiredOption('--content <content>', 'Markdown content of the entry')
     .requiredOption('--type <type>', 'Entry type: architecture, business, convention, or specification')
     .option('--status <status>', 'Status override (default: draft)')
@@ -113,6 +122,7 @@ export function registerKnowledgeCommands(program: Command): void {
           createKnowledgeEntry(ctx.client, ctx.projectId, ctx.userId, {
             title: opts.title,
             content: opts.content,
+            claim: opts.claim,
             type: opts.type,
             status: opts.status,
             tags,
@@ -127,6 +137,7 @@ export function registerKnowledgeCommands(program: Command): void {
     .description('Update an existing knowledge entry')
     .argument('<id>', 'Entry UUID')
     .option('--title <title>', 'New title')
+    .option('--claim <claim>', 'Authored claim; explicitly confirms a legacy proposal')
     .option('--content <content>', 'New markdown content')
     .option('--content-mode <mode>', 'replace, prepend_section, or append_section')
     .option('--allow-shrink', 'Explicitly permit a destructive shorter replacement')
@@ -160,6 +171,7 @@ export function registerKnowledgeCommands(program: Command): void {
             content: opts.content,
             content_mode: opts.contentMode,
             allow_shrink: opts.allowShrink,
+            claim: opts.claim,
             type: opts.type,
             status: opts.status,
             tags,
@@ -177,6 +189,7 @@ export function registerKnowledgeCommands(program: Command): void {
     .description('Supersede an existing knowledge entry with a new replacement')
     .argument('<id>', 'UUID of the entry to supersede')
     .requiredOption('--title <title>', 'Title for the replacement entry')
+    .requiredOption('--claim <claim>', 'Authored claim for the replacement')
     .requiredOption('--content <content>', 'Content for the replacement entry')
     .option('--type <type>', 'Type for the replacement (defaults to type of superseded entry)')
     .option('--tags <tags>', 'Comma-separated tags for the replacement')
@@ -194,6 +207,7 @@ export function registerKnowledgeCommands(program: Command): void {
             entry_id: id,
             new_title: opts.title,
             new_content: opts.content,
+            new_claim: opts.claim,
             type: opts.type,
             tags,
           }),

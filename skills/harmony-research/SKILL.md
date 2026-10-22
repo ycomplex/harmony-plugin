@@ -5,6 +5,8 @@ capabilities: harmony-mcp read web
 allowed-tools: mcp__harmony__* Read Grep Glob WebSearch WebFetch
 ---
 
+**Knowledge claims:** Author `claim` as one quotable sentence (at most 50 words) on every `record_decision` / `create_knowledge_entry` write, and on `update_knowledge_entry` when confirming or replacing a claim. A successor uses `claim` in `supersede_decision` or `new_claim` in `supersede_knowledge_entry`; retire-only calls have no successor claim. On every entry-producing `compose_brief`, author the exact approved sentence as `doc.claim`, separately from the recommendation. Use a sentence-shaped title; compatibility-derived proposals are unconfirmed, not authored statements.
+
 > **No `disallowed-tools` here (B-1117, 2026-10-13).** This skill never edits code or runs git — that is
 > its role, stated in prose — but it no longer *revokes* Write/Edit/git: Claude Code applies an invoked
 > skill's `disallowed-tools` to the rest of the session, subagents included, so in an auto-approved run
@@ -82,6 +84,7 @@ the entry's `domain` from the gap.
 
 ```
 mcp__harmony__record_decision({
+  claim: "<one sentence stating what this entry establishes>",
   type: "specification",
   title: "<subject>: researched finding",
   content: "<the finding, with the source/citation the human pasted>",

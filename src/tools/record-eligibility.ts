@@ -1,3 +1,4 @@
+import { isSingleSentenceShaped } from './knowledge-claim.js';
 // B-1062 — the eligibility evaluator for `harmony record` (the gate-walk core, src/tools/record-walk.ts).
 //
 // Five items, deterministic and mechanical (mirrors src/tools/risk-class.ts's own "not an LLM/semantic
@@ -151,24 +152,6 @@ function evaluateRiskClassItem(summary: string, evidence: EligibilityEvidenceLin
 
 const SENTENCE_WORD_LIMIT = 50;
 
-function isSingleSentenceShaped(summary: string): boolean {
-  const trimmed = summary.trim();
-  if (!trimmed) return false;
-  const words = trimmed.split(/\s+/).filter(Boolean);
-  if (words.length > SENTENCE_WORD_LIMIT) return false;
-  // B-1105: a dot between two digits ("Sonnet 5.5", "v0.15.42") and the abbreviations "e.g." / "i.e."
-  // are never sentence boundaries — neutralize them BEFORE counting terminators. Three of four
-  // fast-track summaries on 2026-10-12 failed on a version number alone. "etc." stays a known
-  // false-fail (it genuinely ends sentences often enough to keep).
-  const neutralized = trimmed
-    .replace(/(\d)\.(?=\d)/g, '$1')
-    .replace(/\be\.g\.|\bi\.e\./gi, (m) => m.replace(/\./g, ''));
-  // Strip exactly one trailing terminator run, then check for any terminator left inside — that is a
-  // second sentence. (Conservative-on-ambiguity in the SAME direction as risk-class.ts — a false 'fail'
-  // costs one human re-phrase, never a silent pass-through.)
-  const withoutTrailingTerminator = neutralized.replace(/[.!?]+\s*$/, '');
-  return !/[.!?]/.test(withoutTrailingTerminator);
-}
 
 function evaluateSingleSentenceItem(summary: string): EligibilityItemResult {
   const trimmed = summary.trim();

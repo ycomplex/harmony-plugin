@@ -5,6 +5,8 @@ capabilities: harmony-mcp read web
 allowed-tools: mcp__harmony__* Read Grep Glob WebSearch WebFetch
 ---
 
+**Knowledge claims:** Author `claim` as one quotable sentence (at most 50 words) on every `record_decision` / `create_knowledge_entry` write, and on `update_knowledge_entry` when confirming or replacing a claim. A successor uses `claim` in `supersede_decision` or `new_claim` in `supersede_knowledge_entry`; retire-only calls have no successor claim. On every entry-producing `compose_brief`, author the exact approved sentence as `doc.claim`, separately from the recommendation. Use a sentence-shaped title; compatibility-derived proposals are unconfirmed, not authored statements.
+
 > **No `disallowed-tools` here (B-1117, 2026-10-13).** This skill never edits code or runs git — that is
 > its role, stated in prose — but it no longer *revokes* Write/Edit/git: Claude Code applies an invoked
 > skill's `disallowed-tools` to the rest of the session, subagents included, so in an auto-approved run
@@ -122,6 +124,7 @@ mcp__harmony__compose_brief({
   reason: "decomposition-proposal",
   pending_activity: "decomposing",
   doc: {
+    claim: "<the exact one-sentence claim the human will approve>",
     decide: "Decompose <ticket> into N children, or keep as one ticket?",
     recommend: { text: "Three children: schema, MCP surface, web UI" },
     frame: {
@@ -178,6 +181,7 @@ instead of clarify's:
 
 ```
 const split = mcp__harmony__record_decision({
+  claim: "<one sentence stating what this entry establishes>",
   type: "specification",
   title: "<parent ticket>: decomposition — split into <N> children",
   content: "<placeholder — one line: 'decomposition rationale for <parent ticket>; body derived from the ratified brief'>",
@@ -229,6 +233,7 @@ Judge the amend rule yourself, as PROSE — never defer it to a human — over e
   procedural knowledge, not a proposal awaiting human promotion — mirrors B-836's finish-work pattern):
   ```
   mcp__harmony__record_decision({
+    claim: "<one sentence stating what this entry establishes>",
     type: "convention", title: "Decompose: when a ticket does not split",
     content: "<the heuristic + the measured retired-count + AT MOST 5 canonical examples — never a full
       id list; retired per-ticket entries stay reachable via include_superseded>",
@@ -329,6 +334,7 @@ Show the rendered `content`. On the human's command:
   deferral, then park:
   ```
   const deferral = mcp__harmony__record_decision({
+    claim: "<one sentence stating what this entry establishes>",
     type: "deferral", title: "<ticket>: decomposition deferred — <why>",
     content: "<rationale: why not breaking this down now + when to revisit>",
     review_by: "<watch/revisit date, ISO>", domain: ["engineering", "product"],

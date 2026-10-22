@@ -36398,6 +36398,83 @@ function resolveGatePhase(workflow_state, workflow_activity) {
   return GATE_BY_WORKFLOW_STATE[workflow_state] ?? null;
 }
 
+// src/tools/knowledge-claim.ts
+var ENVELOPE = /^\*\*Claim:\*\* ([^\n]+)\n\n\*\*Claim source:\*\* (authored|derived)\n\n/;
+function isSingleSentenceShaped(value) {
+  const text = value.trim();
+  if (!text || text.split(/\s+/).length > 50) return false;
+  const neutral = text.replace(/(\d)\.(?=\d)/g, "$1").replace(/\be\.g\.|\bi\.e\./gi, (m) => m.replace(/\./g, ""));
+  return !/[.!?]/.test(neutral.replace(/[.!?]+\s*$/, ""));
+}
+function validateClaimEntry(title, claim) {
+  for (const [field, value] of [["title", title], ["claim", claim]]) {
+    if (!isSingleSentenceShaped(value)) throw new Error(`${field} must be one sentence of at most 50 words`);
+  }
+}
+function decodeClaim(content = "") {
+  const match = ENVELOPE.exec(content);
+  return { claim: match?.[1] ?? null, claim_source: match?.[2] ?? null };
+}
+function claimFields(row) {
+  const decoded = decodeClaim(row.content ?? "");
+  return row.claim && (row.claim_source === "authored" || row.claim_source === "derived") ? { claim: row.claim, claim_source: row.claim_source } : decoded;
+}
+function stripClaim(content = "") {
+  return content.replace(ENVELOPE, "");
+}
+function encodeClaim(content, claim, source = "authored") {
+  return `**Claim:** ${claim.trim().replace(/\s+/g, " ")}
+
+**Claim source:** ${source}
+
+${stripClaim(content)}`;
+}
+function claimContent(title, content, claim) {
+  if (claim !== void 0) {
+    validateClaimEntry(title, claim);
+    return encodeClaim(content, claim);
+  }
+  const proposed = proposeClaim(stripClaim(content)) ?? proposeClaim(title);
+  console.warn("Knowledge claim omitted; using a derived proposal when available. Supply claim to author it.");
+  return proposed ? encodeClaim(content, proposed, "derived") : stripClaim(content);
+}
+function editedClaimContent(current, updates) {
+  const prior = claimFields(current);
+  const title = updates.title ?? current.title;
+  const content = updates.content ?? current.content;
+  if (updates.claim !== void 0) return claimContent(title, content, updates.claim);
+  if (prior.claim_source === "authored" && prior.claim) {
+    return encodeClaim(content, prior.claim);
+  }
+  return claimContent(title, content);
+}
+function plainText(content) {
+  return stripClaim(content).replace(/<[^>]*>/g, " ").replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/[`*_#>|~]/g, "").replace(/\s+/g, " ").trim();
+}
+function matchedPassage(content, query) {
+  const text = [decodeClaim(content).claim, plainText(content)].filter(Boolean).join(" ");
+  const terms = query.toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+  const indexes = terms.map((term) => text.toLocaleLowerCase().indexOf(term)).filter((i) => i >= 0);
+  if (!indexes.length) return null;
+  const at = Math.min(...indexes), start = Math.max(0, at - 60), end = Math.min(text.length, start + 240);
+  return `${start ? "\u2026" : ""}${text.slice(start, end)}${end < text.length ? "\u2026" : ""}`;
+}
+function proposeClaim(content) {
+  if (decodeClaim(content).claim) return null;
+  const lines = content.split("\n").filter((line) => !/^\s*(?:_?Derived from|#{1,6}\s|\*\*(?:Question put to the human|Track|Reach|On accept|Context|Ratified asks):)/i.test(line));
+  const text = plainText(lines.join("\n")).replace(/^Decision:\s*/i, "");
+  const candidates = text.match(/.*?[.!?](?=\s|$)|.+$/g) ?? [];
+  let candidate = "";
+  for (const part of candidates) {
+    candidate += part;
+    if (/\b(?:e\.g\.|i\.e\.)$/i.test(candidate.trim())) continue;
+    const value = candidate.trim();
+    if (isSingleSentenceShaped(value)) return value;
+    return null;
+  }
+  return null;
+}
+
 // src/tools/resolve-task-id.ts
 var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 var BARE_NUMBER_RE = /^\d+$/;
@@ -36730,7 +36807,7 @@ async function queryKnowledge(client, projectId, args) {
         _query_text: args.search,
         _domain: args.domain && args.domain.length > 0 ? args.domain : null,
         _match_limit: null
-      }, count ? { count: "exact" } : {}).select("id, title, type, status, domain, tags, project_id, updated_at");
+      }, count ? { count: "exact" } : {}).select("*");
       query = bookkeeping ? query.contains("tags", [BOOKKEEPING_TAG]) : query.or(SUBSTANTIVE_TAG_FILTER);
       return query.range(offset, offset + limit - 1);
     }, args);
@@ -36739,6 +36816,8 @@ async function queryKnowledge(client, projectId, args) {
       title: d.title,
       type: d.type,
       status: d.status,
+      ...claimFields(d),
+      snippet: matchedPassage(d.content ?? "", args.search),
       domain: d.domain,
       tags: d.tags,
       project_id: d.project_id,
@@ -36748,7 +36827,7 @@ async function queryKnowledge(client, projectId, args) {
     return hydrateSupersession(client, workspaceId, projectId, matches);
   }
   const rows = await bookkeepingPage(({ bookkeeping, offset, limit, count }) => {
-    let query = client.from("knowledge_decisions").select("id, title, type, status, domain, tags, project_id, updated_at", count ? { count: "exact" } : {}).eq("workspace_id", workspaceId).eq("project_id", projectId);
+    let query = client.from("knowledge_decisions").select("*", count ? { count: "exact" } : {}).eq("workspace_id", workspaceId).eq("project_id", projectId);
     if (args.status) query = query.eq("status", args.status);
     else if (!args.include_superseded) query = query.eq("status", "Accepted");
     if (args.type) query = query.eq("type", args.type);
@@ -36758,7 +36837,7 @@ async function queryKnowledge(client, projectId, args) {
     query = bookkeeping ? query.contains("tags", [BOOKKEEPING_TAG]) : query.or(SUBSTANTIVE_TAG_FILTER);
     return query.order("type", { ascending: true }).order("id", { ascending: true }).range(offset, offset + limit - 1);
   }, args);
-  return hydrateSupersession(client, workspaceId, projectId, rows);
+  return hydrateSupersession(client, workspaceId, projectId, rows.map((d) => ({ id: d.id, title: d.title, type: d.type, status: d.status, domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d) })));
 }
 async function hydrateSupersession(client, workspaceId, projectId, rows) {
   const edges = [];
@@ -36773,12 +36852,14 @@ async function hydrateSupersession(client, workspaceId, projectId, rows) {
   return projectSupersession(rows, edges);
 }
 async function getKnowledgeEntry(client, projectId, args) {
+  if (args.id && args.entry_id && args.id !== args.entry_id) throw new Error("id and entry_id must identify the same entry");
+  args = { ...args, entry_id: args.entry_id ?? args.id };
   if (!args.entry_id && !args.title) {
     throw new Error("Either entry_id or title must be provided");
   }
   const workspaceId = await getWorkspaceId(client, projectId);
   let query = client.from("knowledge_decisions").select(
-    "id, workspace_id, project_id, title, content, type, status, realization, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
+    "*"
   ).eq("workspace_id", workspaceId).eq("project_id", projectId);
   if (args.entry_id) {
     query = query.eq("id", args.entry_id);
@@ -36787,18 +36868,20 @@ async function getKnowledgeEntry(client, projectId, args) {
   }
   const { data, error } = await query.single();
   if (error) throw error;
-  return data;
+  return { ...data, ...claimFields(data) };
 }
 async function createKnowledgeEntry(client, projectId, userId, args) {
   if (!args.title?.trim()) {
     throw new Error("title is required");
   }
+  const title = normalizeHtmlEntities(args.title.trim());
+  const claimedContent = claimContent(title, normalizeHtmlEntities(args.content ?? ""), args.claim === void 0 ? void 0 : normalizeHtmlEntities(args.claim));
   const workspaceId = await getWorkspaceId(client, projectId);
   const record = {
     workspace_id: workspaceId,
     project_id: projectId,
     title: normalizeHtmlEntities(args.title.trim()),
-    content: normalizeHtmlEntities(args.content ?? ""),
+    content: claimedContent,
     type: args.type,
     status: args.status !== void 0 ? toLegacyStatus(args.status) : "draft",
     created_by: userId
@@ -36837,20 +36920,38 @@ async function updateKnowledgeEntry(client, projectId, args) {
   if (mode !== "replace" && !args.content?.trim()) {
     throw new Error("Amendment section must not be blank");
   }
-  const hasUpdates = args.new_title !== void 0 || args.content !== void 0 || args.type !== void 0 || args.status !== void 0 || args.tags !== void 0 || args.domain !== void 0 || args.madr !== void 0 || args.realization !== void 0 || args.review_by !== void 0;
+  const hasUpdates = args.claim !== void 0 || args.new_title !== void 0 || args.content !== void 0 || args.type !== void 0 || args.status !== void 0 || args.tags !== void 0 || args.domain !== void 0 || args.madr !== void 0 || args.realization !== void 0 || args.review_by !== void 0;
   if (!hasUpdates) {
     throw new Error("At least one field to update must be provided");
   }
   const workspaceId = await getWorkspaceId(client, projectId);
+  let currentQuery = client.from("knowledge_decisions").select("*").eq("workspace_id", workspaceId).eq("project_id", projectId);
+  currentQuery = args.entry_id ? currentQuery.eq("id", args.entry_id) : currentQuery.eq("title", args.title);
+  const { data: current, error: readError } = await currentQuery.single();
+  if (readError) throw readError;
+  if (!current) throw new Error("Knowledge entry not found");
+  if (mode !== "replace") {
+    if (args.claim !== void 0 || /\*\*Claim(?: source)?:\*\*/.test(args.content)) {
+      throw new Error("Section amendments must contain only section text; change a claim using replace mode with an explicit claim.");
+    }
+    if (mode === "prepend_section") {
+      const capability = await client.rpc("knowledge_claim_amendment_capable");
+      if (capability.error && !["PGRST202", "42883"].includes(capability.error.code)) throw new Error(capability.error.message);
+      if (capability.error || capability.data !== true) {
+        throw new Error("Prepending knowledge requires the B-1136 claim-preserving amendment migration. Use append_section or wait for database promotion; no content was changed.");
+      }
+    }
+  }
+  const content = mode !== "replace" ? normalizeHtmlEntities(args.content) : editedClaimContent(current, { title: args.new_title !== void 0 ? normalizeHtmlEntities(args.new_title.trim()) : void 0, content: args.content !== void 0 ? normalizeHtmlEntities(args.content) : void 0, claim: args.claim !== void 0 ? normalizeHtmlEntities(args.claim) : void 0 });
   const newTitle = args.new_title !== void 0 ? normalizeHtmlEntities(args.new_title.trim()) : void 0;
   guardKnowledgeWriteProvenance(args.provenance);
-  const contentWrite = args.content !== void 0;
+  const contentWrite = args.content !== void 0 || args.claim !== void 0;
   const { data, error } = await client.rpc(contentWrite ? "knowledge_amend_knowledge_entry" : "knowledge_update_knowledge_entry", {
     p_project_id: projectId,
     p_entry_id: args.entry_id ?? null,
     p_title: args.title ?? null,
     p_new_title: newTitle ?? null,
-    p_content: args.content !== void 0 ? normalizeHtmlEntities(args.content) : null,
+    p_content: contentWrite ? content : null,
     p_type: args.type ?? null,
     p_status: args.status !== void 0 ? toBaseStatus(args.status) : null,
     p_tags: args.tags ?? null,
@@ -36881,10 +36982,10 @@ async function updateKnowledgeEntry(client, projectId, args) {
     throw new Error(error.message);
   }
   const updated = data;
-  if (args.new_title !== void 0 || args.content !== void 0) {
+  if (args.new_title !== void 0 || args.content !== void 0 || args.claim !== void 0) {
     await embedDecisionById(client, workspaceId, projectId, updated.id, updated.title, updated.content);
   }
-  return updated;
+  return { ...updated, ...claimFields(updated) };
 }
 async function findCrossKindCollision(client, workspaceId, name, kind) {
   const { data, error } = await client.from("knowledge_entities").select("id, kind").eq("workspace_id", workspaceId).eq("name", name).neq("kind", kind).limit(1).maybeSingle();
@@ -36931,13 +37032,16 @@ async function recordDecision(client, projectId, userId, args) {
   if (args.claim_provenance !== void 0 && !CLAIM_PROVENANCES.includes(args.claim_provenance)) {
     throw new Error(`claim_provenance must be one of: ${CLAIM_PROVENANCES.join(", ")}`);
   }
+  const title = normalizeHtmlEntities(args.title.trim());
+  const claimedContent = claimContent(title, normalizeHtmlEntities(args.content ?? ""), args.claim === void 0 ? void 0 : normalizeHtmlEntities(args.claim));
+  const content = claimedContent;
   const workspaceId = await getWorkspaceId(client, projectId);
   const affectedIds = [];
   for (const name of args.affected_entity_names ?? []) {
     affectedIds.push(await resolveOrCreateEntity(client, workspaceId, projectId, name));
   }
-  const embedding = await embedText(client, `${args.title}
-${args.content ?? ""}`);
+  const embedding = await embedText(client, `${title}
+${content}`);
   let realization = args.realization;
   if (realization === void 0 && DESIGN_DECISION_TYPES.has(args.type)) {
     realization = "agreed";
@@ -36945,9 +37049,9 @@ ${args.content ?? ""}`);
   guardKnowledgeWriteProvenance(args.provenance);
   const { data, error } = await client.rpc("knowledge_record_decision", {
     p_project_id: projectId,
-    p_title: normalizeHtmlEntities(args.title.trim()),
+    p_title: title,
     p_type: args.type,
-    p_content: normalizeHtmlEntities(args.content ?? ""),
+    p_content: content,
     p_status: args.status ?? "Asserted",
     p_domain: args.domain ?? [],
     p_madr: args.madr ?? null,
@@ -36972,18 +37076,19 @@ ${args.content ?? ""}`);
     }
     throw new Error(error.message);
   }
-  return data;
+  return { ...data, ...claimFields(data) };
 }
 async function supersedeKnowledgeEntry(client, projectId, userId, args) {
   if (!args.entry_id && !args.title) {
     throw new Error("Either entry_id or title must be provided to identify the entry to supersede");
   }
+  const content = claimContent(normalizeHtmlEntities(args.new_title), normalizeHtmlEntities(args.new_content), args.new_claim === void 0 ? void 0 : normalizeHtmlEntities(args.new_claim));
   const workspaceId = await getWorkspaceId(client, projectId);
   guardKnowledgeWriteProvenance(args.provenance);
   const { data, error } = await client.rpc("knowledge_supersede_knowledge_entry", {
     p_project_id: projectId,
     p_new_title: normalizeHtmlEntities(args.new_title),
-    p_new_content: normalizeHtmlEntities(args.new_content),
+    p_new_content: content,
     p_entry_id: args.entry_id ?? null,
     p_title: args.title ?? null,
     p_type: args.type ?? null,
@@ -37003,6 +37108,33 @@ async function supersedeKnowledgeEntry(client, projectId, userId, args) {
     result.replacement.content
   );
   return result;
+}
+async function proposeLegacyClaims(client, projectId, apply = false) {
+  const workspaceId = await getWorkspaceId(client, projectId);
+  const { data, error } = await client.from("knowledge_decisions").select("*").eq("workspace_id", workspaceId).eq("project_id", projectId).neq("type", "intent");
+  if (error) throw error;
+  const results = [];
+  for (const row of data ?? []) {
+    if (claimFields(row).claim) {
+      results.push({ id: row.id, status: "skipped-existing" });
+      continue;
+    }
+    const claim = proposeClaim(row.content ?? "");
+    if (!claim) {
+      results.push({ id: row.id, status: "no-usable-sentence" });
+      continue;
+    }
+    if (apply) {
+      const { data: written, error: writeError } = await client.from("knowledge_decisions").update({ content: encodeClaim(row.content ?? "", claim, "derived") }).eq("id", row.id).eq("workspace_id", workspaceId).eq("project_id", projectId).eq("content", row.content ?? "").select("id");
+      if (writeError) throw writeError;
+      if (!written?.length) {
+        results.push({ id: row.id, status: "skipped-changed" });
+        continue;
+      }
+    }
+    results.push({ id: row.id, claim, claim_source: "derived", status: apply ? "applied" : "proposed" });
+  }
+  return results;
 }
 
 // src/tools/workflow.ts
@@ -37087,6 +37219,7 @@ async function listTicketKnowledge(client, projectId, args) {
   const projectEntry = (row) => ({
     decision_id: row.decision_id,
     ...row.knowledge_decisions ?? {},
+    ...claimFields(row.knowledge_decisions ?? {}),
     affected_entities: affected[row.decision_id] ?? []
   });
   if (single) return rows.map(projectEntry);
@@ -39244,6 +39377,7 @@ function renderBrief(doc, decisionRef, ctx) {
   const frame = doc.frame;
   if (frame?.kind === "clarify") out.push(...renderFrame(frame), "");
   out.push(`## DECIDE: ${doc.decide}`, "");
+  if (doc.claim) out.push(`**Claim:** ${doc.claim}${doc.claim_source === "derived" ? " (derived proposal)" : ""}`, "");
   if (frame?.kind === "release") out.push(...renderFrame(frame), "");
   if (doc.load_bearing_gap) {
     out.push("**Recommend:** I don't know enough yet \u2014 run the research below before deciding.", "");
@@ -39358,19 +39492,20 @@ function renderEntry(doc, ctx) {
   }
   const changes = revisionLines(doc);
   if (changes.length) out.push("**Changed in the final round:**", ...markAll(changes), "");
-  return out.join("\n").trimEnd();
+  const body = out.join("\n").trimEnd();
+  return doc.claim ? encodeClaim(body, doc.claim, doc.claim_source ?? "authored") : body;
 }
 function deriveEntryTitle(doc, reason, ctx) {
-  const recommendation = doc.recommend?.text;
+  const recommendation = doc.claim ?? (doc.recommend?.text ? proposeClaim(doc.recommend.text) : void 0);
   if (!recommendation || !ctx.visualId) return void 0;
   if (reason === "decomposition-proposal") {
-    return `${ctx.visualId}: decomposition \u2014 ${recommendation}`;
+    return `${ctx.visualId}: decomposition \u2014 ${recommendation}`.split(/\s+/).slice(0, 50).join(" ");
   }
   if (reason === "design-decision-draft") {
     const type = ctx.decisionRef?.type;
     if (!type) return void 0;
     const subTrackDisplay = type.replace(/-design$/, " design");
-    return `${ctx.visualId}: ${subTrackDisplay} \u2014 ${recommendation}`;
+    return `${ctx.visualId}: ${subTrackDisplay} \u2014 ${recommendation}`.split(/\s+/).slice(0, 50).join(" ");
   }
   return void 0;
 }
@@ -40026,6 +40161,16 @@ async function composeBrief(client, projectId, userId, args) {
   const mergedDecisionRef = args.decision_ref !== void 0 ? args.decision_ref ?? null : existingRow?.decision_ref ?? null;
   const priorDoc = existingRow?.doc ?? null;
   const mergedDoc = mergeBriefDoc(priorDoc, args.doc);
+  if (derivesEntryContent(args.reason) && mergedDecisionRef?.id) {
+    const explicit = args.doc.claim;
+    if (explicit !== void 0 && !isSingleSentenceShaped(explicit)) {
+      throw new Error("doc.claim must be one sentence of at most 50 words");
+    }
+    const inherited = !args.doc.recommend && priorDoc?.claim_source !== "derived" ? priorDoc?.claim : void 0;
+    const claim = explicit ?? inherited ?? proposeClaim(mergedDoc.recommend?.text ?? "");
+    mergedDoc.claim = claim?.trim().replace(/\s+/g, " ");
+    mergedDoc.claim_source = explicit !== void 0 || inherited ? "authored" : "derived";
+  }
   validateBriefFrame(mergedDoc.frame, FRAME_KIND_FOR_REASON[args.reason]);
   const priorRiskClasses = priorDoc?.frame?.kind === "release" ? priorDoc.frame.risk_classes : void 0;
   const pendingActivity = typeof args.pending_activity === "string" && args.pending_activity.trim().toLowerCase() === "null" ? null : args.pending_activity;
@@ -40107,6 +40252,7 @@ async function composeBrief(client, projectId, userId, args) {
     // B-1017 — an explicit cause, or a send-back the DB derives one from.
     statesCause: args.revision_cause !== void 0 || args.iterate_feedback != null
   });
+  if (doc.claim_source === "derived") lint.warnings.push("doc.claim omitted \u2014 a derived first-sentence proposal is shown when available; supply doc.claim to author the exact statement.");
   const settlement = await settlementWarning(client, projectId, doc, args.changed_paths);
   if (settlement) lint.warnings.push(settlement);
   if (!lint.ok) {
@@ -40257,6 +40403,7 @@ var composeBriefTool = {
         description: "The canonical structured BLUF brief. The rendered Markdown blob is derived from this.",
         properties: {
           decide: { type: "string", description: "One-line statement of the decision needed" },
+          claim: { type: "string", description: "Exact one-sentence claim stored in the derived entry; omission derives an unconfirmed first-sentence proposal with a warning" },
           recommend: { type: "object", description: '{ text, confidence?: "high" | "medium" | "low", cede?: boolean } \u2014 omit when load_bearing_gap (research-first)' },
           why: { type: "array", items: { type: "string" }, description: "2\u20133 bullets of reasoning" },
           alternatives: { type: "array", items: { type: "object" }, description: "[{ option, rejection }]" },
@@ -43071,6 +43218,9 @@ function registerKnowledgeCommands(program3) {
           transform: (v) => v.slice(0, 8)
         },
         { key: "title", header: "Title", width: 40 },
+        { key: "claim", header: "Claim", width: 60 },
+        { key: "claim_source", header: "Claim source" },
+        { key: "snippet", header: "Matched passage", width: 60 },
         { key: "type", header: "Type", width: 14 },
         { key: "status", header: "Status", width: 12 },
         { key: "superseded_by", header: "Superseded by", transform: (v) => v ?? "\u2014" },
@@ -43088,6 +43238,9 @@ function registerKnowledgeCommands(program3) {
         }
       ])
     );
+  });
+  knowledge.command("propose-claims").description("Propose missing legacy claims; dry run unless --apply").option("--apply", "Store missing proposals as derived", false).action(async (opts) => {
+    await runCommand(program3.opts(), (ctx) => proposeLegacyClaims(ctx.client, ctx.projectId, opts.apply), (data) => JSON.stringify(data, null, 2));
   });
   knowledge.command("get").description("Get full details of a knowledge entry").argument("<id-or-title>", "Entry UUID or title").action(async (idOrTitle) => {
     const isUuid = /^[0-9a-f-]{36}$/i.test(idOrTitle);
@@ -43108,13 +43261,14 @@ function registerKnowledgeCommands(program3) {
       ])
     );
   });
-  knowledge.command("create").description("Create a new knowledge entry").requiredOption("--title <title>", "Entry title").requiredOption("--content <content>", "Markdown content of the entry").requiredOption("--type <type>", "Entry type: architecture, business, convention, or specification").option("--status <status>", "Status override (default: draft)").option("--tags <tags>", "Comma-separated list of tags").option("--source-task <id>", "Task ID that triggered this knowledge entry").action(async (opts) => {
+  knowledge.command("create").description("Create a new knowledge entry").requiredOption("--title <title>", "Entry title").requiredOption("--claim <claim>", "One-sentence claim").requiredOption("--content <content>", "Markdown content of the entry").requiredOption("--type <type>", "Entry type: architecture, business, convention, or specification").option("--status <status>", "Status override (default: draft)").option("--tags <tags>", "Comma-separated list of tags").option("--source-task <id>", "Task ID that triggered this knowledge entry").action(async (opts) => {
     const tags = opts.tags ? opts.tags.split(",").map((t) => t.trim()).filter(Boolean) : void 0;
     await runCommand(
       program3.opts(),
       async (ctx) => createKnowledgeEntry(ctx.client, ctx.projectId, ctx.userId, {
         title: opts.title,
         content: opts.content,
+        claim: opts.claim,
         type: opts.type,
         status: opts.status,
         tags,
@@ -43123,7 +43277,7 @@ function registerKnowledgeCommands(program3) {
       (entry) => `Created knowledge entry: "${entry.title}" (${entry.id})`
     );
   });
-  knowledge.command("update").description("Update an existing knowledge entry").argument("<id>", "Entry UUID").option("--title <title>", "New title").option("--content <content>", "New markdown content").option("--content-mode <mode>", "replace, prepend_section, or append_section").option("--allow-shrink", "Explicitly permit a destructive shorter replacement").option("--type <type>", "New entry type").option("--status <status>", "New status").option("--tags <tags>", "Comma-separated list of tags (replaces existing tags)").option(
+  knowledge.command("update").description("Update an existing knowledge entry").argument("<id>", "Entry UUID").option("--title <title>", "New title").option("--claim <claim>", "Authored claim; explicitly confirms a legacy proposal").option("--content <content>", "New markdown content").option("--content-mode <mode>", "replace, prepend_section, or append_section").option("--allow-shrink", "Explicitly permit a destructive shorter replacement").option("--type <type>", "New entry type").option("--status <status>", "New status").option("--tags <tags>", "Comma-separated list of tags (replaces existing tags)").option(
     "--domain <domain>",
     "Domain (repeat for multiple): engineering, operations, data, product, customer, process",
     (v, prev) => [...prev, v],
@@ -43140,6 +43294,7 @@ function registerKnowledgeCommands(program3) {
         content: opts.content,
         content_mode: opts.contentMode,
         allow_shrink: opts.allowShrink,
+        claim: opts.claim,
         type: opts.type,
         status: opts.status,
         tags,
@@ -43151,7 +43306,7 @@ function registerKnowledgeCommands(program3) {
       (entry) => `Updated knowledge entry: "${entry.title}" (${entry.id})`
     );
   });
-  knowledge.command("supersede").description("Supersede an existing knowledge entry with a new replacement").argument("<id>", "UUID of the entry to supersede").requiredOption("--title <title>", "Title for the replacement entry").requiredOption("--content <content>", "Content for the replacement entry").option("--type <type>", "Type for the replacement (defaults to type of superseded entry)").option("--tags <tags>", "Comma-separated tags for the replacement").action(async (id, opts) => {
+  knowledge.command("supersede").description("Supersede an existing knowledge entry with a new replacement").argument("<id>", "UUID of the entry to supersede").requiredOption("--title <title>", "Title for the replacement entry").requiredOption("--claim <claim>", "Authored claim for the replacement").requiredOption("--content <content>", "Content for the replacement entry").option("--type <type>", "Type for the replacement (defaults to type of superseded entry)").option("--tags <tags>", "Comma-separated tags for the replacement").action(async (id, opts) => {
     const tags = opts.tags ? opts.tags.split(",").map((t) => t.trim()).filter(Boolean) : void 0;
     await runCommand(
       program3.opts(),
@@ -43159,6 +43314,7 @@ function registerKnowledgeCommands(program3) {
         entry_id: id,
         new_title: opts.title,
         new_content: opts.content,
+        new_claim: opts.claim,
         type: opts.type,
         tags
       }),
@@ -48900,15 +49056,6 @@ function evaluateRiskClassItem(summary, evidence) {
   return { item: "risk_class", label: "No auth/shared-core/irreversible-destructive risk", verdict: "pass", value };
 }
 var SENTENCE_WORD_LIMIT2 = 50;
-function isSingleSentenceShaped(summary) {
-  const trimmed = summary.trim();
-  if (!trimmed) return false;
-  const words = trimmed.split(/\s+/).filter(Boolean);
-  if (words.length > SENTENCE_WORD_LIMIT2) return false;
-  const neutralized = trimmed.replace(/(\d)\.(?=\d)/g, "$1").replace(/\be\.g\.|\bi\.e\./gi, (m) => m.replace(/\./g, ""));
-  const withoutTrailingTerminator = neutralized.replace(/[.!?]+\s*$/, "");
-  return !/[.!?]/.test(withoutTrailingTerminator);
-}
 function evaluateSingleSentenceItem(summary) {
   const trimmed = summary.trim();
   const wordCount = trimmed ? trimmed.split(/\s+/).filter(Boolean).length : 0;
@@ -49185,6 +49332,7 @@ async function composeAndAccept(client, projectId, userId, taskId, args) {
     doc: {
       decide: args.decide,
       tags: args.tags,
+      claim: args.claim,
       why: args.why,
       items: [],
       frame: args.frame,
@@ -49218,6 +49366,7 @@ async function coupleDecomposeNoSplitConvention(client, projectId, userId, taskI
     const created = await recordDecision(client, projectId, userId, {
       type: "convention",
       title: "Decompose: when a ticket does not split",
+      claim: "A ticket that does not split keeps the work on its parent.",
       content: `Decision: a ticket that does not need to split into children records no split rationale of its own. Why: per-ticket "no split" entries crowd out load-bearing knowledge with near-duplicate prose (264 were retired for this \u2014 B-849). How to apply: query this shared entry, couple the ticket to it via reference_knowledge, and record nothing further unless the reasoning introduces a genuinely new pattern this entry doesn't yet state. Scope: every no-split decompose accept, conducted or recorded.`,
       tags: [DECOMPOSE_NO_SPLIT_TAG],
       domain: ["product", "process"],
@@ -49288,6 +49437,7 @@ async function runRecordedWalk(client, projectId, userId, args) {
       const clarifyDecision = await recordDecision(client, projectId, userId, {
         type: "specification",
         title: `${args.task_id}: clarified intent (recorded)`,
+        claim: summary,
         content: `<placeholder \u2014 one line: 'clarified intent for ${args.task_id}; body derived from the ratified brief'>`,
         domain: ["product"],
         source_type: "manual",
@@ -49308,6 +49458,7 @@ async function runRecordedWalk(client, projectId, userId, args) {
           in_scope: [summary],
           not_solving: []
         },
+        claim: summary,
         decisionRef: { type: "specification", id: clarifyDecision.id }
       });
       gates.push({ gate: "clarify", reason: GATE_REASONS.clarify, landed: true });
@@ -49361,6 +49512,7 @@ async function runRecordedWalk(client, projectId, userId, args) {
         type: "technical-design",
         title: `${args.task_id}: technical-design \u2014 no new decision needed (recorded)`,
         tags: bookkeepingTags(ticketTags),
+        claim: "This recorded change requires no new design decision.",
         content: `<placeholder \u2014 one line: 'technical-design decision for ${args.task_id}; body derived from the ratified brief'>`,
         domain: ["engineering"],
         source_type: "manual",
@@ -49384,16 +49536,21 @@ async function runRecordedWalk(client, projectId, userId, args) {
           ],
           reach: []
         },
+        claim: "This recorded change requires no new design decision.",
         decisionRef: { type: "technical-design", id: designDecision.id }
       });
       gates.push({ gate: "design", reason: GATE_REASONS.design, landed: true });
     }
     if (runs("plan")) {
-      const planEntryContent = `Decision: record ${args.task_id}'s plan from the supplied summary and evidence (recorded, not conducted). Why: ${summary} Scope: this ticket only.`;
+      const planEntryContent = encodeClaim(
+        `Decision: record ${args.task_id}'s plan from the supplied summary and evidence (recorded, not conducted). Why: ${summary} Scope: this ticket only.`,
+        summary
+      );
       const planDecision = await recordDecision(client, projectId, userId, {
         type: "specification",
         title: `${args.task_id}: recorded plan`,
         tags: bookkeepingTags(ticketTags),
+        claim: summary,
         content: planEntryContent,
         domain: ["process"],
         source_type: "manual",
@@ -49404,6 +49561,7 @@ async function runRecordedWalk(client, projectId, userId, args) {
       await referenceKnowledge(client, projectId, { task_id: taskId, decision_id: planDecision.id });
       await composeAndAccept(client, projectId, userId, taskId, {
         reason: GATE_REASONS.plan,
+        claim: summary,
         pendingActivity: "planning",
         decide: `Record ${args.task_id}'s plan from the supplied summary and evidence (recorded, not conducted).`,
         frame: {
