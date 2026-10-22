@@ -1,3 +1,4 @@
+import { featureAccountTools, createFeatureAccount, readFeatureAccounts, previewFeatureAmendment, proposeFeatureAmendment, applyFeatureAmendment } from './feature-accounts.js';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { getProjectTool, getProject } from './project.js';
 import { listEpicsTool, listEpics, createEpicTool, createEpic, updateEpicTool, updateEpic } from './epics.js';
@@ -163,6 +164,7 @@ export {
 
 export function registerTools(disabledFeatures?: Record<string, boolean>) {
   const tools = [
+    ...featureAccountTools,
     // Core tools (always visible)
     getProjectTool, listTasksTool, getTaskTool, createTaskTool, updateTaskTool,
     bulkCreateTasksTool, bulkUpdateTasksTool, queryTasksTool, searchTasksTool,
@@ -291,6 +293,11 @@ export async function handleToolCall(
       case 'bulk_update_tasks':
         result = await bulkUpdateTasks(client, projectId, args as any);
         break;
+      case 'create_feature_account': result = await createFeatureAccount(client,projectId,args); break;
+      case 'read_feature_accounts': result = await readFeatureAccounts(client,projectId,args); break;
+      case 'preview_feature_amendment': result = await previewFeatureAmendment(client,projectId,args); break;
+      case 'propose_feature_amendment': result = await proposeFeatureAmendment(client,projectId,args); break;
+      case 'apply_feature_amendment': result = await applyFeatureAmendment(client,projectId,args); break;
       case 'query_knowledge':
         result = await queryKnowledge(client, projectId, args as any);
         break;
