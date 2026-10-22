@@ -581,7 +581,10 @@ function makeClient(
   taskNumberStub.eq = vi.fn(() => taskNumberStub);
   taskNumberStub.maybeSingle = vi.fn(async () => ({ data: null, error: null }));
   const realSelect = chain.select;
-  chain.select = vi.fn((cols?: string) => (cols === 'task_number' ? taskNumberStub : realSelect(cols)));
+  // B-1225: the shared linked-knowledge reader verifies resolved UUIDs against the current
+  // project before its FLOOR read. Route that existence probe outside the response FIFO too.
+  const taskExistenceStub = { eq: () => ({ in: (_key: string, ids: string[]) => Promise.resolve({ data: ids.map(id => ({ id })), error: null }) }) };
+  chain.select = vi.fn((cols?: string) => cols === 'task_number' ? taskNumberStub : cols === 'id' ? taskExistenceStub : realSelect(cols));
   return chain;
 }
 
@@ -4244,6 +4247,10 @@ describe('B-876 gate frame', () => {
       genericChain.maybeSingle = vi.fn(async () => nextGeneric());
       genericChain.single = vi.fn(async () => nextGeneric());
       genericChain.then = (resolve: any) => resolve(nextGeneric());
+      const genericSelect = genericChain.select;
+      genericChain.select = vi.fn((cols: string) => cols === 'id'
+        ? { eq: () => ({ in: (_key: string, ids: string[]) => Promise.resolve({ data: ids.map(id => ({ id })), error: null }) }) }
+        : genericSelect(cols));
 
       const projectsChain: any = {};
       projectsChain.select = vi.fn(() => projectsChain);

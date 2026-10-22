@@ -182,14 +182,16 @@ export const createKnowledgeEntryTool = {
 
 export const updateKnowledgeEntryTool = {
   name: 'update_knowledge_entry',
-  description: 'Update an existing knowledge entry in this project by ID or title. Can update title, content, type, status, tags, domain, madr, realization, or review_by. Works for all entry types, including the next-gen design types.',
+  description: 'Update an existing knowledge entry in this project by ID or title. Use content_mode prepend_section/append_section to add only a new section while atomically preserving existing content. Shorter replacements that drop dated amendment markers are refused unless allow_shrink is explicitly true. Can also update title, type, status, tags, domain, madr, realization, or review_by.',
   inputSchema: {
     type: 'object' as const,
     properties: {
       entry_id: { type: 'string', description: 'Knowledge entry UUID' },
       title: { type: 'string', description: 'Current entry title (used to find the entry if entry_id not provided)' },
       new_title: { type: 'string', description: 'New title for the entry' },
-      content: { type: 'string', description: 'New markdown content' },
+      content: { type: 'string', description: 'Replacement markdown, or only the new section when content_mode is prepend_section/append_section.' },
+      content_mode: { type: 'string', enum: ['replace', 'prepend_section', 'append_section'], description: 'Default replace. Section modes merge with the stored entry atomically and preserve its content.' },
+      allow_shrink: { type: 'boolean', description: 'Explicitly permit a deliberate shorter replacement that drops dated amendment sections. Default false.' },
       type: { type: 'string', description: 'New entry type' },
       status: { type: 'string', description: 'New status: Asserted, Accepted, Superseded, or Archived (legacy lowercase draft/accepted/superseded also accepted)' },
       tags: {
@@ -632,6 +634,8 @@ export interface UpdateKnowledgeEntryArgs {
   title?: string;
   new_title?: string;
   content?: string;
+  content_mode?: 'replace' | 'prepend_section' | 'append_section';
+  allow_shrink?: boolean;
   type?: string;
   status?: string;
   tags?: string[];
@@ -658,6 +662,20 @@ export async function updateKnowledgeEntry(
     throw new Error('Either entry_id or title must be provided to identify the entry');
   }
 
+  const mode = args.content_mode ?? 'replace';
+  if (!['replace', 'prepend_section', 'append_section'].includes(mode)) {
+    throw new Error('content_mode must be replace, prepend_section or append_section');
+  }
+  if (args.allow_shrink !== undefined && typeof args.allow_shrink !== 'boolean') {
+    throw new Error('allow_shrink must be a boolean');
+  }
+  if (args.content === undefined && (args.content_mode !== undefined || args.allow_shrink !== undefined)) {
+    throw new Error('content is required with content_mode or allow_shrink');
+  }
+  if (mode !== 'replace' && !args.content?.trim()) {
+    throw new Error('Amendment section must not be blank');
+  }
+
   const hasUpdates =
     args.new_title !== undefined ||
     args.content !== undefined ||
@@ -679,7 +697,10 @@ export async function updateKnowledgeEntry(
 
   // B-1021: fence out human-in-browser / validate agent-on-behalf:* before the write.
   guardKnowledgeWriteProvenance(args.provenance);
-  const { data, error } = await client.rpc('knowledge_update_knowledge_entry', {
+  // All content writes use the locked, guarded operation. Never fall back to an
+  // older unsafe replacement writer when its migration is unavailable.
+  const contentWrite = args.content !== undefined;
+  const { data, error } = await client.rpc(contentWrite ? 'knowledge_amend_knowledge_entry' : 'knowledge_update_knowledge_entry', {
     p_project_id: projectId,
     p_entry_id: args.entry_id ?? null,
     p_title: args.title ?? null,
@@ -698,9 +719,16 @@ export async function updateKnowledgeEntry(
     p_provenance: args.provenance ?? null,
     p_conduction_id: getConductionId() ?? null,
     p_leg: getLeg() ?? null,
+    ...(contentWrite ? { p_content_mode: mode, p_allow_shrink: args.allow_shrink ?? false } : {}),
   });
 
   if (error) {
+    if (contentWrite && (error.code === 'PGRST202' || error.code === '42883')) {
+      throw new Error('Knowledge content update unavailable: apply the B-1111 database migration before using content updates. No content was replaced.');
+    }
+    if (contentWrite && error.code === '22023') {
+      throw new Error([error.message, error.hint].filter(Boolean).join('\n'));
+    }
     if (error.code === '23505') {
       throw new Error(
         `A knowledge entry titled "${newTitle ?? ''}" already exists in this project`,
