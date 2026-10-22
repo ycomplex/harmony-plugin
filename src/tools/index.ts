@@ -220,7 +220,6 @@ export async function handleToolCall(
 ) {
   try {
     let result: unknown;
-    const diagnostics: string[] = [];
     switch (name) {
       case 'get_project':
         result = await getProject(client, projectId);
@@ -304,7 +303,7 @@ export async function handleToolCall(
         result = await importKnowledgeQuestions(client, projectId, args as any);
         break;
       case 'query_knowledge':
-        result = await queryKnowledge(client, projectId, args as any, message => diagnostics.push(message));
+        result = await queryKnowledge(client, projectId, args as any);
         break;
       case 'search_ticket_intents':
         result = await searchTicketIntents(client, projectId, args as any);
@@ -481,8 +480,7 @@ export async function handleToolCall(
     // record; reads pass through) + compact JSON for ALL tool results. Both apply ONLY at this
     // MCP boundary — the CLI and in-process callers use the handler functions directly and keep
     // full-fidelity results. Do NOT strip nulls: `pending_resolution: null` is the poll signal.
-    return { content: [{ type: 'text' as const, text: JSON.stringify(projectAck(name, result, args)) },
-      ...diagnostics.map(text => ({ type: 'text' as const, text }))] };
+    return { content: [{ type: 'text' as const, text: JSON.stringify(projectAck(name, result, args)) }] };
   } catch (err: any) {
     const message = err.message ?? 'Unknown error';
     if (message.includes('permission denied') || message.includes('RLS')) {

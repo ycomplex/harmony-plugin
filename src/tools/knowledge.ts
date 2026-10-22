@@ -1,5 +1,6 @@
-import { questionProjection, missingQuestionCapability } from './knowledge-questions.js';
+import { questionProjection } from './knowledge-questions.js';
 import { projectSupersession } from './knowledge-supersession.js';
+import { withInvalidations, type InvalidationLink } from './knowledge-invalidations.js';
 import { BOOKKEEPING_TAG, SUBSTANTIVE_TAG_FILTER, bookkeepingPage } from './knowledge-bookkeeping.js';
 import { claimFields, encodeClaim, editedClaimContent, claimContent, matchedPassage, proposeClaim } from './knowledge-claim.js';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -20,6 +21,9 @@ export interface KnowledgeEntrySummary {
   answer?: string;
   resulting_decision_id?: string | null;
   score?: number;
+  invalidations?: InvalidationLink[];
+  invalidations_available?: boolean;
+  invalidation_rollout_available?: boolean;
   id: string;
   title: string;
   type: string;
@@ -39,6 +43,9 @@ export interface KnowledgeEntryFull {
   question_scope?: 'product' | 'deployment';
   answer?: string;
   resulting_decision_id?: string | null;
+  invalidations?: InvalidationLink[];
+  invalidations_available?: boolean;
+  invalidation_rollout_available?: boolean;
   id: string;
   workspace_id: string;
   project_id: string | null;
@@ -122,17 +129,17 @@ const ENTITY_COLS = 'id, workspace_id, project_id, kind, name, description, meta
 export const queryKnowledgeTool = {
   name: 'query_knowledge',
   description:
-    'Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Results include nullable superseded_by and inverse supersedes UUIDs; matching successors precede replaced entries. Check this before making significant implementation choices. Defaults to "Accepted" entries only, with explicitly marked bookkeeping ranked last; include_bookkeeping:false excludes it before pagination. When `search` is given, retrieval is semantic (RRF) and composes with `domain`, `limit` and `include_bookkeeping`; type, status and tags also compose with search when the question-search capability is available. as_of, include_superseded and offset remain structured-only. Questions expose explicit state and not-yet-decided answers; absent question coverage is disclosed.',
+    'Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Results include nullable superseded_by and inverse supersedes UUIDs; matching successors precede replaced entries. Check this before making significant implementation choices. Defaults to "Accepted" entries only, with explicitly marked bookkeeping ranked last; include_bookkeeping:false excludes it before pagination. When `search` is given, retrieval is semantic (RRF) and composes with `domain`, `limit` and `include_bookkeeping`; other filters remain structured-only until B-1223 shared ranking. Open/parked questions expose not-yet-decided answers and receive precedence only within the returned page, after bookkeeping ordering; topic relevance and before-limit question priority are not guaranteed.',
   inputSchema: {
     type: 'object' as const,
     properties: {
       type: {
         type: 'string',
-        description: 'Filter by entry type (e.g. "architecture", "business", "convention", "specification"). (also supported by capable semantic search)',
+        description: 'Filter by entry type (e.g. "architecture", "business", "convention", "specification").',
       },
       status: {
         type: 'string',
-        description: 'Filter by status. Default: "Accepted". (also supported by capable semantic search)',
+        description: 'Filter by status. Default: "Accepted".',
       },
       domain: {
         type: 'array',
@@ -141,7 +148,7 @@ export const queryKnowledgeTool = {
       },
       as_of: {
         type: 'string',
-        description: 'ISO timestamp — return entries valid at or before this instant (temporal query). (also supported by capable semantic search)',
+        description: 'ISO timestamp — return entries valid at or before this instant (temporal query).',
       },
       tags: {
         type: 'array',
@@ -152,7 +159,7 @@ export const queryKnowledgeTool = {
         type: 'string',
         description: 'Free-text search query — hybrid semantic + trigram retrieval, ranked by relevance (RRF). Composes with `domain`, `limit` and `include_bookkeeping`.',
       },
-      question_state: { type: 'string', enum: ['open', 'parked', 'decided'], description: 'Only matching knowledge questions in this state; unavailable capabilities fail visibly.' },
+      question_state: { type: 'string', enum: ['open', 'parked', 'decided'], description: 'Filter-only lists: open, parked or decided questions. Cannot combine with search until B-1223 shared ranking.' },
       include_bookkeeping: { type: 'boolean', description: 'Include explicitly marked procedural gate records after substantive knowledge (default true). False excludes them before pagination.' },
       include_superseded: {
         type: 'boolean',
@@ -410,62 +417,63 @@ export async function queryKnowledge(
   client: SupabaseClient,
   projectId: string,
   args: QueryKnowledgeArgs,
-  onDiagnostic: (message: string) => void = () => {},
 ): Promise<KnowledgeEntrySummary[]> {
   const workspaceId = await getWorkspaceId(client, projectId);
   if (args.question_state && !['open', 'parked', 'decided'].includes(args.question_state)) {
     throw new Error('question_state must be open, parked or decided');
   }
-  if (args.question_state && !args.search) {
-    const { error } = await client.rpc('knowledge_question_search', {
-      _workspace_id: workspaceId, _project_id: projectId,
-      _query_embedding: null, _query_text: null, _match_limit: 0,
-    });
-    if (missingQuestionCapability(error)) throw new Error('Question filtering unavailable: apply the B-1242 database capability');
-    if (error) throw new Error(error.message);
-  }
-
   // Semantic path: a free-text query => embed it + fuse vector ⊕ trigram via RRF (Phase C).
   if (args.search) {
-    const queryEmbedding = await embedText(client, args.search);
-    let legacy = false;
-    const data = await bookkeepingPage<any>(async ({ bookkeeping, offset, limit, count }) => {
-      const params = {
-        _workspace_id: workspaceId, _project_id: projectId,
-        _query_embedding: queryEmbedding, _query_text: args.search,
-        _domain: args.domain?.length ? args.domain : null, _match_limit: null,
-      };
-      if (args.as_of || args.include_superseded || args.offset) {
-        throw new Error('query_knowledge: semantic search cannot be combined with as_of, include_superseded or offset');
-      }
-      const fetch = (name: string, enhanced: boolean) => {
-        let query = (client as any).rpc(name, enhanced ? { ...params,
-          _type: args.type ?? null, _status: args.status ?? (args.question_state === 'decided' ? 'Superseded' : 'Accepted'),
-          _tags: args.tags?.length ? args.tags : null, _question_state: args.question_state ?? null,
-        } : params, count ? { count: 'exact' } : {})
-          .select('*');
-        query = bookkeeping ? query.contains('tags', [BOOKKEEPING_TAG]) : query.or(SUBSTANTIVE_TAG_FILTER);
-        return query.range(offset, offset + limit - 1);
-      };
-      let response = await fetch(legacy ? 'knowledge_search_rrf' : 'knowledge_question_search', !legacy);
-      if (!legacy && missingQuestionCapability(response.error)) {
-        if (args.question_state || args.type || args.status || args.tags?.length) {
-          throw new Error('Requested question/search filters unavailable on this database; no constraints were dropped');
-        }
-        legacy = true;
-        onDiagnostic('Question coverage unavailable: database lacks B-1242 question search. Returning ordinary knowledge results; absence is not evidence that no open question exists.');
-        response = await fetch('knowledge_search_rrf', false);
-      }
-      return response;
+    // Semantic retrieval (RRF) returns Accepted decisions ranked by relevance, optionally filtered by
+    // `domain` (+ `limit`). It does NOT yet compose with the other structured filters — reject rather than
+    // silently drop them (no silent wrong answer; e.g. search+include_superseded would otherwise return
+    // Accepted-only with no error). Composable semantic+filter search is tracked as a follow-up.
+    const incompatible: string[] = [];
+    if (args.question_state) {
+      throw new Error('query_knowledge: search + question_state is unavailable until B-1223 shared ranking; omit search for structured question filtering');
+    }
+    if (args.status) incompatible.push('status');
+    if (args.include_superseded) incompatible.push('include_superseded');
+    if (args.type) incompatible.push('type');
+    if (args.tags && args.tags.length > 0) incompatible.push('tags');
+    if (args.as_of) incompatible.push('as_of');
+    if (args.offset) incompatible.push('offset');
+    if (incompatible.length > 0) {
+      throw new Error(
+        `query_knowledge: "search" (semantic retrieval) cannot be combined with: ${incompatible.join(', ')}. ` +
+        `Semantic search returns Accepted decisions ranked by relevance, optionally filtered by "domain". ` +
+        `Omit "search" to use the structured filters.`,
+      );
+    }
+    const queryEmbedding = await embedText(client, args.search);   // may be null -> fn degrades to trigram-only
+    const data = await bookkeepingPage<any>(({ bookkeeping, offset, limit, count }) => {
+      // NULL disables the RPC's INNER limit. PostgREST then filters the SETOF rows before its
+      // outer range; a finite inner limit would lose substantive hits on an older deployment.
+      let query = (client as any).rpc('knowledge_search_rrf', {
+        _workspace_id: workspaceId,
+        _project_id: projectId,
+        _query_embedding: queryEmbedding,
+        _query_text: args.search,
+        _domain: args.domain && args.domain.length > 0 ? args.domain : null,
+        _match_limit: null,
+      }, count ? { count: 'exact' } : {}).select('*');
+      query = bookkeeping ? query.contains('tags', [BOOKKEEPING_TAG]) : query.or(SUBSTANTIVE_TAG_FILTER);
+      return query.range(offset, offset + limit - 1);
     }, args);
     const matches = (data ?? []).map((d: any) => ({
       id: d.id, title: d.title, type: d.type, status: d.status,
+      ...questionProjection(d),
       ...claimFields(d), snippet: matchedPassage(d.content ?? '', args.search!),
       domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at,
-      ...questionProjection(d), ...(typeof d.score === 'number' ? { score: d.score } : {}),
     })) as KnowledgeEntrySummary[];
     if (!matches.length) return [];
-    return hydrateSupersession(client, workspaceId, projectId, matches);
+    // Transitional precedence only within the returned page and each bookkeeping class.
+    // Full relevance-gated promotion BEFORE limiting belongs to B-1223.
+    const questionRank = (row: KnowledgeEntrySummary) =>
+      Number(row.tags?.includes(BOOKKEEPING_TAG) ?? false) * 2 +
+      (row.question_state === 'open' || row.question_state === 'parked' ? 0 : 1);
+    matches.sort((left, right) => questionRank(left) - questionRank(right));
+    return withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, matches));
   }
 
   // Structured retrieval uses the same class boundary and applies every filter before pagination.
@@ -485,7 +493,7 @@ export async function queryKnowledge(
     return query.order('type', { ascending: true }).order('id', { ascending: true })
       .range(offset, offset + limit - 1);
   }, args);
-  return hydrateSupersession(client, workspaceId, projectId, rows.map(d => ({ id: d.id, title: d.title, type: d.type, status: d.status, domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d), ...questionProjection(d) })));
+  return withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, rows.map(d => ({ id: d.id, title: d.title, type: d.type, status: d.status, domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d), ...questionProjection(d) }))));
 }
 
 // Hydrate only returned IDs, in batches below PostgREST's row cap. Never scan the corpus
@@ -627,7 +635,7 @@ export async function getKnowledgeEntry(
 
   const { data, error } = await query.single();
   if (error) throw error;
-  return { ...data, ...claimFields(data), ...questionProjection(data) } as KnowledgeEntryFull;
+  return (await withInvalidations(client, [{ ...data, ...claimFields(data), ...questionProjection(data) } as KnowledgeEntryFull]))[0];
 }
 
 // ---------------------------------------------------------------------------

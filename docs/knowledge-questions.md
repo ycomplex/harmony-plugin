@@ -20,13 +20,13 @@ harmony knowledge list --question-state open
 harmony knowledge list --search 'several schedulers'
 ```
 
-Search prioritises relevant open or parked questions before selecting the page,
-and returns `answer: "not yet decided"`. Ordinary hybrid relevance and explicit
-bookkeeping partitions remain intact. Unrelated semantic questions do not jump
-ahead merely because a vector exists: the question arm requires cosine distance
-at most 0.35 or the existing lexical word-similarity floor of 0.3. These are
-retrieval gates, not probabilities that a claim is true. New search results carry
-their actual fusion score; no scores are reconstructed from grouped positions.
+Search uses the existing hybrid retrieval route. Within the returned page, open
+or parked questions precede other matches in the same bookkeeping partition,
+and carry `answer: "not yet decided"`. This transitional page-local ordering
+cannot guarantee topic relevance or priority before the result limit. It does
+not manufacture scores. B-1223 owns relevance-gated question ranking and
+composed search filters in the single shared candidate pool (acceptance criterion
+`e97dafdb-264d-4e55-bd69-c23ab683d08d`).
 
 Read a question immediately before changing it. Use its `updated_at` token:
 
@@ -45,15 +45,14 @@ its resulting link atomically while retaining event history.
 
 MCP exposes the same shared handlers through `save_knowledge_question`,
 `preview_knowledge_questions`, and `import_knowledge_questions`.
-`query_knowledge` supports `question_state`; `get_knowledge_entry` shows the
-question state, answer and resulting decision. The new capability is additive:
-older shared RPC signatures are unchanged. A missing question-search capability
-keeps the original ordinary search route and emits a separate coverage warning,
-including for an empty result. Explicit question actions or filters fail visibly
-when their capability is absent. Permission and transport errors never trigger
-that fallback. Array results remain arrays, with optional additional fields.
-B-1223 owns the broader bounded-search envelope and deadline contract; consumers
-must retain its diagnostics when adopting this question route.
+`query_knowledge` supports `question_state` on structured lists. Combining
+`search` with `question_state` fails explicitly and names B-1223; use a
+filter-only list until shared ranking lands. `get_knowledge_entry` shows the
+question state, answer and resulting decision. Existing search RPC signatures
+and ordinary array result shapes remain unchanged; question fields are additive.
+Question save/import fail visibly when their database capability is absent.
+Permission and transport errors remain errors. No alternate question search
+route or coverage-warning callback is introduced.
 
 ## Reviewed milestone ingestion
 

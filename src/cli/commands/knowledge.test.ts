@@ -53,7 +53,7 @@ describe('knowledge list human output', () => {
     expect(output.text).toContain('Supersedes');
     expect(output.text).toContain('old-id');
     expect(output.text).toContain('new-id');
-    expect(queryKnowledge).toHaveBeenCalledWith('client', 'project', expect.objectContaining({ include_superseded: true }), expect.any(Function));
+    expect(queryKnowledge).toHaveBeenCalledWith('client', 'project', expect.objectContaining({ include_superseded: true }));
   });
 });
 

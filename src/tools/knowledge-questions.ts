@@ -20,7 +20,7 @@ export function questionProjection(row: { madr?: unknown; superseded_by?: string
 
 /** Only a positively identified absent RPC enables the compatibility route. */
 export function missingQuestionCapability(error: { code?: string; message?: string } | null) {
-  return error?.code === 'PGRST202' || (error?.code === '42883' && /knowledge_question_(search|save|import)/.test(error.message ?? ''));
+  return error?.code === 'PGRST202' || (error?.code === '42883' && /knowledge_question_(save|import)/.test(error.message ?? ''));
 }
 
 export interface SaveQuestionArgs {

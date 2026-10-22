@@ -53,7 +53,7 @@ export function registerKnowledgeCommands(program: Command): void {
       [] as string[],
     )
     .option('--search <text>', 'Search term matched against title and content')
-    .option('--question-state <state>', 'Only questions in open, parked or decided state')
+    .option('--question-state <state>', 'Filter-only: open, parked or decided; search combination requires B-1223')
     .option('--all', 'Include superseded entries', false)
     .option('--no-bookkeeping', 'Exclude explicitly marked procedural gate records')
     .action(async (opts) => {
@@ -68,7 +68,7 @@ export function registerKnowledgeCommands(program: Command): void {
             include_superseded: opts.all,
             include_bookkeeping: opts.bookkeeping,
             question_state: opts.questionState,
-          }, message => console.error(message)),
+          }),
         (data) =>
           formatTable(data, [
             {
@@ -87,6 +87,7 @@ export function registerKnowledgeCommands(program: Command): void {
             { key: 'resulting_decision_id', header: 'Resulting decision', width: 36 },
             { key: 'superseded_by', header: 'Superseded by', transform: (v: string | null) => v ?? '—' },
             { key: 'supersedes', header: 'Supersedes', transform: (v: string[]) => (v ?? []).join(', ') || '—' },
+            { key: 'invalidations', header: 'Invalidation', transform: (links: Array<{ effective_at: string | null }> = []) => links.some(link => link.effective_at) ? 'Retired' : links.length ? 'Removal pending' : '' },
             {
               key: 'tags',
               header: 'Tags',
@@ -130,6 +131,9 @@ export function registerKnowledgeCommands(program: Command): void {
             { label: 'Question', value: entry.question_state ?? '(not a question)' },
             { label: 'Answer', value: entry.answer ?? '' },
             { label: 'Resulting decision', value: entry.resulting_decision_id ?? '' },
+            { label: 'Removal capability', value: entry.invalidations_available === false ? 'unavailable' : 'available' },
+            { label: 'Invalidators', value: (entry.invalidations ?? []).map(link => `${link.invalidator_title} (${link.invalidator_id}): ${link.effective_at ? 'retired' : 'removal agreed, not yet effective'}`).join('\n') || '(none)' },
+            ...(entry.invalidation_rollout_available === false ? [{ label: 'Rollout capability', value: 'unavailable; no retirement inferred' }] : []),
             { label: 'Content', value: entry.content },
           ]),
       );

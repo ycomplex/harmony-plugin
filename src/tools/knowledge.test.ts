@@ -25,6 +25,13 @@ import {
   queryFacts,
 } from './knowledge.js';
 
+// Existing knowledge tests isolate their original read/write contracts; the new RPC boundary is
+// exercised with real handlers in knowledge-invalidations.integration.test.ts.
+vi.mock('./knowledge-invalidations.js', async importOriginal => ({
+  ...await importOriginal<typeof import('./knowledge-invalidations.js')>(),
+  withInvalidations: async (_client: unknown, entries: unknown[]) => entries,
+}));
+
 const PROJECT_ID = 'proj-abc-123';
 const WORKSPACE_ID = 'ws-xyz-456';
 const USER_ID = 'user-abc-123';
@@ -224,27 +231,46 @@ function rrfMock(response: { data: any[]; error?: any }) {
 }
 
 describe('queryKnowledge', () => {
-  it('keeps ordinary empty results and explicitly reports missing question coverage', async () => {
+  it('refuses search plus question_state explicitly before retrieving or embedding', async () => {
     const { client } = buildWorkspaceAndQueryClient({ data: [] });
-    const missing = rrfMock({ data: [], error: { code: 'PGRST202', message: 'knowledge_question_search missing' } });
-    const legacy = rrfMock({ data: [] });
-    client.rpc = vi.fn().mockImplementation((name, ...args) => name === 'knowledge_question_search' ? missing(name, ...args) : legacy(name, ...args));
-    const diagnostic = vi.fn();
-    await expect(queryKnowledge(client, PROJECT_ID, { search: 'topic' }, diagnostic)).resolves.toEqual([]);
-    expect(diagnostic).toHaveBeenCalledTimes(1);
-    expect(diagnostic.mock.calls[0][0]).toContain('Question coverage unavailable');
-    expect(legacy).toHaveBeenCalled();
+    client.rpc = vi.fn();
+    client.functions = { invoke: vi.fn() };
+    await expect(queryKnowledge(client, PROJECT_ID, { search: 'topic', question_state: 'open' }))
+      .rejects.toThrow('B-1223');
+    expect(client.rpc).not.toHaveBeenCalled();
+    expect(client.functions.invoke).not.toHaveBeenCalled();
   });
 
-  it('never drops requested filters or treats authorization as an older schema', async () => {
+  it('keeps ordinary empty legacy search results without probing a question RPC', async () => {
     const { client } = buildWorkspaceAndQueryClient({ data: [] });
-    client.rpc = rrfMock({ data: [], error: { code: 'PGRST202', message: 'missing capability' } });
-    await expect(queryKnowledge(client, PROJECT_ID, { search: 'topic', type: 'specification' })).rejects.toThrow('no constraints were dropped');
-    expect(client.rpc).toHaveBeenCalledTimes(1);
+    client.rpc = rrfMock({ data: [] });
+    await expect(queryKnowledge(client, PROJECT_ID, { search: 'topic' })).resolves.toEqual([]);
+    expect(client.rpc.mock.calls.every(([name]: string[]) => name === 'knowledge_search_rrf')).toBe(true);
+  });
+
+  it('preserves legacy search errors without treating authorization as missing capability', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: [] });
     client.rpc = rrfMock({ data: [], error: { code: '42501', message: 'permission denied' } });
     await expect(queryKnowledge(client, PROJECT_ID, { search: 'topic' })).rejects.toThrow('permission denied');
-    expect(client.rpc).toHaveBeenCalledTimes(1);
   });
+
+  it('prioritises unresolved questions only in the returned page after bookkeeping ordering', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: [] });
+    const question = (id: string, state: string, tags: string[] = []) => ({ id, tags,
+      madr: { question: { version: 1, state, scope: 'product' } } });
+    client.rpc = rrfMock({ data: [
+      { id: 'decision', tags: [] }, question('parked', 'parked'), question('open', 'open'),
+      { id: 'bookkeeping-decision', tags: ['harmony:bookkeeping'] },
+      question('bookkeeping-question', 'open', ['harmony:bookkeeping']),
+    ] });
+    const result = await queryKnowledge(client, PROJECT_ID, { search: 'topic', limit: 5 });
+    expect(result.map(row => row.id)).toEqual(['parked', 'open', 'decision', 'bookkeeping-question', 'bookkeeping-decision']);
+    expect(result[0]).toMatchObject({ question_state: 'parked', question_scope: 'product', answer: 'not yet decided' });
+    expect(result.every(row => !('score' in row))).toBe(true);
+    const limited = await queryKnowledge(client, PROJECT_ID, { search: 'topic', limit: 1 });
+    expect(limited.map(row => row.id)).toEqual(['decision']); // No before-limit guarantee.
+  });
+
   it('applies default filters (status=accepted, no type/tags) and scopes to token project', async () => {
     const { client, wsChain, secondChain } = buildWorkspaceAndQueryClient({
       data: sampleSummaries,
@@ -320,7 +346,7 @@ describe('queryKnowledge', () => {
     };
     const result = await queryKnowledge(client, PROJECT_ID, { search: 'session security', domain: ['engineering'] });
     expect(client.functions.invoke).toHaveBeenCalledWith('embed-knowledge', { body: { text: 'session security' } });
-    expect(client.rpc).toHaveBeenCalledWith('knowledge_question_search', expect.objectContaining({
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_search_rrf', expect.objectContaining({
       _workspace_id: WORKSPACE_ID, _project_id: PROJECT_ID, _query_embedding: '[0.1,0.2]',
       _query_text: 'session security', _domain: ['engineering'],
       _match_limit: null,
@@ -351,7 +377,7 @@ describe('queryKnowledge', () => {
       rpc: rrfMock({ data: [], error: null }),
     };
     await queryKnowledge(client, PROJECT_ID, { search: 'auth', domain: ['engineering'], limit: 5 });
-    expect(client.rpc).toHaveBeenCalledWith('knowledge_question_search', expect.objectContaining({ _match_limit: null, _domain: ['engineering'] }), {});
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_search_rrf', expect.objectContaining({ _match_limit: null, _domain: ['engineering'] }), {});
   });
 
   it('passes _query_embedding null when embedding fails (trigram-only degrade)', async () => {
@@ -365,7 +391,7 @@ describe('queryKnowledge', () => {
       rpc: rrfMock({ data: [], error: null }),
     };
     await queryKnowledge(client, PROJECT_ID, { search: 'auth' });
-    expect(client.rpc).toHaveBeenCalledWith('knowledge_question_search', expect.objectContaining({ _query_embedding: null, _query_text: 'auth', _domain: null }), {});
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_search_rrf', expect.objectContaining({ _query_embedding: null, _query_text: 'auth', _domain: null }), {});
   });
 
   it('passes limit and offset to .range()', async () => {
