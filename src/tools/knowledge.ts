@@ -96,7 +96,7 @@ const ENTITY_COLS = 'id, workspace_id, project_id, kind, name, description, meta
 export const queryKnowledgeTool = {
   name: 'query_knowledge',
   description:
-    'Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Check this before making significant implementation choices. Defaults to "Accepted" entries only, with explicitly marked bookkeeping ranked last; include_bookkeeping:false excludes it before pagination. When `search` is given, retrieval is semantic (RRF) and composes only with `domain` (+ `limit`); the other structured filters (`type`, `status`, `tags`, `as_of`, `include_superseded`, `offset`) apply to the non-search structured path only.',
+    'Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Check this before making significant implementation choices. Defaults to "Accepted" entries only, with explicitly marked bookkeeping ranked last; include_bookkeeping:false excludes it before pagination. When `search` is given, retrieval is semantic (RRF) and composes with `domain`, `limit` and `include_bookkeeping`; the other structured filters (`type`, `status`, `tags`, `as_of`, `include_superseded`, `offset`) apply to the non-search structured path only.',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -124,7 +124,7 @@ export const queryKnowledgeTool = {
       },
       search: {
         type: 'string',
-        description: 'Free-text search query — hybrid semantic + trigram retrieval, ranked by relevance (RRF). Composes only with `domain` and `limit`.',
+        description: 'Free-text search query — hybrid semantic + trigram retrieval, ranked by relevance (RRF). Composes with `domain`, `limit` and `include_bookkeeping`.',
       },
       include_bookkeeping: { type: 'boolean', description: 'Include explicitly marked procedural gate records after substantive knowledge (default true). False excludes them before pagination.' },
       include_superseded: {
