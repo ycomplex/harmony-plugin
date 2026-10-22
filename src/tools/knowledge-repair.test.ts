@@ -5,6 +5,12 @@ import {
   verifiedPrPaths,
   type RepairManifest,
 } from './knowledge-repair.js';
+import { existsSync, readFileSync } from 'node:fs';
+vi.mock('node:fs', async importOriginal => ({
+  ...await importOriginal<typeof import('node:fs')>(),
+  existsSync: vi.fn(),
+  readFileSync: vi.fn(),
+}));
 import { execFileSync } from 'node:child_process';
 vi.mock('node:child_process', () => ({ execFileSync: vi.fn() }));
 function manifest(): RepairManifest {
@@ -38,6 +44,8 @@ function manifest(): RepairManifest {
   };
 }
 beforeEach(() => {
+  vi.mocked(existsSync).mockReturnValue(true);
+  vi.mocked(readFileSync).mockReturnValue(JSON.stringify({ repos: [{ url: 'https://github.com/ycomplex/harmony-web.git', path: 'web' }] }));
   vi.mocked(execFileSync).mockImplementation((_command, args) =>
     args?.[0] === 'pr'
       ? JSON.stringify({
@@ -140,6 +148,13 @@ describe('reviewed metadata repair', () => {
         manifest(),
       ),
     ).rejects.toThrow('entry: Entry changed since review');
+  });
+  it('uses the repository name when no project mapping is declared', () => {
+    vi.mocked(existsSync).mockReturnValue(false);
+    expect(verifiedPrPaths('ycomplex/harmony-web', 42).paths).toEqual([
+      'harmony-web/src/features/queue/deleted.ts',
+      'harmony-web/src/features/queue/kept.ts',
+    ]);
   });
   it('refuses open PR evidence', () => {
     vi.mocked(execFileSync).mockReturnValue(

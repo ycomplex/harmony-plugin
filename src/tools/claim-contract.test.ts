@@ -2,13 +2,15 @@ import { describe, it, expect, vi } from 'vitest';
 import { getKnowledgeEntry, createKnowledgeEntry, recordDecision, updateKnowledgeEntry, queryKnowledge, proposeLegacyClaims } from './knowledge.js';
 import { renderBrief, renderEntry, withDerivedEntryContent, type BriefDoc } from './briefs.js';
 import { encodeClaim } from './knowledge-claim.js';
-function mock(row: any) {
+function mock(row: any, metadata: boolean | 'missing' = false) {
  const chain: any = {};
  for (const name of ['select','eq','neq','order','range','single','update','or','contains','in','limit']) chain[name] = vi.fn().mockReturnValue(chain);
  chain.then = (resolve: any) => Promise.resolve({ data: row, error: null }).then(resolve);
  chain.single.mockResolvedValue({ data: row, error: null });
  const ws: any = { select: vi.fn().mockReturnThis(), eq: vi.fn().mockReturnThis(), single: vi.fn().mockResolvedValue({ data: { workspace_id: 'ws' }, error: null }) };
- const client: any = { from: vi.fn((table: string) => table === 'projects' ? ws : chain), rpc: vi.fn().mockImplementation(async (name: string) => name === 'read_knowledge_invalidations'
+ const client: any = { from: vi.fn((table: string) => table === 'projects' ? ws : chain), rpc: vi.fn().mockImplementation(async (name: string) => name === 'knowledge_metadata_capable'
+  ? { data: typeof metadata === 'boolean' ? metadata : null, error: metadata === 'missing' ? { code: 'PGRST202', message: 'older schema' } : null }
+  : name === 'read_knowledge_invalidations'
   ? { data: null, error: { code: 'PGRST202', message: 'older schema' } } : { data: row, error: null }) };
  return { client, chain };
 }
@@ -27,8 +29,8 @@ describe('claim contracts across surfaces', () => {
   await expect(recordDecision(client, 'proj', 'user', { title: 'Teams save views.', claim: 'One. Two.', type: 'specification', affected_entity_names: ['Entity'] })).rejects.toThrow(/claim/);
   expect(client.from).not.toHaveBeenCalled(); expect(client.rpc).not.toHaveBeenCalled();
  });
- it('keeps an old caller legacy edit compatible and marks its proposal derived', async () => {
-  const { client } = mock({ id: 'entry', title: 'Teams save views.', content: 'Historical body.' });
+ it.each([false, 'missing'] as const)('keeps an old caller legacy edit compatible with metadata capability %s and marks its proposal derived', async metadata => {
+  const { client } = mock({ id: 'entry', title: 'Teams save views.', content: 'Historical body.' }, metadata);
   await updateKnowledgeEntry(client, 'proj', { entry_id: 'entry', content: 'New body.' });
   expect(client.rpc).toHaveBeenCalledWith('knowledge_amend_knowledge_entry', expect.objectContaining({
     p_content: encodeClaim('New body.', 'New body.', 'derived'),
@@ -46,11 +48,11 @@ describe('claim contracts across surfaces', () => {
   const { client } = mock(row);
   client.rpc.mockImplementation(async (name: string) => name === 'knowledge_claim_amendment_capable'
     ? { data: capability === true, error: typeof capability === 'string' ? { code: capability === 'missing' ? 'PGRST202' : '42501', message: capability } : null }
-    : { data: row, error: null });
+    : name === 'knowledge_metadata_capable' ? { data: true, error: null } : { data: row, error: null });
   const write = updateKnowledgeEntry(client, 'proj', { entry_id: 'entry', content: 'New section.', content_mode: 'prepend_section' });
   if (capability === true) {
     await write;
-    expect(client.rpc).toHaveBeenCalledWith('knowledge_amend_knowledge_entry', expect.objectContaining({ p_content: 'New section.' }));
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_amend_knowledge_entry_metadata', expect.objectContaining({ p_content: 'New section.', p_scope: null }));
   } else {
     await expect(write).rejects.toThrow(capability === 'denied' ? 'denied' : 'claim-preserving amendment migration');
     expect(client.rpc).toHaveBeenCalledTimes(1);
