@@ -102,13 +102,26 @@ export class HarmonyAuth {
     }
 
     const data: TokenExchangeResult = await res.json();
-    this.accessToken = data.access_token;
-    this.projectId = data.project_id;
-    this.expiresAt = Date.now() + data.expires_in * 1000;
 
     // Extract user ID from JWT payload (sub claim)
     const payloadB64 = data.access_token.split('.')[1];
     const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString());
+
+    // B-266: the exchange now mints a `project_id` claim the database honours (RLS confines the JWT
+    // to that one project), so the claim — not the response body — is the authoritative project pin.
+    // A body that names a different project than the claim is a broken exchange, never something to
+    // trust either half of; refuse it before any tool runs. A claim-less JWT (an auth-token function
+    // deployed before B-266) keeps the pre-B-266 body pin unchanged, so the plugin works against both.
+    const claimedProject = typeof payload.project_id === 'string' ? payload.project_id : null;
+    if (claimedProject && data.project_id && claimedProject !== data.project_id) {
+      throw new Error(
+        `Token exchange returned a JWT scoped to project ${claimedProject} but a body naming project ${data.project_id}; refusing to use either.`,
+      );
+    }
+
+    this.accessToken = data.access_token;
+    this.projectId = claimedProject ?? data.project_id;
+    this.expiresAt = Date.now() + data.expires_in * 1000;
     this.userId = payload.sub;
   }
 }

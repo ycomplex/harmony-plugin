@@ -23517,11 +23517,17 @@ var HarmonyAuth = class {
       throw new TokenExchangeError(endpoint, res.status, body);
     }
     const data = await res.json();
-    this.accessToken = data.access_token;
-    this.projectId = data.project_id;
-    this.expiresAt = Date.now() + data.expires_in * 1e3;
     const payloadB64 = data.access_token.split(".")[1];
     const payload2 = JSON.parse(Buffer.from(payloadB64, "base64url").toString());
+    const claimedProject = typeof payload2.project_id === "string" ? payload2.project_id : null;
+    if (claimedProject && data.project_id && claimedProject !== data.project_id) {
+      throw new Error(
+        `Token exchange returned a JWT scoped to project ${claimedProject} but a body naming project ${data.project_id}; refusing to use either.`
+      );
+    }
+    this.accessToken = data.access_token;
+    this.projectId = claimedProject ?? data.project_id;
+    this.expiresAt = Date.now() + data.expires_in * 1e3;
     this.userId = payload2.sub;
   }
 };
