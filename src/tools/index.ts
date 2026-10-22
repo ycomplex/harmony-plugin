@@ -1,4 +1,5 @@
 import { listKnowledgeTagsTool, registerKnowledgeTagTool, listKnowledgeTags, registerKnowledgeTag } from './knowledge-metadata.js';
+import { setClaimContext, setClaimContextTool } from './claim-context.js';
 import { publishDefinition, publishDefinitionTool, type PublishDefinitionArgs } from './knowledge-definitions.js';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { getProjectTool, getProject } from './project.js';
@@ -173,7 +174,7 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
     listActivityTool,
     listWorkflowTransitionsTool,
     listMembersTool,
-    listKnowledgeTagsTool, registerKnowledgeTagTool, publishDefinitionTool, queryKnowledgeTool, searchTicketIntentsTool, getKnowledgeEntryTool, createKnowledgeEntryTool, updateKnowledgeEntryTool, supersedeKnowledgeEntryTool,
+    setClaimContextTool, listKnowledgeTagsTool, registerKnowledgeTagTool, publishDefinitionTool, queryKnowledgeTool, searchTicketIntentsTool, getKnowledgeEntryTool, createKnowledgeEntryTool, updateKnowledgeEntryTool, supersedeKnowledgeEntryTool,
     recordDecisionTool, supersedeDecisionTool, queryFactsTool, assertFactTool, invalidateFactTool, queryEntitiesTool,
     createEntityTool, updateEntityTool, reconcileEntityTool,
     composeBriefTool, getBriefTool, listBriefsTool, resolveBriefTool, reshapeBriefTool, consumeAcceptRemarkTool,
@@ -298,6 +299,9 @@ export async function handleToolCall(
         break;
       case 'register_knowledge_tag':
         result = await registerKnowledgeTag(client, projectId, args.name as string, args.description as string);
+        break;
+      case 'set_claim_context':
+        result = await setClaimContext(client, projectId, args as any);
         break;
       case 'publish_definition':
         result = await publishDefinition(client, projectId, args as unknown as PublishDefinitionArgs);

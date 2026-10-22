@@ -1,4 +1,5 @@
 import { metadataCapable, metadataRpc, type KnowledgeScope } from './knowledge-metadata.js';
+import { readClaimContexts, withClaimContexts, type ClaimContext, type QuestionReference } from './claim-context.js';
 import { readDefinitions, type Definition } from './knowledge-definitions.js';
 import { projectSupersession } from './knowledge-supersession.js';
 import { withInvalidations, type InvalidationLink } from './knowledge-invalidations.js';
@@ -18,6 +19,7 @@ export interface KnowledgeEntrySummary extends KnowledgeTruthState {
   scope?: KnowledgeScope | null;
   snippet?: string | null;
   claim?: string | null;
+  claim_context?: ClaimContext;
   claim_source?: 'authored' | 'derived' | null;
   invalidations?: InvalidationLink[];
   invalidations_available?: boolean;
@@ -37,6 +39,7 @@ export interface KnowledgeEntrySummary extends KnowledgeTruthState {
 export interface KnowledgeEntryFull extends KnowledgeTruthState {
   scope?: KnowledgeScope | null;
   claim?: string | null;
+  claim_context?: ClaimContext;
   claim_source?: 'authored' | 'derived' | null;
   invalidations?: InvalidationLink[];
   invalidations_available?: boolean;
@@ -66,6 +69,7 @@ export interface KnowledgeEntryFull extends KnowledgeTruthState {
 export interface KnowledgeDecisionFull extends KnowledgeTruthState {
   scope?: KnowledgeScope | null;
   claim?: string | null;
+  claim_context?: ClaimContext;
   claim_source?: 'authored' | 'derived' | null;
   id: string;
   workspace_id: string;
@@ -452,7 +456,7 @@ export async function queryKnowledge(
   // Explicit historical/type filters remain decision-only. Default lookup gives current terms first.
   const includeDefinitions = !args.type && !args.status && !args.tags?.length && !args.as_of && !args.include_superseded && args.scope !== 'deployment';
   const prepend = async (entries: KnowledgeEntrySummary[]) => {
-    if (!includeDefinitions) return entries;
+    if (!includeDefinitions) return withClaimContexts(client, entries);
     const ids = args.search ? [...new Set(definitions.definitions.flatMap(d => d.refinements.map(r => r.id)))] : [];
     let refinements: KnowledgeEntrySummary[] = [];
     if (ids.length) {
@@ -465,10 +469,13 @@ export async function queryKnowledge(
         (data ?? []).map(d => ({ id: d.id, title: d.title, type: d.type, status: d.status, domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d), snippet: matchedPassage(d.content ?? '', args.search!) }))));
     }
     const seen = new Set<string>();
-    return [...definitions.definitions, ...refinements, ...entries].filter(entry => {
+    const result = [...definitions.definitions, ...refinements, ...entries].filter(entry => {
       if (seen.has(entry.id)) return false;
       seen.add(entry.id); return true;
     }).slice(0, args.limit ?? 50);
+    const enriched = await withClaimContexts(client, result.filter(e => e.type !== 'definition'));
+    const contexts = new Map(enriched.map(e=>[e.id,e]));
+    return result.map(e=>contexts.get(e.id) ?? e);
   };
   const decisionArgs = includeDefinitions && definitions.available
     ? { ...args, offset: Math.max(0, (args.offset ?? 0) - (definitions.total_count ?? definitions.definitions.length)),
@@ -666,7 +673,7 @@ export async function getKnowledgeEntry(
 
   const { data, error } = await query.single();
   if (error) throw error;
-  return (await withInvalidations(client, [{ ...data, ...claimFields(data), verified_against: data.verified_against ?? null, rollout_state: data.rollout_state ?? null, open_steps: data.open_steps ?? null } as KnowledgeEntryFull]))[0];
+  return (await withClaimContexts(client, await withInvalidations(client, [{ ...data, ...claimFields(data), verified_against: data.verified_against ?? null, rollout_state: data.rollout_state ?? null, open_steps: data.open_steps ?? null } as KnowledgeEntryFull])))[0];
 }
 
 // ---------------------------------------------------------------------------
@@ -1024,6 +1031,8 @@ export async function resolveOrCreateEntity(
 
 export interface RecordDecisionArgs {
   scope?: KnowledgeScope;
+  claim_questions?: QuestionReference[];
+  concept_ids?: string[];
   claim?: string;
   type: string;
   title: string;
@@ -1104,7 +1113,7 @@ export async function recordDecision(
 
   // B-1021: fence out human-in-browser / validate agent-on-behalf:* before the write.
   guardKnowledgeWriteProvenance(args.provenance);
-  const { data, error } = await metadataRpc(client, 'knowledge_record_decision', args.scope, {
+  const record = {
     p_project_id: projectId,
     p_title: title,
     p_type: args.type,
@@ -1126,14 +1135,20 @@ export async function recordDecision(
     p_provenance: args.provenance ?? null,
     p_conduction_id: getConductionId() ?? null,
     p_leg: getLeg() ?? null,
-  });
+  };
+  const explicitContext = args.claim_questions !== undefined || args.concept_ids !== undefined;
+  if (explicitContext && !args.claim_provenance) throw new Error('Question/concept capture requires claim_provenance');
+  const capability = explicitContext ? await readClaimContexts(client, []) : null;
+  const { data, error } = capability?.available
+    ? await client.rpc('record_claim_with_context', { p_record: { ...record, p_scope: args.scope ?? null }, p_questions: args.claim_questions ?? [], p_concept_ids: args.concept_ids ?? [] })
+    : await metadataRpc(client, 'knowledge_record_decision', args.scope, record);
   if (error) {
     if (error.code === '23505') {
       throw new Error(`A decision titled "${args.title.trim()}" already exists in this project`);
     }
     throw new Error(error.message);
   }
-  return { ...data, ...claimFields(data) } as unknown as KnowledgeDecisionFull;
+  return { ...data, ...(explicitContext && !capability?.available ? { claim_context: { question_state: 'capability-unavailable', questions: [], concepts: [] } } : {}), ...claimFields(data) } as unknown as KnowledgeDecisionFull;
 }
 
 // ---------------------------------------------------------------------------
@@ -1273,6 +1288,8 @@ export const recordDecisionTool = {
       tags: { type: 'array', items: { type: 'string' }, description: 'Optional tags' },
       source_task_id: { type: 'string', description: 'Task that triggered this decision' },
       review_by: { type: 'string', description: 'ISO timestamp; freshness/decay date. Researched knowledge sets this ~90 days out so Drift-Risk/review_by resurfacing fires.' },
+      claim_questions: { type: 'array', items: { type: 'object', properties: { exchange_id: {type:'string'}, round: {type:'integer'}, question_id: {type:'string'} }, required: ['exchange_id','round','question_id'] }, description: 'Explicit ordered source question references; exact text is copied by the server, never authored here.' },
+      concept_ids: { type: 'array', items: {type:'string'}, description: 'Explicitly selected existing concept UUIDs only; never infer or create concepts from claim wording.' },
       claim_provenance: { type: 'string', enum: ['human-stated', 'agent-inferred-human-validated', 'force-quit'], description: "B-645: how an elicitation claim was grounded. 'force-quit' claims are quarantined — never promoted on their brief's accept, never grounds for inference until validated. Omit for a non-claim decision." },
       underwriting_brief_id: { type: 'string', description: 'B-645: the brief (UUID) this Asserted claim underwrites — resolve_brief disposes coupled claims on accept/defer; compose_brief prunes dropped claims on iterate. Omit for a non-claim decision.' },
       provenance: { type: 'string', description: 'Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>", or "agent-on-behalf:human-in-session"/"agent-on-behalf:human-in-browser"/"agent-on-behalf:human-recorded" when an agent writes on a human\'s already-made decision). Omit for NULL — the reader\'s rule then falls back to conduction-only or untracked classification. B-1021 (widened B-1062): bare "human-in-browser" is REJECTED — that value is the web client\'s alone, and "agent-on-behalf:" accepts only the three closed suffixes above.' },
