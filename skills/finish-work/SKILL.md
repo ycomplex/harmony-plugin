@@ -1005,9 +1005,15 @@ For each candidate:
    Pass `acting_task_id: <this ticket UUID>` so the same-transaction re-stamp event identifies the
    release that performed the check. Use `provenance: 'agent-on-behalf:<release_provenance>'` as on the
    other release writes.
-3. If rollout still needs a production promotion, conductor restart, cutover or other step, set
-   `rollout_state: 'partly-live'` and name every remaining action in `open_steps`. A fully live surface
-   may set `rollout_state: 'live', open_steps: []`. Designed and retired remain explicit observations.
+3. Rollout always refers to PRODUCTION, the environment of record. `live` means live in production;
+   `partly-live` means part of the change is already in production. A staging-only successor remains
+   `designed`; staging alone never advances an existing production fact's rollout. Name remaining
+   promotions, restarts and cutover actions in `open_steps` without inferring partial production rollout
+   from their presence. Only an observed complete production rollout may set
+   `rollout_state: 'live', open_steps: []`. Retired remains an explicit production observation.
+   The transition to live is recorded by the typed re-stamped event; its `created_at` is the cutover
+   signal/time for current-account consumers (B-1234). `verified_against.at` dates a verification check
+   and must NEVER be substituted for that cutover time.
    Never infer rollout from Accepted/Superseded, never mark an old running fact retired merely because
    its successor was agreed, and never stamp a production claim using staging-only evidence. Retain
    the old verified stamp when only future behavior was checked; name that limit in the trail.

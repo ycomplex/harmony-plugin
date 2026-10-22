@@ -163,7 +163,7 @@ export function registerKnowledgeCommands(program: Command): void {
     .option('--realization <state>', 'Realization state: agreed, live, deprecating, or retired')
     .option('--acting-task <uuid>', 'Acting ticket UUID for a verification/rollout write')
     .option('--verified-against <json>', 'Verification stamp {plugin_version, web_sha, at}; null to clear')
-    .option('--rollout-state <state>', 'designed, partly-live, live, retired; null to clear')
+    .option('--rollout-state <state>', 'Production rollout: designed (staging-only), partly-live (part in production), live (production), retired; null to clear')
     .option('--open-steps <json>', 'JSON array of remaining rollout steps; null to clear')
     .option('--review-by <iso>', 'ISO timestamp; freshness/decay date')
     .action(async (id, opts) => {
