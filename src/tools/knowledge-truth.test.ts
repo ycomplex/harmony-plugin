@@ -26,8 +26,8 @@ describe('truth-state compatibility', () => {
   it('uses one atomic guarded RPC for truth plus content, and fails visibly before migration', async () => {
     const client = { from: vi.fn().mockReturnValue({ select: () => ({ eq: () => ({ single: async () => ({ data: { workspace_id: 'w' }, error: null }) }) }) }),
       rpc: vi.fn().mockResolvedValue({ data: null, error: { code: 'PGRST202', message: 'RPC not found' } }) };
-    await expect(updateKnowledgeEntry(client as never, 'p', { entry_id: 'd', content: 'New amendment', content_mode: 'append_section', rollout_state: 'partly-live', open_steps: ['Promote'] })).rejects.toThrow('No fields were changed');
+    await expect(updateKnowledgeEntry(client as never, 'p', { entry_id: 'd', acting_task_id: 'ticket-uuid', content: 'New amendment', content_mode: 'append_section', rollout_state: 'partly-live', open_steps: ['Promote'] })).rejects.toThrow('No fields were changed');
     expect(client.rpc).toHaveBeenCalledTimes(1);
-    expect(client.rpc).toHaveBeenCalledWith('knowledge_amend_entry_truth', expect.objectContaining({ p_content_mode: 'append_section', p_content: 'New amendment', p_truth_state: { rollout_state: 'partly-live', open_steps: ['Promote'] } }));
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_amend_entry_truth', expect.objectContaining({ p_acting_task_id: 'ticket-uuid', p_content_mode: 'append_section', p_content: 'New amendment', p_truth_state: { rollout_state: 'partly-live', open_steps: ['Promote'] } }));
   });
 });

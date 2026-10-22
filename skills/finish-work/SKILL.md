@@ -1002,7 +1002,9 @@ For each candidate:
    irrelevant/unavailable side, but never invent either version; at least one observed version is
    required. Only after a real successful check call `update_knowledge_entry` with
    `verified_against: { plugin_version, web_sha, at }` and the independently observed `rollout_state`.
-   Use `provenance: 'agent-on-behalf:<release_provenance>'` as on the other release writes.
+   Pass `acting_task_id: <this ticket UUID>` so the same-transaction re-stamp event identifies the
+   release that performed the check. Use `provenance: 'agent-on-behalf:<release_provenance>'` as on the
+   other release writes.
 3. If rollout still needs a production promotion, conductor restart, cutover or other step, set
    `rollout_state: 'partly-live'` and name every remaining action in `open_steps`. A fully live surface
    may set `rollout_state: 'live', open_steps: []`. Designed and retired remain explicit observations.

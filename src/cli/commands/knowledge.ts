@@ -161,6 +161,7 @@ export function registerKnowledgeCommands(program: Command): void {
     )
     .option('--madr <json>', 'Structured MADR body as a JSON object (full-object replace)')
     .option('--realization <state>', 'Realization state: agreed, live, deprecating, or retired')
+    .option('--acting-task <uuid>', 'Acting ticket UUID for a verification/rollout write')
     .option('--verified-against <json>', 'Verification stamp {plugin_version, web_sha, at}; null to clear')
     .option('--rollout-state <state>', 'designed, partly-live, live, retired; null to clear')
     .option('--open-steps <json>', 'JSON array of remaining rollout steps; null to clear')
@@ -191,6 +192,7 @@ export function registerKnowledgeCommands(program: Command): void {
             madr,
             realization: opts.realization,
             review_by: opts.reviewBy,
+            acting_task_id: opts.actingTask,
             verified_against: opts.verifiedAgainst !== undefined ? JSON.parse(opts.verifiedAgainst) : undefined,
             rollout_state: opts.rolloutState === 'null' ? null : opts.rolloutState,
             open_steps: opts.openSteps !== undefined ? JSON.parse(opts.openSteps) : undefined,

@@ -235,6 +235,7 @@ export const updateKnowledgeEntryTool = {
         enum: ['agreed', 'live', 'deprecating', 'retired'],
         description: 'Implementation/realization state (orthogonal to status); NULL ≡ live; "agreed" = decided-not-yet-built',
       },
+      acting_task_id: { type: 'string', description: 'Acting ticket UUID for a verification/rollout write. Omit to use the current conduction ticket; manual writes without a ticket record null.' },
       verified_against: { type: ['object', 'null'], properties: { plugin_version: { type: ['string', 'null'] }, web_sha: { type: ['string', 'null'] }, at: { type: 'string' } }, required: ['at'], additionalProperties: false, description: 'Observed versions and ISO verification time; null clears verification. At least one version must be present.' },
       rollout_state: { type: ['string', 'null'], enum: ['designed', 'partly-live', 'live', 'retired', null], description: 'Rollout progress, independent of acceptance and realization. null means unknown.' },
       open_steps: { type: ['array', 'null'], items: { type: 'string' }, description: 'Remaining rollout steps; partly-live requires at least one nonblank step. null clears the list.' },
@@ -685,6 +686,7 @@ export async function createKnowledgeEntry(
 
 export interface UpdateKnowledgeEntryArgs extends KnowledgeTruthState {
   claim?: string;
+  acting_task_id?: string;
   entry_id?: string;
   title?: string;
   new_title?: string;
@@ -797,7 +799,7 @@ export async function updateKnowledgeEntry(
     p_conduction_id: getConductionId() ?? null,
     p_leg: getLeg() ?? null,
     ...((contentWrite || hasTruthUpdates) ? { p_content_mode: mode, p_allow_shrink: args.allow_shrink ?? false } : {}),
-    ...(hasTruthUpdates ? { p_truth_state: truthPatch } : {}),
+    ...(hasTruthUpdates ? { p_truth_state: truthPatch, p_acting_task_id: args.acting_task_id ?? null } : {}),
   });
 
   if (error) {
