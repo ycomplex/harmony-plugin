@@ -36488,6 +36488,44 @@ async function resolveTaskIds(client, projectId, inputs) {
   return classified.map((c) => c.kind === "uuid" ? c.id : idByNumber.get(c.taskNumber));
 }
 
+// src/tools/knowledge-bookkeeping.ts
+var BOOKKEEPING_TAG = "harmony:bookkeeping";
+function bookkeepingTags(tags = []) {
+  return [.../* @__PURE__ */ new Set([...tags, BOOKKEEPING_TAG])];
+}
+var SUBSTANTIVE_TAG_FILTER = `tags.is.null,tags.not.cs.{${BOOKKEEPING_TAG}}`;
+async function bookkeepingPage(fetchPage, { limit = 50, offset = 0, include_bookkeeping = true }) {
+  if (!Number.isInteger(limit) || limit < 0 || !Number.isInteger(offset) || offset < 0) {
+    throw new Error("Knowledge limit and offset must be non-negative integers");
+  }
+  if (limit === 0) return [];
+  const partition = async (bookkeeping, start, size, count) => {
+    const rows = [];
+    let total;
+    while (rows.length < size) {
+      const chunk = Math.min(500, size - rows.length);
+      const result = await fetchPage({ bookkeeping, offset: start + rows.length, limit: chunk, count });
+      if (result.error?.code === "PGRST103") {
+        total = result.count ?? Number(result.error.details?.match(/only (\d+) rows/)?.[1]);
+        if (count && !Number.isFinite(total)) throw new Error(result.error.message);
+        break;
+      }
+      if (result.error) throw new Error(result.error.message);
+      total = result.count ?? total;
+      const batch = result.data ?? [];
+      rows.push(...batch);
+      if (batch.length < chunk) break;
+    }
+    return { rows, total };
+  };
+  const substantive = await partition(false, offset, limit, include_bookkeeping && offset > 0);
+  if (!include_bookkeeping || substantive.rows.length === limit) return substantive.rows;
+  const substantiveTotal = offset === 0 ? substantive.rows.length : substantive.total;
+  if (substantiveTotal == null) throw new Error("Knowledge pagination requires the substantive count");
+  const procedural = await partition(true, Math.max(0, offset - substantiveTotal), limit - substantive.rows.length, false);
+  return [...substantive.rows, ...procedural.rows];
+}
+
 // src/tools/text-normalize.ts
 var ENTITY_MAP = {
   "&amp;": "&",
@@ -36652,16 +36690,19 @@ async function queryKnowledge(client, projectId, args) {
       );
     }
     const queryEmbedding = await embedText(client, args.search);
-    const { data: data2, error: error2 } = await client.rpc("knowledge_search_rrf", {
-      _workspace_id: workspaceId,
-      _project_id: projectId,
-      _query_embedding: queryEmbedding,
-      _query_text: args.search,
-      _domain: args.domain && args.domain.length > 0 ? args.domain : null,
-      _match_limit: args.limit ?? 50
-    });
-    if (error2) throw new Error(error2.message);
-    return (data2 ?? []).map((d) => ({
+    const data = await bookkeepingPage(({ bookkeeping, offset, limit, count }) => {
+      let query = client.rpc("knowledge_search_rrf", {
+        _workspace_id: workspaceId,
+        _project_id: projectId,
+        _query_embedding: queryEmbedding,
+        _query_text: args.search,
+        _domain: args.domain && args.domain.length > 0 ? args.domain : null,
+        _match_limit: null
+      }, count ? { count: "exact" } : {}).select("id, title, type, status, domain, tags, project_id, updated_at");
+      query = bookkeeping ? query.contains("tags", [BOOKKEEPING_TAG]) : query.or(SUBSTANTIVE_TAG_FILTER);
+      return query.range(offset, offset + limit - 1);
+    }, args);
+    return (data ?? []).map((d) => ({
       id: d.id,
       title: d.title,
       type: d.type,
@@ -36672,22 +36713,17 @@ async function queryKnowledge(client, projectId, args) {
       updated_at: d.updated_at
     }));
   }
-  let query = client.from("knowledge_decisions").select("id, title, type, status, domain, tags, project_id, updated_at").eq("workspace_id", workspaceId).eq("project_id", projectId);
-  if (args.status) {
-    query = query.eq("status", args.status);
-  } else if (!args.include_superseded) {
-    query = query.eq("status", "Accepted");
-  }
-  if (args.type) query = query.eq("type", args.type);
-  if (args.domain && args.domain.length > 0) query = query.overlaps("domain", args.domain);
-  if (args.as_of) query = query.lte("valid_from", args.as_of);
-  if (args.tags && args.tags.length > 0) query = query.contains("tags", args.tags);
-  query = query.order("type", { ascending: true });
-  const limit = args.limit ?? 50;
-  const offset = args.offset ?? 0;
-  const { data, error } = await query.range(offset, offset + limit - 1);
-  if (error) throw new Error(error.message);
-  return data ?? [];
+  return bookkeepingPage(({ bookkeeping, offset, limit, count }) => {
+    let query = client.from("knowledge_decisions").select("id, title, type, status, domain, tags, project_id, updated_at", count ? { count: "exact" } : {}).eq("workspace_id", workspaceId).eq("project_id", projectId);
+    if (args.status) query = query.eq("status", args.status);
+    else if (!args.include_superseded) query = query.eq("status", "Accepted");
+    if (args.type) query = query.eq("type", args.type);
+    if (args.domain && args.domain.length > 0) query = query.overlaps("domain", args.domain);
+    if (args.as_of) query = query.lte("valid_from", args.as_of);
+    if (args.tags && args.tags.length > 0) query = query.contains("tags", args.tags);
+    query = bookkeeping ? query.contains("tags", [BOOKKEEPING_TAG]) : query.or(SUBSTANTIVE_TAG_FILTER);
+    return query.order("type", { ascending: true }).order("id", { ascending: true }).range(offset, offset + limit - 1);
+  }, args);
 }
 async function getKnowledgeEntry(client, projectId, args) {
   if (!args.entry_id && !args.title) {
@@ -42970,7 +43006,7 @@ function registerKnowledgeCommands(program3) {
     "Filter by tag (repeat for multiple)",
     (v, prev) => [...prev, v],
     []
-  ).option("--search <text>", "Search term matched against title and content").option("--all", "Include superseded entries", false).action(async (opts) => {
+  ).option("--search <text>", "Search term matched against title and content").option("--all", "Include superseded entries", false).option("--no-bookkeeping", "Exclude explicitly marked procedural gate records").action(async (opts) => {
     await runCommand(
       program3.opts(),
       async (ctx) => queryKnowledge(ctx.client, ctx.projectId, {
@@ -42978,7 +43014,8 @@ function registerKnowledgeCommands(program3) {
         status: opts.status,
         tags: opts.tag && opts.tag.length > 0 ? opts.tag : void 0,
         search: opts.search,
-        include_superseded: opts.all
+        include_superseded: opts.all,
+        include_bookkeeping: opts.bookkeeping
       }),
       (data) => formatTable(data, [
         {
@@ -49092,6 +49129,7 @@ async function composeAndAccept(client, projectId, userId, taskId, args) {
     decision_ref: args.decisionRef,
     doc: {
       decide: args.decide,
+      tags: args.tags,
       why: args.why,
       items: [],
       frame: args.frame,
@@ -49259,6 +49297,7 @@ async function runRecordedWalk(client, projectId, userId, args) {
       const designDecision = await recordDecision(client, projectId, userId, {
         type: "technical-design",
         title: `${args.task_id}: technical-design \u2014 no new decision needed (recorded)`,
+        tags: bookkeepingTags(),
         content: `<placeholder \u2014 one line: 'technical-design decision for ${args.task_id}; body derived from the ratified brief'>`,
         domain: ["engineering"],
         source_type: "manual",
@@ -49271,6 +49310,7 @@ async function runRecordedWalk(client, projectId, userId, args) {
         reason: GATE_REASONS.design,
         pendingActivity: "designing",
         decide: `Confirm ${args.task_id} needs no new design decision (recorded walk).`,
+        tags: bookkeepingTags(),
         frame: {
           kind: "design",
           track: "technical-design",
@@ -49290,6 +49330,7 @@ async function runRecordedWalk(client, projectId, userId, args) {
       const planDecision = await recordDecision(client, projectId, userId, {
         type: "specification",
         title: `${args.task_id}: recorded plan`,
+        tags: bookkeepingTags(),
         content: planEntryContent,
         domain: ["process"],
         source_type: "manual",
@@ -49315,7 +49356,8 @@ async function runRecordedWalk(client, projectId, userId, args) {
           write_kind: "knowledge_entry_content",
           ref: slugRef("plan-entry", planEntryContent),
           content: planEntryContent,
-          entry_id: planDecision.id
+          entry_id: planDecision.id,
+          tags: bookkeepingTags()
         }]
       });
       gates.push({ gate: "plan", reason: GATE_REASONS.plan, landed: true });

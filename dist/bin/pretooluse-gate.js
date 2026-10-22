@@ -22557,6 +22557,10 @@ async function resolveTaskId(client, projectId, input) {
   return data.id;
 }
 
+// src/tools/knowledge-bookkeeping.ts
+var BOOKKEEPING_TAG = "harmony:bookkeeping";
+var SUBSTANTIVE_TAG_FILTER = `tags.is.null,tags.not.cs.{${BOOKKEEPING_TAG}}`;
+
 // src/tools/text-normalize.ts
 var ENTITY_MAP = {
   "&amp;": "&",
