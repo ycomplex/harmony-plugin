@@ -178,3 +178,20 @@ tags, the existing current-state convention. It is a conservative clue, not an e
 untagged entries and aliases are outside this check. An empty report on a matching surface produces
 an advisory warning and composition still succeeds. A failed lookup produces a diagnostic, never a
 false assurance that no matching entry exists.
+
+
+## Explicit bookkeeping metadata (B-1224)
+
+Gate records that only attest procedure carry the exact reserved tag `harmony:bookkeeping`, set by
+the writer. Recorded-walk plans and no-new-decision design records are examples. Pass it alongside
+existing tags to `record_decision`; when a brief derives the accepted entry, also put it in `doc.tags`
+so acceptance preserves the classification. Code writers use `bookkeepingTags(existingTags)`.
+Never infer this class from titles, ticket ids, or the presence of a gate. Substantive decisions and
+B-849's reusable shared no-split convention remain substantive; do not revive per-ticket no-split
+emissions or reclassify the historical corpus.
+
+`query_knowledge` returns substantive matches first and preserves relevance within each class.
+`include_bookkeeping:false` excludes marked records before the page limit; the CLI equivalent is
+`harmony knowledge list --no-bookkeeping`. Missing/null tags are substantive. The reserved marker
+uses existing tag storage and works without a schema promotion. The query adapter must filter server
+partitions before pagination, including on older RPC deployments; sorting a limited page is insufficient.

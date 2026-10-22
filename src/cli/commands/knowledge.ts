@@ -25,6 +25,7 @@ export function registerKnowledgeCommands(program: Command): void {
     )
     .option('--search <text>', 'Search term matched against title and content')
     .option('--all', 'Include superseded entries', false)
+    .option('--no-bookkeeping', 'Exclude explicitly marked procedural gate records')
     .action(async (opts) => {
       await runCommand(
         program.opts(),
@@ -35,6 +36,7 @@ export function registerKnowledgeCommands(program: Command): void {
             tags: opts.tag && opts.tag.length > 0 ? opts.tag : undefined,
             search: opts.search,
             include_superseded: opts.all,
+            include_bookkeeping: opts.bookkeeping,
           }),
         (data) =>
           formatTable(data, [

@@ -675,3 +675,14 @@ describe('B-1046: the derived entry carries the ticket tag, so it keeps its link
     expect(entryItemOf(result)!.tags).toBeUndefined();
   });
 });
+
+
+it('B-1224 keeps explicit bookkeeping metadata through the derived design entry and accept write', async () => {
+  const doc = withDerivedEntryContent(ratifiedDoc({ tags: ['harmony:bookkeeping'] }), 'design-decision-draft', DECISION_REF, { reason: 'design-decision-draft', visualId: 'B-1224' });
+  const item = entryItemOf(doc)!;
+  expect(item.tags).toEqual(['b-1224', 'harmony:bookkeeping']);
+  const rpc = vi.fn(async () => ({ data: { applied: true }, error: null }));
+  const event: PendingAcceptanceEvent = { id: 'b1224-event', task_id: 'task-1', brief_id: 'brief-1', reason: 'design-decision-draft', payload: doc as unknown as Record<string, unknown>, pending_activity: null, status: 'pending' };
+  await applyAcceptanceEventPayload({ rpc } as any, event);
+  expect(rpc).toHaveBeenCalledWith('consume_knowledge_entry_content_write', expect.objectContaining({ _tags: ['b-1224', 'harmony:bookkeeping'] }));
+});
