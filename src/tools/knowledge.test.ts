@@ -107,6 +107,9 @@ function buildWorkspaceAndQueryClient(secondResponse: { data: any; error?: any }
   secondChain.contains = vi.fn().mockImplementation((field, value) => { if (field === 'tags' && value.includes('harmony:bookkeeping')) bookkeeping = true; return secondChain; });
   secondChain.overlaps = vi.fn().mockReturnValue(secondChain);
   secondChain.lte = vi.fn().mockReturnValue(secondChain);
+  secondChain.neq = vi.fn().mockReturnValue(secondChain);
+  secondChain.in = vi.fn().mockReturnValue(secondChain);
+  secondChain.limit = vi.fn().mockResolvedValue({ data: [], error: null });
   secondChain.or = vi.fn().mockImplementation(() => { bookkeeping = false; return secondChain; });
   secondChain.order = vi.fn().mockReturnValue(secondChain);
   secondChain.range = vi
@@ -235,7 +238,7 @@ describe('queryKnowledge', () => {
     expect(secondChain.eq).toHaveBeenCalledWith('project_id', PROJECT_ID);
     expect(secondChain.eq).toHaveBeenCalledWith('status', 'Accepted');
     expect(secondChain.order).toHaveBeenCalledWith('type', { ascending: true });
-    expect(result).toEqual(sampleSummaries);
+    expect(result).toEqual(sampleSummaries.map(e => ({ ...e, superseded_by: null, supersedes: [] })));
   });
 
   it('applies type filter when provided', async () => {
@@ -277,6 +280,11 @@ describe('queryKnowledge', () => {
     wsChain.select = vi.fn().mockReturnValue(wsChain);
     wsChain.eq = vi.fn().mockReturnValue(wsChain);
     wsChain.single = vi.fn().mockResolvedValue({ data: { workspace_id: WORKSPACE_ID }, error: null });
+    wsChain.neq = vi.fn().mockReturnValue(wsChain);
+    wsChain.in = vi.fn().mockReturnValue(wsChain);
+    wsChain.limit = vi.fn().mockResolvedValue({ data: [], error: null });
+    wsChain.order = vi.fn().mockReturnValue(wsChain);
+    wsChain.range = vi.fn().mockResolvedValue({ data: [{ id: 'd1', superseded_by: null }], error: null });
     const client: any = {
       from: vi.fn().mockReturnValue(wsChain),
       functions: { invoke: vi.fn().mockResolvedValue({ data: { embedding: [0.1, 0.2] }, error: null }) },

@@ -22678,6 +22678,38 @@ async function resolveTaskIds(client, projectId, inputs) {
   return classified.map((c) => c.kind === "uuid" ? c.id : idByNumber.get(c.taskNumber));
 }
 
+// src/tools/knowledge-supersession.ts
+function projectSupersession(entries, edges) {
+  const successor = new Map(edges.map((e) => [e.id, e.superseded_by ?? null]));
+  const predecessors = /* @__PURE__ */ new Map();
+  for (const [id, next] of successor) {
+    if (next && next !== id) predecessors.set(next, [...predecessors.get(next) ?? [], id]);
+  }
+  const projected = entries.map((e) => ({ ...e, superseded_by: successor.get(e.id) ?? null, supersedes: predecessors.get(e.id) ?? [] }));
+  const matching = new Set(entries.map((e) => e.id));
+  const dependencies = /* @__PURE__ */ new Map();
+  for (const entry of entries) {
+    const seen = /* @__PURE__ */ new Set([entry.id]);
+    const deps = /* @__PURE__ */ new Set();
+    let next = successor.get(entry.id);
+    while (next && !seen.has(next)) {
+      seen.add(next);
+      if (matching.has(next)) deps.add(next);
+      next = successor.get(next);
+    }
+    dependencies.set(entry.id, deps);
+  }
+  const remaining = [...projected];
+  const output = [];
+  while (remaining.length) {
+    const index = remaining.findIndex((e) => dependencies.get(e.id).size === 0);
+    const [entry] = remaining.splice(index < 0 ? 0 : index, 1);
+    output.push(entry);
+    for (const deps of dependencies.values()) deps.delete(entry.id);
+  }
+  return output;
+}
+
 // src/tools/knowledge-bookkeeping.ts
 var BOOKKEEPING_TAG = "harmony:bookkeeping";
 function bookkeepingTags(tags = []) {
@@ -22851,7 +22883,7 @@ async function queryKnowledge(client, projectId, args) {
       query = bookkeeping ? query.contains("tags", [BOOKKEEPING_TAG]) : query.or(SUBSTANTIVE_TAG_FILTER);
       return query.range(offset, offset + limit - 1);
     }, args);
-    return (data ?? []).map((d) => ({
+    const matches = (data ?? []).map((d) => ({
       id: d.id,
       title: d.title,
       type: d.type,
@@ -22861,8 +22893,10 @@ async function queryKnowledge(client, projectId, args) {
       project_id: d.project_id,
       updated_at: d.updated_at
     }));
+    if (!matches.length) return [];
+    return hydrateSupersession(client, workspaceId, projectId, matches);
   }
-  return bookkeepingPage(({ bookkeeping, offset, limit, count }) => {
+  const rows = await bookkeepingPage(({ bookkeeping, offset, limit, count }) => {
     let query = client.from("knowledge_decisions").select("id, title, type, status, domain, tags, project_id, updated_at", count ? { count: "exact" } : {}).eq("workspace_id", workspaceId).eq("project_id", projectId);
     if (args.status) query = query.eq("status", args.status);
     else if (!args.include_superseded) query = query.eq("status", "Accepted");
@@ -22873,6 +22907,19 @@ async function queryKnowledge(client, projectId, args) {
     query = bookkeeping ? query.contains("tags", [BOOKKEEPING_TAG]) : query.or(SUBSTANTIVE_TAG_FILTER);
     return query.order("type", { ascending: true }).order("id", { ascending: true }).range(offset, offset + limit - 1);
   }, args);
+  return hydrateSupersession(client, workspaceId, projectId, rows);
+}
+async function hydrateSupersession(client, workspaceId, projectId, rows) {
+  const edges = [];
+  for (let offset = 0; offset < rows.length; offset += 500) {
+    const ids = rows.slice(offset, offset + 500).map((row) => row.id);
+    for (const column of ["id", "superseded_by"]) {
+      const { data, error } = await client.from("knowledge_decisions").select("id, superseded_by").eq("workspace_id", workspaceId).eq("project_id", projectId).neq("type", "intent").in(column, ids).limit(500);
+      if (error) throw new Error(error.message);
+      edges.push(...data ?? []);
+    }
+  }
+  return projectSupersession(rows, edges);
 }
 async function findCrossKindCollision(client, workspaceId, name, kind) {
   const { data, error } = await client.from("knowledge_entities").select("id, kind").eq("workspace_id", workspaceId).eq("name", name).neq("kind", kind).limit(1).maybeSingle();
