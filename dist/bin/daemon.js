@@ -35796,9 +35796,16 @@ async function runRecordedWalk(client, projectId, userId, args) {
       await addComment(client, projectId, userId, { task_id: taskId, content: renderAttestationComment(args, userId) });
       attestationRecorded = true;
     }
-    const { data: currentTaskRow, error: currentStateErr } = await client.from("tasks").select("workflow_state").eq("id", taskId).eq("project_id", projectId).single();
+    const { data: currentTaskRow, error: currentStateErr } = await client.from("tasks").select("workflow_state, task_number").eq("id", taskId).eq("project_id", projectId).single();
     if (currentStateErr) throw currentStateErr;
     const currentWorkflowState = currentTaskRow?.workflow_state ?? null;
+    let ticketTags = [];
+    if (runs("clarify") || runs("design") || runs("plan")) {
+      const project = await getProject(client, projectId);
+      const taskNumber = currentTaskRow?.task_number;
+      if (!project.key || taskNumber == null) throw new Error("Cannot resolve recorded ticket tag");
+      ticketTags = [`${project.key}-${taskNumber}`.toLowerCase()];
+    }
     if (currentWorkflowState === "Captured") {
       await advanceWorkflow(client, projectId, { task_id: taskId, activity: "proposing" });
     }
@@ -35811,6 +35818,7 @@ async function runRecordedWalk(client, projectId, userId, args) {
         source_type: "manual",
         source_activity: "clarify",
         source_task_id: taskId,
+        tags: ticketTags,
         provenance: KNOWLEDGE_WRITE_PROVENANCE_RECORDED
       });
       await referenceKnowledge(client, projectId, { task_id: taskId, decision_id: clarifyDecision.id });
@@ -35877,7 +35885,7 @@ async function runRecordedWalk(client, projectId, userId, args) {
       const designDecision = await recordDecision(client, projectId, userId, {
         type: "technical-design",
         title: `${args.task_id}: technical-design \u2014 no new decision needed (recorded)`,
-        tags: bookkeepingTags(),
+        tags: bookkeepingTags(ticketTags),
         content: `<placeholder \u2014 one line: 'technical-design decision for ${args.task_id}; body derived from the ratified brief'>`,
         domain: ["engineering"],
         source_type: "manual",
@@ -35890,7 +35898,7 @@ async function runRecordedWalk(client, projectId, userId, args) {
         reason: GATE_REASONS.design,
         pendingActivity: "designing",
         decide: `Confirm ${args.task_id} needs no new design decision (recorded walk).`,
-        tags: bookkeepingTags(),
+        tags: bookkeepingTags(ticketTags),
         frame: {
           kind: "design",
           track: "technical-design",
@@ -35910,7 +35918,7 @@ async function runRecordedWalk(client, projectId, userId, args) {
       const planDecision = await recordDecision(client, projectId, userId, {
         type: "specification",
         title: `${args.task_id}: recorded plan`,
-        tags: bookkeepingTags(),
+        tags: bookkeepingTags(ticketTags),
         content: planEntryContent,
         domain: ["process"],
         source_type: "manual",
@@ -35937,7 +35945,7 @@ async function runRecordedWalk(client, projectId, userId, args) {
           ref: slugRef("plan-entry", planEntryContent),
           content: planEntryContent,
           entry_id: planDecision.id,
-          tags: bookkeepingTags()
+          tags: bookkeepingTags(ticketTags)
         }]
       });
       gates.push({ gate: "plan", reason: GATE_REASONS.plan, landed: true });

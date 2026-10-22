@@ -54,6 +54,7 @@ vi.mock('./acceptance-criteria.js', () => ({
 }));
 vi.mock('node:child_process', () => ({ execFile: mocks.execFile }));
 vi.mock('./tasks.js', () => ({ updateTask: mocks.updateTask }));
+vi.mock('./project.js', () => ({ getProject: vi.fn(async () => ({ key: 'B' })) }));
 vi.mock('./knowledge.js', () => ({ recordDecision: mocks.recordDecision, queryKnowledge: mocks.queryKnowledge }));
 
 import { runRecordedWalk } from './record-walk.js';
@@ -83,7 +84,7 @@ function makeStatefulClient(initialState: string, fieldValues: Record<string, un
         select: () => ({
           eq: () => ({
             eq: () => ({
-              single: async () => ({ data: { workflow_state: workflowState, field_values: fieldValues }, error: null }),
+              single: async () => ({ data: { workflow_state: workflowState, task_number: 2000, field_values: fieldValues }, error: null }),
             }),
           }),
         }),
