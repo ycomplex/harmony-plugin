@@ -21,7 +21,7 @@ describe('claim context composition',()=>{
  it('probes first and captures claim/context in one atomic governed RPC',async()=>{
   const {client,rpc}=fixture();const result=await recordDecision(client,'p','u',args);
   expect(result.claim_context?.questions[0].text).toBe('Original question?');
-  expect(rpc).toHaveBeenCalledWith('record_claim_with_context',expect.objectContaining({p_questions:args.claim_questions,p_concept_ids:['concept'],p_record:expect.objectContaining({p_project_id:'p',p_claim_provenance:'human-stated'})}));
+  expect(rpc).toHaveBeenCalledWith('record_claim_with_context',expect.objectContaining({p_questions:args.claim_questions,p_concept_ids:['concept'],p_record:expect.objectContaining({p_project_id:'p',p_scope:'product',p_claim_provenance:'human-stated'})}));
   expect(rpc.mock.calls.findIndex(c=>c[0]==='read_claim_context')).toBeLessThan(rpc.mock.calls.findIndex(c=>c[0]==='record_claim_with_context'));
   expect(rpc.mock.calls.some(c=>c[0]==='knowledge_record_decision')).toBe(false);
  });
