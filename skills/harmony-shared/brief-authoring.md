@@ -297,6 +297,12 @@ attestation stay enforced underneath as system requirements; terse prose never w
 **The question.** Ship it? Merge + deploy is one-way — this decision is irreversible.
 
 **The headline must-haves.**
+- **Settled beyond design** — author `frame.settled_beyond_design: [{ behaviour, ac, knowledge_entry_id }]`
+  from completed, read-back knowledge writes; always supply `[]` if none. The render shows the report
+  and destinations. Follow knowledge-discipline.md §Record behaviour settled during build before
+  composing; a code comment is not a knowledge destination. Empty reports touching an Accepted
+  `surface:<path>` entry receive an advisory warning, never a refusal. Older callers that omit the
+  optional field remain compatible.
 - The deployment's **risk** — the path-based signal computed from the changed paths, never
   prose-detector output.
 - **Why to trust it** — what tests were added, what was run.

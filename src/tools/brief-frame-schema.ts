@@ -28,6 +28,8 @@ export const briefFrameSchema = z.discriminatedUnion('kind', [
     attestation: object({ base_verified: z.string(), derisked_by_running: z.string().optional() }),
     carried_unproven: unproven, ac_coverage: z.string(), landing: landing.optional(), design_delta: z.string().optional(), ...floor }),
   object({ kind: z.literal('release'), act: landing, unproven,
+    settled_beyond_design: z.array(object({ behaviour: z.string().trim().min(1), ac: z.string().trim().min(1),
+      knowledge_entry_id: z.string().trim().min(1) })).optional(),
     evidence_status: object({ proven_by_run: z.number(), walk_at_verify: z.number(), unproven: z.number(), total: z.number(), detail: z.string().optional() }),
     // These values are overwritten by compose; callers need not author them.
     risk_classes: strings.optional(), contradiction_signal: z.unknown().optional(), pr_review_state: z.string().optional(), ...floor }),

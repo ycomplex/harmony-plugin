@@ -57,3 +57,13 @@ describe('real frame compatibility (B-1158)', () => {
     expect(() => validateBriefFrame(clarify)).toThrow('doc.frame.not_solving[0].item');
   });
 });
+
+it('validates settlement reports without requiring them on legacy release frames', () => {
+  const frame = structuredClone(samples.find(s => s.frame.kind === 'release')!.frame) as Extract<GateFrame, {kind:'release'}>;
+  frame.settled_beyond_design = [];
+  expect(() => validateBriefFrame(frame)).not.toThrow();
+  frame.settled_beyond_design = [{ behaviour: 'Keeps stale value', ac: 'AC1', knowledge_entry_id: 'entry' }];
+  expect(() => validateBriefFrame(frame)).not.toThrow();
+  frame.settled_beyond_design[0].knowledge_entry_id = ' ';
+  expect(() => validateBriefFrame(frame)).toThrow('knowledge_entry_id');
+});

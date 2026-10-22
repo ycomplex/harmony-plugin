@@ -152,3 +152,29 @@ they decline, skip the `record_decision`/`reference_knowledge` and just `resolve
 needs LLM judgment, which the web doesn't run). So a deferral made from the web queue is lossy in exactly
 the §5a sense; only a skill-side `defer` writes the deferral knowledge. This is the known v1 consequence of
 "web = mechanical, skill = LLM."
+
+
+## Record behaviour settled during build (B-1143)
+
+Before filing the release brief, compare each resolved acceptance criterion with the ticket's
+Accepted design. If implementation settled behaviour the design does not state, record a concrete
+claim on a ticket-linked design entry, or amend the affected surface's current-state entry. Read the
+full existing entry first and preserve it; use amend mode when available, otherwise submit the full
+preserved content plus a dated build-settled section through `update_knowledge_entry`. Include the
+criterion, observed behaviour and evidence, with `provenance: 'agent-synthesized'`. This records what
+the build observed; it does not turn an agent's additional design choice into a human decision.
+A change to the Accepted design itself still follows revise-scope, rather than being smuggled in as
+a build claim. Do not create a new decision entry merely to repeat the design.
+
+After the write succeeds, read the entry back and retain its id for the release report. Do not claim
+an intended or failed write as recorded knowledge. If recording fails, preserve the build and file a
+worker-question for that blocked write before composing release. The release frame carries
+`settled_beyond_design: [{ behaviour, ac, knowledge_entry_id }]`; `ac` identifies the criterion and
+`knowledge_entry_id` identifies the entry actually updated. Explicit `[]` means the comparison found
+no behaviour beyond design. It is a legitimate answer, including for refactors.
+
+The compose warning matches changed repo-relative paths to Accepted entries' exact `surface:<path>`
+tags, the existing current-state convention. It is a conservative clue, not an exhaustive inventory:
+untagged entries and aliases are outside this check. An empty report on a matching surface produces
+an advisory warning and composition still succeeds. A failed lookup produces a diagnostic, never a
+false assurance that no matching entry exists.
