@@ -1,0 +1,1 @@
+{"version":1,"repository":"ycomplex/harmony-plugin","publishers":[{"surface":"example-config","publisher_version":"1","inputs":["examples/source-values/*"],"command":["node","examples/source-values/publish.mjs"]}]}
