@@ -439,7 +439,7 @@ export async function queryKnowledge(
         _query_text: args.search,
         _domain: args.domain && args.domain.length > 0 ? args.domain : null,
         _match_limit: null,
-      }, count ? { count: 'exact' } : {}).select('*');
+      }, count ? { count: 'exact' } : {}).select('id, title, content, type, status, domain, tags, project_id, updated_at' + extraColumns);
       query = bookkeeping ? query.contains('tags', [BOOKKEEPING_TAG]) : query.or(SUBSTANTIVE_TAG_FILTER);
       return query.range(offset, offset + limit - 1);
     }), args);
