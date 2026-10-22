@@ -335,6 +335,7 @@ export const ackProjections: Record<string, AckProjection> = {
  * annotated pass-throughs (value = why), so the pin test can prove every write tool was decided.
  */
 export const ACK_PASS_THROUGH: Record<string, string> = {
+  publish_source_inventory: 'Server-computed inventory revision, count and replay flag only; no value echo.',
   import_knowledge_questions: 'Server-computed per-source-key outcome and created question ids; no imported prose is echoed.',
   resolve_brief:
     'RPC result is already a compact state-confirming ack ({task_id, brief_id, workflow_state, brief_status, command, idempotent}); skills read workflow_state off it. ' +

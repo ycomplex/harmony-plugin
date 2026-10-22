@@ -1,4 +1,5 @@
 import { createFeatureAccount, readFeatureAccounts, previewFeatureAmendment, proposeFeatureAmendment, applyFeatureAmendment } from '../../tools/feature-accounts.js';
+import { registerSourceCommands } from './knowledge-sources.js';
 import { readFile } from 'node:fs/promises';
 import { saveKnowledgeQuestion, previewKnowledgeQuestions, importKnowledgeQuestions } from '../../tools/knowledge-questions.js';
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -36,6 +37,7 @@ export function registerKnowledgeCommands(program: Command): void {
   accounts.command('apply').argument('<amendment-id>').option('--production-event <id>').option('--confirm-production', 'Explicitly confirm production promotion has completed').action(async (id,opts) => {
     await runCommand(program.opts(), ctx => applyFeatureAmendment(ctx.client,ctx.projectId,{amendment_id:id,production_event_id:opts.productionEvent,confirm_production:opts.confirmProduction}), data => JSON.stringify(data,null,2));
   });
+  registerSourceCommands(knowledge, program);
   const questions = knowledge.command('questions').description('Manage unresolved knowledge; question state never implies shipped behaviour');
   questions.command('save').requiredOption('--state <state>', 'open, parked or decided')
     .option('--claim <claim>', 'Authored one-sentence claim; omitted claims remain derived proposals')
@@ -102,7 +104,8 @@ export function registerKnowledgeCommands(program: Command): void {
               transform: (v: string) => v.slice(0, 8),
             },
             { key: 'title', header: 'Title', width: 40 },
-            { key: 'content', header: 'Definition', width: 60 },
+            { key: 'content', header: 'Definition / value', width: 60 },
+            { key: 'source', header: 'Generated source', transform: (v: unknown) => v ? JSON.stringify(v) : '' },
             { key: 'claim', header: 'Claim', width: 60 },
             { key: 'claim_source', header: 'Claim source' },
             { key: 'snippet', header: 'Matched passage', width: 60 },

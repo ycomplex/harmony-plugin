@@ -1,4 +1,5 @@
 import { featureAccountTools, createFeatureAccount, readFeatureAccounts, previewFeatureAmendment, proposeFeatureAmendment, applyFeatureAmendment } from './feature-accounts.js';
+import { sourceTools, publishSourceInventory, readSourceInventory, comparePublishedCoverage } from './knowledge-sources.js';
 import { saveKnowledgeQuestionTool, saveKnowledgeQuestion, previewKnowledgeQuestionsTool, previewKnowledgeQuestions, importKnowledgeQuestionsTool, importKnowledgeQuestions } from './knowledge-questions.js';
 import { listKnowledgeTagsTool, registerKnowledgeTagTool, listKnowledgeTags, registerKnowledgeTag } from './knowledge-metadata.js';
 import { publishDefinition, publishDefinitionTool, type PublishDefinitionArgs } from './knowledge-definitions.js';
@@ -176,7 +177,7 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
     listActivityTool,
     listWorkflowTransitionsTool,
     listMembersTool,
-    saveKnowledgeQuestionTool, previewKnowledgeQuestionsTool, importKnowledgeQuestionsTool,
+    ...sourceTools, saveKnowledgeQuestionTool, previewKnowledgeQuestionsTool, importKnowledgeQuestionsTool,
     listKnowledgeTagsTool, registerKnowledgeTagTool, publishDefinitionTool, queryKnowledgeTool, searchTicketIntentsTool, getKnowledgeEntryTool, createKnowledgeEntryTool, updateKnowledgeEntryTool, supersedeKnowledgeEntryTool,
     recordDecisionTool, supersedeDecisionTool, queryFactsTool, assertFactTool, invalidateFactTool, queryEntitiesTool,
     createEntityTool, updateEntityTool, reconcileEntityTool,
@@ -302,6 +303,15 @@ export async function handleToolCall(
       case 'preview_feature_amendment': result = await previewFeatureAmendment(client,projectId,args); break;
       case 'propose_feature_amendment': result = await proposeFeatureAmendment(client,projectId,args); break;
       case 'apply_feature_amendment': result = await applyFeatureAmendment(client,projectId,args); break;
+      case 'publish_source_inventory':
+        result = await publishSourceInventory(client, projectId, args as any);
+        break;
+      case 'read_source_inventory':
+        result = await readSourceInventory(client, projectId, args as any);
+        break;
+      case 'compare_source_coverage':
+        result = await comparePublishedCoverage(client, projectId, args as any);
+        break;
       case 'save_knowledge_question':
         result = await saveKnowledgeQuestion(client, projectId, args as any);
         break;
