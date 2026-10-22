@@ -117,6 +117,7 @@ const supersededAck = (row: unknown) => pick(row, ['id', 'status', 'superseded_b
  * stringify; tools without an entry (all reads) pass through unchanged.
  */
 export const ackProjections: Record<string, AckProjection> = {
+  publish_definition: result => pick(result, ['id', 'concept_id', 'current_revision']),
   // ——— tasks ———
   create_task: (result) => createdTaskAck(result),
   bulk_create_tasks: (result) => {
@@ -183,6 +184,7 @@ export const ackProjections: Record<string, AckProjection> = {
   // ——— knowledge entries / decisions / facts / entities ———
   save_knowledge_question: result => pick(result, ['id', 'status', 'updated_at', 'question_state', 'answer', 'resulting_decision_id']),
   create_knowledge_entry: knowledgeCreatedAck,
+  register_knowledge_tag: result => pick(result, ['project_id','name']),
   record_decision: knowledgeCreatedAck,
   update_knowledge_entry: (result, args) => {
     if (!isRecord(result)) return result;

@@ -1,3 +1,5 @@
+import { publishDefinition } from '../../tools/knowledge-definitions.js';
+vi.mock('../../tools/knowledge-definitions.js', () => ({ publishDefinition: vi.fn().mockResolvedValue({ id: 'definition', current_revision: 'revision' }) }));
 import { Command } from 'commander';
 import { describe, it, expect, vi } from 'vitest';
 import { registerKnowledgeCommands } from './knowledge.js';
@@ -82,5 +84,19 @@ describe('knowledge questions commands', () => {
     await program.parseAsync(['knowledge', 'questions', 'preview', 'm'], { from: 'user' });
     expect(previewKnowledgeQuestions).toHaveBeenCalledWith('client', 'project', { milestone_id: 'm' });
     expect(output.text).toContain('"approved": false');
+  });
+});
+
+describe('definition CLI controls', () => {
+  it('forwards definitions-only to the shared reader', async () => {
+    vi.mocked(queryKnowledge).mockResolvedValue([]);
+    const program = new Command(); registerKnowledgeCommands(program);
+    await program.parseAsync(['knowledge', 'list', '--definitions-only', '--search', 'Term'], { from: 'user' });
+    expect(queryKnowledge).toHaveBeenLastCalledWith('client', 'project', expect.objectContaining({ definitions_only: true, search: 'Term' }));
+  });
+  it('preserves the explicit accepted source and first-publication revision', async () => {
+    const program = new Command(); registerKnowledgeCommands(program);
+    await program.parseAsync(['knowledge', 'publish-definition', '--concept', 'concept', '--expected-revision', 'null', '--source', 'source', '--wording', 'Meaning.', '--metadata', '{"ticket":"B-1226"}'], { from: 'user' });
+    expect(publishDefinition).toHaveBeenLastCalledWith('client', 'project', expect.objectContaining({ concept_id: 'concept', expected_revision: null, source_decision_id: 'source', wording: 'Meaning.', metadata: { ticket: 'B-1226' } }));
   });
 });

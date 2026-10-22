@@ -39,6 +39,7 @@ const READ_TOOLS = [
   'list_workflow_transitions',
   'list_members',
   'query_knowledge',
+  'list_knowledge_tags',
   'search_ticket_intents',
   'get_knowledge_entry',
   'query_facts',

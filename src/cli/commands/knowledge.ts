@@ -1,5 +1,9 @@
 import { readFile } from 'node:fs/promises';
 import { saveKnowledgeQuestion, previewKnowledgeQuestions, importKnowledgeQuestions } from '../../tools/knowledge-questions.js';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { previewMetadataRepair, applyMetadataRepair, tagReleasedKnowledge } from '../../tools/knowledge-repair.js';
+import { listKnowledgeTags, registerKnowledgeTag } from '../../tools/knowledge-metadata.js';
+import { publishDefinition } from '../../tools/knowledge-definitions.js';
 import { Command } from 'commander';
 import {
   queryKnowledge,
@@ -44,6 +48,7 @@ export function registerKnowledgeCommands(program: Command): void {
   knowledge
     .command('list')
     .description('List knowledge entries with optional filters')
+    .option('--scope <scope>', 'Product or deployment scope; fails visibly when unavailable')
     .option('--type <type>', 'Filter by type (e.g. architecture, business, convention, specification)')
     .option('--status <status>', 'Filter by status')
     .option(
@@ -54,6 +59,7 @@ export function registerKnowledgeCommands(program: Command): void {
     )
     .option('--search <text>', 'Search term matched against title and content')
     .option('--question-state <state>', 'Filter-only: open, parked or decided; search combination requires B-1223')
+    .option('--definitions-only', 'Return only current term definitions', false)
     .option('--all', 'Include superseded entries', false)
     .option('--no-bookkeeping', 'Exclude explicitly marked procedural gate records')
     .action(async (opts) => {
@@ -61,6 +67,8 @@ export function registerKnowledgeCommands(program: Command): void {
         program.opts(),
         async (ctx) =>
           queryKnowledge(ctx.client, ctx.projectId, {
+            scope: opts.scope,
+            definitions_only: opts.definitionsOnly,
             type: opts.type,
             status: opts.status,
             tags: opts.tag && opts.tag.length > 0 ? opts.tag : undefined,
@@ -77,10 +85,11 @@ export function registerKnowledgeCommands(program: Command): void {
               transform: (v: string) => v.slice(0, 8),
             },
             { key: 'title', header: 'Title', width: 40 },
+            { key: 'content', header: 'Definition', width: 60 },
             { key: 'claim', header: 'Claim', width: 60 },
             { key: 'claim_source', header: 'Claim source' },
             { key: 'snippet', header: 'Matched passage', width: 60 },
-            { key: 'type', header: 'Type', width: 14 },
+            { key: 'type', header: 'Type (advisory)', width: 16 },
             { key: 'status', header: 'Status', width: 12 },
             { key: 'question_state', header: 'Question', width: 10 },
             { key: 'answer', header: 'Answer', width: 24 },
@@ -105,6 +114,26 @@ export function registerKnowledgeCommands(program: Command): void {
       );
     });
 
+  knowledge.command('preview-metadata-repair').argument('<file>').action(async file => {
+    await runCommand(program.opts(), async ctx => {const manifest=await previewMetadataRepair(ctx.client,ctx.projectId);writeFileSync(file,JSON.stringify(manifest,null,2));return manifest.counts;}, data=>JSON.stringify(data,null,2));
+  });
+  knowledge.command('apply-metadata-repair').argument('<reviewed-file>').action(async file => {
+    await runCommand(program.opts(), ctx=>applyMetadataRepair(ctx.client,ctx.projectId,JSON.parse(readFileSync(file,'utf8'))),data=>JSON.stringify(data,null,2));
+  });
+  knowledge.command('tag-release').requiredOption('--task <uuid>','Ticket UUID').requiredOption('--repo <owner/name>','PR repository').requiredOption('--pr <number>','Merged PR number').action(async opts=>{
+    await runCommand(program.opts(),ctx=>tagReleasedKnowledge(ctx.client,ctx.projectId,opts.task,opts.repo,Number(opts.pr)),data=>JSON.stringify(data,null,2));
+  });
+  knowledge.command('tags').action(async () => { await runCommand(program.opts(), ctx => listKnowledgeTags(ctx.client, ctx.projectId), data => JSON.stringify(data, null, 2)); });
+  knowledge.command('register-tag').argument('<name>').argument('<description>').action(async (name, description) => { await runCommand(program.opts(), ctx => registerKnowledgeTag(ctx.client, ctx.projectId, name, description), data => JSON.stringify(data, null, 2)); });
+  knowledge.command('publish-definition').requiredOption('--concept <uuid>').requiredOption('--expected-revision <uuid-or-null>')
+    .requiredOption('--source <uuid>').requiredOption('--wording <text>')
+    .option('--metadata <json>', 'Source references', '{}').option('--provenance <value>', 'Knowledge-write provenance').action(async opts => {
+      await runCommand(program.opts(), ctx => publishDefinition(ctx.client, ctx.projectId, {
+        concept_id: opts.concept, expected_revision: opts.expectedRevision === 'null' ? null : opts.expectedRevision,
+        source_decision_id: opts.source, wording: opts.wording, provenance: opts.provenance, metadata: JSON.parse(opts.metadata),
+      }), data => JSON.stringify(data, null, 2));
+    });
+
   knowledge.command('propose-claims').description('Propose missing legacy claims; dry run unless --apply').option('--apply', 'Store missing proposals as derived', false).action(async opts => {
     await runCommand(program.opts(), ctx => proposeLegacyClaims(ctx.client, ctx.projectId, opts.apply), data => JSON.stringify(data, null, 2));
   });
@@ -125,7 +154,7 @@ export function registerKnowledgeCommands(program: Command): void {
           formatDetail([
             { label: 'ID', value: entry.id },
             { label: 'Title', value: entry.title },
-            { label: 'Type', value: entry.type },
+            { label: 'Type (advisory)', value: entry.type },
             { label: 'Status', value: entry.status },
             { label: 'Verification', value: entry.verified_against ? JSON.stringify(entry.verified_against) : 'Not verified' },
             { label: 'Rollout', value: entry.rollout_state ?? 'Unknown' },
@@ -146,6 +175,7 @@ export function registerKnowledgeCommands(program: Command): void {
 
   knowledge
     .command('create')
+    .option('--scope <scope>', 'Required new-entry product or deployment scope')
     .description('Create a new knowledge entry')
     .requiredOption('--title <title>', 'Entry title')
     .requiredOption('--claim <claim>', 'One-sentence claim')
@@ -165,6 +195,7 @@ export function registerKnowledgeCommands(program: Command): void {
         program.opts(),
         async (ctx) =>
           createKnowledgeEntry(ctx.client, ctx.projectId, ctx.userId, {
+            scope: opts.scope,
             title: opts.title,
             content: opts.content,
             claim: opts.claim,
@@ -179,6 +210,7 @@ export function registerKnowledgeCommands(program: Command): void {
 
   knowledge
     .command('update')
+    .option('--scope <scope>', 'Product or deployment scope; requires metadata capability')
     .description('Update an existing knowledge entry')
     .argument('<id>', 'Entry UUID')
     .option('--title <title>', 'New title')
@@ -216,6 +248,7 @@ export function registerKnowledgeCommands(program: Command): void {
         async (ctx) =>
           updateKnowledgeEntry(ctx.client, ctx.projectId, {
             entry_id: id,
+            scope: opts.scope,
             new_title: opts.title,
             content: opts.content,
             content_mode: opts.contentMode,
@@ -239,6 +272,7 @@ export function registerKnowledgeCommands(program: Command): void {
 
   knowledge
     .command('supersede')
+    .option('--scope <scope>', 'Required applicability of a new successor')
     .description('Supersede an existing knowledge entry with a new replacement')
     .argument('<id>', 'UUID of the entry to supersede')
     .requiredOption('--title <title>', 'Title for the replacement entry')
@@ -258,6 +292,7 @@ export function registerKnowledgeCommands(program: Command): void {
         async (ctx) =>
           supersedeKnowledgeEntry(ctx.client, ctx.projectId, ctx.userId, {
             entry_id: id,
+            scope: opts.scope,
             new_title: opts.title,
             new_content: opts.content,
             new_claim: opts.claim,
