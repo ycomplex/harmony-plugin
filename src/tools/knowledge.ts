@@ -1,4 +1,5 @@
 import { projectSupersession } from './knowledge-supersession.js';
+import { withInvalidations, type InvalidationLink } from './knowledge-invalidations.js';
 import { BOOKKEEPING_TAG, SUBSTANTIVE_TAG_FILTER, bookkeepingPage } from './knowledge-bookkeeping.js';
 import { claimFields, encodeClaim, editedClaimContent, claimContent, matchedPassage, proposeClaim } from './knowledge-claim.js';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -14,6 +15,9 @@ export interface KnowledgeEntrySummary {
   snippet?: string | null;
   claim?: string | null;
   claim_source?: 'authored' | 'derived' | null;
+  invalidations?: InvalidationLink[];
+  invalidations_available?: boolean;
+  invalidation_rollout_available?: boolean;
   id: string;
   title: string;
   type: string;
@@ -29,6 +33,9 @@ export interface KnowledgeEntrySummary {
 export interface KnowledgeEntryFull {
   claim?: string | null;
   claim_source?: 'authored' | 'derived' | null;
+  invalidations?: InvalidationLink[];
+  invalidations_available?: boolean;
+  invalidation_rollout_available?: boolean;
   id: string;
   workspace_id: string;
   project_id: string | null;
@@ -437,7 +444,7 @@ export async function queryKnowledge(
       domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at,
     })) as KnowledgeEntrySummary[];
     if (!matches.length) return [];
-    return hydrateSupersession(client, workspaceId, projectId, matches);
+    return withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, matches));
   }
 
   // Structured retrieval uses the same class boundary and applies every filter before pagination.
@@ -457,7 +464,7 @@ export async function queryKnowledge(
       .range(offset, offset + limit - 1);
   }, args);
   // B-1136 claim fields first, then B-1230 page-bounded supersession hydration (both page-local).
-  return hydrateSupersession(client, workspaceId, projectId, rows.map(d => ({ id: d.id, title: d.title, type: d.type, status: d.status, domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d) })));
+  return withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, rows.map(d => ({ id: d.id, title: d.title, type: d.type, status: d.status, domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d) }))));
 }
 
 // Hydrate only returned IDs, in batches below PostgREST's row cap. Never scan the corpus
@@ -599,7 +606,7 @@ export async function getKnowledgeEntry(
 
   const { data, error } = await query.single();
   if (error) throw error;
-  return { ...data, ...claimFields(data) } as KnowledgeEntryFull;
+  return (await withInvalidations(client, [{ ...data, ...claimFields(data) } as KnowledgeEntryFull]))[0];
 }
 
 // ---------------------------------------------------------------------------

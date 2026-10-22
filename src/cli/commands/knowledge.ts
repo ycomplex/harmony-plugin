@@ -54,6 +54,7 @@ export function registerKnowledgeCommands(program: Command): void {
             { key: 'status', header: 'Status', width: 12 },
             { key: 'superseded_by', header: 'Superseded by', transform: (v: string | null) => v ?? '—' },
             { key: 'supersedes', header: 'Supersedes', transform: (v: string[]) => (v ?? []).join(', ') || '—' },
+            { key: 'invalidations', header: 'Invalidation', transform: (links: Array<{ effective_at: string | null }> = []) => links.some(link => link.effective_at) ? 'Retired' : links.length ? 'Removal pending' : '' },
             {
               key: 'tags',
               header: 'Tags',
@@ -94,6 +95,9 @@ export function registerKnowledgeCommands(program: Command): void {
             { label: 'Tags', value: entry.tags?.length ? entry.tags.join(', ') : '(none)' },
             { label: 'Project', value: entry.project_id ?? '(workspace-wide)' },
             { label: 'Updated', value: formatDate(entry.updated_at) },
+            { label: 'Removal capability', value: entry.invalidations_available === false ? 'unavailable' : 'available' },
+            { label: 'Invalidators', value: (entry.invalidations ?? []).map(link => `${link.invalidator_title} (${link.invalidator_id}): ${link.effective_at ? 'retired' : 'removal agreed, not yet effective'}`).join('\n') || '(none)' },
+            ...(entry.invalidation_rollout_available === false ? [{ label: 'Rollout capability', value: 'unavailable; no retirement inferred' }] : []),
             { label: 'Content', value: entry.content },
           ]),
       );
