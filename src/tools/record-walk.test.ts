@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => ({
   }),
   // B-1073: the build_pr backfill writes through tasks.ts's updateTask (field_values merge).
   updateTask: vi.fn(async () => ({})),
+  getProject: vi.fn(async () => ({ key: 'B' })),
 }));
 const {
   composeBrief, resolveBrief, consumePendingAcceptanceEvent, writeGateSlot, advanceWorkflow, addComment,
@@ -46,6 +47,7 @@ vi.mock('./acceptance-criteria.js', () => ({
 vi.mock('./knowledge.js', () => ({ recordDecision: mocks.recordDecision, queryKnowledge: mocks.queryKnowledge }));
 vi.mock('node:child_process', () => ({ execFile: mocks.execFile }));
 vi.mock('./tasks.js', () => ({ updateTask: mocks.updateTask }));
+vi.mock('./project.js', () => ({ getProject: mocks.getProject }));
 
 import { runRecordedWalk, RATIFIED_BY_RECORDED, RESOLVE_BRIEF_PROVENANCE_RECORDED, KNOWLEDGE_WRITE_PROVENANCE_RECORDED } from './record-walk.js';
 import { PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED } from './provenance.js';
@@ -72,7 +74,7 @@ function makeClient(workflowState: string | null = 'Proposed') {
         select: () => ({
           eq: () => ({
             eq: () => ({
-              single: async () => ({ data: { workflow_state: workflowState }, error: null }),
+              single: async () => ({ data: { workflow_state: workflowState, task_number: 2000 }, error: null }),
             }),
           }),
         }),
@@ -92,7 +94,7 @@ function makeRichClient(opts: { workflowState?: string; fieldValues?: Record<str
             eq: () => ({
               eq: () => ({
                 single: async () => ({
-                  data: { workflow_state: opts.workflowState ?? 'Proposed', field_values: opts.fieldValues ?? {} },
+                  data: { workflow_state: opts.workflowState ?? 'Proposed', task_number: 2000, field_values: opts.fieldValues ?? {} },
                   error: null,
                 }),
               }),
@@ -1041,5 +1043,35 @@ describe('B-1224 recorded bookkeeping classification', () => {
     // B-849's shared no-split convention is reusable knowledge, not per-ticket bookkeeping.
     expect(writes.filter((entry: any) => entry.source_activity === 'decompose')).toHaveLength(1);
     expect(writes.find((entry: any) => entry.source_activity === 'decompose').tags).toEqual(['decompose-no-split']);
+  });
+});
+
+// A sibling of derivation-contract.test.ts: assert the creation payload, before any brief
+// projection can backfill a missing tag. Empty tags on ANY ticket-derived entry must fail.
+describe('recorded entry creation tag contract (B-1232)', () => {
+  it.each(['B-2000', 'b-2000', '2000', '866e319d-f114-4475-94c0-37a935b7210d'])(
+    'tags all three entries canonically for input %s', async (task_id) => {
+      await runRecordedWalk(makeClient(), PROJECT_ID, USER_ID, { ...eligibleArgs(), task_id });
+      const entries = recordDecision.mock.calls.map((call: any) => call[3])
+        .filter((entry: any) => entry.type !== 'convention');
+      expect(entries.map((entry: any) => entry.source_activity)).toEqual(['clarify', 'design-decide', 'plan']);
+      for (const entry of entries) expect(entry.tags).toContain('b-2000');
+      const plan = composeBrief.mock.calls.map((call: any) => call[3])
+        .find((brief: any) => brief.reason === 'plan-draft');
+      expect(plan.doc.payload.find((item: any) => item.write_kind === 'knowledge_entry_content').tags)
+        .toContain('b-2000');
+      const convention = recordDecision.mock.calls.map((call: any) => call[3])
+        .find((entry: any) => entry.type === 'convention');
+      expect(convention.tags).not.toContain('b-2000');
+    },
+  );
+
+  it('uses the owning project key rather than a hardcoded B prefix', async () => {
+    mocks.getProject.mockResolvedValueOnce({ key: 'OPS' });
+    await runRecordedWalk(makeClient(), PROJECT_ID, USER_ID, { ...eligibleArgs(), task_id: '2000' });
+    const entries = recordDecision.mock.calls.map((call: any) => call[3])
+      .filter((entry: any) => entry.type !== 'convention');
+    expect(entries).toHaveLength(3);
+    for (const entry of entries) expect(entry.tags).toContain('ops-2000');
   });
 });
