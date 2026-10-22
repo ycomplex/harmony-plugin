@@ -1,6 +1,7 @@
 import { questionProjection } from './knowledge-questions.js';
 import { projectSupersession } from './knowledge-supersession.js';
 import { withInvalidations, type InvalidationLink } from './knowledge-invalidations.js';
+import { truthCompatibleRead, truthStatePatch, type KnowledgeTruthState } from './knowledge-truth.js';
 import { BOOKKEEPING_TAG, SUBSTANTIVE_TAG_FILTER, bookkeepingPage } from './knowledge-bookkeeping.js';
 import { claimFields, encodeClaim, editedClaimContent, claimContent, matchedPassage, proposeClaim } from './knowledge-claim.js';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -12,7 +13,7 @@ import { guardKnowledgeWriteProvenance } from './provenance.js';
 // Interfaces
 // ---------------------------------------------------------------------------
 
-export interface KnowledgeEntrySummary {
+export interface KnowledgeEntrySummary extends KnowledgeTruthState {
   snippet?: string | null;
   claim?: string | null;
   claim_source?: 'authored' | 'derived' | null;
@@ -36,7 +37,7 @@ export interface KnowledgeEntrySummary {
   supersedes?: string[];
 }
 
-export interface KnowledgeEntryFull {
+export interface KnowledgeEntryFull extends KnowledgeTruthState {
   claim?: string | null;
   claim_source?: 'authored' | 'derived' | null;
   question_state?: 'open' | 'parked' | 'decided';
@@ -68,7 +69,7 @@ export interface KnowledgeEntryFull {
   review_by?: string | null;
 }
 
-export interface KnowledgeDecisionFull {
+export interface KnowledgeDecisionFull extends KnowledgeTruthState {
   claim?: string | null;
   claim_source?: 'authored' | 'derived' | null;
   id: string;
@@ -218,7 +219,7 @@ export const createKnowledgeEntryTool = {
 
 export const updateKnowledgeEntryTool = {
   name: 'update_knowledge_entry',
-  description: 'Update an existing knowledge entry in this project by ID or title. Use content_mode prepend_section/append_section to add only a new section while atomically preserving existing content. Shorter replacements that drop dated amendment markers are refused unless allow_shrink is explicitly true. Can also update title, type, status, tags, domain, madr, realization, or review_by.',
+  description: 'Update an existing knowledge entry in this project by ID or title. Use content_mode prepend_section/append_section to add only a new section while atomically preserving existing content. Shorter replacements that drop dated amendment markers are refused unless allow_shrink is explicitly true. Can also update title, type, status, tags, domain, madr, realization, review_by, verified_against, rollout_state or open_steps.',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -250,6 +251,10 @@ export const updateKnowledgeEntryTool = {
         enum: ['agreed', 'live', 'deprecating', 'retired'],
         description: 'Implementation/realization state (orthogonal to status); NULL ≡ live; "agreed" = decided-not-yet-built',
       },
+      acting_task_id: { type: 'string', description: 'Acting ticket UUID for a verification/rollout write. Omit to use the current conduction ticket; manual writes without a ticket record null.' },
+      verified_against: { type: ['object', 'null'], properties: { plugin_version: { type: ['string', 'null'] }, web_sha: { type: ['string', 'null'] }, at: { type: 'string' } }, required: ['at'], additionalProperties: false, description: 'Observed versions and ISO verification time; null clears verification. At least one version must be present.' },
+      rollout_state: { type: ['string', 'null'], enum: ['designed', 'partly-live', 'live', 'retired', null], description: 'Production rollout, independent of acceptance and realization. live means production; partly-live means partly in production; staging-only remains designed. null means unknown. Cutover time is the re-stamped event created_at, never verified_against.at.' },
+      open_steps: { type: ['array', 'null'], items: { type: 'string' }, description: 'Remaining rollout steps; partly-live requires at least one nonblank step. null clears the list.' },
       review_by: { type: 'string', description: 'ISO timestamp; freshness/decay date (knowledge-model-v1 §3)' },
       provenance: { type: 'string', description: 'Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>", or "agent-on-behalf:human-in-session"/"agent-on-behalf:human-in-browser"/"agent-on-behalf:human-recorded" when an agent writes on a human\'s already-made decision). Omit for NULL — the reader\'s rule then falls back to conduction-only or untracked classification. B-1021 (widened B-1062): bare "human-in-browser" is REJECTED — that value is the web client\'s alone, and "agent-on-behalf:" accepts only the three closed suffixes above.' },
     },
@@ -446,7 +451,7 @@ export async function queryKnowledge(
       );
     }
     const queryEmbedding = await embedText(client, args.search);   // may be null -> fn degrades to trigram-only
-    const data = await bookkeepingPage<any>(({ bookkeeping, offset, limit, count }) => {
+    const data = await bookkeepingPage<any>(({ bookkeeping, offset, limit, count }) => truthCompatibleRead(extraColumns => {
       // NULL disables the RPC's INNER limit. PostgREST then filters the SETOF rows before its
       // outer range; a finite inner limit would lose substantive hits on an older deployment.
       let query = (client as any).rpc('knowledge_search_rrf', {
@@ -456,15 +461,16 @@ export async function queryKnowledge(
         _query_text: args.search,
         _domain: args.domain && args.domain.length > 0 ? args.domain : null,
         _match_limit: null,
-      }, count ? { count: 'exact' } : {}).select('*');
+      }, count ? { count: 'exact' } : {}).select('id, title, content, type, status, domain, tags, project_id, updated_at' + extraColumns);
       query = bookkeeping ? query.contains('tags', [BOOKKEEPING_TAG]) : query.or(SUBSTANTIVE_TAG_FILTER);
       return query.range(offset, offset + limit - 1);
-    }, args);
+    }), args);
     const matches = (data ?? []).map((d: any) => ({
       id: d.id, title: d.title, type: d.type, status: d.status,
       ...questionProjection(d),
       ...claimFields(d), snippet: matchedPassage(d.content ?? '', args.search!),
       domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at,
+      verified_against: d.verified_against ?? null, rollout_state: d.rollout_state ?? null, open_steps: d.open_steps ?? null,
     })) as KnowledgeEntrySummary[];
     if (!matches.length) return [];
     // Transitional precedence only within the returned page and each bookkeeping class.
@@ -493,7 +499,8 @@ export async function queryKnowledge(
     return query.order('type', { ascending: true }).order('id', { ascending: true })
       .range(offset, offset + limit - 1);
   }, args);
-  return withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, rows.map(d => ({ id: d.id, title: d.title, type: d.type, status: d.status, domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d), ...questionProjection(d) }))));
+  // B-1136 claim fields first, then B-1230 page-bounded supersession hydration (both page-local).
+  return withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, rows.map(d => ({ id: d.id, title: d.title, type: d.type, status: d.status, domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d), ...questionProjection(d), verified_against: d.verified_against ?? null, rollout_state: d.rollout_state ?? null, open_steps: d.open_steps ?? null }))));
 }
 
 // Hydrate only returned IDs, in batches below PostgREST's row cap. Never scan the corpus
@@ -635,7 +642,7 @@ export async function getKnowledgeEntry(
 
   const { data, error } = await query.single();
   if (error) throw error;
-  return (await withInvalidations(client, [{ ...data, ...claimFields(data), ...questionProjection(data) } as KnowledgeEntryFull]))[0];
+  return (await withInvalidations(client, [{ ...data, ...claimFields(data), ...questionProjection(data), verified_against: data.verified_against ?? null, rollout_state: data.rollout_state ?? null, open_steps: data.open_steps ?? null } as KnowledgeEntryFull]))[0];
 }
 
 // ---------------------------------------------------------------------------
@@ -707,8 +714,9 @@ export async function createKnowledgeEntry(
 // Handler: updateKnowledgeEntry
 // ---------------------------------------------------------------------------
 
-export interface UpdateKnowledgeEntryArgs {
+export interface UpdateKnowledgeEntryArgs extends KnowledgeTruthState {
   claim?: string;
+  acting_task_id?: string;
   entry_id?: string;
   title?: string;
   new_title?: string;
@@ -755,8 +763,11 @@ export async function updateKnowledgeEntry(
     throw new Error('Amendment section must not be blank');
   }
 
+  const truthPatch = truthStatePatch(args);
+  const hasTruthUpdates = Object.keys(truthPatch).length > 0;
   const hasUpdates =
     args.claim !== undefined ||
+    hasTruthUpdates ||
     args.new_title !== undefined ||
     args.content !== undefined ||
     args.type !== undefined ||
@@ -798,7 +809,7 @@ export async function updateKnowledgeEntry(
   // All content writes use the locked, guarded operation. Never fall back to an
   // older unsafe replacement writer when its migration is unavailable.
   const contentWrite = args.content !== undefined || args.claim !== undefined;
-  const { data, error } = await client.rpc(contentWrite ? 'knowledge_amend_knowledge_entry' : 'knowledge_update_knowledge_entry', {
+  const { data, error } = await client.rpc(hasTruthUpdates ? 'knowledge_amend_entry_truth' : contentWrite ? 'knowledge_amend_knowledge_entry' : 'knowledge_update_knowledge_entry', {
     p_project_id: projectId,
     p_entry_id: args.entry_id ?? null,
     p_title: args.title ?? null,
@@ -817,10 +828,14 @@ export async function updateKnowledgeEntry(
     p_provenance: args.provenance ?? null,
     p_conduction_id: getConductionId() ?? null,
     p_leg: getLeg() ?? null,
-    ...(contentWrite ? { p_content_mode: mode, p_allow_shrink: args.allow_shrink ?? false } : {}),
+    ...((contentWrite || hasTruthUpdates) ? { p_content_mode: mode, p_allow_shrink: args.allow_shrink ?? false } : {}),
+    ...(hasTruthUpdates ? { p_truth_state: truthPatch, p_acting_task_id: args.acting_task_id ?? null } : {}),
   });
 
   if (error) {
+    if (hasTruthUpdates && ['PGRST202', '42883', '42703', 'PGRST204'].includes(error.code ?? '')) {
+      throw new Error('Knowledge verification/rollout update unavailable: apply the B-1229 database migration first. No fields were changed.');
+    }
     if (contentWrite && (error.code === 'PGRST202' || error.code === '42883')) {
       throw new Error('Knowledge content update unavailable: apply the B-1111 database migration before using content updates. No content was replaced.');
     }
