@@ -3079,9 +3079,9 @@ Expecting one of '${allowedValues.join("', '")}'`);
           helpWidth: context.helpWidth,
           outputHasColors: context.hasColors
         });
-        const text = helper.formatHelp(this, helper);
-        if (context.hasColors) return text;
-        return this._outputConfiguration.stripColor(text);
+        const text2 = helper.formatHelp(this, helper);
+        if (context.hasColors) return text2;
+        return this._outputConfiguration.stripColor(text2);
       }
       /**
        * @typedef HelpContext
@@ -3235,7 +3235,7 @@ Expecting one of '${allowedValues.join("', '")}'`);
        * @param {(string | Function)} text - string to add, or a function returning a string
        * @return {Command} `this` command for chaining
        */
-      addHelpText(position, text) {
+      addHelpText(position, text2) {
         const allowedValues = ["beforeAll", "before", "after", "afterAll"];
         if (!allowedValues.includes(position)) {
           throw new Error(`Unexpected value for position to addHelpText.
@@ -3244,10 +3244,10 @@ Expecting one of '${allowedValues.join("', '")}'`);
         const helpEvent = `${position}Help`;
         this.on(helpEvent, (context) => {
           let helpStr;
-          if (typeof text === "function") {
-            helpStr = text({ error: context.error, command: context.command });
+          if (typeof text2 === "function") {
+            helpStr = text2({ error: context.error, command: context.command });
           } else {
-            helpStr = text;
+            helpStr = text2;
           }
           if (helpStr) {
             context.write(`${helpStr}
@@ -3453,11 +3453,11 @@ function __metadata(metadataKey, metadataValue) {
 }
 function __awaiter(thisArg, _arguments, P, generator) {
   function adopt(value) {
-    return value instanceof P ? value : new P(function(resolve5) {
-      resolve5(value);
+    return value instanceof P ? value : new P(function(resolve7) {
+      resolve7(value);
     });
   }
-  return new (P || (P = Promise))(function(resolve5, reject) {
+  return new (P || (P = Promise))(function(resolve7, reject) {
     function fulfilled(value) {
       try {
         step(generator.next(value));
@@ -3473,7 +3473,7 @@ function __awaiter(thisArg, _arguments, P, generator) {
       }
     }
     function step(result) {
-      result.done ? resolve5(result.value) : adopt(result.value).then(fulfilled, rejected);
+      result.done ? resolve7(result.value) : adopt(result.value).then(fulfilled, rejected);
     }
     step((generator = generator.apply(thisArg, _arguments || [])).next());
   });
@@ -3664,14 +3664,14 @@ function __asyncValues(o) {
   }, i);
   function verb(n) {
     i[n] = o[n] && function(v) {
-      return new Promise(function(resolve5, reject) {
-        v = o[n](v), settle(resolve5, reject, v.done, v.value);
+      return new Promise(function(resolve7, reject) {
+        v = o[n](v), settle(resolve7, reject, v.done, v.value);
       });
     };
   }
-  function settle(resolve5, reject, d, v) {
+  function settle(resolve7, reject, d, v) {
     Promise.resolve(v).then(function(v2) {
-      resolve5({ value: v2, done: d });
+      resolve7({ value: v2, done: d });
     }, reject);
   }
 }
@@ -7161,15 +7161,15 @@ var require_RealtimeChannel = __commonJS({
             }
           }
         } else {
-          return new Promise((resolve5) => {
+          return new Promise((resolve7) => {
             var _a2, _b2, _c;
             const push = this.channelAdapter.push(args.type, args, opts.timeout || this.timeout);
             if (args.type === "broadcast" && !((_c = (_b2 = (_a2 = this.params) === null || _a2 === void 0 ? void 0 : _a2.config) === null || _b2 === void 0 ? void 0 : _b2.broadcast) === null || _c === void 0 ? void 0 : _c.ack)) {
-              resolve5("ok");
+              resolve7("ok");
             }
-            push.receive("ok", () => resolve5("ok"));
-            push.receive("error", () => resolve5("error"));
-            push.receive("timeout", () => resolve5("timed out"));
+            push.receive("ok", () => resolve7("ok"));
+            push.receive("error", () => resolve7("error"));
+            push.receive("timeout", () => resolve7("timed out"));
           });
         }
       }
@@ -7194,8 +7194,8 @@ var require_RealtimeChannel = __commonJS({
        * @category Realtime
        */
       async unsubscribe(timeout = this.timeout) {
-        return new Promise((resolve5) => {
-          this.channelAdapter.unsubscribe(timeout).receive("ok", () => resolve5("ok")).receive("timeout", () => resolve5("timed out")).receive("error", () => resolve5("error"));
+        return new Promise((resolve7) => {
+          this.channelAdapter.unsubscribe(timeout).receive("ok", () => resolve7("ok")).receive("timeout", () => resolve7("timed out")).receive("error", () => resolve7("error"));
         });
       }
       /**
@@ -7389,11 +7389,11 @@ var require_socketAdapter = __commonJS({
         this.socket.connect();
       }
       disconnect(callback, code, reason, timeout = 1e4) {
-        return new Promise((resolve5) => {
-          setTimeout(() => resolve5("timeout"), timeout);
+        return new Promise((resolve7) => {
+          setTimeout(() => resolve7("timeout"), timeout);
           this.socket.disconnect(() => {
             callback();
-            resolve5("ok");
+            resolve7("ok");
           }, code, reason);
         });
       }
@@ -13769,11 +13769,11 @@ var require_utils = __commonJS({
       }
       return output;
     }
-    function hyperlink(url, text) {
+    function hyperlink(url, text2) {
       const OSC = "\x1B]";
       const BEL = "\x07";
       const SEP = ";";
-      return [OSC, "8", SEP, SEP, url || text, BEL, text, OSC, "8", SEP, SEP, BEL].join("");
+      return [OSC, "8", SEP, SEP, url || text2, BEL, text2, OSC, "8", SEP, SEP, BEL].join("");
     }
     module.exports = {
       strlen,
@@ -13968,10 +13968,10 @@ var require_supports_colors = __commonJS({
 // node_modules/@colors/colors/lib/custom/trap.js
 var require_trap = __commonJS({
   "node_modules/@colors/colors/lib/custom/trap.js"(exports, module) {
-    module["exports"] = function runTheTrap(text, options) {
+    module["exports"] = function runTheTrap(text2, options) {
       var result = "";
-      text = text || "Run the trap, drop the bass";
-      text = text.split("");
+      text2 = text2 || "Run the trap, drop the bass";
+      text2 = text2.split("");
       var trap = {
         a: ["@", "\u0104", "\u023A", "\u0245", "\u0394", "\u039B", "\u0414"],
         b: ["\xDF", "\u0181", "\u0243", "\u026E", "\u03B2", "\u0E3F"],
@@ -14019,7 +14019,7 @@ var require_trap = __commonJS({
         y: ["\xA5", "\u04B0", "\u04CB"],
         z: ["\u01B5", "\u0240"]
       };
-      text.forEach(function(c) {
+      text2.forEach(function(c) {
         c = c.toLowerCase();
         var chars = trap[c] || [" "];
         var rand = Math.floor(Math.random() * chars.length);
@@ -14037,8 +14037,8 @@ var require_trap = __commonJS({
 // node_modules/@colors/colors/lib/custom/zalgo.js
 var require_zalgo = __commonJS({
   "node_modules/@colors/colors/lib/custom/zalgo.js"(exports, module) {
-    module["exports"] = function zalgo(text, options) {
-      text = text || "   he is here   ";
+    module["exports"] = function zalgo(text2, options) {
+      text2 = text2 || "   he is here   ";
       var soul = {
         "up": [
           "\u030D",
@@ -14171,7 +14171,7 @@ var require_zalgo = __commonJS({
         });
         return bool;
       }
-      function heComes(text2, options2) {
+      function heComes(text3, options2) {
         var result = "";
         var counts;
         var l;
@@ -14180,12 +14180,12 @@ var require_zalgo = __commonJS({
         options2["mid"] = typeof options2["mid"] !== "undefined" ? options2["mid"] : true;
         options2["down"] = typeof options2["down"] !== "undefined" ? options2["down"] : true;
         options2["size"] = typeof options2["size"] !== "undefined" ? options2["size"] : "maxi";
-        text2 = text2.split("");
-        for (l in text2) {
+        text3 = text3.split("");
+        for (l in text3) {
           if (isChar(l)) {
             continue;
           }
-          result = result + text2[l];
+          result = result + text3[l];
           counts = { "up": 0, "down": 0, "mid": 0 };
           switch (options2.size) {
             case "mini":
@@ -14216,7 +14216,7 @@ var require_zalgo = __commonJS({
         }
         return result;
       }
-      return heComes(text, options);
+      return heComes(text2, options);
     };
   }
 });
@@ -16126,14 +16126,14 @@ var require_foldFlowLines = __commonJS({
     var FOLD_FLOW = "flow";
     var FOLD_BLOCK = "block";
     var FOLD_QUOTED = "quoted";
-    function foldFlowLines(text, indent, mode = "flow", { indentAtStart, lineWidth = 80, minContentWidth = 20, onFold, onOverflow } = {}) {
+    function foldFlowLines(text2, indent, mode = "flow", { indentAtStart, lineWidth = 80, minContentWidth = 20, onFold, onOverflow } = {}) {
       if (!lineWidth || lineWidth < 0)
-        return text;
+        return text2;
       if (lineWidth < minContentWidth)
         minContentWidth = 0;
       const endStep = Math.max(1 + minContentWidth, 1 + lineWidth - indent.length);
-      if (text.length <= endStep)
-        return text;
+      if (text2.length <= endStep)
+        return text2;
       const folds = [];
       const escapedFolds = {};
       let end = lineWidth - indent.length;
@@ -16150,14 +16150,14 @@ var require_foldFlowLines = __commonJS({
       let escStart = -1;
       let escEnd = -1;
       if (mode === FOLD_BLOCK) {
-        i = consumeMoreIndentedLines(text, i, indent.length);
+        i = consumeMoreIndentedLines(text2, i, indent.length);
         if (i !== -1)
           end = i + endStep;
       }
-      for (let ch; ch = text[i += 1]; ) {
+      for (let ch; ch = text2[i += 1]; ) {
         if (mode === FOLD_QUOTED && ch === "\\") {
           escStart = i;
-          switch (text[i + 1]) {
+          switch (text2[i + 1]) {
             case "x":
               i += 3;
               break;
@@ -16174,12 +16174,12 @@ var require_foldFlowLines = __commonJS({
         }
         if (ch === "\n") {
           if (mode === FOLD_BLOCK)
-            i = consumeMoreIndentedLines(text, i, indent.length);
+            i = consumeMoreIndentedLines(text2, i, indent.length);
           end = i + indent.length + endStep;
           split = void 0;
         } else {
           if (ch === " " && prev && prev !== " " && prev !== "\n" && prev !== "	") {
-            const next = text[i + 1];
+            const next = text2[i + 1];
             if (next && next !== " " && next !== "\n" && next !== "	")
               split = i;
           }
@@ -16191,12 +16191,12 @@ var require_foldFlowLines = __commonJS({
             } else if (mode === FOLD_QUOTED) {
               while (prev === " " || prev === "	") {
                 prev = ch;
-                ch = text[i += 1];
+                ch = text2[i += 1];
                 overflow = true;
               }
               const j = i > escEnd + 1 ? i - 2 : escStart - 1;
               if (escapedFolds[j])
-                return text;
+                return text2;
               folds.push(j);
               escapedFolds[j] = true;
               end = j + endStep;
@@ -16211,39 +16211,39 @@ var require_foldFlowLines = __commonJS({
       if (overflow && onOverflow)
         onOverflow();
       if (folds.length === 0)
-        return text;
+        return text2;
       if (onFold)
         onFold();
-      let res = text.slice(0, folds[0]);
+      let res = text2.slice(0, folds[0]);
       for (let i2 = 0; i2 < folds.length; ++i2) {
         const fold = folds[i2];
-        const end2 = folds[i2 + 1] || text.length;
+        const end2 = folds[i2 + 1] || text2.length;
         if (fold === 0)
           res = `
-${indent}${text.slice(0, end2)}`;
+${indent}${text2.slice(0, end2)}`;
         else {
           if (mode === FOLD_QUOTED && escapedFolds[fold])
-            res += `${text[fold]}\\`;
+            res += `${text2[fold]}\\`;
           res += `
-${indent}${text.slice(fold + 1, end2)}`;
+${indent}${text2.slice(fold + 1, end2)}`;
         }
       }
       return res;
     }
-    function consumeMoreIndentedLines(text, i, indent) {
+    function consumeMoreIndentedLines(text2, i, indent) {
       let end = i;
       let start = i + 1;
-      let ch = text[start];
+      let ch = text2[start];
       while (ch === " " || ch === "	") {
         if (i < start + indent) {
-          ch = text[++i];
+          ch = text2[++i];
         } else {
           do {
-            ch = text[++i];
+            ch = text2[++i];
           } while (ch && ch !== "\n");
           end = i;
           start = i + 1;
-          ch = text[start];
+          ch = text2[start];
         }
       }
       return end;
@@ -27935,9 +27935,9 @@ function createFetchClient(options) {
         },
         body: body ? JSON.stringify(body) : void 0
       });
-      const text = await res.text();
+      const text2 = await res.text();
       const isJson = (res.headers.get("content-type") || "").includes("application/json");
-      const data = isJson && text ? JSON.parse(text) : text;
+      const data = isJson && text2 ? JSON.parse(text2) : text2;
       if (!res.ok) {
         const errBody = isJson ? data : void 0;
         const errorDetail = errBody?.error;
@@ -28537,7 +28537,7 @@ var _getRequestParams = (method, options, parameters, body) => {
   return _objectSpread22(_objectSpread22({}, params), parameters);
 };
 async function _handleRequest(fetcher, method, url, options, parameters, body, namespace) {
-  return new Promise((resolve5, reject) => {
+  return new Promise((resolve7, reject) => {
     fetcher(url, _getRequestParams(method, options, parameters, body)).then((result) => {
       if (!result.ok) throw result;
       if (options === null || options === void 0 ? void 0 : options.noResolveJson) return result;
@@ -28547,7 +28547,7 @@ async function _handleRequest(fetcher, method, url, options, parameters, body, n
         if (!contentType || !contentType.includes("application/json")) return {};
       }
       return result.json();
-    }).then((data) => resolve5(data)).catch((error) => handleError(error, reject, options, namespace));
+    }).then((data) => resolve7(data)).catch((error) => handleError(error, reject, options, namespace));
   });
 }
 function createFetchApi(namespace = "storage") {
@@ -35538,9 +35538,9 @@ var SnapshotSchema = external_exports.object({
   fetched_at: external_exports.string(),
   content: external_exports.string()
 });
-function parseSnapshotText(text) {
+function parseSnapshotText(text2) {
   try {
-    const r = SnapshotSchema.safeParse(JSON.parse(text));
+    const r = SnapshotSchema.safeParse(JSON.parse(text2));
     return r.success ? r.data : null;
   } catch {
     return null;
@@ -35669,27 +35669,27 @@ function zodIssuesToConfigIssues(file, issues, root) {
 function customFix(message) {
   return message.includes("secret VALUE") ? "store the value in Secret Manager and put only the secret NAME here" : message === SUPABASE_URL_NEEDS_CUSTOM ? 'add "target": "custom" or remove supabase_url' : "correct the value to match the schema";
 }
-function lineColOf(text, pos) {
-  const before = text.slice(0, pos);
+function lineColOf(text2, pos) {
+  const before = text2.slice(0, pos);
   const line = before.split("\n").length;
   return { line, col: pos - (before.lastIndexOf("\n") + 1) + 1 };
 }
-function parseJsonText(file, text) {
+function parseJsonText(file, text2) {
   try {
-    return { ok: true, value: JSON.parse(text) };
+    return { ok: true, value: JSON.parse(text2) };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     let where2 = "";
     if (!/line \d+ column \d+/.test(msg)) {
       const m = /position (\d+)/.exec(msg);
       if (m) {
-        const { line, col } = lineColOf(text, Number(m[1]));
+        const { line, col } = lineColOf(text2, Number(m[1]));
         where2 = ` (line ${line}, column ${col})`;
       } else {
         const snip = /\.\.\."?([\s\S]*?)"? is not valid JSON/.exec(msg)?.[1] ?? /"([\s\S]*?)" is not valid JSON/.exec(msg)?.[1];
-        const at = snip ? text.indexOf(snip) : -1;
+        const at = snip ? text2.indexOf(snip) : -1;
         if (at >= 0) {
-          const { line, col } = lineColOf(text, at + Math.max(0, snip.length - 1));
+          const { line, col } = lineColOf(text2, at + Math.max(0, snip.length - 1));
           where2 = ` (near line ${line}, column ${col})`;
         }
       }
@@ -35700,15 +35700,15 @@ function parseJsonText(file, text) {
     };
   }
 }
-function validateText(file, text, schema) {
-  const parsed = parseJsonText(file, text);
+function validateText(file, text2, schema) {
+  const parsed = parseJsonText(file, text2);
   if (!parsed.ok) return { ok: false, issues: [parsed.issue] };
   const r = schema.safeParse(parsed.value);
   if (r.success) return { ok: true, value: r.data };
   return { ok: false, issues: zodIssuesToConfigIssues(file, r.error.issues, schema) };
 }
-function validateProjectFileText(file, text) {
-  return validateText(file, text, ProjectFileSchema);
+function validateProjectFileText(file, text2) {
+  return validateText(file, text2, ProjectFileSchema);
 }
 var BUILTIN_PROFILES = {
   cloud: {
@@ -36105,9 +36105,9 @@ function evaluateConductorConfig(opts = {}) {
       projectFailed = true;
       issues.push({ file: label, key: "(file)", problem: `not found at ${paths.projectFile}`, fix: "create it, or unset HARMONY_CONDUCTOR_PROJECT_FILE" });
     } else {
-      const text = readText(paths.projectFile, label);
-      if (text !== null) {
-        const v = validateProjectFileText(label, text);
+      const text2 = readText(paths.projectFile, label);
+      if (text2 !== null) {
+        const v = validateProjectFileText(label, text2);
         if (v.ok) {
           projectLayer = v.value;
           sources.push(`project: ${paths.projectFile}`);
@@ -36118,9 +36118,9 @@ function evaluateConductorConfig(opts = {}) {
       } else projectFailed = true;
     }
   } else if (hasSnapshot) {
-    const text = readText(paths.snapshotFile, "conductor-snapshot.json");
-    if (text !== null) {
-      const snap = parseSnapshotText(text);
+    const text2 = readText(paths.snapshotFile, "conductor-snapshot.json");
+    if (text2 !== null) {
+      const snap = parseSnapshotText(text2);
       if (!snap) {
         warnings.push(`snapshot ${paths.snapshotFile} is unreadable or malformed; ignoring it (run \`harmony conductor config sync\` to rewrite it)`);
       } else {
@@ -36137,9 +36137,9 @@ function evaluateConductorConfig(opts = {}) {
   }
   let hostLayer;
   if (hasHost) {
-    const text = readText(paths.hostFile, HOST_FILE_LABEL);
-    if (text !== null) {
-      const v = validateText(HOST_FILE_LABEL, text, HostFileSchema);
+    const text2 = readText(paths.hostFile, HOST_FILE_LABEL);
+    if (text2 !== null) {
+      const v = validateText(HOST_FILE_LABEL, text2, HostFileSchema);
       if (v.ok) {
         hostLayer = v.value;
         sources.push(`host: ${paths.hostFile}`);
@@ -36401,9 +36401,9 @@ function resolveGatePhase(workflow_state, workflow_activity) {
 // src/tools/knowledge-claim.ts
 var ENVELOPE = /^\*\*Claim:\*\* ([^\n]+)\n\n\*\*Claim source:\*\* (authored|derived)\n\n/;
 function isSingleSentenceShaped(value) {
-  const text = value.trim();
-  if (!text || text.split(/\s+/).length > 50) return false;
-  const neutral = text.replace(/(\d)\.(?=\d)/g, "$1").replace(/\be\.g\.|\bi\.e\./gi, (m) => m.replace(/\./g, ""));
+  const text2 = value.trim();
+  if (!text2 || text2.split(/\s+/).length > 50) return false;
+  const neutral = text2.replace(/(\d)\.(?=\d)/g, "$1").replace(/\be\.g\.|\bi\.e\./gi, (m) => m.replace(/\./g, ""));
   return !/[.!?]/.test(neutral.replace(/[.!?]+\s*$/, ""));
 }
 function validateClaimEntry(title, claim) {
@@ -36452,18 +36452,18 @@ function plainText(content) {
   return stripClaim(content).replace(/<[^>]*>/g, " ").replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/[`*_#>|~]/g, "").replace(/\s+/g, " ").trim();
 }
 function matchedPassage(content, query) {
-  const text = [decodeClaim(content).claim, plainText(content)].filter(Boolean).join(" ");
+  const text2 = [decodeClaim(content).claim, plainText(content)].filter(Boolean).join(" ");
   const terms = query.toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
-  const indexes = terms.map((term) => text.toLocaleLowerCase().indexOf(term)).filter((i) => i >= 0);
+  const indexes = terms.map((term) => text2.toLocaleLowerCase().indexOf(term)).filter((i) => i >= 0);
   if (!indexes.length) return null;
-  const at = Math.min(...indexes), start = Math.max(0, at - 60), end = Math.min(text.length, start + 240);
-  return `${start ? "\u2026" : ""}${text.slice(start, end)}${end < text.length ? "\u2026" : ""}`;
+  const at = Math.min(...indexes), start = Math.max(0, at - 60), end = Math.min(text2.length, start + 240);
+  return `${start ? "\u2026" : ""}${text2.slice(start, end)}${end < text2.length ? "\u2026" : ""}`;
 }
 function proposeClaim(content) {
   if (decodeClaim(content).claim) return null;
   const lines = content.split("\n").filter((line) => !/^\s*(?:_?Derived from|#{1,6}\s|\*\*(?:Question put to the human|Track|Reach|On accept|Context|Ratified asks):)/i.test(line));
-  const text = plainText(lines.join("\n")).replace(/^Decision:\s*/i, "");
-  const candidates = text.match(/.*?[.!?](?=\s|$)|.+$/g) ?? [];
+  const text2 = plainText(lines.join("\n")).replace(/^Decision:\s*/i, "");
+  const candidates = text2.match(/.*?[.!?](?=\s|$)|.+$/g) ?? [];
   let candidate = "";
   for (const part of candidates) {
     candidate += part;
@@ -36563,6 +36563,209 @@ async function resolveTaskIds(client, projectId, inputs) {
     }
   }
   return classified.map((c) => c.kind === "uuid" ? c.id : idByNumber.get(c.taskNumber));
+}
+
+// src/tools/knowledge-metadata.ts
+import { existsSync as existsSync2, readFileSync as readFileSync2 } from "node:fs";
+import { basename as basename2, dirname, join as join3 } from "node:path";
+async function metadataCapable(client) {
+  const { data, error } = await client.rpc("knowledge_metadata_capable");
+  if (error) {
+    if (["PGRST202", "42883"].includes(error.code)) return false;
+    throw new Error(error.message);
+  }
+  if (data === true || data === false) return data;
+  throw new Error(
+    "Invalid knowledge metadata capability response; legacy fallback refused."
+  );
+}
+async function metadataRpc(client, operation, scope, args) {
+  const capable = await metadataCapable(client);
+  if (scope !== void 0 && !["product", "deployment"].includes(scope))
+    throw new Error("scope must be product or deployment");
+  if (scope !== void 0 && !capable)
+    throw new Error(
+      "Knowledge scope unavailable until the schema is promoted; nothing was saved."
+    );
+  if (capable && (operation === "knowledge_record_decision" || operation === "knowledge_supersede_knowledge_entry" || operation === "knowledge_supersede_decision" && args.p_type) && !scope)
+    throw new Error(
+      "New knowledge requires product or deployment scope. Separate mixed claims."
+    );
+  const result = await client.rpc(
+    capable ? `${operation}_metadata` : operation,
+    { ...args, ...capable ? { p_scope: scope ?? null } : {} }
+  );
+  if (result.error?.details)
+    result.error.message += `
+${result.error.details}`;
+  return result;
+}
+async function listKnowledgeTags(client, projectId) {
+  if (!await metadataCapable(client))
+    throw new Error(
+      "Project tag vocabulary unavailable until the schema is promoted."
+    );
+  const { data, error } = await client.rpc("knowledge_list_tags", {
+    p_project_id: projectId
+  });
+  if (error) throw new Error(error.message);
+  return data;
+}
+async function registerKnowledgeTag(client, projectId, name, description) {
+  if (!await metadataCapable(client))
+    throw new Error(
+      "Project tag vocabulary unavailable until the schema is promoted."
+    );
+  const { data, error } = await client.rpc("knowledge_register_tag", {
+    p_project_id: projectId,
+    p_name: name,
+    p_description: description
+  });
+  if (error) throw new Error(error.message);
+  return data;
+}
+function surfaceTags(paths) {
+  return [
+    ...new Set(
+      paths.map((path3) => path3.replace(/^\.\//, "")).filter(
+        (path3) => /^[A-Za-z0-9_.-]+\//.test(path3) && !path3.split("/").some((part) => part === ".." || part === "")
+      ).map((path3) => `surface:${path3.slice(0, path3.lastIndexOf("/"))}`)
+    )
+  ].sort();
+}
+function repositoryPrefix(repo) {
+  let directory = process.cwd();
+  for (; ; ) {
+    const file = join3(directory, ".harmony", "conductor.json");
+    if (existsSync2(file)) {
+      const config = JSON.parse(readFileSync2(file, "utf8"));
+      const match = (config.repos ?? []).find((item) => {
+        const name = String(item.url ?? "").replace(/\.git$/, "").replace(/^.*github\.com[/:]/, "");
+        return name === repo || name.split("/").pop() === repo;
+      });
+      if (match) {
+        const prefix2 = basename2(match.path);
+        if (!/^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(prefix2))
+          throw new Error("Invalid declared repository directory");
+        return prefix2;
+      }
+    }
+    const parent = dirname(directory);
+    if (parent === directory) break;
+    directory = parent;
+  }
+  const prefix = repo.split("/").pop();
+  if (!/^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(prefix))
+    throw new Error("Invalid repository prefix");
+  return prefix;
+}
+
+// src/tools/knowledge-sources.ts
+var text = external_exports.string().trim().min(1);
+var sourceValueSchema = external_exports.object({
+  key: text,
+  kind: external_exports.enum(["default", "error", "file-shape", "measurement", "explanation"]),
+  title: text,
+  content: text,
+  spellings: external_exports.array(text).min(1),
+  tags: external_exports.array(text).optional(),
+  source: external_exports.object({
+    path: text.refine((p) => !p.startsWith("/") && !p.split("/").includes(".."), "Source path must be repository-relative"),
+    sha: external_exports.string().regex(/^[a-f0-9]{40,64}$/),
+    publisher: text,
+    publisher_version: text,
+    run_url: text,
+    line_start: external_exports.number().int().positive().optional(),
+    line_end: external_exports.number().int().positive().optional(),
+    measurement: external_exports.object({ command: text, parameters: external_exports.unknown(), tool_versions: external_exports.unknown(), result: external_exports.unknown() }).optional()
+  }).passthrough()
+}).strict().superRefine((v, ctx) => {
+  if (v.kind === "measurement" && !v.source.measurement) ctx.addIssue({ code: "custom", message: "Measurement requires command, parameters, tool versions and captured result" });
+  if (v.source.line_end && v.source.line_start && v.source.line_end < v.source.line_start) ctx.addIssue({ code: "custom", message: "Invalid source line span" });
+});
+var sourceInventorySchema = external_exports.object({
+  repository: text,
+  surface: text,
+  expected_revision: external_exports.string().uuid().nullable(),
+  run_id: text,
+  source_sha: external_exports.string().regex(/^[a-f0-9]{40,64}$/),
+  values: external_exports.array(sourceValueSchema).max(1e3)
+}).strict().superRefine((v, ctx) => {
+  if (new Set(v.values.map((x) => x.key)).size !== v.values.length) ctx.addIssue({ code: "custom", message: "Duplicate inventory keys" });
+  if (v.values.some((x) => x.source.sha !== v.source_sha)) ctx.addIssue({ code: "custom", message: "Source revision mismatch" });
+});
+async function sourceCapable(client) {
+  const { data, error } = await client.rpc("knowledge_source_capable");
+  if (error) {
+    if (["PGRST202", "42883"].includes(error.code)) return false;
+    throw new Error(error.message);
+  }
+  if (typeof data !== "boolean") throw new Error("Invalid source inventory capability response");
+  return data;
+}
+async function requireSources(client) {
+  if (!await metadataCapable(client) || !await sourceCapable(client)) throw new Error("Source publication unavailable until metadata and inventory schema are promoted; nothing was saved.");
+}
+async function publishSourceInventory(client, projectId, args) {
+  const inventory = sourceInventorySchema.parse(args);
+  await requireSources(client);
+  const { data, error } = await client.rpc("publish_knowledge_source_inventory", {
+    p_project_id: projectId,
+    p_repository: inventory.repository,
+    p_surface: inventory.surface,
+    p_expected_revision: inventory.expected_revision,
+    p_run_id: inventory.run_id,
+    p_source_sha: inventory.source_sha,
+    p_values: inventory.values,
+    p_conduction_id: getConductionId() ?? null,
+    p_leg: getLeg() ?? null
+  });
+  if (error) throw new Error([error.message, error.details].filter(Boolean).join("\n"));
+  return data;
+}
+async function readSourceInventory(client, projectId, args) {
+  await requireSources(client);
+  const { data, error } = await client.rpc("read_knowledge_source_inventory", { p_project_id: projectId, p_repository: args.repository, p_surface: args.surface });
+  if (error) throw new Error(error.message);
+  return data ?? { revision: null, values: [] };
+}
+async function readSourceValues(client, projectId, args = {}) {
+  const requested = args.limit ?? 50, offset = args.offset ?? 0;
+  if (!Number.isInteger(requested) || requested < 0 || !Number.isInteger(offset) || offset < 0) throw new Error("Invalid source value page");
+  const values = [];
+  let total_count = 0;
+  while (values.length < requested) {
+    const size = Math.min(500, requested - values.length);
+    const { data, error } = await client.rpc("read_knowledge_source_values", { p_project_id: projectId, p_search: args.search ?? null, p_limit: size, p_offset: offset + values.length });
+    if (error) {
+      if (["PGRST202", "42883"].includes(error.code)) return { values: [], total_count: 0 };
+      throw new Error(error.message);
+    }
+    if (!data || !Array.isArray(data.values) || !Number.isInteger(data.total_count)) throw new Error("Invalid source values response");
+    values.push(...data.values);
+    total_count = data.total_count;
+    if (data.values.length < size) break;
+  }
+  return { values, total_count };
+}
+function compareSourceCoverage(values, current, previous, revision) {
+  const mentioned = (document2, spelling) => {
+    const escaped = spelling.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(?<![\\p{L}\\p{N}_-])${escaped}(?![\\p{L}\\p{N}_-])`, "u").test(document2);
+  };
+  const rows = values.map((v) => ({ key: v.key, source: v.source, matched_spellings: v.spellings.filter((s) => mentioned(current, s)), previous_spellings: previous === void 0 ? [] : v.spellings.filter((s) => mentioned(previous, s)) }));
+  return {
+    coverage: "explicit-mention coverage; not proof of semantic completeness",
+    inventory_revision: revision ?? null,
+    mentioned: rows.filter((r) => r.matched_spellings.length),
+    missing: rows.filter((r) => !r.matched_spellings.length),
+    lost: rows.filter((r) => !r.matched_spellings.length && r.previous_spellings.length)
+  };
+}
+async function comparePublishedCoverage(client, projectId, args) {
+  const inventory = await readSourceInventory(client, projectId, args);
+  if (!inventory.revision) throw new Error("No published inventory for this repository/surface");
+  return compareSourceCoverage(inventory.values, args.current, args.previous, inventory.revision);
 }
 
 // src/tools/knowledge-questions.ts
@@ -36665,13 +36868,13 @@ function milestoneQuestionPreview(projectId, milestone) {
     source_fingerprint: createHash("md5").update(source).digest("hex"),
     warnings: ["Historical milestone prose may include themes that have since been decided. Review every source excerpt against current knowledge; approve only unresolved themes. Nothing is written by preview."],
     entries: excerpts.map((source_excerpt) => {
-      const text = source_excerpt.replace(/^\s*[-*]\s+/, "");
-      const key = text.match(/^[A-Z][A-Z0-9]*-\d+\b/)?.[0] ?? createHash("sha256").update(text).digest("hex").slice(0, 24);
+      const text2 = source_excerpt.replace(/^\s*[-*]\s+/, "");
+      const key = text2.match(/^[A-Z][A-Z0-9]*-\d+\b/)?.[0] ?? createHash("sha256").update(text2).digest("hex").slice(0, 24);
       if (used.has(key)) throw new Error(`Duplicate theme key ${key}; review the milestone before importing`);
       used.add(key);
       return {
         key,
-        title: `Open question: ${text.slice(0, 160)}`,
+        title: `Open question: ${text2.slice(0, 160)}`,
         content: encodeClaim(
           `Not yet decided. Proposed from milestone \u201C${milestone.name}\u201D; this is not evidence of shipped behaviour.
 
@@ -36715,101 +36918,6 @@ async function importKnowledgeQuestions(client, projectId, args) {
     if (entry) await embedQuestion(client, projectId, { ...entry, id: result.id });
   }
   return data;
-}
-
-// src/tools/knowledge-metadata.ts
-import { existsSync as existsSync2, readFileSync as readFileSync2 } from "node:fs";
-import { basename as basename2, dirname, join as join3 } from "node:path";
-async function metadataCapable(client) {
-  const { data, error } = await client.rpc("knowledge_metadata_capable");
-  if (error) {
-    if (["PGRST202", "42883"].includes(error.code)) return false;
-    throw new Error(error.message);
-  }
-  if (data === true || data === false) return data;
-  throw new Error(
-    "Invalid knowledge metadata capability response; legacy fallback refused."
-  );
-}
-async function metadataRpc(client, operation, scope, args) {
-  const capable = await metadataCapable(client);
-  if (scope !== void 0 && !["product", "deployment"].includes(scope))
-    throw new Error("scope must be product or deployment");
-  if (scope !== void 0 && !capable)
-    throw new Error(
-      "Knowledge scope unavailable until the schema is promoted; nothing was saved."
-    );
-  if (capable && (operation === "knowledge_record_decision" || operation === "knowledge_supersede_knowledge_entry" || operation === "knowledge_supersede_decision" && args.p_type) && !scope)
-    throw new Error(
-      "New knowledge requires product or deployment scope. Separate mixed claims."
-    );
-  const result = await client.rpc(
-    capable ? `${operation}_metadata` : operation,
-    { ...args, ...capable ? { p_scope: scope ?? null } : {} }
-  );
-  if (result.error?.details)
-    result.error.message += `
-${result.error.details}`;
-  return result;
-}
-async function listKnowledgeTags(client, projectId) {
-  if (!await metadataCapable(client))
-    throw new Error(
-      "Project tag vocabulary unavailable until the schema is promoted."
-    );
-  const { data, error } = await client.rpc("knowledge_list_tags", {
-    p_project_id: projectId
-  });
-  if (error) throw new Error(error.message);
-  return data;
-}
-async function registerKnowledgeTag(client, projectId, name, description) {
-  if (!await metadataCapable(client))
-    throw new Error(
-      "Project tag vocabulary unavailable until the schema is promoted."
-    );
-  const { data, error } = await client.rpc("knowledge_register_tag", {
-    p_project_id: projectId,
-    p_name: name,
-    p_description: description
-  });
-  if (error) throw new Error(error.message);
-  return data;
-}
-function surfaceTags(paths) {
-  return [
-    ...new Set(
-      paths.map((path3) => path3.replace(/^\.\//, "")).filter(
-        (path3) => /^[A-Za-z0-9_.-]+\//.test(path3) && !path3.split("/").some((part) => part === ".." || part === "")
-      ).map((path3) => `surface:${path3.slice(0, path3.lastIndexOf("/"))}`)
-    )
-  ].sort();
-}
-function repositoryPrefix(repo) {
-  let directory = process.cwd();
-  for (; ; ) {
-    const file = join3(directory, ".harmony", "conductor.json");
-    if (existsSync2(file)) {
-      const config = JSON.parse(readFileSync2(file, "utf8"));
-      const match = (config.repos ?? []).find((item) => {
-        const name = String(item.url ?? "").replace(/\.git$/, "").replace(/^.*github\.com[/:]/, "");
-        return name === repo || name.split("/").pop() === repo;
-      });
-      if (match) {
-        const prefix2 = basename2(match.path);
-        if (!/^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(prefix2))
-          throw new Error("Invalid declared repository directory");
-        return prefix2;
-      }
-    }
-    const parent = dirname(directory);
-    if (parent === directory) break;
-    directory = parent;
-  }
-  const prefix = repo.split("/").pop();
-  if (!/^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(prefix))
-    throw new Error("Invalid repository prefix");
-  return prefix;
 }
 
 // src/tools/knowledge-definitions.ts
@@ -37011,40 +37119,40 @@ var ENTITY_MAP = {
 };
 var ENTITY_PATTERN = /&amp;|&lt;|&gt;|&quot;|&#39;/g;
 var HAS_ENTITY_PATTERN = /&amp;|&lt;|&gt;|&quot;|&#39;/;
-function splitCodeSpans(text) {
+function splitCodeSpans(text2) {
   const segments = [];
   let i = 0;
   let plainStart = 0;
-  while (i < text.length) {
-    if (text.startsWith("```", i)) {
-      const close = text.indexOf("```", i + 3);
-      const codeEnd = close === -1 ? text.length : close + 3;
-      if (plainStart < i) segments.push({ code: false, text: text.slice(plainStart, i) });
-      segments.push({ code: true, text: text.slice(i, codeEnd) });
+  while (i < text2.length) {
+    if (text2.startsWith("```", i)) {
+      const close = text2.indexOf("```", i + 3);
+      const codeEnd = close === -1 ? text2.length : close + 3;
+      if (plainStart < i) segments.push({ code: false, text: text2.slice(plainStart, i) });
+      segments.push({ code: true, text: text2.slice(i, codeEnd) });
       i = codeEnd;
       plainStart = i;
       continue;
     }
-    if (text[i] === "`") {
-      const close = text.indexOf("`", i + 1);
+    if (text2[i] === "`") {
+      const close = text2.indexOf("`", i + 1);
       if (close === -1) {
         i += 1;
         continue;
       }
-      if (plainStart < i) segments.push({ code: false, text: text.slice(plainStart, i) });
-      segments.push({ code: true, text: text.slice(i, close + 1) });
+      if (plainStart < i) segments.push({ code: false, text: text2.slice(plainStart, i) });
+      segments.push({ code: true, text: text2.slice(i, close + 1) });
       i = close + 1;
       plainStart = i;
       continue;
     }
     i += 1;
   }
-  if (plainStart < text.length) segments.push({ code: false, text: text.slice(plainStart) });
+  if (plainStart < text2.length) segments.push({ code: false, text: text2.slice(plainStart) });
   return segments;
 }
-function normalizeHtmlEntities(text) {
-  if (!text || !HAS_ENTITY_PATTERN.test(text)) return text;
-  return splitCodeSpans(text).map(
+function normalizeHtmlEntities(text2) {
+  if (!text2 || !HAS_ENTITY_PATTERN.test(text2)) return text2;
+  return splitCodeSpans(text2).map(
     (seg) => seg.code ? seg.text : seg.text.replace(ENTITY_PATTERN, (m) => ENTITY_MAP[m] ?? m)
   ).join("");
 }
@@ -37069,9 +37177,9 @@ async function getWorkspaceId(client, projectId) {
   if (error) throw new Error(`Could not resolve workspace: ${error.message}`);
   return data.workspace_id;
 }
-async function embedText(client, text) {
+async function embedText(client, text2) {
   try {
-    const { data, error } = await client.functions.invoke("embed-knowledge", { body: { text } });
+    const { data, error } = await client.functions.invoke("embed-knowledge", { body: { text: text2 } });
     if (error || !data?.embedding) return null;
     return `[${data.embedding.join(",")}]`;
   } catch {
@@ -37155,8 +37263,11 @@ async function queryKnowledge(client, projectId, args) {
     return definitions.definitions;
   }
   const includeDefinitions = !args.type && !args.status && !args.tags?.length && !args.as_of && !args.include_superseded && args.scope !== "deployment";
+  const includeSources = !args.type && !args.status && !args.tags?.length && !args.as_of && !args.include_superseded && args.scope !== "product" && (!args.domain?.length || args.domain.includes("operations"));
+  const sourceOffset = Math.max(0, (args.offset ?? 0) - (includeDefinitions ? definitions.total_count ?? definitions.definitions.length : 0));
+  const generated = includeSources ? await readSourceValues(client, projectId, { search: args.search, limit: args.limit, offset: sourceOffset }) : { values: [], total_count: 0 };
   const prepend = async (entries) => {
-    if (!includeDefinitions) return entries;
+    if (!includeDefinitions) return [...generated.values, ...entries].slice(0, args.limit ?? 50);
     const ids = args.search ? [...new Set(definitions.definitions.flatMap((d) => d.refinements.map((r) => r.id)))] : [];
     let refinements = [];
     if (ids.length) {
@@ -37172,18 +37283,16 @@ async function queryKnowledge(client, projectId, args) {
       ));
     }
     const seen = /* @__PURE__ */ new Set();
-    return [...definitions.definitions, ...refinements, ...entries].filter((entry) => {
+    return [...definitions.definitions, ...refinements, ...generated.values, ...entries].filter((entry) => {
       if (seen.has(entry.id)) return false;
       seen.add(entry.id);
       return true;
     }).slice(0, args.limit ?? 50);
   };
-  const decisionArgs = includeDefinitions && definitions.available ? {
-    ...args,
-    offset: Math.max(0, (args.offset ?? 0) - (definitions.total_count ?? definitions.definitions.length)),
-    limit: Math.max(1, (args.limit ?? 50) - definitions.definitions.length)
-  } : args;
-  if (includeDefinitions && definitions.definitions.length >= (args.limit ?? 50)) return definitions.definitions;
+  const prefixCount = (includeDefinitions ? definitions.total_count ?? definitions.definitions.length : 0) + generated.total_count;
+  const pagePrefixCount = (includeDefinitions ? definitions.definitions.length : 0) + generated.values.length;
+  const decisionArgs = { ...args, offset: Math.max(0, (args.offset ?? 0) - prefixCount), limit: Math.max(1, (args.limit ?? 50) - pagePrefixCount) };
+  if (pagePrefixCount >= (args.limit ?? 50)) return prepend([]);
   if (args.search) {
     const queryEmbedding = await embedText(client, args.search);
     const data = await bookkeepingPage(({ bookkeeping, offset, limit, count }) => truthCompatibleRead((extraColumns) => {
@@ -38635,23 +38744,23 @@ var kw = (re, senseOk) => ({ re, senseOk });
 var AUTH_WORD_REGEX = /\bauth(?:entication|orization|z|n)?\b/i;
 var OAUTH_WORD_REGEX = /\boauth\b/i;
 var AUTH_TOKEN_QUALIFIER = /\b(?:auth|access|api|bearer|jwt|session|refresh|csrf)\b/i;
-function tokenIsAuthSense(text, start, end) {
-  const before = text.slice(Math.max(0, start - 24), start);
-  const after = text.slice(end, end + 24);
+function tokenIsAuthSense(text2, start, end) {
+  const before = text2.slice(Math.max(0, start - 24), start);
+  const after = text2.slice(end, end + 24);
   const window2 = before + " " + after;
   return AUTH_TOKEN_QUALIFIER.test(window2);
 }
 var MIGRATION_CI_TRIGGER_QUALIFIER = /^\s*(?:PRs?|pull[\s-]?requests?)\b/i;
-function migrationSenseOk(text, _start, end) {
-  const after = text.slice(end, end + 20);
+function migrationSenseOk(text2, _start, end) {
+  const after = text2.slice(end, end + 20);
   return !MIGRATION_CI_TRIGGER_QUALIFIER.test(after);
 }
 var AUTH_AUTHORING_VERBS = /\b(?:add(?:s|ed|ing)?|creat(?:e|es|ed|ing)|chang(?:e|es|ed|ing)|implement(?:s|ed|ing)?|requir(?:e|es|ed|ing))\b/i;
 var READING_QUALIFIER_WORDS = /\b(?:existing|current|exercised|accessed|observed|inside|under)\b/i;
 var READING_QUALIFIER_WINDOW = 56;
-function notReadingQualifiedSense(text, start, end) {
-  const before = text.slice(Math.max(0, start - READING_QUALIFIER_WINDOW), start);
-  const after = text.slice(end, end + READING_QUALIFIER_WINDOW);
+function notReadingQualifiedSense(text2, start, end) {
+  const before = text2.slice(Math.max(0, start - READING_QUALIFIER_WINDOW), start);
+  const after = text2.slice(end, end + READING_QUALIFIER_WINDOW);
   const window2 = before + " " + after;
   if (AUTH_AUTHORING_VERBS.test(window2)) return true;
   return !READING_QUALIFIER_WORDS.test(window2);
@@ -38666,7 +38775,7 @@ var KEYWORD_TABLE = {
     kw(/\bsign[\s-]?in\b/i),
     kw(/\bsign[\s-]?out\b/i),
     kw(/\bsession\b/i, notReadingQualifiedSense),
-    kw(/\btokens?\b/i, (text, start, end) => tokenIsAuthSense(text, start, end) && notReadingQualifiedSense(text, start, end)),
+    kw(/\btokens?\b/i, (text2, start, end) => tokenIsAuthSense(text2, start, end) && notReadingQualifiedSense(text2, start, end)),
     kw(/\bpasswords?\b/i),
     kw(/\bcredentials?\b/i, notReadingQualifiedSense),
     kw(/\bRLS\b/i),
@@ -38725,8 +38834,8 @@ var SUBJECT_STARTER_WORDS = /* @__PURE__ */ new Set([
 ]);
 var CLAUSE_BOUNDARY_PUNCT = /[,;:.–—]/;
 var ASCII_LETTER = /[a-z]/;
-function precedingTokens(text, matchStart) {
-  const slice = text.slice(Math.max(0, matchStart - 80), matchStart).toLowerCase();
+function precedingTokens(text2, matchStart) {
+  const slice = text2.slice(Math.max(0, matchStart - 80), matchStart).toLowerCase();
   const isWordChar = (k) => {
     const c = slice[k];
     if (c === void 0) return false;
@@ -38758,26 +38867,26 @@ function precedingTokens(text, matchStart) {
   }
   return inClause;
 }
-function isNegated(text, start) {
-  for (const tok of precedingTokens(text, start)) {
+function isNegated(text2, start) {
+  for (const tok of precedingTokens(text2, start)) {
     if (NEGATION_CUES.has(tok)) return true;
     if (tok.endsWith("n't")) return true;
   }
   return false;
 }
-function textHitsClass(text, cls) {
+function textHitsClass(text2, cls) {
   for (const keyword of KEYWORD_TABLE[cls]) {
     const g = new RegExp(keyword.re.source, keyword.re.flags.includes("g") ? keyword.re.flags : keyword.re.flags + "g");
     let m;
-    while ((m = g.exec(text)) !== null) {
+    while ((m = g.exec(text2)) !== null) {
       const start = m.index;
       const end = m.index + m[0].length;
       if (m[0].length === 0) {
         g.lastIndex++;
         continue;
       }
-      if (keyword.senseOk && !keyword.senseOk(text, start, end)) continue;
-      if (isNegated(text, start)) continue;
+      if (keyword.senseOk && !keyword.senseOk(text2, start, end)) continue;
+      if (isNegated(text2, start)) continue;
       return true;
     }
   }
@@ -38885,7 +38994,7 @@ function pathHitsClass(paths, cls) {
 }
 function detectRiskClasses(input) {
   const hits = /* @__PURE__ */ new Set();
-  const text = typeof input.text === "string" ? input.text : "";
+  const text2 = typeof input.text === "string" ? input.text : "";
   const paths = Array.isArray(input.changedPaths) ? input.changedPaths.filter((p) => typeof p === "string") : [];
   const labels = Array.isArray(input.labels) ? input.labels.filter((l) => typeof l === "string") : [];
   const hasDiff = paths.length > 0;
@@ -38896,10 +39005,10 @@ function detectRiskClasses(input) {
   for (const cls of RISK_CLASSES) {
     if (pathHitsClass(paths, cls)) hits.add(cls);
   }
-  if (text.length > 0) {
+  if (text2.length > 0) {
     for (const cls of RISK_CLASSES) {
       if (hits.has(cls)) continue;
-      if (!textHitsClass(text, cls)) continue;
+      if (!textHitsClass(text2, cls)) continue;
       const demotedByCleanDiff = hasDiff && PATH_GLOB_TABLE[cls].length > 0 && !pathHitsClass(paths, cls);
       if (!demotedByCleanDiff) hits.add(cls);
     }
@@ -38908,12 +39017,12 @@ function detectRiskClasses(input) {
 }
 
 // src/tools/payload-refs.ts
-function kebabSlug(text, maxLen) {
-  const full = text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+function kebabSlug(text2, maxLen) {
+  const full = text2.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
   return full.slice(0, maxLen).replace(/-+$/g, "");
 }
-function slugRef(prefix, text, maxLen = 40) {
-  const slug = kebabSlug(text ?? "", maxLen) || "item";
+function slugRef(prefix, text2, maxLen = 40) {
+  const slug = kebabSlug(text2 ?? "", maxLen) || "item";
   return `${prefix}-${slug}`;
 }
 
@@ -38952,11 +39061,11 @@ var GENERATED_VENDORED_EXCLUDE = [
 function isExcludedPath(path3) {
   return GENERATED_VENDORED_EXCLUDE.some((re) => re.test(path3));
 }
-function extractCandidateValues(text) {
-  if (!text) return [];
+function extractCandidateValues(text2) {
+  if (!text2) return [];
   const values = [];
   const fenceRe = /```[a-zA-Z0-9_-]*\n([\s\S]*?)```/g;
-  let working = text.replace(fenceRe, (_match, body) => {
+  let working = text2.replace(fenceRe, (_match, body) => {
     for (const line of body.split("\n")) {
       const trimmed = line.trim();
       if (trimmed.length >= MIN_INLINE_CODE_SPAN_LENGTH) values.push(trimmed);
@@ -39135,10 +39244,10 @@ function validateSteps(file, extensionPoint, steps, projectRoot, existsSync6) {
 }
 function loadProjectManifest(projectRoot, deps = {}) {
   const existsSync6 = deps.existsSync ?? nodeExistsSync2;
-  const readFileSync15 = deps.readFileSync ?? ((p) => nodeReadFileSync2(p, "utf8"));
+  const readFileSync17 = deps.readFileSync ?? ((p) => nodeReadFileSync2(p, "utf8"));
   const file = nodeJoin2(projectRoot, PROJECT_MANIFEST_RELATIVE_PATH);
   if (!existsSync6(file)) return { kind: "absent" };
-  const raw = readFileSync15(file);
+  const raw = readFileSync17(file);
   let parsed;
   try {
     parsed = (0, import_yaml.parse)(raw);
@@ -39497,8 +39606,8 @@ function countProseWords(s) {
   return s.split(/\s+/).filter((w) => /[A-Za-z0-9]/.test(w)).length;
 }
 function analyzeLegibility(content) {
-  const text = stripForLegibility(content);
-  const sentences = text.split("\n").flatMap((line) => line.split(/(?<=[.!?;:])\s+/)).map((s) => s.trim()).filter((s) => countProseWords(s) > 0);
+  const text2 = stripForLegibility(content);
+  const sentences = text2.split("\n").flatMap((line) => line.split(/(?<=[.!?;:])\s+/)).map((s) => s.trim()).filter((s) => countProseWords(s) > 0);
   const measured = sentences.map((s) => ({ words: countProseWords(s), sentence: s }));
   const longSentences = measured.filter((m) => m.words > SENTENCE_WORD_LIMIT).sort((a, b) => b.words - a.words).map((m) => ({
     words: m.words,
@@ -39506,7 +39615,7 @@ function analyzeLegibility(content) {
   }));
   let nestedParens = 0;
   let adjacentParens = 0;
-  for (const line of text.split("\n")) {
+  for (const line of text2.split("\n")) {
     let depth = 0;
     let prevClose = -1;
     for (let i = 0; i < line.length; i++) {
@@ -39744,40 +39853,40 @@ function proposedAcLines(payload2) {
   return (payload2 ?? []).filter((p) => p.write_kind === "acceptance_criterion" && typeof p.content === "string" && p.content.trim().length > 0).map((p) => `- ${p.content}`);
 }
 function promisedWriteLine(item) {
-  const text = (v) => typeof v === "string" && v.trim() ? v.trim() : null;
+  const text2 = (v) => typeof v === "string" && v.trim() ? v.trim() : null;
   switch (item.write_kind) {
     case "acceptance_criterion": {
-      const content = text(item.content);
+      const content = text2(item.content);
       return content ? `- acceptance criterion \u2014 ${content}` : null;
     }
     case "child_ticket": {
-      const title = text(item.title);
+      const title = text2(item.title);
       return title ? `- new child ticket \u2014 ${title}` : null;
     }
     case "checklist_item": {
-      const title = text(item.title);
+      const title = text2(item.title);
       return title ? `- checklist item \u2014 ${title}` : null;
     }
     case "ac_transfer": {
-      const content = text(item.content);
-      return content ? `- moves an acceptance criterion to ${text(item.target_child_ref) ?? "(unnamed child)"} \u2014 ${content}` : null;
+      const content = text2(item.content);
+      return content ? `- moves an acceptance criterion to ${text2(item.target_child_ref) ?? "(unnamed child)"} \u2014 ${content}` : null;
     }
     case "label_add":
-      return `- label \u2014 ${text(item.label_name) ?? "decision-only"}`;
+      return `- label \u2014 ${text2(item.label_name) ?? "decision-only"}`;
     case "knowledge_entry_content":
       return "- the linked decision entry, written from THIS brief (derived, never separately authored)";
     case "gate_slot":
-      return `- the ${text(item.gate) ?? "gate"} section on the ticket \u2014 this brief's ratified content, kept visible after the gate closes`;
+      return `- the ${text2(item.gate) ?? "gate"} section on the ticket \u2014 this brief's ratified content, kept visible after the gate closes`;
     case "supersede_decision": {
-      const label = text(item.title);
-      return `- supersede decision \u2014 ${label ? `"${label}"` : text(item.decision_id) ?? text(item.ref) ?? "(unnamed)"}, retired with no successor authored here`;
+      const label = text2(item.title);
+      return `- supersede decision \u2014 ${label ? `"${label}"` : text2(item.decision_id) ?? text2(item.ref) ?? "(unnamed)"}, retired with no successor authored here`;
     }
     case "implements_entities": {
       const names = Array.isArray(item.names) ? item.names : [];
       return `- the confirmed feature-entity name(s) \u2014 ${names.length ? names.join(", ") : "(none)"} \u2014 landed on the ticket`;
     }
     case "entity_link": {
-      const name = text(item.entity_name);
+      const name = text2(item.entity_name);
       return name ? `- links this ticket${item.decision_id ? " and this decision" : ""} to the entity "${name}"` : null;
     }
     default:
@@ -39873,8 +39982,8 @@ function decidedItems(doc) {
 }
 function renderEntry(doc, ctx) {
   const briefContent = renderBrief(doc, ctx?.decisionRef ?? null, ctx);
-  const isRatified = (text) => !text.trim() || briefContent.includes(text);
-  const mark = (text) => isRatified(text) ? text : `${text} ${NOT_RATIFIED_MARK}`;
+  const isRatified = (text2) => !text2.trim() || briefContent.includes(text2);
+  const mark = (text2) => isRatified(text2) ? text2 : `${text2} ${NOT_RATIFIED_MARK}`;
   const markAll = (lines) => lines.map(mark);
   const isItemRatified = (item) => isRatified(item.text) && isRatified(item.recommendation ?? "");
   const out = [entryProvenanceStamp(ctx), ""];
@@ -43626,18 +43735,110 @@ function registerBulkCommands(program3) {
   });
 }
 
+// src/cli/commands/knowledge-sources.ts
+import { readFileSync as readFileSync5, writeFileSync } from "node:fs";
+import { resolve as resolve2 } from "node:path";
+
+// src/cli/source-publishers.ts
+import { execFileSync } from "node:child_process";
+import { readFileSync as readFileSync4, realpathSync } from "node:fs";
+import { resolve, relative, isAbsolute } from "node:path";
+var publisherDeclarationSchema = external_exports.object({ version: external_exports.literal(1), repository: external_exports.string().min(1), publishers: external_exports.array(external_exports.object({
+  surface: external_exports.string().min(1),
+  command: external_exports.array(external_exports.string().min(1)).min(1),
+  inputs: external_exports.array(external_exports.string().min(1)).min(1),
+  publisher_version: external_exports.string().min(1)
+})).min(1) });
+var git = (root, args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 });
+function loadPublisherDeclaration(root, file = ".harmony/source-publishers.json") {
+  return publisherDeclarationSchema.parse(JSON.parse(readFileSync4(resolve(root, file), "utf8")));
+}
+function runSourcePublisher(root, declaration, surface, expectedRevision, runId, runUrl, previousSha) {
+  root = realpathSync(root);
+  const publisher = declaration.publishers.find((p) => p.surface === surface);
+  if (!publisher) throw new Error(`Undeclared publisher: ${surface}`);
+  if (declaration.publishers.filter((p) => p.surface === surface).length !== 1) throw new Error("Duplicate surface declaration");
+  const sha = git(root, ["rev-parse", "HEAD"]).trim();
+  if (previousSha) {
+    try {
+      git(root, ["merge-base", "--is-ancestor", previousSha, sha]);
+    } catch {
+      throw new Error("Published source is newer or divergent; update the checkout before regenerating");
+    }
+  }
+  const paths = /* @__PURE__ */ new Set();
+  for (const input of publisher.inputs) {
+    if (input.startsWith("/") || input.split("/").includes("..")) throw new Error("Inputs must be repository-relative");
+    const matches = git(root, ["ls-files", "--", input]).trim().split("\n").filter(Boolean);
+    if (!matches.length) throw new Error(`Publisher input matches no tracked sources: ${input}`);
+    matches.forEach((path3) => paths.add(path3));
+  }
+  if (!paths.size) throw new Error("Publisher inputs match no tracked sources");
+  for (const path3 of paths) {
+    const actual = readFileSync4(resolve(root, path3));
+    const committed = execFileSync("git", ["-C", root, "show", `${sha}:${path3}`], { maxBuffer: 10 * 1024 * 1024 });
+    if (!actual.equals(committed)) throw new Error(`Uncommitted publisher input: ${path3}`);
+  }
+  const output = execFileSync(publisher.command[0], publisher.command.slice(1), { cwd: root, encoding: "utf8", timeout: 12e4, maxBuffer: 10 * 1024 * 1024 });
+  const values = JSON.parse(output);
+  if (!Array.isArray(values)) throw new Error("Publisher must emit a JSON value array");
+  const inventory = sourceInventorySchema.parse({
+    repository: declaration.repository,
+    surface,
+    expected_revision: expectedRevision,
+    run_id: runId,
+    source_sha: sha,
+    values: values.map((v) => ({ ...v, source: { ...v.source, repository: declaration.repository, sha, publisher: surface, publisher_version: publisher.publisher_version, run_url: runUrl } }))
+  });
+  for (const path3 of paths) {
+    if (!readFileSync4(resolve(root, path3)).equals(execFileSync("git", ["-C", root, "show", `${sha}:${path3}`], { maxBuffer: 10 * 1024 * 1024 }))) throw new Error(`Publisher mutated input: ${path3}`);
+  }
+  for (const value of inventory.values) {
+    const path3 = value.source.path;
+    const local = relative(root, realpathSync(resolve(root, path3)));
+    if (isAbsolute(local) || local.startsWith("..") || !paths.has(path3)) throw new Error(`Source is outside declared inputs: ${path3}`);
+    if (!readFileSync4(resolve(root, path3)).equals(execFileSync("git", ["-C", root, "show", `${sha}:${path3}`], { maxBuffer: 10 * 1024 * 1024 }))) throw new Error(`Publisher mutated source: ${path3}`);
+    const lines = readFileSync4(resolve(root, path3), "utf8").split("\n").length;
+    if (value.source.line_start && value.source.line_start > lines || value.source.line_end && value.source.line_end > lines) throw new Error(`Source span outside file: ${path3}`);
+  }
+  return inventory;
+}
+
+// src/cli/commands/knowledge-sources.ts
+var render = (data) => JSON.stringify(data, null, 2);
+function registerSourceCommands(knowledge, program3) {
+  knowledge.command("source-inventory").requiredOption("--repository <repository>").requiredOption("--surface <surface>").action(async (opts) => {
+    await runCommand(program3.opts(), (ctx) => readSourceInventory(ctx.client, ctx.projectId, opts), render);
+  });
+  knowledge.command("source-publish <file>").description("Publish a complete extracted JSON inventory; no legacy fallback").action(async (file) => {
+    await runCommand(program3.opts(), (ctx) => publishSourceInventory(ctx.client, ctx.projectId, JSON.parse(readFileSync5(file, "utf8"))), render);
+  });
+  knowledge.command("publish-values").description("Run a declared trusted publisher and publish its complete deployment inventory").requiredOption("--surface <surface>").requiredOption("--run-id <id>").requiredOption("--run-url <url>").option("--root <directory>", "Repository checkout", process.cwd()).option("--declaration <file>", "Publisher declaration", ".harmony/source-publishers.json").option("--output <file>", "Also save extracted inventory for auditing").action(async (opts) => {
+    await runCommand(program3.opts(), async (ctx) => {
+      const root = resolve2(opts.root), declaration = loadPublisherDeclaration(root, opts.declaration);
+      const snapshot = await readSourceInventory(ctx.client, ctx.projectId, { repository: declaration.repository, surface: opts.surface });
+      const inventory = runSourcePublisher(root, declaration, opts.surface, snapshot.revision, opts.runId, opts.runUrl, snapshot.source_sha);
+      if (opts.output) writeFileSync(opts.output, JSON.stringify(inventory, null, 2) + "\n");
+      return publishSourceInventory(ctx.client, ctx.projectId, inventory);
+    }, render);
+  });
+  knowledge.command("compare-coverage <current>").description("Exact option mentions, missing options and coverage lost since --previous").requiredOption("--repository <repository>").requiredOption("--surface <surface>").option("--previous <file>").action(async (current, opts) => {
+    await runCommand(program3.opts(), (ctx) => comparePublishedCoverage(ctx.client, ctx.projectId, { repository: opts.repository, surface: opts.surface, current: readFileSync5(current, "utf8"), previous: opts.previous ? readFileSync5(opts.previous, "utf8") : void 0 }), render);
+  });
+}
+
 // src/cli/commands/knowledge.ts
 import { readFile } from "node:fs/promises";
-import { readFileSync as readFileSync4, writeFileSync } from "node:fs";
+import { readFileSync as readFileSync6, writeFileSync as writeFileSync2 } from "node:fs";
 
 // src/tools/knowledge-repair.ts
-import { execFileSync } from "node:child_process";
+import { execFileSync as execFileSync2 } from "node:child_process";
 import { randomUUID } from "node:crypto";
 function verifiedPrPaths(repo, number) {
   if (!/^[-\w]+\/[-\w.]+$/.test(repo) || !Number.isSafeInteger(number) || number < 1)
     throw new Error("Invalid PR identity");
   const pr = JSON.parse(
-    execFileSync(
+    execFileSync2(
       "gh",
       [
         "pr",
@@ -43653,7 +43854,7 @@ function verifiedPrPaths(repo, number) {
   );
   if (pr.state !== "MERGED") throw new Error(`PR ${pr.url} is not merged`);
   const prefix = repositoryPrefix(repo);
-  const pages = execFileSync(
+  const pages = execFileSync2(
     "gh",
     [
       "api",
@@ -43679,12 +43880,12 @@ async function previewMetadataRepair(client, projectId) {
   if (error) throw new Error(error.message);
   const entries = [];
   for (const d of data ?? []) {
-    const text = `${d.title}
+    const text2 = `${d.title}
 ${d.content}`;
     const operations = /promote-prod|container\/|\.github\/workflows|staging.*(?:job|host)|\bdeployment\b/i.test(
-      text
+      text2
     );
-    const product = /\b(user|reader|author|product)\b/i.test(text);
+    const product = /\b(user|reader|author|product)\b/i.test(text2);
     const prs = [];
     const { data: refs, error: refsError } = await client.from("ticket_references_knowledge").select("task_id").eq("decision_id", d.id);
     if (refsError) throw new Error(refsError.message);
@@ -43831,6 +44032,7 @@ async function tagReleasedKnowledge(client, projectId, taskId, repo, pr) {
 // src/cli/commands/knowledge.ts
 function registerKnowledgeCommands(program3) {
   const knowledge = program3.command("knowledge").description("Manage workspace knowledge base");
+  registerSourceCommands(knowledge, program3);
   const questions = knowledge.command("questions").description("Manage unresolved knowledge; question state never implies shipped behaviour");
   questions.command("save").requiredOption("--state <state>", "open, parked or decided").option("--claim <claim>", "Authored one-sentence claim; omitted claims remain derived proposals").option("--id <id>", "Existing question UUID").option("--expected-updated-at <timestamp>", "Fresh read timestamp for changes").option("--title <title>").option("--content <content>").option("--scope <scope>", "product or deployment; required for creates").option("--decision <id>", "Accepted resulting decision in this project").option("--reopen", "Explicitly reopen a decided question").option("--domain <domains>", "Comma-separated subject domains; defaults to product on create").option("--provenance <value>", "Declare how this write was authorized").action(async (opts) => runCommand(program3.opts(), (ctx) => saveKnowledgeQuestion(ctx.client, ctx.projectId, {
     question_id: opts.id,
@@ -43883,7 +44085,8 @@ function registerKnowledgeCommands(program3) {
           transform: (v) => v.slice(0, 8)
         },
         { key: "title", header: "Title", width: 40 },
-        { key: "content", header: "Definition", width: 60 },
+        { key: "content", header: "Definition / value", width: 60 },
+        { key: "source", header: "Generated source", transform: (v) => v ? JSON.stringify(v) : "" },
         { key: "claim", header: "Claim", width: 60 },
         { key: "claim_source", header: "Claim source" },
         { key: "snippet", header: "Matched passage", width: 60 },
@@ -43914,12 +44117,12 @@ function registerKnowledgeCommands(program3) {
   knowledge.command("preview-metadata-repair").argument("<file>").action(async (file) => {
     await runCommand(program3.opts(), async (ctx) => {
       const manifest = await previewMetadataRepair(ctx.client, ctx.projectId);
-      writeFileSync(file, JSON.stringify(manifest, null, 2));
+      writeFileSync2(file, JSON.stringify(manifest, null, 2));
       return manifest.counts;
     }, (data) => JSON.stringify(data, null, 2));
   });
   knowledge.command("apply-metadata-repair").argument("<reviewed-file>").action(async (file) => {
-    await runCommand(program3.opts(), (ctx) => applyMetadataRepair(ctx.client, ctx.projectId, JSON.parse(readFileSync4(file, "utf8"))), (data) => JSON.stringify(data, null, 2));
+    await runCommand(program3.opts(), (ctx) => applyMetadataRepair(ctx.client, ctx.projectId, JSON.parse(readFileSync6(file, "utf8"))), (data) => JSON.stringify(data, null, 2));
   });
   knowledge.command("tag-release").requiredOption("--task <uuid>", "Ticket UUID").requiredOption("--repo <owner/name>", "PR repository").requiredOption("--pr <number>", "Merged PR number").action(async (opts) => {
     await runCommand(program3.opts(), (ctx) => tagReleasedKnowledge(ctx.client, ctx.projectId, opts.task, opts.repo, Number(opts.pr)), (data) => JSON.stringify(data, null, 2));
@@ -44389,8 +44592,8 @@ function resolveCost(parsed, model) {
 }
 var asNumber = (v) => typeof v === "number" && Number.isFinite(v) ? v : null;
 var asString = (v) => typeof v === "string" ? v : null;
-function parseEnvelope(text) {
-  const trimmed = text.trim();
+function parseEnvelope(text2) {
+  const trimmed = text2.trim();
   if (!trimmed) return null;
   try {
     const whole = JSON.parse(trimmed);
@@ -44414,8 +44617,8 @@ function parseEnvelope(text) {
   }
   return null;
 }
-function parseClaudeResultJson(text) {
-  const envelope = parseEnvelope(text);
+function parseClaudeResultJson(text2) {
+  const envelope = parseEnvelope(text2);
   if (!envelope) return null;
   if (!("result" in envelope) && !("usage" in envelope)) return null;
   const usage = envelope.usage ?? {};
@@ -44487,8 +44690,8 @@ var UNIT_SECONDS = {
   day: 86400,
   days: 86400
 };
-function relativeResetSeconds(text) {
-  const m = /(?:try again|retry|resets?|available again)\s+(?:in|after)\s+((?:\d+(?:\.\d+)?\s*[a-z]+[\s,]*(?:and\s+)?)+)/i.exec(text);
+function relativeResetSeconds(text2) {
+  const m = /(?:try again|retry|resets?|available again)\s+(?:in|after)\s+((?:\d+(?:\.\d+)?\s*[a-z]+[\s,]*(?:and\s+)?)+)/i.exec(text2);
   if (!m) return null;
   let total = 0;
   let any = false;
@@ -44500,14 +44703,14 @@ function relativeResetSeconds(text) {
   }
   return any && total > 0 ? total : null;
 }
-function absoluteResetFromText(text) {
-  const m = /(?:try again|resets?|available again)\s+(?:at|on)\s+([^.;\n)]+)/i.exec(text);
+function absoluteResetFromText(text2) {
+  const m = /(?:try again|resets?|available again)\s+(?:at|on)\s+([^.;\n)]+)/i.exec(text2);
   return m ? absoluteResetTime(m[1]) : null;
 }
-function resetFromText(text, now) {
-  const rel = relativeResetSeconds(text);
+function resetFromText(text2, now) {
+  const rel = relativeResetSeconds(text2);
   if (rel !== null) return resetsInSeconds(rel, now);
-  return absoluteResetFromText(text);
+  return absoluteResetFromText(text2);
 }
 
 // src/agents/claude-code.ts
@@ -44519,12 +44722,12 @@ function parseClaudeRefusal(stdout, now = /* @__PURE__ */ new Date(), env2 = pro
   if (forced) return forced;
   const parsed = parseClaudeResultJson(stdout);
   if (!parsed || !parsed.is_error) return null;
-  const text = parsed.result ?? "";
-  if (text === "") return null;
-  const kind = CLAUDE_QUOTA_RE.test(text) ? "quota" : CLAUDE_RATE_LIMIT_RE.test(text) ? "rate-limit" : CLAUDE_LIMIT_REACHED_RE.test(text) ? "quota" : null;
+  const text2 = parsed.result ?? "";
+  if (text2 === "") return null;
+  const kind = CLAUDE_QUOTA_RE.test(text2) ? "quota" : CLAUDE_RATE_LIMIT_RE.test(text2) ? "rate-limit" : CLAUDE_LIMIT_REACHED_RE.test(text2) ? "quota" : null;
   if (!kind) return null;
-  const pipe = /\|\s*(\d{9,13})\s*$/.exec(text);
-  const resets_at = (pipe ? absoluteResetTime(Number(pipe[1])) : null) ?? resetFromText(text, now);
+  const pipe = /\|\s*(\d{9,13})\s*$/.exec(text2);
+  const resets_at = (pipe ? absoluteResetTime(Number(pipe[1])) : null) ?? resetFromText(text2, now);
   return { kind, resets_at };
 }
 var CLAUDE_OUTPUT_FORMAT_FLAGS = ["--output-format", "json"];
@@ -44896,10 +45099,10 @@ function isPlausibleCodexThreadId(id) {
 function buildCodexThreadRecord(threadId, model, now = /* @__PURE__ */ new Date()) {
   return { agent: "codex", thread_id: threadId, model: model ? model : null, time: now.toISOString() };
 }
-function parseCodexThreadRecord(text) {
+function parseCodexThreadRecord(text2) {
   let v;
   try {
-    v = JSON.parse(text);
+    v = JSON.parse(text2);
   } catch {
     return null;
   }
@@ -44943,30 +45146,30 @@ function errorText(e) {
   push(e.error);
   return parts.join(" ");
 }
-function structuredReset(e, text, now) {
+function structuredReset(e, text2, now) {
   const err = e.error && typeof e.error === "object" ? e.error : {};
   const fromField = resetsInSeconds(err.resets_in_seconds, now) ?? absoluteResetTime(err.resets_at) ?? resetsInSeconds(err.retry_after, now);
   if (fromField) return fromField;
-  const inSec = /"?resets_in_seconds"?\s*[:=]\s*(\d+)/i.exec(text);
+  const inSec = /"?resets_in_seconds"?\s*[:=]\s*(\d+)/i.exec(text2);
   if (inSec) return resetsInSeconds(Number(inSec[1]), now);
-  const at = /"?resets_at"?\s*[:=]\s*"?([0-9T:.\-+Z]+)"?/i.exec(text);
+  const at = /"?resets_at"?\s*[:=]\s*"?([0-9T:.\-+Z]+)"?/i.exec(text2);
   if (at) {
     const t = absoluteResetTime(/^\d+$/.test(at[1]) ? Number(at[1]) : at[1]);
     if (t) return t;
   }
-  const retryAfter = /retry[- _]after\s*[:=]?\s*(\d+)\s*(?:s\b|sec|seconds)?/i.exec(text);
+  const retryAfter = /retry[- _]after\s*[:=]?\s*(\d+)\s*(?:s\b|sec|seconds)?/i.exec(text2);
   if (retryAfter) return resetsInSeconds(Number(retryAfter[1]), now);
-  return resetFromText(text, now);
+  return resetFromText(text2, now);
 }
 function parseCodexRefusal(stdout, now = /* @__PURE__ */ new Date(), env2 = process.env) {
   const forced = forcedRefusal(env2);
   if (forced) return forced;
   const failures = events(stdout).filter((e) => e.type === "error" || e.type === "turn.failed");
   for (const e of failures.reverse()) {
-    const text = errorText(e);
-    if (text === "") continue;
-    const kind = CODEX_QUOTA_RE.test(text) ? "quota" : CODEX_RATE_LIMIT_RE.test(text) ? "rate-limit" : null;
-    if (kind) return { kind, resets_at: structuredReset(e, text, now) };
+    const text2 = errorText(e);
+    if (text2 === "") continue;
+    const kind = CODEX_QUOTA_RE.test(text2) ? "quota" : CODEX_RATE_LIMIT_RE.test(text2) ? "rate-limit" : null;
+    if (kind) return { kind, resets_at: structuredReset(e, text2, now) };
   }
   return null;
 }
@@ -45252,8 +45455,8 @@ function registerConfigCommands(program3) {
 
 // src/cli/commands/conductor-config.ts
 import { execFile } from "node:child_process";
-import { chmodSync as chmodSync3, existsSync as fsExistsSync3, mkdirSync as mkdirSync3, readFileSync as fsReadFileSync3, writeFileSync as writeFileSync4 } from "node:fs";
-import { dirname as dirname6, resolve as resolve3 } from "node:path";
+import { chmodSync as chmodSync3, existsSync as fsExistsSync3, mkdirSync as mkdirSync3, readFileSync as fsReadFileSync3, writeFileSync as writeFileSync5 } from "node:fs";
+import { dirname as dirname6, resolve as resolve5 } from "node:path";
 
 // src/config/conductor-migrate.ts
 var DEFAULT_SECRET_NAMES = {
@@ -45373,12 +45576,12 @@ function buildMigration(input) {
 
 // src/config/conductor-project-source.ts
 import { createHash as createHash2 } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync as readFileSync6, renameSync, rmSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync as readFileSync8, renameSync, rmSync, writeFileSync as writeFileSync3 } from "node:fs";
 import { dirname as dirname3 } from "node:path";
 
 // src/config/github-app-token.ts
 import { createSign } from "node:crypto";
-import { readFileSync as readFileSync5 } from "node:fs";
+import { readFileSync as readFileSync7 } from "node:fs";
 var GITHUB_API_DEFAULT = "https://api.github.com";
 var REQUEST_TIMEOUT_MS = 1e4;
 var TOKEN_REFRESH_MARGIN_MS = 5 * 6e4;
@@ -45394,7 +45597,7 @@ function buildAppJwt(appId, privateKey, nowSeconds) {
 function createGithubTokenProvider(deps) {
   const { env: env2 } = deps;
   const fetchImpl = deps.fetchImpl ?? fetch;
-  const readFile2 = deps.readFile ?? ((p) => readFileSync5(p, "utf8"));
+  const readFile2 = deps.readFile ?? ((p) => readFileSync7(p, "utf8"));
   const now = deps.now ?? Date.now;
   const api = env2.GITHUB_API_URL || GITHUB_API_DEFAULT;
   const appId = env2.HARMONY_APP_ID || deps.appOverride?.app_id;
@@ -45432,8 +45635,8 @@ function createGithubTokenProvider(deps) {
 
 // src/config/conductor-project-source.ts
 var REQUEST_TIMEOUT_MS2 = 1e4;
-function gitBlobSha(text) {
-  const body = Buffer.from(text, "utf8");
+function gitBlobSha(text2) {
+  const body = Buffer.from(text2, "utf8");
   return createHash2("sha1").update(`blob ${body.length}\0`).update(body).digest("hex");
 }
 var encodePath = (p) => p.split("/").map(encodeURIComponent).join("/");
@@ -45478,15 +45681,15 @@ async function fetchProjectFile(input) {
     if (!res.ok) {
       return { status: "error", code: `http-${res.status}`, message: `HTTP ${res.status} reading ${where2}` };
     }
-    const text = await res.text();
-    return { status: "ok", text, etag: res.headers?.get?.("etag") ?? null, sha: gitBlobSha(text) };
+    const text2 = await res.text();
+    return { status: "ok", text: text2, etag: res.headers?.get?.("etag") ?? null, sha: gitBlobSha(text2) };
   } catch (err) {
     return { status: "error", code: "network", message: `network error reading ${where2}: ${err instanceof Error ? err.message : String(err)}` };
   }
 }
 function readSnapshot(path3) {
   try {
-    return parseSnapshotText(readFileSync6(path3, "utf8"));
+    return parseSnapshotText(readFileSync8(path3, "utf8"));
   } catch {
     return null;
   }
@@ -45495,7 +45698,7 @@ function writeSnapshot(path3, snap) {
   mkdirSync(dirname3(path3), { recursive: true });
   const tmp = `${path3}.${process.pid}.${Date.now().toString(36)}.tmp`;
   try {
-    writeFileSync2(tmp, `${JSON.stringify(snap, null, 2)}
+    writeFileSync3(tmp, `${JSON.stringify(snap, null, 2)}
 `, { mode: 384 });
     chmodSync(tmp, 384);
     renameSync(tmp, path3);
@@ -45599,10 +45802,10 @@ function classifyLeases(rows, host, runningPid, freshMs, nowMs) {
 }
 
 // src/daemon/conductor-process.ts
-import { basename as basename3, isAbsolute, join as join5, resolve } from "node:path";
-function parsePsOutput(text) {
+import { basename as basename3, isAbsolute as isAbsolute2, join as join5, resolve as resolve3 } from "node:path";
+function parsePsOutput(text2) {
   const out = [];
-  for (const line of text.split("\n")) {
+  for (const line of text2.split("\n")) {
     const m = /^\s*(\d+)\s+(.+?)\s*$/.exec(line);
     if (m) out.push({ pid: Number(m[1]), args: m[2] });
   }
@@ -45667,24 +45870,24 @@ function daemonCandidates(procs) {
   return out;
 }
 function matchConductors(procs, opts) {
-  const want = resolve(join5(opts.pluginDir, "dist", "bin", "daemon.js"));
+  const want = resolve3(join5(opts.pluginDir, "dist", "bin", "daemon.js"));
   const out = [];
   for (const c of daemonCandidates(procs)) {
     let script;
-    if (isAbsolute(c.script)) script = resolve(c.script);
+    if (isAbsolute2(c.script)) script = resolve3(c.script);
     else {
       const cwd = opts.cwdByPid?.get(c.pid);
       if (!cwd) continue;
-      script = resolve(cwd, c.script);
+      script = resolve3(cwd, c.script);
     }
     if (script !== want) continue;
-    if (opts.configPath && c.config !== void 0 && resolve(c.config) !== resolve(opts.configPath)) continue;
+    if (opts.configPath && c.config !== void 0 && resolve3(c.config) !== resolve3(opts.configPath)) continue;
     out.push({ ...c, script });
   }
   return out;
 }
 function needsCwd(procs) {
-  return daemonCandidates(procs).filter((c) => !isAbsolute(c.script)).map((c) => c.pid);
+  return daemonCandidates(procs).filter((c) => !isAbsolute2(c.script)).map((c) => c.pid);
 }
 
 // src/daemon/supervisor-control.ts
@@ -45811,7 +46014,7 @@ import { join as join9 } from "node:path";
 import { basename as basename4, join as join8 } from "node:path";
 
 // src/config/conductor-secrets.ts
-import { readFileSync as readFileSync7 } from "node:fs";
+import { readFileSync as readFileSync9 } from "node:fs";
 
 // src/daemon/conductor-remote.ts
 var REMOTE_ENV = "HARMONY_CONDUCTOR_REMOTE";
@@ -45839,17 +46042,17 @@ async function resolveConductorSecrets(deps) {
   const result = { resolved: [], skipped: [] };
   const remote = isRemoteConductor(deps.env);
   const hostPath = resolveConductorPaths(deps.env).hostFile;
-  const read = deps.readFile ?? ((p) => readFileSync7(p, "utf8"));
-  let text;
+  const read = deps.readFile ?? ((p) => readFileSync9(p, "utf8"));
+  let text2;
   try {
-    text = read(hostPath);
+    text2 = read(hostPath);
   } catch {
     if (!remote) return result;
     throw new ConductorSecretsError(`the host file ${hostPath} could not be read; a conductor with a secrets block takes its secret names from its "secrets" block`);
   }
   let json;
   try {
-    json = JSON.parse(text);
+    json = JSON.parse(text2);
   } catch {
     if (!remote) return result;
     throw new ConductorSecretsError(`the host file ${hostPath} is not valid JSON`);
@@ -46372,9 +46575,9 @@ async function runStopRemote(deps, opts = {}, onLine) {
 
 // src/cli/commands/conductor-lifecycle-deps.ts
 import { spawn } from "node:child_process";
-import { chmodSync as chmodSync2, closeSync, existsSync as existsSync3, mkdirSync as mkdirSync2, openSync, readFileSync as readFileSync8, readlinkSync, rmSync as rmSync2, writeFileSync as writeFileSync3 } from "node:fs";
+import { chmodSync as chmodSync2, closeSync, existsSync as existsSync3, mkdirSync as mkdirSync2, openSync, readFileSync as readFileSync10, readlinkSync, rmSync as rmSync2, writeFileSync as writeFileSync4 } from "node:fs";
 import { homedir as homedir3, hostname, userInfo } from "node:os";
-import { dirname as dirname4, resolve as resolve2 } from "node:path";
+import { dirname as dirname4, resolve as resolve4 } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // src/cli/commands/conductions.ts
@@ -46590,7 +46793,7 @@ function createRegistryClient(deps) {
   const call = (name, args, cls, timeoutMs = defaultTimeout) => withWriteRetry(
     deps,
     { class: cls, endpoint: `rpc(${name})` },
-    () => new Promise((resolve5, reject) => {
+    () => new Promise((resolve7, reject) => {
       let done = false;
       const cancel = deps.startTimeout(timeoutMs, () => {
         if (done) return;
@@ -46612,7 +46815,7 @@ function createRegistryClient(deps) {
           done = true;
           cancel();
           if (error) reject(error);
-          else resolve5(data);
+          else resolve7(data);
         },
         (err) => {
           if (done) return;
@@ -46826,7 +47029,7 @@ function defaultLifecycleDeps() {
       }
     })(),
     home: homedir3(),
-    cliPluginDir: resolve2(dirname4(fileURLToPath2(import.meta.url)), "..", ".."),
+    cliPluginDir: resolve4(dirname4(fileURLToPath2(import.meta.url)), "..", ".."),
     hostname: () => hostname(),
     now: () => Date.now(),
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
@@ -46870,9 +47073,9 @@ function defaultLifecycleDeps() {
       }
     },
     existsSync: existsSync3,
-    readFileSync: (p) => readFileSync8(p, "utf8"),
-    writeFileSync: (p, text, mode) => {
-      writeFileSync3(p, text, { mode });
+    readFileSync: (p) => readFileSync10(p, "utf8"),
+    writeFileSync: (p, text2, mode) => {
+      writeFileSync4(p, text2, { mode });
       chmodSync2(p, mode);
     },
     mkdirSync: (p) => {
@@ -47541,16 +47744,16 @@ var fail = (message, extra = {}) => ({
 });
 function readHostFile(deps, path3) {
   if (!deps.existsSync(path3)) return { host: null, issues: [] };
-  let text;
+  let text2;
   try {
-    text = deps.readFileSync(path3);
+    text2 = deps.readFileSync(path3);
   } catch (err) {
     return {
       host: null,
       issues: [{ file: "conductor-host.json", key: "(file)", problem: `could not be read: ${err instanceof Error ? err.message : String(err)}`, fix: `check that ${path3} is readable` }]
     };
   }
-  const parsed = parseJsonText("conductor-host.json", text);
+  const parsed = parseJsonText("conductor-host.json", text2);
   if (!parsed.ok) return { host: null, issues: [parsed.issue] };
   const r = HostFileSchema.safeParse(parsed.value);
   return r.success ? { host: r.data, issues: [] } : { host: null, issues: zodIssuesToConfigIssues("conductor-host.json", r.error.issues, HostFileSchema) };
@@ -47663,8 +47866,8 @@ async function runMigrate(deps, opts) {
     );
   }
   const paths = resolveConductorPaths(deps.env);
-  const outHost = opts.outHost ? resolve3(opts.outHost) : paths.hostFile;
-  const outProject = opts.outProject ? resolve3(opts.outProject) : void 0;
+  const outHost = opts.outHost ? resolve5(opts.outHost) : paths.hostFile;
+  const outProject = opts.outProject ? resolve5(opts.outProject) : void 0;
   const projectText = pretty(migration.projectFile);
   const hostText = pretty(migration.hostFile);
   const written = [];
@@ -47675,7 +47878,7 @@ async function runMigrate(deps, opts) {
     const targets = [outProject, outHost];
     if (outProject === outHost) return fail("--out-project and --out-host name the same file");
     for (const t of targets) {
-      if (t === resolve3(legacyPath)) {
+      if (t === resolve5(legacyPath)) {
         return fail(`refusing to write ${t}: it is the legacy deployment config, which migrate never modifies`);
       }
     }
@@ -47684,10 +47887,10 @@ async function runMigrate(deps, opts) {
       return fail(`refusing to overwrite ${existing.join(", ")} (pass --force to replace it; nothing was written)`);
     }
     mkdirSync3(dirname6(outProject), { recursive: true });
-    writeFileSync4(outProject, projectText, { mode: 420 });
+    writeFileSync5(outProject, projectText, { mode: 420 });
     written.push(outProject);
     mkdirSync3(dirname6(outHost), { recursive: true });
-    writeFileSync4(outHost, hostText, { mode: 384 });
+    writeFileSync5(outHost, hostText, { mode: 384 });
     chmodSync3(outHost, 384);
     written.push(outHost);
   }
@@ -47943,10 +48146,10 @@ function defaultLogsDeps() {
     now: Date.now,
     existsSync: fsExistsSync4,
     readFileSync: (p) => fsReadFileSync4(p, "utf8"),
-    runGcloud: (args) => new Promise((resolve5) => {
+    runGcloud: (args) => new Promise((resolve7) => {
       execFile2("gcloud", args, { maxBuffer: 64 * 1024 * 1024, timeout: 6e4 }, (err, stdout, stderr) => {
         const code = err ? typeof err.code === "number" ? err.code : 1 : 0;
-        resolve5({ code, stdout: String(stdout ?? ""), stderr: String(stderr ?? err?.message ?? "") });
+        resolve7({ code, stdout: String(stdout ?? ""), stderr: String(stderr ?? err?.message ?? "") });
       });
     }),
     configuredProject: () => {
@@ -47955,8 +48158,8 @@ function defaultLogsDeps() {
   };
 }
 var UNIT_MS = { s: 1e3, m: 6e4, h: 36e5, d: 864e5 };
-function parseDuration(text) {
-  const m = /^(\d+)([smhd])$/.exec(text.trim());
+function parseDuration(text2) {
+  const m = /^(\d+)([smhd])$/.exec(text2.trim());
   if (!m) return null;
   const ms = Number(m[1]) * UNIT_MS[m[2]];
   return ms > 0 ? ms : null;
@@ -47972,13 +48175,13 @@ function readLocal(deps, path3, sinceMs) {
   for (let i = ROTATE_KEEP; i >= 0; i--) {
     const file = i === 0 ? path3 : `${path3}.${i}`;
     if (!deps.existsSync(file)) continue;
-    let text;
+    let text2;
     try {
-      text = deps.readFileSync(file);
+      text2 = deps.readFileSync(file);
     } catch {
       continue;
     }
-    for (const raw of text.split("\n")) {
+    for (const raw of text2.split("\n")) {
       if (!raw.trim()) continue;
       try {
         const o = JSON.parse(raw);
@@ -48209,7 +48412,7 @@ function encodeNulArgv(argv) {
 }
 
 // src/cli/commands/agent.ts
-import { existsSync as existsSync5, mkdirSync as mkdirSync5, readFileSync as readFileSync10, renameSync as renameSync2, writeFileSync as writeFileSync6 } from "node:fs";
+import { existsSync as existsSync5, mkdirSync as mkdirSync5, readFileSync as readFileSync12, renameSync as renameSync2, writeFileSync as writeFileSync7 } from "node:fs";
 
 // src/agents/codex-provision.ts
 import {
@@ -48220,16 +48423,16 @@ import {
   existsSync as existsSync4,
   lstatSync,
   mkdirSync as mkdirSync4,
-  readFileSync as readFileSync9,
+  readFileSync as readFileSync11,
   readdirSync,
   readlinkSync as readlinkSync2,
   statSync,
   symlinkSync,
   unlinkSync,
-  writeFileSync as writeFileSync5,
+  writeFileSync as writeFileSync6,
   appendFileSync
 } from "node:fs";
-import { join as join12, resolve as resolve4 } from "node:path";
+import { join as join12, resolve as resolve6 } from "node:path";
 
 // src/agents/hooks.ts
 var HARMONY_HOOKS = {
@@ -48339,15 +48542,15 @@ function isFile(p) {
   }
 }
 function collectInstructionSources(input) {
-  const ws = resolve4(input.workspaceDir);
-  const plugin = resolve4(input.pluginDir);
+  const ws = resolve6(input.workspaceDir);
+  const plugin = resolve6(input.pluginDir);
   const candidates = [
     { label: "workspace/CLAUDE.md", path: join12(ws, "CLAUDE.md") },
     { label: "plugin/CLAUDE.md", path: join12(plugin, "CLAUDE.md") },
     { label: "web/CLAUDE.md", path: join12(ws, "web", "CLAUDE.md") }
   ];
   for (const p of input.extraRepoPaths ?? []) {
-    const abs = resolve4(p);
+    const abs = resolve6(p);
     candidates.push({ label: `${abs.replace(/^\/+/, "")}/CLAUDE.md`, path: join12(abs, "CLAUDE.md") });
   }
   const seen = /* @__PURE__ */ new Set();
@@ -48355,18 +48558,18 @@ function collectInstructionSources(input) {
   for (const c of candidates) {
     if (seen.has(c.path) || !isFile(c.path)) continue;
     seen.add(c.path);
-    out.push({ label: c.label, content: readFileSync9(c.path, "utf8") });
+    out.push({ label: c.label, content: readFileSync11(c.path, "utf8") });
   }
   return out;
 }
 function collectSkillCapabilities(pluginDir) {
-  const root = join12(resolve4(pluginDir), "skills");
+  const root = join12(resolve6(pluginDir), "skills");
   if (!existsSync4(root)) return [];
   const out = [];
   for (const name of readdirSync(root).sort()) {
     const file = join12(root, name, "SKILL.md");
     if (!isFile(file)) continue;
-    const value = capabilitiesFromSkillMd(readFileSync9(file, "utf8"));
+    const value = capabilitiesFromSkillMd(readFileSync11(file, "utf8"));
     if (value === void 0) continue;
     const parsed = parseCapabilities(value);
     if (!parsed.ok) throw new Error(`skills/${name}/SKILL.md capabilities: ${parsed.problems.join("; ")}`);
@@ -48386,14 +48589,14 @@ function excludeFromGit(workspaceDir, entries) {
   const infoDir = join12(gitDir, "info");
   mkdirSync4(infoDir, { recursive: true });
   const excludePath = join12(infoDir, "exclude");
-  const current = existsSync4(excludePath) ? readFileSync9(excludePath, "utf8") : "";
+  const current = existsSync4(excludePath) ? readFileSync11(excludePath, "utf8") : "";
   const have = new Set(current.split("\n"));
   const missing = entries.filter((e) => !have.has(e));
   if (missing.length) appendFileSync(excludePath, (current === "" || current.endsWith("\n") ? "" : "\n") + missing.join("\n") + "\n");
 }
 function linkSkills(workspaceDir, pluginDir) {
   const link = join12(workspaceDir, CODEX_SKILLS_LINK);
-  const target = join12(resolve4(pluginDir), "skills");
+  const target = join12(resolve6(pluginDir), "skills");
   if (!existsSync4(target)) throw new Error(`skills directory not found at ${target}`);
   mkdirSync4(join12(workspaceDir, ".agents"), { recursive: true });
   let st;
@@ -48415,7 +48618,7 @@ function installAuth(authFile, codexHome) {
     throw new Error(`the Codex login-cache file is missing at ${authFile} (HARMONY_CODEX_AUTH_FILE) \u2014 mount it, see container/README.md "Codex credential runbook"`);
   }
   const dest = join12(codexHome, CODEX_AUTH_FILE_NAME);
-  if (resolve4(authFile) !== resolve4(dest)) {
+  if (resolve6(authFile) !== resolve6(dest)) {
     copyFileSync(authFile, dest);
   }
   chmodSync4(dest, 384);
@@ -48446,26 +48649,26 @@ function preflightHookScripts(pluginRoot) {
   return paths;
 }
 function provisionCodex(input) {
-  const workspaceDir = resolve4(input.workspaceDir);
-  const codexHome = resolve4(input.codexHome);
+  const workspaceDir = resolve6(input.workspaceDir);
+  const codexHome = resolve6(input.codexHome);
   const sources = collectInstructionSources(input);
   if (sources.length === 0) throw new Error(`no CLAUDE.md found under ${workspaceDir} / ${input.pluginDir} \u2014 nothing to build AGENTS.md from`);
   const agentsMd = renderCodexAgentsMd(sources, codexOverlayFor(input.pluginDir));
   const problems = verifyCodexAgentsMd(agentsMd, sources);
   if (problems.length) throw new Error(`AGENTS.md preflight failed: ${problems.join("; ")}`);
   const agentsMdPath = join12(workspaceDir, "AGENTS.md");
-  if (existsSync4(agentsMdPath) && !readFileSync9(agentsMdPath, "utf8").startsWith(GENERATED_AGENTS_HEADER)) {
+  if (existsSync4(agentsMdPath) && !readFileSync11(agentsMdPath, "utf8").startsWith(GENERATED_AGENTS_HEADER)) {
     throw new Error(`${agentsMdPath} exists and is not a generated file \u2014 refusing to overwrite a repository's own AGENTS.md`);
   }
-  preflightHookScripts(resolve4(input.pluginDir));
+  preflightHookScripts(resolve6(input.pluginDir));
   mkdirSync4(codexHome, { recursive: true });
-  const config = renderCodexConfig(HARMONY_MCP_CONNECTION, { pluginRoot: resolve4(input.pluginDir) });
+  const config = renderCodexConfig(HARMONY_MCP_CONNECTION, { pluginRoot: resolve6(input.pluginDir) });
   const configPath = join12(codexHome, config.fileName);
-  writeFileSync5(configPath, config.content, { mode: 420 });
-  const hooks = renderCodexHooks(resolve4(input.pluginDir));
+  writeFileSync6(configPath, config.content, { mode: 420 });
+  const hooks = renderCodexHooks(resolve6(input.pluginDir));
   const hooksPath = join12(codexHome, hooks.fileName);
-  writeFileSync5(hooksPath, hooks.content, { mode: 420 });
-  writeFileSync5(agentsMdPath, agentsMd);
+  writeFileSync6(hooksPath, hooks.content, { mode: 420 });
+  writeFileSync6(agentsMdPath, agentsMd);
   const skillsLink = linkSkills(workspaceDir, input.pluginDir);
   excludeFromGit(workspaceDir, ["AGENTS.md", ".agents/"]);
   const authInstalledAt = installAuth(input.authFile, codexHome);
@@ -48592,13 +48795,13 @@ function registerAgentCommands(program3) {
   agent.command("thread-id").description(
     "Print the Codex thread id parsed from a codex `--json` stdout capture (its thread.started event) and exit 0; print nothing and exit 1 when the capture has none or is unreadable."
   ).argument("<stdout-file>").action((file) => {
-    let text = "";
+    let text2 = "";
     try {
-      text = readFileSync10(file, "utf8");
+      text2 = readFileSync12(file, "utf8");
     } catch {
       process.exit(1);
     }
-    const id = parseCodexThreadId(text);
+    const id = parseCodexThreadId(text2);
     if (!id) process.exit(1);
     process.stdout.write(`${id}
 `);
@@ -48606,19 +48809,19 @@ function registerAgentCommands(program3) {
   agent.command("write-thread").description(
     `Parse the thread id from a codex stdout capture and write ${CODEX_THREAD_FILE_NAME} ({agent:"codex", thread_id, model, time}) into --dir; prints the id. Exit 1, leaving any existing file untouched, when the capture carries no thread id.`
   ).requiredOption("--dir <dir>", "The conduction's Codex sessions folder").requiredOption("--stdout-file <file>", "The codex invocation's stdout capture").option("--model <model>", "The model the invocation ran on").action((opts) => {
-    let text = "";
+    let text2 = "";
     try {
-      text = readFileSync10(opts.stdoutFile, "utf8");
+      text2 = readFileSync12(opts.stdoutFile, "utf8");
     } catch {
       process.exit(1);
     }
-    const id = parseCodexThreadId(text);
+    const id = parseCodexThreadId(text2);
     if (!id) process.exit(1);
     try {
       mkdirSync5(opts.dir, { recursive: true });
       const target = join13(opts.dir, CODEX_THREAD_FILE_NAME);
       const tmp = `${target}.tmp-${process.pid}`;
-      writeFileSync6(tmp, `${JSON.stringify(buildCodexThreadRecord(id, opts.model))}
+      writeFileSync7(tmp, `${JSON.stringify(buildCodexThreadRecord(id, opts.model))}
 `);
       renameSync2(tmp, target);
     } catch (err) {
@@ -48632,13 +48835,13 @@ function registerAgentCommands(program3) {
     `Print the thread id from a ${CODEX_THREAD_FILE_NAME} file and exit 0 \u2014 ONLY when the file names agent "codex" and a well-formed id; otherwise print nothing and exit 1.`
   ).argument("<thread-file>").action((file) => {
     if (!existsSync5(file)) process.exit(1);
-    let text = "";
+    let text2 = "";
     try {
-      text = readFileSync10(file, "utf8");
+      text2 = readFileSync12(file, "utf8");
     } catch {
       process.exit(1);
     }
-    const rec = parseCodexThreadRecord(text);
+    const rec = parseCodexThreadRecord(text2);
     if (!rec) process.exit(1);
     process.stdout.write(`${rec.thread_id}
 `);
@@ -48646,7 +48849,7 @@ function registerAgentCommands(program3) {
 }
 
 // src/cli/commands/leg-cost.ts
-import { readFileSync as readFileSync11 } from "node:fs";
+import { readFileSync as readFileSync13 } from "node:fs";
 
 // src/tools/leg-cost-record.ts
 var LEG_COST_COLS = "id, conduction_id, task_id, leg_key, gate, model, invocation_index, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_creation_1h_input_tokens, cache_creation_5m_input_tokens, thinking_tokens, total_cost_usd, cost_source, num_turns, duration_ms, duration_api_ms, session_id, is_error, service_tier, created_at";
@@ -48662,9 +48865,9 @@ function isRefusalColumnError(err) {
 function isNamedColumnError(err, cols) {
   if (!err) return false;
   const e = err;
-  const text = [e.message, e.details, e.hint].filter(Boolean).join(" ").toLowerCase();
-  if (!cols.some((c) => text.includes(c))) return false;
-  return e.code === "42703" || e.code === "PGRST204" || e.code === "PGRST200" || /column|schema cache|does not exist|not found|unknown/.test(text);
+  const text2 = [e.message, e.details, e.hint].filter(Boolean).join(" ").toLowerCase();
+  if (!cols.some((c) => text2.includes(c))) return false;
+  return e.code === "42703" || e.code === "PGRST204" || e.code === "PGRST200" || /column|schema cache|does not exist|not found|unknown/.test(text2);
 }
 function warn(message) {
   console.error(`harmony leg-cost: WARNING \u2014 ${message}`);
@@ -48888,7 +49091,7 @@ function registerLegCostCommands(program3) {
       }
       let captured;
       try {
-        captured = readFileSync11(opts.file, "utf8");
+        captured = readFileSync13(opts.file, "utf8");
       } catch (err) {
         console.error(
           `harmony leg-cost record: WARNING \u2014 could not read the capture file ${opts.file} (${err?.message ?? String(err)}); nothing recorded`
@@ -48953,7 +49156,7 @@ function registerLegCostCommands(program3) {
 }
 
 // src/cli/commands/leg-output.ts
-import { readFileSync as readFileSync12 } from "node:fs";
+import { readFileSync as readFileSync14 } from "node:fs";
 
 // src/tools/leg-output-record.ts
 var LEG_OUTPUT_TAIL_BYTES = 64 * 1024;
@@ -48961,16 +49164,16 @@ function warn2(message) {
   console.error(`harmony leg-output: WARNING \u2014 ${message}`);
 }
 var errText2 = (err) => err?.message ?? String(err);
-function boundedTail(text, limitBytes = LEG_OUTPUT_TAIL_BYTES) {
-  if (Buffer.byteLength(text, "utf8") <= limitBytes) return text;
+function boundedTail(text2, limitBytes = LEG_OUTPUT_TAIL_BYTES) {
+  if (Buffer.byteLength(text2, "utf8") <= limitBytes) return text2;
   let lo = 0;
-  let hi = text.length;
+  let hi = text2.length;
   while (lo < hi) {
     const mid = lo + hi >> 1;
-    if (Buffer.byteLength(text.slice(mid), "utf8") > limitBytes) lo = mid + 1;
+    if (Buffer.byteLength(text2.slice(mid), "utf8") > limitBytes) lo = mid + 1;
     else hi = mid;
   }
-  return text.slice(lo);
+  return text2.slice(lo);
 }
 async function recordLegOutput(client, args) {
   if (!client) return false;
@@ -49018,9 +49221,9 @@ var RULES = [
   // sk-… secret keys
   { re: /\bsk-[A-Za-z0-9_-]{16,}/g, replace: REDACTED }
 ];
-function redactSecrets(text) {
-  if (typeof text !== "string" || text === "") return text;
-  let out = text;
+function redactSecrets(text2) {
+  if (typeof text2 !== "string" || text2 === "") return text2;
+  let out = text2;
   for (const { re, replace } of RULES) {
     out = out.replace(re, replace);
   }
@@ -49039,7 +49242,7 @@ async function getClient2() {
 var SOURCES = ["worker", "launcher"];
 function readCapture(path3) {
   try {
-    return readFileSync12(path3, "utf8");
+    return readFileSync14(path3, "utf8");
   } catch (err) {
     console.error(
       `harmony leg-output record: WARNING \u2014 could not read the capture file ${path3} (${err?.message ?? String(err)}); it contributes nothing to this row`
@@ -49093,8 +49296,8 @@ function registerLegOutputCommands(program3) {
 }
 
 // src/cli/commands/gates.ts
-import { execFileSync as execFileSync2, spawnSync } from "node:child_process";
-import { mkdirSync as mkdirSync6, readFileSync as readFileSync13, renameSync as renameSync3, writeFileSync as writeFileSync7 } from "node:fs";
+import { execFileSync as execFileSync3, spawnSync } from "node:child_process";
+import { mkdirSync as mkdirSync6, readFileSync as readFileSync15, renameSync as renameSync3, writeFileSync as writeFileSync8 } from "node:fs";
 import { dirname as dirname8 } from "node:path";
 
 // src/config/notify-sync.ts
@@ -49376,7 +49579,7 @@ function registerGatesCommands(program3) {
       },
       notifySync: productionNotifySyncIO(),
       writeMarker: (marker) => writeGateEvidenceMarker(process.cwd(), marker),
-      resolveHeadSha: () => execFileSync2("git", ["rev-parse", "HEAD"], { cwd: process.cwd(), encoding: "utf8" }).trim(),
+      resolveHeadSha: () => execFileSync3("git", ["rev-parse", "HEAD"], { cwd: process.cwd(), encoding: "utf8" }).trim(),
       log: (line) => console.log(line),
       error: (line) => console.error(line)
     });
@@ -49387,7 +49590,7 @@ function writeGateEvidenceMarker(projectRoot, marker) {
   const filePath = gateEvidenceMarkerPath(projectRoot, marker.extension_point);
   mkdirSync6(dirname8(filePath), { recursive: true });
   const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  writeFileSync7(tmpPath, `${JSON.stringify(marker, null, 2)}
+  writeFileSync8(tmpPath, `${JSON.stringify(marker, null, 2)}
 `, "utf8");
   renameSync3(tmpPath, filePath);
 }
@@ -49408,7 +49611,7 @@ function productionNotifySyncIO() {
     },
     readCache: (path3) => {
       try {
-        return readFileSync13(path3, "utf8");
+        return readFileSync15(path3, "utf8");
       } catch {
         return null;
       }
@@ -49416,14 +49619,14 @@ function productionNotifySyncIO() {
     writeCache: (path3, contents) => {
       mkdirSync6(dirname8(path3), { recursive: true });
       const tmpPath = `${path3}.tmp-${process.pid}-${Date.now()}`;
-      writeFileSync7(tmpPath, contents, "utf8");
+      writeFileSync8(tmpPath, contents, "utf8");
       renameSync3(tmpPath, path3);
     }
   };
 }
 
 // src/cli/commands/notify.ts
-import { readFileSync as readFileSync14 } from "node:fs";
+import { readFileSync as readFileSync16 } from "node:fs";
 function errorMessage(err) {
   const message = err?.message;
   return message && message.trim() ? message.trim() : String(err);
@@ -49514,7 +49717,7 @@ function productionDeps() {
 }
 function readSecretFromStdin() {
   try {
-    return readFileSync14(0, "utf8");
+    return readFileSync16(0, "utf8");
   } catch {
     return "";
   }
@@ -49829,10 +50032,10 @@ function evaluateEligibility(input) {
 var GITHUB_PR_URL = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?/i;
 async function runGhCommand(args) {
   const { execFile: execFile3 } = await import("node:child_process");
-  return await new Promise((resolve5, reject) => {
+  return await new Promise((resolve7, reject) => {
     execFile3("gh", args, { maxBuffer: 10 * 1024 * 1024 }, (err, stdout) => {
       if (err) reject(err);
-      else resolve5(stdout);
+      else resolve7(stdout);
     });
   });
 }
@@ -49924,10 +50127,10 @@ function buildAttestation(args, userId) {
 var GH_RELEASE_INFO_TIMEOUT_MS = 5e3;
 async function runGhForReleaseInfo(args) {
   const { execFile: execFile3 } = await import("node:child_process");
-  return await new Promise((resolve5, reject) => {
+  return await new Promise((resolve7, reject) => {
     execFile3("gh", args, { timeout: GH_RELEASE_INFO_TIMEOUT_MS, maxBuffer: 1024 * 1024 }, (err, stdout) => {
       if (err) reject(err);
-      else resolve5(String(stdout));
+      else resolve7(String(stdout));
     });
   });
 }
@@ -50494,7 +50697,7 @@ function registerRecordCommand(program3) {
 }
 
 // src/cli/commands/fasttrack.ts
-import { execFileSync as execFileSync3 } from "node:child_process";
+import { execFileSync as execFileSync4 } from "node:child_process";
 function resolveScopeBudget(projectRoot) {
   const result = loadProjectManifest(projectRoot);
   if (result.kind !== "ok") return DEFAULT_SCOPE_BUDGET;
@@ -50532,7 +50735,7 @@ function registerFasttrackCommands(program3) {
     const budget = resolveScopeBudget(projectRoot);
     let raw;
     try {
-      raw = execFileSync3("git", ["diff", "--numstat", `${opts.base}...HEAD`], {
+      raw = execFileSync4("git", ["diff", "--numstat", `${opts.base}...HEAD`], {
         cwd: projectRoot,
         encoding: "utf8"
       });

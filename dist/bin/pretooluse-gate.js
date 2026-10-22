@@ -1006,14 +1006,14 @@ var require_foldFlowLines = __commonJS({
     var FOLD_FLOW = "flow";
     var FOLD_BLOCK = "block";
     var FOLD_QUOTED = "quoted";
-    function foldFlowLines(text, indent, mode = "flow", { indentAtStart, lineWidth = 80, minContentWidth = 20, onFold, onOverflow } = {}) {
+    function foldFlowLines(text2, indent, mode = "flow", { indentAtStart, lineWidth = 80, minContentWidth = 20, onFold, onOverflow } = {}) {
       if (!lineWidth || lineWidth < 0)
-        return text;
+        return text2;
       if (lineWidth < minContentWidth)
         minContentWidth = 0;
       const endStep = Math.max(1 + minContentWidth, 1 + lineWidth - indent.length);
-      if (text.length <= endStep)
-        return text;
+      if (text2.length <= endStep)
+        return text2;
       const folds = [];
       const escapedFolds = {};
       let end = lineWidth - indent.length;
@@ -1030,14 +1030,14 @@ var require_foldFlowLines = __commonJS({
       let escStart = -1;
       let escEnd = -1;
       if (mode === FOLD_BLOCK) {
-        i = consumeMoreIndentedLines(text, i, indent.length);
+        i = consumeMoreIndentedLines(text2, i, indent.length);
         if (i !== -1)
           end = i + endStep;
       }
-      for (let ch; ch = text[i += 1]; ) {
+      for (let ch; ch = text2[i += 1]; ) {
         if (mode === FOLD_QUOTED && ch === "\\") {
           escStart = i;
-          switch (text[i + 1]) {
+          switch (text2[i + 1]) {
             case "x":
               i += 3;
               break;
@@ -1054,12 +1054,12 @@ var require_foldFlowLines = __commonJS({
         }
         if (ch === "\n") {
           if (mode === FOLD_BLOCK)
-            i = consumeMoreIndentedLines(text, i, indent.length);
+            i = consumeMoreIndentedLines(text2, i, indent.length);
           end = i + indent.length + endStep;
           split = void 0;
         } else {
           if (ch === " " && prev && prev !== " " && prev !== "\n" && prev !== "	") {
-            const next = text[i + 1];
+            const next = text2[i + 1];
             if (next && next !== " " && next !== "\n" && next !== "	")
               split = i;
           }
@@ -1071,12 +1071,12 @@ var require_foldFlowLines = __commonJS({
             } else if (mode === FOLD_QUOTED) {
               while (prev === " " || prev === "	") {
                 prev = ch;
-                ch = text[i += 1];
+                ch = text2[i += 1];
                 overflow = true;
               }
               const j = i > escEnd + 1 ? i - 2 : escStart - 1;
               if (escapedFolds[j])
-                return text;
+                return text2;
               folds.push(j);
               escapedFolds[j] = true;
               end = j + endStep;
@@ -1091,39 +1091,39 @@ var require_foldFlowLines = __commonJS({
       if (overflow && onOverflow)
         onOverflow();
       if (folds.length === 0)
-        return text;
+        return text2;
       if (onFold)
         onFold();
-      let res = text.slice(0, folds[0]);
+      let res = text2.slice(0, folds[0]);
       for (let i2 = 0; i2 < folds.length; ++i2) {
         const fold = folds[i2];
-        const end2 = folds[i2 + 1] || text.length;
+        const end2 = folds[i2 + 1] || text2.length;
         if (fold === 0)
           res = `
-${indent}${text.slice(0, end2)}`;
+${indent}${text2.slice(0, end2)}`;
         else {
           if (mode === FOLD_QUOTED && escapedFolds[fold])
-            res += `${text[fold]}\\`;
+            res += `${text2[fold]}\\`;
           res += `
-${indent}${text.slice(fold + 1, end2)}`;
+${indent}${text2.slice(fold + 1, end2)}`;
         }
       }
       return res;
     }
-    function consumeMoreIndentedLines(text, i, indent) {
+    function consumeMoreIndentedLines(text2, i, indent) {
       let end = i;
       let start = i + 1;
-      let ch = text[start];
+      let ch = text2[start];
       while (ch === " " || ch === "	") {
         if (i < start + indent) {
-          ch = text[++i];
+          ch = text2[++i];
         } else {
           do {
-            ch = text[++i];
+            ch = text2[++i];
           } while (ch && ch !== "\n");
           end = i;
           start = i + 1;
-          ch = text[start];
+          ch = text2[start];
         }
       }
       return end;
@@ -21618,9 +21618,9 @@ var SnapshotSchema = external_exports.object({
   fetched_at: external_exports.string(),
   content: external_exports.string()
 });
-function parseSnapshotText(text) {
+function parseSnapshotText(text2) {
   try {
-    const r = SnapshotSchema.safeParse(JSON.parse(text));
+    const r = SnapshotSchema.safeParse(JSON.parse(text2));
     return r.success ? r.data : null;
   } catch {
     return null;
@@ -21749,27 +21749,27 @@ function zodIssuesToConfigIssues(file, issues, root) {
 function customFix(message) {
   return message.includes("secret VALUE") ? "store the value in Secret Manager and put only the secret NAME here" : message === SUPABASE_URL_NEEDS_CUSTOM ? 'add "target": "custom" or remove supabase_url' : "correct the value to match the schema";
 }
-function lineColOf(text, pos) {
-  const before = text.slice(0, pos);
+function lineColOf(text2, pos) {
+  const before = text2.slice(0, pos);
   const line = before.split("\n").length;
   return { line, col: pos - (before.lastIndexOf("\n") + 1) + 1 };
 }
-function parseJsonText(file, text) {
+function parseJsonText(file, text2) {
   try {
-    return { ok: true, value: JSON.parse(text) };
+    return { ok: true, value: JSON.parse(text2) };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     let where = "";
     if (!/line \d+ column \d+/.test(msg)) {
       const m = /position (\d+)/.exec(msg);
       if (m) {
-        const { line, col } = lineColOf(text, Number(m[1]));
+        const { line, col } = lineColOf(text2, Number(m[1]));
         where = ` (line ${line}, column ${col})`;
       } else {
         const snip = /\.\.\."?([\s\S]*?)"? is not valid JSON/.exec(msg)?.[1] ?? /"([\s\S]*?)" is not valid JSON/.exec(msg)?.[1];
-        const at = snip ? text.indexOf(snip) : -1;
+        const at = snip ? text2.indexOf(snip) : -1;
         if (at >= 0) {
-          const { line, col } = lineColOf(text, at + Math.max(0, snip.length - 1));
+          const { line, col } = lineColOf(text2, at + Math.max(0, snip.length - 1));
           where = ` (near line ${line}, column ${col})`;
         }
       }
@@ -21780,15 +21780,15 @@ function parseJsonText(file, text) {
     };
   }
 }
-function validateText(file, text, schema) {
-  const parsed = parseJsonText(file, text);
+function validateText(file, text2, schema) {
+  const parsed = parseJsonText(file, text2);
   if (!parsed.ok) return { ok: false, issues: [parsed.issue] };
   const r = schema.safeParse(parsed.value);
   if (r.success) return { ok: true, value: r.data };
   return { ok: false, issues: zodIssuesToConfigIssues(file, r.error.issues, schema) };
 }
-function validateProjectFileText(file, text) {
-  return validateText(file, text, ProjectFileSchema);
+function validateProjectFileText(file, text2) {
+  return validateText(file, text2, ProjectFileSchema);
 }
 var BUILTIN_PROFILES = {
   cloud: {
@@ -22147,9 +22147,9 @@ function evaluateConductorConfig(opts = {}) {
       projectFailed = true;
       issues.push({ file: label, key: "(file)", problem: `not found at ${paths.projectFile}`, fix: "create it, or unset HARMONY_CONDUCTOR_PROJECT_FILE" });
     } else {
-      const text = readText(paths.projectFile, label);
-      if (text !== null) {
-        const v = validateProjectFileText(label, text);
+      const text2 = readText(paths.projectFile, label);
+      if (text2 !== null) {
+        const v = validateProjectFileText(label, text2);
         if (v.ok) {
           projectLayer = v.value;
           sources.push(`project: ${paths.projectFile}`);
@@ -22160,9 +22160,9 @@ function evaluateConductorConfig(opts = {}) {
       } else projectFailed = true;
     }
   } else if (hasSnapshot) {
-    const text = readText(paths.snapshotFile, "conductor-snapshot.json");
-    if (text !== null) {
-      const snap = parseSnapshotText(text);
+    const text2 = readText(paths.snapshotFile, "conductor-snapshot.json");
+    if (text2 !== null) {
+      const snap = parseSnapshotText(text2);
       if (!snap) {
         warnings.push(`snapshot ${paths.snapshotFile} is unreadable or malformed; ignoring it (run \`harmony conductor config sync\` to rewrite it)`);
       } else {
@@ -22179,9 +22179,9 @@ function evaluateConductorConfig(opts = {}) {
   }
   let hostLayer;
   if (hasHost) {
-    const text = readText(paths.hostFile, HOST_FILE_LABEL);
-    if (text !== null) {
-      const v = validateText(HOST_FILE_LABEL, text, HostFileSchema);
+    const text2 = readText(paths.hostFile, HOST_FILE_LABEL);
+    if (text2 !== null) {
+      const v = validateText(HOST_FILE_LABEL, text2, HostFileSchema);
       if (v.ok) {
         hostLayer = v.value;
         sources.push(`host: ${paths.hostFile}`);
@@ -22557,6 +22557,41 @@ async function resolveTaskId(client, projectId, input) {
   return data.id;
 }
 
+// src/tools/knowledge-sources.ts
+var text = external_exports.string().trim().min(1);
+var sourceValueSchema = external_exports.object({
+  key: text,
+  kind: external_exports.enum(["default", "error", "file-shape", "measurement", "explanation"]),
+  title: text,
+  content: text,
+  spellings: external_exports.array(text).min(1),
+  tags: external_exports.array(text).optional(),
+  source: external_exports.object({
+    path: text.refine((p) => !p.startsWith("/") && !p.split("/").includes(".."), "Source path must be repository-relative"),
+    sha: external_exports.string().regex(/^[a-f0-9]{40,64}$/),
+    publisher: text,
+    publisher_version: text,
+    run_url: text,
+    line_start: external_exports.number().int().positive().optional(),
+    line_end: external_exports.number().int().positive().optional(),
+    measurement: external_exports.object({ command: text, parameters: external_exports.unknown(), tool_versions: external_exports.unknown(), result: external_exports.unknown() }).optional()
+  }).passthrough()
+}).strict().superRefine((v, ctx) => {
+  if (v.kind === "measurement" && !v.source.measurement) ctx.addIssue({ code: "custom", message: "Measurement requires command, parameters, tool versions and captured result" });
+  if (v.source.line_end && v.source.line_start && v.source.line_end < v.source.line_start) ctx.addIssue({ code: "custom", message: "Invalid source line span" });
+});
+var sourceInventorySchema = external_exports.object({
+  repository: text,
+  surface: text,
+  expected_revision: external_exports.string().uuid().nullable(),
+  run_id: text,
+  source_sha: external_exports.string().regex(/^[a-f0-9]{40,64}$/),
+  values: external_exports.array(sourceValueSchema).max(1e3)
+}).strict().superRefine((v, ctx) => {
+  if (new Set(v.values.map((x) => x.key)).size !== v.values.length) ctx.addIssue({ code: "custom", message: "Duplicate inventory keys" });
+  if (v.values.some((x) => x.source.sha !== v.source_sha)) ctx.addIssue({ code: "custom", message: "Source revision mismatch" });
+});
+
 // src/tools/provenance.ts
 var PROVENANCE_HUMAN_IN_SESSION = "human-in-session";
 var PROVENANCE_WEB_ONLY = "human-in-browser";
@@ -22580,40 +22615,40 @@ var ENTITY_MAP = {
 };
 var ENTITY_PATTERN = /&amp;|&lt;|&gt;|&quot;|&#39;/g;
 var HAS_ENTITY_PATTERN = /&amp;|&lt;|&gt;|&quot;|&#39;/;
-function splitCodeSpans(text) {
+function splitCodeSpans(text2) {
   const segments = [];
   let i = 0;
   let plainStart = 0;
-  while (i < text.length) {
-    if (text.startsWith("```", i)) {
-      const close = text.indexOf("```", i + 3);
-      const codeEnd = close === -1 ? text.length : close + 3;
-      if (plainStart < i) segments.push({ code: false, text: text.slice(plainStart, i) });
-      segments.push({ code: true, text: text.slice(i, codeEnd) });
+  while (i < text2.length) {
+    if (text2.startsWith("```", i)) {
+      const close = text2.indexOf("```", i + 3);
+      const codeEnd = close === -1 ? text2.length : close + 3;
+      if (plainStart < i) segments.push({ code: false, text: text2.slice(plainStart, i) });
+      segments.push({ code: true, text: text2.slice(i, codeEnd) });
       i = codeEnd;
       plainStart = i;
       continue;
     }
-    if (text[i] === "`") {
-      const close = text.indexOf("`", i + 1);
+    if (text2[i] === "`") {
+      const close = text2.indexOf("`", i + 1);
       if (close === -1) {
         i += 1;
         continue;
       }
-      if (plainStart < i) segments.push({ code: false, text: text.slice(plainStart, i) });
-      segments.push({ code: true, text: text.slice(i, close + 1) });
+      if (plainStart < i) segments.push({ code: false, text: text2.slice(plainStart, i) });
+      segments.push({ code: true, text: text2.slice(i, close + 1) });
       i = close + 1;
       plainStart = i;
       continue;
     }
     i += 1;
   }
-  if (plainStart < text.length) segments.push({ code: false, text: text.slice(plainStart) });
+  if (plainStart < text2.length) segments.push({ code: false, text: text2.slice(plainStart) });
   return segments;
 }
-function normalizeHtmlEntities(text) {
-  if (!text || !HAS_ENTITY_PATTERN.test(text)) return text;
-  return splitCodeSpans(text).map(
+function normalizeHtmlEntities(text2) {
+  if (!text2 || !HAS_ENTITY_PATTERN.test(text2)) return text2;
+  return splitCodeSpans(text2).map(
     (seg) => seg.code ? seg.text : seg.text.replace(ENTITY_PATTERN, (m) => ENTITY_MAP[m] ?? m)
   ).join("");
 }
@@ -28110,9 +28145,9 @@ function createFetchClient(options) {
         },
         body: body ? JSON.stringify(body) : void 0
       });
-      const text = await res.text();
+      const text2 = await res.text();
       const isJson = (res.headers.get("content-type") || "").includes("application/json");
-      const data = isJson && text ? JSON.parse(text) : text;
+      const data = isJson && text2 ? JSON.parse(text2) : text2;
       if (!res.ok) {
         const errBody = isJson ? data : void 0;
         const errorDetail = errBody?.error;

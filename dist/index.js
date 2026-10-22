@@ -4236,7 +4236,7 @@ var require_core = __commonJS({
       errorsText(errors = this.errors, { separator = ", ", dataVar = "data" } = {}) {
         if (!errors || errors.length === 0)
           return "No errors";
-        return errors.map((e) => `${dataVar}${e.instancePath} ${e.message}`).reduce((text, msg) => text + separator + msg);
+        return errors.map((e) => `${dataVar}${e.instancePath} ${e.message}`).reduce((text2, msg) => text2 + separator + msg);
       }
       $dataMetaSchema(metaSchema, keywordsJsonPointers) {
         const rules = this.RULES.all;
@@ -17797,14 +17797,14 @@ var require_foldFlowLines = __commonJS({
     var FOLD_FLOW = "flow";
     var FOLD_BLOCK = "block";
     var FOLD_QUOTED = "quoted";
-    function foldFlowLines(text, indent, mode = "flow", { indentAtStart, lineWidth = 80, minContentWidth = 20, onFold, onOverflow } = {}) {
+    function foldFlowLines(text2, indent, mode = "flow", { indentAtStart, lineWidth = 80, minContentWidth = 20, onFold, onOverflow } = {}) {
       if (!lineWidth || lineWidth < 0)
-        return text;
+        return text2;
       if (lineWidth < minContentWidth)
         minContentWidth = 0;
       const endStep = Math.max(1 + minContentWidth, 1 + lineWidth - indent.length);
-      if (text.length <= endStep)
-        return text;
+      if (text2.length <= endStep)
+        return text2;
       const folds = [];
       const escapedFolds = {};
       let end = lineWidth - indent.length;
@@ -17821,14 +17821,14 @@ var require_foldFlowLines = __commonJS({
       let escStart = -1;
       let escEnd = -1;
       if (mode === FOLD_BLOCK) {
-        i = consumeMoreIndentedLines(text, i, indent.length);
+        i = consumeMoreIndentedLines(text2, i, indent.length);
         if (i !== -1)
           end = i + endStep;
       }
-      for (let ch; ch = text[i += 1]; ) {
+      for (let ch; ch = text2[i += 1]; ) {
         if (mode === FOLD_QUOTED && ch === "\\") {
           escStart = i;
-          switch (text[i + 1]) {
+          switch (text2[i + 1]) {
             case "x":
               i += 3;
               break;
@@ -17845,12 +17845,12 @@ var require_foldFlowLines = __commonJS({
         }
         if (ch === "\n") {
           if (mode === FOLD_BLOCK)
-            i = consumeMoreIndentedLines(text, i, indent.length);
+            i = consumeMoreIndentedLines(text2, i, indent.length);
           end = i + indent.length + endStep;
           split = void 0;
         } else {
           if (ch === " " && prev && prev !== " " && prev !== "\n" && prev !== "	") {
-            const next = text[i + 1];
+            const next = text2[i + 1];
             if (next && next !== " " && next !== "\n" && next !== "	")
               split = i;
           }
@@ -17862,12 +17862,12 @@ var require_foldFlowLines = __commonJS({
             } else if (mode === FOLD_QUOTED) {
               while (prev === " " || prev === "	") {
                 prev = ch;
-                ch = text[i += 1];
+                ch = text2[i += 1];
                 overflow = true;
               }
               const j = i > escEnd + 1 ? i - 2 : escStart - 1;
               if (escapedFolds[j])
-                return text;
+                return text2;
               folds.push(j);
               escapedFolds[j] = true;
               end = j + endStep;
@@ -17882,39 +17882,39 @@ var require_foldFlowLines = __commonJS({
       if (overflow && onOverflow)
         onOverflow();
       if (folds.length === 0)
-        return text;
+        return text2;
       if (onFold)
         onFold();
-      let res = text.slice(0, folds[0]);
+      let res = text2.slice(0, folds[0]);
       for (let i2 = 0; i2 < folds.length; ++i2) {
         const fold = folds[i2];
-        const end2 = folds[i2 + 1] || text.length;
+        const end2 = folds[i2 + 1] || text2.length;
         if (fold === 0)
           res = `
-${indent}${text.slice(0, end2)}`;
+${indent}${text2.slice(0, end2)}`;
         else {
           if (mode === FOLD_QUOTED && escapedFolds[fold])
-            res += `${text[fold]}\\`;
+            res += `${text2[fold]}\\`;
           res += `
-${indent}${text.slice(fold + 1, end2)}`;
+${indent}${text2.slice(fold + 1, end2)}`;
         }
       }
       return res;
     }
-    function consumeMoreIndentedLines(text, i, indent) {
+    function consumeMoreIndentedLines(text2, i, indent) {
       let end = i;
       let start = i + 1;
-      let ch = text[start];
+      let ch = text2[start];
       while (ch === " " || ch === "	") {
         if (i < start + indent) {
-          ch = text[++i];
+          ch = text2[++i];
         } else {
           do {
-            ch = text[++i];
+            ch = text2[++i];
           } while (ch && ch !== "\n");
           end = i;
           start = i + 1;
-          ch = text[start];
+          ch = text2[start];
         }
       }
       return end;
@@ -40201,9 +40201,9 @@ function createFetchClient(options) {
         },
         body: body ? JSON.stringify(body) : void 0
       });
-      const text = await res.text();
+      const text2 = await res.text();
       const isJson = (res.headers.get("content-type") || "").includes("application/json");
-      const data = isJson && text ? JSON.parse(text) : text;
+      const data = isJson && text2 ? JSON.parse(text2) : text2;
       if (!res.ok) {
         const errBody = isJson ? data : void 0;
         const errorDetail = errBody?.error;
@@ -43594,8 +43594,114 @@ async function createAuthenticatedClient(auth2) {
   });
 }
 
-// src/tools/knowledge-questions.ts
-import { createHash } from "node:crypto";
+// src/tools/knowledge-metadata.ts
+import { existsSync, readFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
+async function metadataCapable(client) {
+  const { data, error: error2 } = await client.rpc("knowledge_metadata_capable");
+  if (error2) {
+    if (["PGRST202", "42883"].includes(error2.code)) return false;
+    throw new Error(error2.message);
+  }
+  if (data === true || data === false) return data;
+  throw new Error(
+    "Invalid knowledge metadata capability response; legacy fallback refused."
+  );
+}
+async function metadataRpc(client, operation, scope, args) {
+  const capable = await metadataCapable(client);
+  if (scope !== void 0 && !["product", "deployment"].includes(scope))
+    throw new Error("scope must be product or deployment");
+  if (scope !== void 0 && !capable)
+    throw new Error(
+      "Knowledge scope unavailable until the schema is promoted; nothing was saved."
+    );
+  if (capable && (operation === "knowledge_record_decision" || operation === "knowledge_supersede_knowledge_entry" || operation === "knowledge_supersede_decision" && args.p_type) && !scope)
+    throw new Error(
+      "New knowledge requires product or deployment scope. Separate mixed claims."
+    );
+  const result = await client.rpc(
+    capable ? `${operation}_metadata` : operation,
+    { ...args, ...capable ? { p_scope: scope ?? null } : {} }
+  );
+  if (result.error?.details)
+    result.error.message += `
+${result.error.details}`;
+  return result;
+}
+async function listKnowledgeTags(client, projectId) {
+  if (!await metadataCapable(client))
+    throw new Error(
+      "Project tag vocabulary unavailable until the schema is promoted."
+    );
+  const { data, error: error2 } = await client.rpc("knowledge_list_tags", {
+    p_project_id: projectId
+  });
+  if (error2) throw new Error(error2.message);
+  return data;
+}
+async function registerKnowledgeTag(client, projectId, name, description) {
+  if (!await metadataCapable(client))
+    throw new Error(
+      "Project tag vocabulary unavailable until the schema is promoted."
+    );
+  const { data, error: error2 } = await client.rpc("knowledge_register_tag", {
+    p_project_id: projectId,
+    p_name: name,
+    p_description: description
+  });
+  if (error2) throw new Error(error2.message);
+  return data;
+}
+function surfaceTags(paths) {
+  return [
+    ...new Set(
+      paths.map((path3) => path3.replace(/^\.\//, "")).filter(
+        (path3) => /^[A-Za-z0-9_.-]+\//.test(path3) && !path3.split("/").some((part) => part === ".." || part === "")
+      ).map((path3) => `surface:${path3.slice(0, path3.lastIndexOf("/"))}`)
+    )
+  ].sort();
+}
+var listKnowledgeTagsTool = {
+  name: "list_knowledge_tags",
+  description: "List the project authored tag vocabulary. Generated ticket/surface namespaces are reserved. Type is advisory.",
+  inputSchema: { type: "object", properties: {} }
+};
+var registerKnowledgeTagTool = {
+  name: "register_knowledge_tag",
+  description: "Explicitly register an authored project tag, separately from entry saves. Existing knowledge writers may register tags.",
+  inputSchema: {
+    type: "object",
+    properties: { name: { type: "string" }, description: { type: "string" } },
+    required: ["name", "description"]
+  }
+};
+function repositoryPrefix(repo) {
+  let directory = process.cwd();
+  for (; ; ) {
+    const file = join(directory, ".harmony", "conductor.json");
+    if (existsSync(file)) {
+      const config2 = JSON.parse(readFileSync(file, "utf8"));
+      const match = (config2.repos ?? []).find((item) => {
+        const name = String(item.url ?? "").replace(/\.git$/, "").replace(/^.*github\.com[/:]/, "");
+        return name === repo || name.split("/").pop() === repo;
+      });
+      if (match) {
+        const prefix2 = basename(match.path);
+        if (!/^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(prefix2))
+          throw new Error("Invalid declared repository directory");
+        return prefix2;
+      }
+    }
+    const parent = dirname(directory);
+    if (parent === directory) break;
+    directory = parent;
+  }
+  const prefix = repo.split("/").pop();
+  if (!/^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(prefix))
+    throw new Error("Invalid repository prefix");
+  return prefix;
+}
 
 // src/config/run-config.ts
 import {
@@ -43612,9 +43718,9 @@ var GATES = ["clarify", "decompose", "design", "plan", "build", "release", "veri
 // src/tools/knowledge-claim.ts
 var ENVELOPE = /^\*\*Claim:\*\* ([^\n]+)\n\n\*\*Claim source:\*\* (authored|derived)\n\n/;
 function isSingleSentenceShaped(value) {
-  const text = value.trim();
-  if (!text || text.split(/\s+/).length > 50) return false;
-  const neutral = text.replace(/(\d)\.(?=\d)/g, "$1").replace(/\be\.g\.|\bi\.e\./gi, (m) => m.replace(/\./g, ""));
+  const text2 = value.trim();
+  if (!text2 || text2.split(/\s+/).length > 50) return false;
+  const neutral = text2.replace(/(\d)\.(?=\d)/g, "$1").replace(/\be\.g\.|\bi\.e\./gi, (m) => m.replace(/\./g, ""));
   return !/[.!?]/.test(neutral.replace(/[.!?]+\s*$/, ""));
 }
 function validateClaimEntry(title, claim) {
@@ -43663,18 +43769,18 @@ function plainText(content) {
   return stripClaim(content).replace(/<[^>]*>/g, " ").replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/[`*_#>|~]/g, "").replace(/\s+/g, " ").trim();
 }
 function matchedPassage(content, query) {
-  const text = [decodeClaim(content).claim, plainText(content)].filter(Boolean).join(" ");
+  const text2 = [decodeClaim(content).claim, plainText(content)].filter(Boolean).join(" ");
   const terms = query.toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
-  const indexes = terms.map((term) => text.toLocaleLowerCase().indexOf(term)).filter((i) => i >= 0);
+  const indexes = terms.map((term) => text2.toLocaleLowerCase().indexOf(term)).filter((i) => i >= 0);
   if (!indexes.length) return null;
-  const at = Math.min(...indexes), start = Math.max(0, at - 60), end = Math.min(text.length, start + 240);
-  return `${start ? "\u2026" : ""}${text.slice(start, end)}${end < text.length ? "\u2026" : ""}`;
+  const at = Math.min(...indexes), start = Math.max(0, at - 60), end = Math.min(text2.length, start + 240);
+  return `${start ? "\u2026" : ""}${text2.slice(start, end)}${end < text2.length ? "\u2026" : ""}`;
 }
 function proposeClaim(content) {
   if (decodeClaim(content).claim) return null;
   const lines = content.split("\n").filter((line) => !/^\s*(?:_?Derived from|#{1,6}\s|\*\*(?:Question put to the human|Track|Reach|On accept|Context|Ratified asks):)/i.test(line));
-  const text = plainText(lines.join("\n")).replace(/^Decision:\s*/i, "");
-  const candidates = text.match(/.*?[.!?](?=\s|$)|.+$/g) ?? [];
+  const text2 = plainText(lines.join("\n")).replace(/^Decision:\s*/i, "");
+  const candidates = text2.match(/.*?[.!?](?=\s|$)|.+$/g) ?? [];
   let candidate = "";
   for (const part of candidates) {
     candidate += part;
@@ -43687,19 +43793,19 @@ function proposeClaim(content) {
 }
 
 // src/tools/environment.ts
-import { readFileSync as readFileSync2 } from "node:fs";
-import { dirname, join as join3 } from "node:path";
+import { readFileSync as readFileSync3 } from "node:fs";
+import { dirname as dirname2, join as join4 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/config/deployment-config.ts
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync as existsSync2, readFileSync as readFileSync2 } from "node:fs";
 import { homedir as homedir2 } from "node:os";
-import { join as join2 } from "node:path";
+import { join as join3 } from "node:path";
 
 // src/config/conductor-config.ts
 import { existsSync as fsExistsSync, readFileSync as fsReadFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename as basename2, join as join2 } from "node:path";
 
 // src/config/deployment-shared-schemas.ts
 var RequiredToolsSchema = external_exports.object({
@@ -43731,11 +43837,11 @@ var WORKER_IMAGE_DEFAULT = "harmony-build-env";
 
 // src/config/conductor-config.ts
 function resolveConductorPaths(env = process.env) {
-  const home = env.HARMONY_HOME || join(homedir(), ".harmony");
+  const home = env.HARMONY_HOME || join2(homedir(), ".harmony");
   return {
     home,
-    hostFile: env.HARMONY_CONDUCTOR_HOST_FILE || join(home, "conductor-host.json"),
-    snapshotFile: env.HARMONY_CONDUCTOR_SNAPSHOT_FILE || join(home, "conductor-snapshot.json"),
+    hostFile: env.HARMONY_CONDUCTOR_HOST_FILE || join2(home, "conductor-host.json"),
+    snapshotFile: env.HARMONY_CONDUCTOR_SNAPSHOT_FILE || join2(home, "conductor-snapshot.json"),
     projectFile: env.HARMONY_CONDUCTOR_PROJECT_FILE || void 0
   };
 }
@@ -43848,9 +43954,9 @@ var SnapshotSchema = external_exports.object({
   fetched_at: external_exports.string(),
   content: external_exports.string()
 });
-function parseSnapshotText(text) {
+function parseSnapshotText(text2) {
   try {
-    const r = SnapshotSchema.safeParse(JSON.parse(text));
+    const r = SnapshotSchema.safeParse(JSON.parse(text2));
     return r.success ? r.data : null;
   } catch {
     return null;
@@ -43979,27 +44085,27 @@ function zodIssuesToConfigIssues(file, issues, root) {
 function customFix(message) {
   return message.includes("secret VALUE") ? "store the value in Secret Manager and put only the secret NAME here" : message === SUPABASE_URL_NEEDS_CUSTOM ? 'add "target": "custom" or remove supabase_url' : "correct the value to match the schema";
 }
-function lineColOf(text, pos) {
-  const before = text.slice(0, pos);
+function lineColOf(text2, pos) {
+  const before = text2.slice(0, pos);
   const line = before.split("\n").length;
   return { line, col: pos - (before.lastIndexOf("\n") + 1) + 1 };
 }
-function parseJsonText(file, text) {
+function parseJsonText(file, text2) {
   try {
-    return { ok: true, value: JSON.parse(text) };
+    return { ok: true, value: JSON.parse(text2) };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     let where = "";
     if (!/line \d+ column \d+/.test(msg)) {
       const m = /position (\d+)/.exec(msg);
       if (m) {
-        const { line, col } = lineColOf(text, Number(m[1]));
+        const { line, col } = lineColOf(text2, Number(m[1]));
         where = ` (line ${line}, column ${col})`;
       } else {
         const snip = /\.\.\."?([\s\S]*?)"? is not valid JSON/.exec(msg)?.[1] ?? /"([\s\S]*?)" is not valid JSON/.exec(msg)?.[1];
-        const at = snip ? text.indexOf(snip) : -1;
+        const at = snip ? text2.indexOf(snip) : -1;
         if (at >= 0) {
-          const { line, col } = lineColOf(text, at + Math.max(0, snip.length - 1));
+          const { line, col } = lineColOf(text2, at + Math.max(0, snip.length - 1));
           where = ` (near line ${line}, column ${col})`;
         }
       }
@@ -44010,15 +44116,15 @@ function parseJsonText(file, text) {
     };
   }
 }
-function validateText(file, text, schema) {
-  const parsed = parseJsonText(file, text);
+function validateText(file, text2, schema) {
+  const parsed = parseJsonText(file, text2);
   if (!parsed.ok) return { ok: false, issues: [parsed.issue] };
   const r = schema.safeParse(parsed.value);
   if (r.success) return { ok: true, value: r.data };
   return { ok: false, issues: zodIssuesToConfigIssues(file, r.error.issues, schema) };
 }
-function validateProjectFileText(file, text) {
-  return validateText(file, text, ProjectFileSchema);
+function validateProjectFileText(file, text2) {
+  return validateText(file, text2, ProjectFileSchema);
 }
 var BUILTIN_PROFILES = {
   cloud: {
@@ -44372,14 +44478,14 @@ function evaluateConductorConfig(opts = {}) {
   let projectLayer;
   let projectFailed = false;
   if (paths.projectFile) {
-    const label = basename(paths.projectFile);
+    const label = basename2(paths.projectFile);
     if (!exists(paths.projectFile)) {
       projectFailed = true;
       issues.push({ file: label, key: "(file)", problem: `not found at ${paths.projectFile}`, fix: "create it, or unset HARMONY_CONDUCTOR_PROJECT_FILE" });
     } else {
-      const text = readText(paths.projectFile, label);
-      if (text !== null) {
-        const v = validateProjectFileText(label, text);
+      const text2 = readText(paths.projectFile, label);
+      if (text2 !== null) {
+        const v = validateProjectFileText(label, text2);
         if (v.ok) {
           projectLayer = v.value;
           sources.push(`project: ${paths.projectFile}`);
@@ -44390,9 +44496,9 @@ function evaluateConductorConfig(opts = {}) {
       } else projectFailed = true;
     }
   } else if (hasSnapshot) {
-    const text = readText(paths.snapshotFile, "conductor-snapshot.json");
-    if (text !== null) {
-      const snap = parseSnapshotText(text);
+    const text2 = readText(paths.snapshotFile, "conductor-snapshot.json");
+    if (text2 !== null) {
+      const snap = parseSnapshotText(text2);
       if (!snap) {
         warnings.push(`snapshot ${paths.snapshotFile} is unreadable or malformed; ignoring it (run \`harmony conductor config sync\` to rewrite it)`);
       } else {
@@ -44409,9 +44515,9 @@ function evaluateConductorConfig(opts = {}) {
   }
   let hostLayer;
   if (hasHost) {
-    const text = readText(paths.hostFile, HOST_FILE_LABEL);
-    if (text !== null) {
-      const v = validateText(HOST_FILE_LABEL, text, HostFileSchema);
+    const text2 = readText(paths.hostFile, HOST_FILE_LABEL);
+    if (text2 !== null) {
+      const v = validateText(HOST_FILE_LABEL, text2, HostFileSchema);
       if (v.ok) {
         hostLayer = v.value;
         sources.push(`host: ${paths.hostFile}`);
@@ -44586,7 +44692,7 @@ function resolveDeploymentConfigPath(opts) {
   const env = opts?.env ?? process.env;
   if (opts?.configPath) return opts.configPath;
   if (env.HARMONY_DEPLOYMENT_CONFIG) return env.HARMONY_DEPLOYMENT_CONFIG;
-  return join2(homedir2(), ".harmony", "deployment.json");
+  return join3(homedir2(), ".harmony", "deployment.json");
 }
 function loadDeploymentConfig(opts = {}) {
   const conductor = loadConductorConfigSync({
@@ -44601,8 +44707,8 @@ function loadDeploymentConfig(opts = {}) {
 }
 function loadLegacyDeploymentConfig(opts = {}) {
   const env = opts.env ?? process.env;
-  const exists = opts.existsSync ?? existsSync;
-  const readFile = opts.readFileSync ?? ((p) => readFileSync(p, "utf8"));
+  const exists = opts.existsSync ?? existsSync2;
+  const readFile = opts.readFileSync ?? ((p) => readFileSync2(p, "utf8"));
   const path3 = resolveDeploymentConfigPath({ configPath: opts.configPath, env });
   if (!exists(path3)) return null;
   let raw;
@@ -44650,7 +44756,7 @@ function resolveKnownRefs(env) {
 }
 function readManifestVersion(manifestPath) {
   try {
-    const parsed = JSON.parse(readFileSync2(manifestPath, "utf8"));
+    const parsed = JSON.parse(readFileSync3(manifestPath, "utf8"));
     return typeof parsed.version === "string" ? parsed.version : null;
   } catch {
     return null;
@@ -44659,14 +44765,14 @@ function readManifestVersion(manifestPath) {
 function resolvePluginVersion(env, moduleUrl) {
   const root = env.CLAUDE_PLUGIN_ROOT;
   if (root) {
-    const version4 = readManifestVersion(join3(root, ".claude-plugin", "plugin.json"));
+    const version4 = readManifestVersion(join4(root, ".claude-plugin", "plugin.json"));
     if (version4 !== null) return version4;
   }
   try {
-    let dir = dirname(fileURLToPath(moduleUrl));
+    let dir = dirname2(fileURLToPath(moduleUrl));
     for (let i = 0; i < 3; i++) {
-      dir = dirname(dir);
-      const version4 = readManifestVersion(join3(dir, ".claude-plugin", "plugin.json"));
+      dir = dirname2(dir);
+      const version4 = readManifestVersion(join4(dir, ".claude-plugin", "plugin.json"));
       if (version4 !== null) return version4;
     }
   } catch {
@@ -44842,114 +44948,8 @@ async function resolveTaskIds(client, projectId, inputs) {
   return classified.map((c) => c.kind === "uuid" ? c.id : idByNumber.get(c.taskNumber));
 }
 
-// src/tools/knowledge-metadata.ts
-import { existsSync as existsSync2, readFileSync as readFileSync3 } from "node:fs";
-import { basename as basename2, dirname as dirname2, join as join4 } from "node:path";
-async function metadataCapable(client) {
-  const { data, error: error2 } = await client.rpc("knowledge_metadata_capable");
-  if (error2) {
-    if (["PGRST202", "42883"].includes(error2.code)) return false;
-    throw new Error(error2.message);
-  }
-  if (data === true || data === false) return data;
-  throw new Error(
-    "Invalid knowledge metadata capability response; legacy fallback refused."
-  );
-}
-async function metadataRpc(client, operation, scope, args) {
-  const capable = await metadataCapable(client);
-  if (scope !== void 0 && !["product", "deployment"].includes(scope))
-    throw new Error("scope must be product or deployment");
-  if (scope !== void 0 && !capable)
-    throw new Error(
-      "Knowledge scope unavailable until the schema is promoted; nothing was saved."
-    );
-  if (capable && (operation === "knowledge_record_decision" || operation === "knowledge_supersede_knowledge_entry" || operation === "knowledge_supersede_decision" && args.p_type) && !scope)
-    throw new Error(
-      "New knowledge requires product or deployment scope. Separate mixed claims."
-    );
-  const result = await client.rpc(
-    capable ? `${operation}_metadata` : operation,
-    { ...args, ...capable ? { p_scope: scope ?? null } : {} }
-  );
-  if (result.error?.details)
-    result.error.message += `
-${result.error.details}`;
-  return result;
-}
-async function listKnowledgeTags(client, projectId) {
-  if (!await metadataCapable(client))
-    throw new Error(
-      "Project tag vocabulary unavailable until the schema is promoted."
-    );
-  const { data, error: error2 } = await client.rpc("knowledge_list_tags", {
-    p_project_id: projectId
-  });
-  if (error2) throw new Error(error2.message);
-  return data;
-}
-async function registerKnowledgeTag(client, projectId, name, description) {
-  if (!await metadataCapable(client))
-    throw new Error(
-      "Project tag vocabulary unavailable until the schema is promoted."
-    );
-  const { data, error: error2 } = await client.rpc("knowledge_register_tag", {
-    p_project_id: projectId,
-    p_name: name,
-    p_description: description
-  });
-  if (error2) throw new Error(error2.message);
-  return data;
-}
-function surfaceTags(paths) {
-  return [
-    ...new Set(
-      paths.map((path3) => path3.replace(/^\.\//, "")).filter(
-        (path3) => /^[A-Za-z0-9_.-]+\//.test(path3) && !path3.split("/").some((part) => part === ".." || part === "")
-      ).map((path3) => `surface:${path3.slice(0, path3.lastIndexOf("/"))}`)
-    )
-  ].sort();
-}
-var listKnowledgeTagsTool = {
-  name: "list_knowledge_tags",
-  description: "List the project authored tag vocabulary. Generated ticket/surface namespaces are reserved. Type is advisory.",
-  inputSchema: { type: "object", properties: {} }
-};
-var registerKnowledgeTagTool = {
-  name: "register_knowledge_tag",
-  description: "Explicitly register an authored project tag, separately from entry saves. Existing knowledge writers may register tags.",
-  inputSchema: {
-    type: "object",
-    properties: { name: { type: "string" }, description: { type: "string" } },
-    required: ["name", "description"]
-  }
-};
-function repositoryPrefix(repo) {
-  let directory = process.cwd();
-  for (; ; ) {
-    const file = join4(directory, ".harmony", "conductor.json");
-    if (existsSync2(file)) {
-      const config2 = JSON.parse(readFileSync3(file, "utf8"));
-      const match = (config2.repos ?? []).find((item) => {
-        const name = String(item.url ?? "").replace(/\.git$/, "").replace(/^.*github\.com[/:]/, "");
-        return name === repo || name.split("/").pop() === repo;
-      });
-      if (match) {
-        const prefix2 = basename2(match.path);
-        if (!/^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(prefix2))
-          throw new Error("Invalid declared repository directory");
-        return prefix2;
-      }
-    }
-    const parent = dirname2(directory);
-    if (parent === directory) break;
-    directory = parent;
-  }
-  const prefix = repo.split("/").pop();
-  if (!/^[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(prefix))
-    throw new Error("Invalid repository prefix");
-  return prefix;
-}
+// src/tools/knowledge-questions.ts
+import { createHash } from "node:crypto";
 
 // src/tools/provenance.ts
 var PROVENANCE_HUMAN_IN_SESSION = "human-in-session";
@@ -44980,6 +44980,152 @@ function guardKnowledgeWriteProvenance(provenance) {
     );
   }
 }
+
+// src/tools/knowledge-questions.ts
+function questionProjection(row) {
+  const q = row?.madr?.question;
+  if (q?.version !== 1 || !["open", "parked", "decided"].includes(q.state)) return {};
+  return {
+    question_state: q.state,
+    question_scope: q.scope,
+    answer: q.state === "decided" ? "decided; see resulting decision" : "not yet decided",
+    resulting_decision_id: q.state === "decided" ? row?.superseded_by ?? null : null
+  };
+}
+function missingQuestionCapability(error2) {
+  return error2?.code === "PGRST202" || error2?.code === "42883" && /knowledge_question_(save|import)/.test(error2.message ?? "");
+}
+async function saveKnowledgeQuestion(client, projectId, args) {
+  if (!["open", "parked", "decided"].includes(args.state)) throw new Error("state must be open, parked or decided");
+  guardKnowledgeWriteProvenance(args.provenance);
+  let content = args.content;
+  if (!args.question_id) {
+    content = claimContent(args.title ?? "", content ?? "", args.claim);
+  } else if (content !== void 0 || args.claim !== void 0) {
+    const current = await client.from("knowledge_decisions").select("*").eq("project_id", projectId).eq("id", args.question_id).single();
+    if (current.error) throw new Error(current.error.message);
+    content = editedClaimContent(current.data, { title: args.title, content, claim: args.claim });
+  }
+  const { data, error: error2 } = await client.rpc("knowledge_question_save", {
+    p_project_id: projectId,
+    p_title: args.title ?? null,
+    p_content: content ?? null,
+    p_state: args.state,
+    p_scope: args.scope ?? null,
+    p_question_id: args.question_id ?? null,
+    p_expected_updated_at: args.expected_updated_at ?? null,
+    p_decision_id: args.resulting_decision_id ?? null,
+    p_domain: args.domain ?? null,
+    p_reopen: args.reopen ?? false,
+    p_provenance: args.provenance ?? null,
+    p_conduction_id: getConductionId() ?? null,
+    p_leg: getLeg() ?? null
+  });
+  if (missingQuestionCapability(error2)) throw new Error("Question management unavailable: apply the B-1242 database capability. No question was saved.");
+  if (error2) throw new Error(error2.message);
+  await embedQuestion(client, projectId, data);
+  return { ...data, ...claimFields(data), ...questionProjection(data) };
+}
+async function embedQuestion(client, projectId, data) {
+  try {
+    const embedded = await client.functions.invoke("embed-knowledge", { body: { text: `${data.title}
+${data.content}` }, timeout: 2e3 });
+    if (!embedded.error && Array.isArray(embedded.data?.embedding)) {
+      await client.from("knowledge_decisions").update({ embedding: `[${embedded.data.embedding.join(",")}]` }).eq("project_id", projectId).eq("id", data.id);
+    }
+  } catch {
+  }
+}
+function milestoneQuestionPreview(projectId, milestone) {
+  const source = milestone.description ?? "";
+  const excerpts = source.split("\n").filter((line) => /^\s*[-*]\s+\S/.test(line));
+  const used = /* @__PURE__ */ new Set();
+  return {
+    version: 1,
+    project_id: projectId,
+    milestone_id: milestone.id,
+    source_name: milestone.name,
+    source_fingerprint: createHash("md5").update(source).digest("hex"),
+    warnings: ["Historical milestone prose may include themes that have since been decided. Review every source excerpt against current knowledge; approve only unresolved themes. Nothing is written by preview."],
+    entries: excerpts.map((source_excerpt) => {
+      const text2 = source_excerpt.replace(/^\s*[-*]\s+/, "");
+      const key = text2.match(/^[A-Z][A-Z0-9]*-\d+\b/)?.[0] ?? createHash("sha256").update(text2).digest("hex").slice(0, 24);
+      if (used.has(key)) throw new Error(`Duplicate theme key ${key}; review the milestone before importing`);
+      used.add(key);
+      return {
+        key,
+        title: `Open question: ${text2.slice(0, 160)}`,
+        content: encodeClaim(
+          `Not yet decided. Proposed from milestone \u201C${milestone.name}\u201D; this is not evidence of shipped behaviour.
+
+${source_excerpt}`,
+          `Theme ${key} is proposed as an unresolved question, subject to review.`,
+          "derived"
+        ),
+        source_excerpt,
+        state: "parked",
+        scope: "product",
+        domain: ["product"],
+        approved: false
+      };
+    })
+  };
+}
+async function previewKnowledgeQuestions(client, projectId, args) {
+  const { data, error: error2 } = await client.from("milestones").select("id, name, description").eq("project_id", projectId).eq("id", args.milestone_id).single();
+  if (error2) throw new Error(error2.message);
+  return milestoneQuestionPreview(projectId, data);
+}
+async function importKnowledgeQuestions(client, projectId, args) {
+  guardKnowledgeWriteProvenance(args.provenance);
+  if (args.manifest.project_id !== projectId) throw new Error("Manifest belongs to another project");
+  const manifest = { ...args.manifest, entries: args.manifest.entries.map((entry) => ({
+    ...entry,
+    content: decodeClaim(entry.content).claim ? entry.content : claimContent(entry.title, entry.content)
+  })) };
+  const { data, error: error2 } = await client.rpc("knowledge_question_import", {
+    p_project_id: projectId,
+    p_manifest: manifest,
+    p_provenance: args.provenance ?? null,
+    p_conduction_id: getConductionId() ?? null,
+    p_leg: getLeg() ?? null
+  });
+  if (missingQuestionCapability(error2)) throw new Error("Question import unavailable: apply the B-1242 database capability. Nothing was imported.");
+  if (error2) throw new Error(error2.message);
+  for (const result of data.results ?? []) {
+    if (result.outcome !== "created") continue;
+    const entry = manifest.entries.find((item) => item.key === result.key);
+    if (entry) await embedQuestion(client, projectId, { ...entry, id: result.id });
+  }
+  return data;
+}
+var saveKnowledgeQuestionTool = {
+  name: "save_knowledge_question",
+  description: "Create an explicitly scoped unresolved knowledge question, or atomically change its state. Accepted acknowledges the question, not an answer or shipped behaviour. For changes supply question_id and expected_updated_at from a fresh read. Deciding requires an accepted resulting decision in this project; reopening a decided question requires reopen:true. Type remains advisory.",
+  inputSchema: { type: "object", properties: {
+    title: { type: "string" },
+    content: { type: "string" },
+    claim: { type: "string", description: "Optional authored one-sentence claim; omission uses the shared derived-proposal contract." },
+    state: { type: "string", enum: ["open", "parked", "decided"] },
+    scope: { type: "string", enum: ["product", "deployment"] },
+    question_id: { type: "string" },
+    expected_updated_at: { type: "string" },
+    resulting_decision_id: { type: "string" },
+    reopen: { type: "boolean" },
+    domain: { type: "array", items: { type: "string" }, description: "Subject domains; new questions default to product. Scope is separate." },
+    provenance: { type: "string" }
+  }, required: ["state"] }
+};
+var previewKnowledgeQuestionsTool = {
+  name: "preview_knowledge_questions",
+  description: "Read-only preview of milestone bullet themes as question proposals. Source-attributed, fingerprinted manifest; each item starts approved:false. Review historical themes against current decisions before approving any. Generic across projects.",
+  inputSchema: { type: "object", properties: { milestone_id: { type: "string" } }, required: ["milestone_id"] }
+};
+var importKnowledgeQuestionsTool = {
+  name: "import_knowledge_questions",
+  description: "Explicitly apply a reviewed milestone-question manifest. Only approved:true entries are imported. The database checks source freshness, project isolation and replay identity atomically; conflicts never overwrite existing questions. Does not decide themes or mark them shipped.",
+  inputSchema: { type: "object", properties: { manifest: { type: "object", additionalProperties: true }, provenance: { type: "string" } }, required: ["manifest"] }
+};
 
 // src/tools/knowledge-definitions.ts
 async function readDefinitions(client, workspaceId, projectId, args = {}) {
@@ -45193,40 +45339,40 @@ var ENTITY_MAP = {
 };
 var ENTITY_PATTERN = /&amp;|&lt;|&gt;|&quot;|&#39;/g;
 var HAS_ENTITY_PATTERN = /&amp;|&lt;|&gt;|&quot;|&#39;/;
-function splitCodeSpans(text) {
+function splitCodeSpans(text2) {
   const segments = [];
   let i = 0;
   let plainStart = 0;
-  while (i < text.length) {
-    if (text.startsWith("```", i)) {
-      const close = text.indexOf("```", i + 3);
-      const codeEnd = close === -1 ? text.length : close + 3;
-      if (plainStart < i) segments.push({ code: false, text: text.slice(plainStart, i) });
-      segments.push({ code: true, text: text.slice(i, codeEnd) });
+  while (i < text2.length) {
+    if (text2.startsWith("```", i)) {
+      const close = text2.indexOf("```", i + 3);
+      const codeEnd = close === -1 ? text2.length : close + 3;
+      if (plainStart < i) segments.push({ code: false, text: text2.slice(plainStart, i) });
+      segments.push({ code: true, text: text2.slice(i, codeEnd) });
       i = codeEnd;
       plainStart = i;
       continue;
     }
-    if (text[i] === "`") {
-      const close = text.indexOf("`", i + 1);
+    if (text2[i] === "`") {
+      const close = text2.indexOf("`", i + 1);
       if (close === -1) {
         i += 1;
         continue;
       }
-      if (plainStart < i) segments.push({ code: false, text: text.slice(plainStart, i) });
-      segments.push({ code: true, text: text.slice(i, close + 1) });
+      if (plainStart < i) segments.push({ code: false, text: text2.slice(plainStart, i) });
+      segments.push({ code: true, text: text2.slice(i, close + 1) });
       i = close + 1;
       plainStart = i;
       continue;
     }
     i += 1;
   }
-  if (plainStart < text.length) segments.push({ code: false, text: text.slice(plainStart) });
+  if (plainStart < text2.length) segments.push({ code: false, text: text2.slice(plainStart) });
   return segments;
 }
-function normalizeHtmlEntities(text) {
-  if (!text || !HAS_ENTITY_PATTERN.test(text)) return text;
-  return splitCodeSpans(text).map(
+function normalizeHtmlEntities(text2) {
+  if (!text2 || !HAS_ENTITY_PATTERN.test(text2)) return text2;
+  return splitCodeSpans(text2).map(
     (seg) => seg.code ? seg.text : seg.text.replace(ENTITY_PATTERN, (m) => ENTITY_MAP[m] ?? m)
   ).join("");
 }
@@ -45250,7 +45396,7 @@ var FACT_COLS = "id, workspace_id, project_id, subject_entity_id, predicate, obj
 var ENTITY_COLS = "id, workspace_id, project_id, kind, name, description, metadata, created_at";
 var queryKnowledgeTool = {
   name: "query_knowledge",
-  description: 'Find current term definitions first, then linked refinements and ordinary decisions. definitions_only returns full quotable current definitions; unavailable storage is reported explicitly. Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Results include nullable superseded_by and inverse supersedes UUIDs; matching successors precede replaced entries. Check this before making significant implementation choices. Defaults to "Accepted" entries only, with explicitly marked bookkeeping ranked last; include_bookkeeping:false excludes it before pagination. When `search` is given, retrieval is semantic (RRF) and composes with `domain`, `limit` and `include_bookkeeping`; the other structured filters (`type`, `status`, `tags`, `as_of`, `include_superseded`, `offset`) apply to the non-search structured path only. Optional scope (product | deployment) filters by declared scope when the metadata schema is present; unsupported scope filtering fails explicitly. question_state (open | parked | decided) is a filter-only argument until B-1223 lands the scored path; combining it with search fails explicitly.',
+  description: 'Find current term definitions first, then linked refinements, current source-generated deployment facts with inspectable provenance, and ordinary decisions. Generated facts remain Asserted and are not human-ratified decisions. definitions_only returns full quotable current definitions; unavailable storage is reported explicitly. Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Results include nullable superseded_by and inverse supersedes UUIDs; matching successors precede replaced entries. Check this before making significant implementation choices. Ordinary decisions default to "Accepted"; current generated evidence is included separately, with explicitly marked bookkeeping ranked last; include_bookkeeping:false excludes it before pagination. When `search` is given, retrieval is semantic (RRF) and composes with `domain`, `limit` and `include_bookkeeping`; the other structured filters (`type`, `status`, `tags`, `as_of`, `include_superseded`, `offset`) apply to the non-search structured path only. Optional scope (product | deployment) filters by declared scope when the metadata schema is present; unsupported scope filtering fails explicitly. question_state (open | parked | decided) is a filter-only argument until B-1223 lands the scored path; combining it with search fails explicitly.',
   inputSchema: {
     type: "object",
     properties: {
@@ -45408,9 +45554,9 @@ async function getWorkspaceId(client, projectId) {
   if (error2) throw new Error(`Could not resolve workspace: ${error2.message}`);
   return data.workspace_id;
 }
-async function embedText(client, text) {
+async function embedText(client, text2) {
   try {
-    const { data, error: error2 } = await client.functions.invoke("embed-knowledge", { body: { text } });
+    const { data, error: error2 } = await client.functions.invoke("embed-knowledge", { body: { text: text2 } });
     if (error2 || !data?.embedding) return null;
     return `[${data.embedding.join(",")}]`;
   } catch {
@@ -45494,8 +45640,11 @@ async function queryKnowledge(client, projectId, args) {
     return definitions.definitions;
   }
   const includeDefinitions = !args.type && !args.status && !args.tags?.length && !args.as_of && !args.include_superseded && args.scope !== "deployment";
+  const includeSources = !args.type && !args.status && !args.tags?.length && !args.as_of && !args.include_superseded && args.scope !== "product" && (!args.domain?.length || args.domain.includes("operations"));
+  const sourceOffset = Math.max(0, (args.offset ?? 0) - (includeDefinitions ? definitions.total_count ?? definitions.definitions.length : 0));
+  const generated = includeSources ? await readSourceValues(client, projectId, { search: args.search, limit: args.limit, offset: sourceOffset }) : { values: [], total_count: 0 };
   const prepend = async (entries) => {
-    if (!includeDefinitions) return entries;
+    if (!includeDefinitions) return [...generated.values, ...entries].slice(0, args.limit ?? 50);
     const ids2 = args.search ? [...new Set(definitions.definitions.flatMap((d) => d.refinements.map((r) => r.id)))] : [];
     let refinements = [];
     if (ids2.length) {
@@ -45511,18 +45660,16 @@ async function queryKnowledge(client, projectId, args) {
       ));
     }
     const seen = /* @__PURE__ */ new Set();
-    return [...definitions.definitions, ...refinements, ...entries].filter((entry) => {
+    return [...definitions.definitions, ...refinements, ...generated.values, ...entries].filter((entry) => {
       if (seen.has(entry.id)) return false;
       seen.add(entry.id);
       return true;
     }).slice(0, args.limit ?? 50);
   };
-  const decisionArgs = includeDefinitions && definitions.available ? {
-    ...args,
-    offset: Math.max(0, (args.offset ?? 0) - (definitions.total_count ?? definitions.definitions.length)),
-    limit: Math.max(1, (args.limit ?? 50) - definitions.definitions.length)
-  } : args;
-  if (includeDefinitions && definitions.definitions.length >= (args.limit ?? 50)) return definitions.definitions;
+  const prefixCount = (includeDefinitions ? definitions.total_count ?? definitions.definitions.length : 0) + generated.total_count;
+  const pagePrefixCount = (includeDefinitions ? definitions.definitions.length : 0) + generated.values.length;
+  const decisionArgs = { ...args, offset: Math.max(0, (args.offset ?? 0) - prefixCount), limit: Math.max(1, (args.limit ?? 50) - pagePrefixCount) };
+  if (pagePrefixCount >= (args.limit ?? 50)) return prepend([]);
   if (args.search) {
     const queryEmbedding = await embedText(client, args.search);
     const data = await bookkeepingPage(({ bookkeeping, offset, limit, count }) => truthCompatibleRead((extraColumns) => {
@@ -46914,151 +47061,118 @@ async function resolveModelCatalog(client) {
   return { entries: MODEL_CATALOG_FALLBACK, source: "fallback" };
 }
 
-// src/tools/knowledge-questions.ts
-function questionProjection(row) {
-  const q = row?.madr?.question;
-  if (q?.version !== 1 || !["open", "parked", "decided"].includes(q.state)) return {};
-  return {
-    question_state: q.state,
-    question_scope: q.scope,
-    answer: q.state === "decided" ? "decided; see resulting decision" : "not yet decided",
-    resulting_decision_id: q.state === "decided" ? row?.superseded_by ?? null : null
-  };
-}
-function missingQuestionCapability(error2) {
-  return error2?.code === "PGRST202" || error2?.code === "42883" && /knowledge_question_(save|import)/.test(error2.message ?? "");
-}
-async function saveKnowledgeQuestion(client, projectId, args) {
-  if (!["open", "parked", "decided"].includes(args.state)) throw new Error("state must be open, parked or decided");
-  guardKnowledgeWriteProvenance(args.provenance);
-  let content = args.content;
-  if (!args.question_id) {
-    content = claimContent(args.title ?? "", content ?? "", args.claim);
-  } else if (content !== void 0 || args.claim !== void 0) {
-    const current = await client.from("knowledge_decisions").select("*").eq("project_id", projectId).eq("id", args.question_id).single();
-    if (current.error) throw new Error(current.error.message);
-    content = editedClaimContent(current.data, { title: args.title, content, claim: args.claim });
+// src/tools/knowledge-sources.ts
+var text = external_exports.string().trim().min(1);
+var sourceValueSchema = external_exports.object({
+  key: text,
+  kind: external_exports.enum(["default", "error", "file-shape", "measurement", "explanation"]),
+  title: text,
+  content: text,
+  spellings: external_exports.array(text).min(1),
+  tags: external_exports.array(text).optional(),
+  source: external_exports.object({
+    path: text.refine((p) => !p.startsWith("/") && !p.split("/").includes(".."), "Source path must be repository-relative"),
+    sha: external_exports.string().regex(/^[a-f0-9]{40,64}$/),
+    publisher: text,
+    publisher_version: text,
+    run_url: text,
+    line_start: external_exports.number().int().positive().optional(),
+    line_end: external_exports.number().int().positive().optional(),
+    measurement: external_exports.object({ command: text, parameters: external_exports.unknown(), tool_versions: external_exports.unknown(), result: external_exports.unknown() }).optional()
+  }).passthrough()
+}).strict().superRefine((v, ctx) => {
+  if (v.kind === "measurement" && !v.source.measurement) ctx.addIssue({ code: "custom", message: "Measurement requires command, parameters, tool versions and captured result" });
+  if (v.source.line_end && v.source.line_start && v.source.line_end < v.source.line_start) ctx.addIssue({ code: "custom", message: "Invalid source line span" });
+});
+var sourceInventorySchema = external_exports.object({
+  repository: text,
+  surface: text,
+  expected_revision: external_exports.string().uuid().nullable(),
+  run_id: text,
+  source_sha: external_exports.string().regex(/^[a-f0-9]{40,64}$/),
+  values: external_exports.array(sourceValueSchema).max(1e3)
+}).strict().superRefine((v, ctx) => {
+  if (new Set(v.values.map((x) => x.key)).size !== v.values.length) ctx.addIssue({ code: "custom", message: "Duplicate inventory keys" });
+  if (v.values.some((x) => x.source.sha !== v.source_sha)) ctx.addIssue({ code: "custom", message: "Source revision mismatch" });
+});
+async function sourceCapable(client) {
+  const { data, error: error2 } = await client.rpc("knowledge_source_capable");
+  if (error2) {
+    if (["PGRST202", "42883"].includes(error2.code)) return false;
+    throw new Error(error2.message);
   }
-  const { data, error: error2 } = await client.rpc("knowledge_question_save", {
-    p_project_id: projectId,
-    p_title: args.title ?? null,
-    p_content: content ?? null,
-    p_state: args.state,
-    p_scope: args.scope ?? null,
-    p_question_id: args.question_id ?? null,
-    p_expected_updated_at: args.expected_updated_at ?? null,
-    p_decision_id: args.resulting_decision_id ?? null,
-    p_domain: args.domain ?? null,
-    p_reopen: args.reopen ?? false,
-    p_provenance: args.provenance ?? null,
-    p_conduction_id: getConductionId() ?? null,
-    p_leg: getLeg() ?? null
-  });
-  if (missingQuestionCapability(error2)) throw new Error("Question management unavailable: apply the B-1242 database capability. No question was saved.");
-  if (error2) throw new Error(error2.message);
-  await embedQuestion(client, projectId, data);
-  return { ...data, ...claimFields(data), ...questionProjection(data) };
-}
-async function embedQuestion(client, projectId, data) {
-  try {
-    const embedded = await client.functions.invoke("embed-knowledge", { body: { text: `${data.title}
-${data.content}` }, timeout: 2e3 });
-    if (!embedded.error && Array.isArray(embedded.data?.embedding)) {
-      await client.from("knowledge_decisions").update({ embedding: `[${embedded.data.embedding.join(",")}]` }).eq("project_id", projectId).eq("id", data.id);
-    }
-  } catch {
-  }
-}
-function milestoneQuestionPreview(projectId, milestone) {
-  const source = milestone.description ?? "";
-  const excerpts = source.split("\n").filter((line) => /^\s*[-*]\s+\S/.test(line));
-  const used = /* @__PURE__ */ new Set();
-  return {
-    version: 1,
-    project_id: projectId,
-    milestone_id: milestone.id,
-    source_name: milestone.name,
-    source_fingerprint: createHash("md5").update(source).digest("hex"),
-    warnings: ["Historical milestone prose may include themes that have since been decided. Review every source excerpt against current knowledge; approve only unresolved themes. Nothing is written by preview."],
-    entries: excerpts.map((source_excerpt) => {
-      const text = source_excerpt.replace(/^\s*[-*]\s+/, "");
-      const key = text.match(/^[A-Z][A-Z0-9]*-\d+\b/)?.[0] ?? createHash("sha256").update(text).digest("hex").slice(0, 24);
-      if (used.has(key)) throw new Error(`Duplicate theme key ${key}; review the milestone before importing`);
-      used.add(key);
-      return {
-        key,
-        title: `Open question: ${text.slice(0, 160)}`,
-        content: encodeClaim(
-          `Not yet decided. Proposed from milestone \u201C${milestone.name}\u201D; this is not evidence of shipped behaviour.
-
-${source_excerpt}`,
-          `Theme ${key} is proposed as an unresolved question, subject to review.`,
-          "derived"
-        ),
-        source_excerpt,
-        state: "parked",
-        scope: "product",
-        domain: ["product"],
-        approved: false
-      };
-    })
-  };
-}
-async function previewKnowledgeQuestions(client, projectId, args) {
-  const { data, error: error2 } = await client.from("milestones").select("id, name, description").eq("project_id", projectId).eq("id", args.milestone_id).single();
-  if (error2) throw new Error(error2.message);
-  return milestoneQuestionPreview(projectId, data);
-}
-async function importKnowledgeQuestions(client, projectId, args) {
-  guardKnowledgeWriteProvenance(args.provenance);
-  if (args.manifest.project_id !== projectId) throw new Error("Manifest belongs to another project");
-  const manifest = { ...args.manifest, entries: args.manifest.entries.map((entry) => ({
-    ...entry,
-    content: decodeClaim(entry.content).claim ? entry.content : claimContent(entry.title, entry.content)
-  })) };
-  const { data, error: error2 } = await client.rpc("knowledge_question_import", {
-    p_project_id: projectId,
-    p_manifest: manifest,
-    p_provenance: args.provenance ?? null,
-    p_conduction_id: getConductionId() ?? null,
-    p_leg: getLeg() ?? null
-  });
-  if (missingQuestionCapability(error2)) throw new Error("Question import unavailable: apply the B-1242 database capability. Nothing was imported.");
-  if (error2) throw new Error(error2.message);
-  for (const result of data.results ?? []) {
-    if (result.outcome !== "created") continue;
-    const entry = manifest.entries.find((item) => item.key === result.key);
-    if (entry) await embedQuestion(client, projectId, { ...entry, id: result.id });
-  }
+  if (typeof data !== "boolean") throw new Error("Invalid source inventory capability response");
   return data;
 }
-var saveKnowledgeQuestionTool = {
-  name: "save_knowledge_question",
-  description: "Create an explicitly scoped unresolved knowledge question, or atomically change its state. Accepted acknowledges the question, not an answer or shipped behaviour. For changes supply question_id and expected_updated_at from a fresh read. Deciding requires an accepted resulting decision in this project; reopening a decided question requires reopen:true. Type remains advisory.",
-  inputSchema: { type: "object", properties: {
-    title: { type: "string" },
-    content: { type: "string" },
-    claim: { type: "string", description: "Optional authored one-sentence claim; omission uses the shared derived-proposal contract." },
-    state: { type: "string", enum: ["open", "parked", "decided"] },
-    scope: { type: "string", enum: ["product", "deployment"] },
-    question_id: { type: "string" },
-    expected_updated_at: { type: "string" },
-    resulting_decision_id: { type: "string" },
-    reopen: { type: "boolean" },
-    domain: { type: "array", items: { type: "string" }, description: "Subject domains; new questions default to product. Scope is separate." },
-    provenance: { type: "string" }
-  }, required: ["state"] }
-};
-var previewKnowledgeQuestionsTool = {
-  name: "preview_knowledge_questions",
-  description: "Read-only preview of milestone bullet themes as question proposals. Source-attributed, fingerprinted manifest; each item starts approved:false. Review historical themes against current decisions before approving any. Generic across projects.",
-  inputSchema: { type: "object", properties: { milestone_id: { type: "string" } }, required: ["milestone_id"] }
-};
-var importKnowledgeQuestionsTool = {
-  name: "import_knowledge_questions",
-  description: "Explicitly apply a reviewed milestone-question manifest. Only approved:true entries are imported. The database checks source freshness, project isolation and replay identity atomically; conflicts never overwrite existing questions. Does not decide themes or mark them shipped.",
-  inputSchema: { type: "object", properties: { manifest: { type: "object", additionalProperties: true }, provenance: { type: "string" } }, required: ["manifest"] }
-};
+async function requireSources(client) {
+  if (!await metadataCapable(client) || !await sourceCapable(client)) throw new Error("Source publication unavailable until metadata and inventory schema are promoted; nothing was saved.");
+}
+async function publishSourceInventory(client, projectId, args) {
+  const inventory = sourceInventorySchema.parse(args);
+  await requireSources(client);
+  const { data, error: error2 } = await client.rpc("publish_knowledge_source_inventory", {
+    p_project_id: projectId,
+    p_repository: inventory.repository,
+    p_surface: inventory.surface,
+    p_expected_revision: inventory.expected_revision,
+    p_run_id: inventory.run_id,
+    p_source_sha: inventory.source_sha,
+    p_values: inventory.values,
+    p_conduction_id: getConductionId() ?? null,
+    p_leg: getLeg() ?? null
+  });
+  if (error2) throw new Error([error2.message, error2.details].filter(Boolean).join("\n"));
+  return data;
+}
+async function readSourceInventory(client, projectId, args) {
+  await requireSources(client);
+  const { data, error: error2 } = await client.rpc("read_knowledge_source_inventory", { p_project_id: projectId, p_repository: args.repository, p_surface: args.surface });
+  if (error2) throw new Error(error2.message);
+  return data ?? { revision: null, values: [] };
+}
+async function readSourceValues(client, projectId, args = {}) {
+  const requested = args.limit ?? 50, offset = args.offset ?? 0;
+  if (!Number.isInteger(requested) || requested < 0 || !Number.isInteger(offset) || offset < 0) throw new Error("Invalid source value page");
+  const values = [];
+  let total_count = 0;
+  while (values.length < requested) {
+    const size = Math.min(500, requested - values.length);
+    const { data, error: error2 } = await client.rpc("read_knowledge_source_values", { p_project_id: projectId, p_search: args.search ?? null, p_limit: size, p_offset: offset + values.length });
+    if (error2) {
+      if (["PGRST202", "42883"].includes(error2.code)) return { values: [], total_count: 0 };
+      throw new Error(error2.message);
+    }
+    if (!data || !Array.isArray(data.values) || !Number.isInteger(data.total_count)) throw new Error("Invalid source values response");
+    values.push(...data.values);
+    total_count = data.total_count;
+    if (data.values.length < size) break;
+  }
+  return { values, total_count };
+}
+function compareSourceCoverage(values, current, previous, revision) {
+  const mentioned = (document2, spelling) => {
+    const escaped = spelling.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(?<![\\p{L}\\p{N}_-])${escaped}(?![\\p{L}\\p{N}_-])`, "u").test(document2);
+  };
+  const rows = values.map((v) => ({ key: v.key, source: v.source, matched_spellings: v.spellings.filter((s) => mentioned(current, s)), previous_spellings: previous === void 0 ? [] : v.spellings.filter((s) => mentioned(previous, s)) }));
+  return {
+    coverage: "explicit-mention coverage; not proof of semantic completeness",
+    inventory_revision: revision ?? null,
+    mentioned: rows.filter((r) => r.matched_spellings.length),
+    missing: rows.filter((r) => !r.matched_spellings.length),
+    lost: rows.filter((r) => !r.matched_spellings.length && r.previous_spellings.length)
+  };
+}
+async function comparePublishedCoverage(client, projectId, args) {
+  const inventory = await readSourceInventory(client, projectId, args);
+  if (!inventory.revision) throw new Error("No published inventory for this repository/surface");
+  return compareSourceCoverage(inventory.values, args.current, args.previous, inventory.revision);
+}
+var sourceTools = [
+  { name: "publish_source_inventory", description: "Atomically replace a complete deployment source inventory. Generated facts remain Asserted, with source provenance. Read the revision BEFORE extraction; stale snapshots refuse. Missing schema refuses.", inputSchema: { type: "object", properties: { repository: { type: "string" }, surface: { type: "string" }, expected_revision: { type: ["string", "null"] }, run_id: { type: "string" }, source_sha: { type: "string" }, values: { type: "array", maxItems: 1e3, items: { type: "object", properties: { key: { type: "string" }, kind: { type: "string", enum: ["default", "error", "file-shape", "measurement", "explanation"] }, title: { type: "string" }, content: { type: "string" }, spellings: { type: "array", minItems: 1, items: { type: "string" } }, tags: { type: "array", items: { type: "string" } }, source: { type: "object", properties: { path: { type: "string" }, sha: { type: "string" }, publisher: { type: "string" }, publisher_version: { type: "string" }, run_url: { type: "string" }, line_start: { type: "integer" }, line_end: { type: "integer" }, measurement: { type: "object", properties: { command: { type: "string" }, parameters: {}, tool_versions: {}, result: {} }, required: ["command", "parameters", "tool_versions", "result"] } }, required: ["path", "sha", "publisher", "publisher_version", "run_url"] } }, required: ["key", "kind", "title", "content", "spellings", "source"] } } }, required: ["repository", "surface", "expected_revision", "run_id", "source_sha", "values"] } },
+  { name: "read_source_inventory", description: "Read current source values, provenance and the revision needed before extraction.", inputSchema: { type: "object", properties: { repository: { type: "string" }, surface: { type: "string" } }, required: ["repository", "surface"] } },
+  { name: "compare_source_coverage", description: "Report exact case-sensitive option mentions, omissions and losses from a previous document against the current published inventory. Does not prove semantic completeness.", inputSchema: { type: "object", properties: { repository: { type: "string" }, surface: { type: "string" }, current: { type: "string" }, previous: { type: "string" } }, required: ["repository", "surface", "current"] } }
+];
 
 // src/tools/epics.ts
 var listEpicsTool = {
@@ -47286,23 +47400,23 @@ var kw = (re, senseOk) => ({ re, senseOk });
 var AUTH_WORD_REGEX = /\bauth(?:entication|orization|z|n)?\b/i;
 var OAUTH_WORD_REGEX = /\boauth\b/i;
 var AUTH_TOKEN_QUALIFIER = /\b(?:auth|access|api|bearer|jwt|session|refresh|csrf)\b/i;
-function tokenIsAuthSense(text, start, end) {
-  const before = text.slice(Math.max(0, start - 24), start);
-  const after = text.slice(end, end + 24);
+function tokenIsAuthSense(text2, start, end) {
+  const before = text2.slice(Math.max(0, start - 24), start);
+  const after = text2.slice(end, end + 24);
   const window2 = before + " " + after;
   return AUTH_TOKEN_QUALIFIER.test(window2);
 }
 var MIGRATION_CI_TRIGGER_QUALIFIER = /^\s*(?:PRs?|pull[\s-]?requests?)\b/i;
-function migrationSenseOk(text, _start, end) {
-  const after = text.slice(end, end + 20);
+function migrationSenseOk(text2, _start, end) {
+  const after = text2.slice(end, end + 20);
   return !MIGRATION_CI_TRIGGER_QUALIFIER.test(after);
 }
 var AUTH_AUTHORING_VERBS = /\b(?:add(?:s|ed|ing)?|creat(?:e|es|ed|ing)|chang(?:e|es|ed|ing)|implement(?:s|ed|ing)?|requir(?:e|es|ed|ing))\b/i;
 var READING_QUALIFIER_WORDS = /\b(?:existing|current|exercised|accessed|observed|inside|under)\b/i;
 var READING_QUALIFIER_WINDOW = 56;
-function notReadingQualifiedSense(text, start, end) {
-  const before = text.slice(Math.max(0, start - READING_QUALIFIER_WINDOW), start);
-  const after = text.slice(end, end + READING_QUALIFIER_WINDOW);
+function notReadingQualifiedSense(text2, start, end) {
+  const before = text2.slice(Math.max(0, start - READING_QUALIFIER_WINDOW), start);
+  const after = text2.slice(end, end + READING_QUALIFIER_WINDOW);
   const window2 = before + " " + after;
   if (AUTH_AUTHORING_VERBS.test(window2)) return true;
   return !READING_QUALIFIER_WORDS.test(window2);
@@ -47317,7 +47431,7 @@ var KEYWORD_TABLE = {
     kw(/\bsign[\s-]?in\b/i),
     kw(/\bsign[\s-]?out\b/i),
     kw(/\bsession\b/i, notReadingQualifiedSense),
-    kw(/\btokens?\b/i, (text, start, end) => tokenIsAuthSense(text, start, end) && notReadingQualifiedSense(text, start, end)),
+    kw(/\btokens?\b/i, (text2, start, end) => tokenIsAuthSense(text2, start, end) && notReadingQualifiedSense(text2, start, end)),
     kw(/\bpasswords?\b/i),
     kw(/\bcredentials?\b/i, notReadingQualifiedSense),
     kw(/\bRLS\b/i),
@@ -47376,8 +47490,8 @@ var SUBJECT_STARTER_WORDS = /* @__PURE__ */ new Set([
 ]);
 var CLAUSE_BOUNDARY_PUNCT = /[,;:.–—]/;
 var ASCII_LETTER = /[a-z]/;
-function precedingTokens(text, matchStart) {
-  const slice = text.slice(Math.max(0, matchStart - 80), matchStart).toLowerCase();
+function precedingTokens(text2, matchStart) {
+  const slice = text2.slice(Math.max(0, matchStart - 80), matchStart).toLowerCase();
   const isWordChar = (k) => {
     const c = slice[k];
     if (c === void 0) return false;
@@ -47409,26 +47523,26 @@ function precedingTokens(text, matchStart) {
   }
   return inClause;
 }
-function isNegated(text, start) {
-  for (const tok of precedingTokens(text, start)) {
+function isNegated(text2, start) {
+  for (const tok of precedingTokens(text2, start)) {
     if (NEGATION_CUES.has(tok)) return true;
     if (tok.endsWith("n't")) return true;
   }
   return false;
 }
-function textHitsClass(text, cls) {
+function textHitsClass(text2, cls) {
   for (const keyword of KEYWORD_TABLE[cls]) {
     const g = new RegExp(keyword.re.source, keyword.re.flags.includes("g") ? keyword.re.flags : keyword.re.flags + "g");
     let m;
-    while ((m = g.exec(text)) !== null) {
+    while ((m = g.exec(text2)) !== null) {
       const start = m.index;
       const end = m.index + m[0].length;
       if (m[0].length === 0) {
         g.lastIndex++;
         continue;
       }
-      if (keyword.senseOk && !keyword.senseOk(text, start, end)) continue;
-      if (isNegated(text, start)) continue;
+      if (keyword.senseOk && !keyword.senseOk(text2, start, end)) continue;
+      if (isNegated(text2, start)) continue;
       return true;
     }
   }
@@ -47536,7 +47650,7 @@ function pathHitsClass(paths, cls) {
 }
 function detectRiskClasses(input) {
   const hits = /* @__PURE__ */ new Set();
-  const text = typeof input.text === "string" ? input.text : "";
+  const text2 = typeof input.text === "string" ? input.text : "";
   const paths = Array.isArray(input.changedPaths) ? input.changedPaths.filter((p) => typeof p === "string") : [];
   const labels = Array.isArray(input.labels) ? input.labels.filter((l) => typeof l === "string") : [];
   const hasDiff = paths.length > 0;
@@ -47547,10 +47661,10 @@ function detectRiskClasses(input) {
   for (const cls of RISK_CLASSES) {
     if (pathHitsClass(paths, cls)) hits.add(cls);
   }
-  if (text.length > 0) {
+  if (text2.length > 0) {
     for (const cls of RISK_CLASSES) {
       if (hits.has(cls)) continue;
-      if (!textHitsClass(text, cls)) continue;
+      if (!textHitsClass(text2, cls)) continue;
       const demotedByCleanDiff = hasDiff && PATH_GLOB_TABLE[cls].length > 0 && !pathHitsClass(paths, cls);
       if (!demotedByCleanDiff) hits.add(cls);
     }
@@ -47559,12 +47673,12 @@ function detectRiskClasses(input) {
 }
 
 // src/tools/payload-refs.ts
-function kebabSlug(text, maxLen) {
-  const full = text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+function kebabSlug(text2, maxLen) {
+  const full = text2.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
   return full.slice(0, maxLen).replace(/-+$/g, "");
 }
-function slugRef(prefix, text, maxLen = 40) {
-  const slug = kebabSlug(text ?? "", maxLen) || "item";
+function slugRef(prefix, text2, maxLen = 40) {
+  const slug = kebabSlug(text2 ?? "", maxLen) || "item";
   return `${prefix}-${slug}`;
 }
 
@@ -47586,9 +47700,9 @@ var UNWALKED_REMARK_PATTERNS = [
 ];
 function remarkAttestsWalk(detail) {
   if (typeof detail !== "string") return false;
-  const text = detail.replace(/[\u2018\u2019]/g, "'").trim();
-  if (!text) return false;
-  return !UNWALKED_REMARK_PATTERNS.some((re) => re.test(text));
+  const text2 = detail.replace(/[\u2018\u2019]/g, "'").trim();
+  if (!text2) return false;
+  return !UNWALKED_REMARK_PATTERNS.some((re) => re.test(text2));
 }
 function buildFastTrackReleaseRemarkRecordedWalkRequest(args) {
   return {
@@ -47662,11 +47776,11 @@ var GENERATED_VENDORED_EXCLUDE = [
 function isExcludedPath(path3) {
   return GENERATED_VENDORED_EXCLUDE.some((re) => re.test(path3));
 }
-function extractCandidateValues(text) {
-  if (!text) return [];
+function extractCandidateValues(text2) {
+  if (!text2) return [];
   const values = [];
   const fenceRe = /```[a-zA-Z0-9_-]*\n([\s\S]*?)```/g;
-  let working = text.replace(fenceRe, (_match, body) => {
+  let working = text2.replace(fenceRe, (_match, body) => {
     for (const line of body.split("\n")) {
       const trimmed = line.trim();
       if (trimmed.length >= MIN_INLINE_CODE_SPAN_LENGTH) values.push(trimmed);
@@ -48188,8 +48302,8 @@ function countProseWords(s) {
   return s.split(/\s+/).filter((w) => /[A-Za-z0-9]/.test(w)).length;
 }
 function analyzeLegibility(content) {
-  const text = stripForLegibility(content);
-  const sentences = text.split("\n").flatMap((line) => line.split(/(?<=[.!?;:])\s+/)).map((s) => s.trim()).filter((s) => countProseWords(s) > 0);
+  const text2 = stripForLegibility(content);
+  const sentences = text2.split("\n").flatMap((line) => line.split(/(?<=[.!?;:])\s+/)).map((s) => s.trim()).filter((s) => countProseWords(s) > 0);
   const measured = sentences.map((s) => ({ words: countProseWords(s), sentence: s }));
   const longSentences = measured.filter((m) => m.words > SENTENCE_WORD_LIMIT).sort((a, b) => b.words - a.words).map((m) => ({
     words: m.words,
@@ -48197,7 +48311,7 @@ function analyzeLegibility(content) {
   }));
   let nestedParens = 0;
   let adjacentParens = 0;
-  for (const line of text.split("\n")) {
+  for (const line of text2.split("\n")) {
     let depth = 0;
     let prevClose = -1;
     for (let i = 0; i < line.length; i++) {
@@ -48435,40 +48549,40 @@ function proposedAcLines(payload) {
   return (payload ?? []).filter((p) => p.write_kind === "acceptance_criterion" && typeof p.content === "string" && p.content.trim().length > 0).map((p) => `- ${p.content}`);
 }
 function promisedWriteLine(item) {
-  const text = (v) => typeof v === "string" && v.trim() ? v.trim() : null;
+  const text2 = (v) => typeof v === "string" && v.trim() ? v.trim() : null;
   switch (item.write_kind) {
     case "acceptance_criterion": {
-      const content = text(item.content);
+      const content = text2(item.content);
       return content ? `- acceptance criterion \u2014 ${content}` : null;
     }
     case "child_ticket": {
-      const title = text(item.title);
+      const title = text2(item.title);
       return title ? `- new child ticket \u2014 ${title}` : null;
     }
     case "checklist_item": {
-      const title = text(item.title);
+      const title = text2(item.title);
       return title ? `- checklist item \u2014 ${title}` : null;
     }
     case "ac_transfer": {
-      const content = text(item.content);
-      return content ? `- moves an acceptance criterion to ${text(item.target_child_ref) ?? "(unnamed child)"} \u2014 ${content}` : null;
+      const content = text2(item.content);
+      return content ? `- moves an acceptance criterion to ${text2(item.target_child_ref) ?? "(unnamed child)"} \u2014 ${content}` : null;
     }
     case "label_add":
-      return `- label \u2014 ${text(item.label_name) ?? "decision-only"}`;
+      return `- label \u2014 ${text2(item.label_name) ?? "decision-only"}`;
     case "knowledge_entry_content":
       return "- the linked decision entry, written from THIS brief (derived, never separately authored)";
     case "gate_slot":
-      return `- the ${text(item.gate) ?? "gate"} section on the ticket \u2014 this brief's ratified content, kept visible after the gate closes`;
+      return `- the ${text2(item.gate) ?? "gate"} section on the ticket \u2014 this brief's ratified content, kept visible after the gate closes`;
     case "supersede_decision": {
-      const label = text(item.title);
-      return `- supersede decision \u2014 ${label ? `"${label}"` : text(item.decision_id) ?? text(item.ref) ?? "(unnamed)"}, retired with no successor authored here`;
+      const label = text2(item.title);
+      return `- supersede decision \u2014 ${label ? `"${label}"` : text2(item.decision_id) ?? text2(item.ref) ?? "(unnamed)"}, retired with no successor authored here`;
     }
     case "implements_entities": {
       const names = Array.isArray(item.names) ? item.names : [];
       return `- the confirmed feature-entity name(s) \u2014 ${names.length ? names.join(", ") : "(none)"} \u2014 landed on the ticket`;
     }
     case "entity_link": {
-      const name = text(item.entity_name);
+      const name = text2(item.entity_name);
       return name ? `- links this ticket${item.decision_id ? " and this decision" : ""} to the entity "${name}"` : null;
     }
     default:
@@ -48564,8 +48678,8 @@ function decidedItems(doc) {
 }
 function renderEntry(doc, ctx) {
   const briefContent = renderBrief(doc, ctx?.decisionRef ?? null, ctx);
-  const isRatified = (text) => !text.trim() || briefContent.includes(text);
-  const mark = (text) => isRatified(text) ? text : `${text} ${NOT_RATIFIED_MARK}`;
+  const isRatified = (text2) => !text2.trim() || briefContent.includes(text2);
+  const mark = (text2) => isRatified(text2) ? text2 : `${text2} ${NOT_RATIFIED_MARK}`;
   const markAll = (lines) => lines.map(mark);
   const isItemRatified = (item) => isRatified(item.text) && isRatified(item.recommendation ?? "");
   const out = [entryProvenanceStamp(ctx), ""];
@@ -50123,9 +50237,9 @@ function validateRound(questions) {
   return errors;
 }
 var ENUMERATED_OPTIONS_PATTERN = /\(\d+\)|\([a-zA-Z]\)|(?:^|\s)\d+[.)]\s|(?:^|\s)[a-zA-Z][.)]\s/g;
-function looksEnumerated(text) {
-  if (!text) return false;
-  const matches = text.match(ENUMERATED_OPTIONS_PATTERN);
+function looksEnumerated(text2) {
+  if (!text2) return false;
+  const matches = text2.match(ENUMERATED_OPTIONS_PATTERN);
   return !!matches && matches.length >= 2;
 }
 function warnRound(questions) {
@@ -53630,8 +53744,8 @@ function resolveCost(parsed, model) {
 }
 var asNumber = (v) => typeof v === "number" && Number.isFinite(v) ? v : null;
 var asString = (v) => typeof v === "string" ? v : null;
-function parseEnvelope(text) {
-  const trimmed = text.trim();
+function parseEnvelope(text2) {
+  const trimmed = text2.trim();
   if (!trimmed) return null;
   try {
     const whole = JSON.parse(trimmed);
@@ -53655,8 +53769,8 @@ function parseEnvelope(text) {
   }
   return null;
 }
-function parseClaudeResultJson(text) {
-  const envelope = parseEnvelope(text);
+function parseClaudeResultJson(text2) {
+  const envelope = parseEnvelope(text2);
   if (!envelope) return null;
   if (!("result" in envelope) && !("usage" in envelope)) return null;
   const usage = envelope.usage ?? {};
@@ -53728,8 +53842,8 @@ var UNIT_SECONDS = {
   day: 86400,
   days: 86400
 };
-function relativeResetSeconds(text) {
-  const m = /(?:try again|retry|resets?|available again)\s+(?:in|after)\s+((?:\d+(?:\.\d+)?\s*[a-z]+[\s,]*(?:and\s+)?)+)/i.exec(text);
+function relativeResetSeconds(text2) {
+  const m = /(?:try again|retry|resets?|available again)\s+(?:in|after)\s+((?:\d+(?:\.\d+)?\s*[a-z]+[\s,]*(?:and\s+)?)+)/i.exec(text2);
   if (!m) return null;
   let total = 0;
   let any = false;
@@ -53741,14 +53855,14 @@ function relativeResetSeconds(text) {
   }
   return any && total > 0 ? total : null;
 }
-function absoluteResetFromText(text) {
-  const m = /(?:try again|resets?|available again)\s+(?:at|on)\s+([^.;\n)]+)/i.exec(text);
+function absoluteResetFromText(text2) {
+  const m = /(?:try again|resets?|available again)\s+(?:at|on)\s+([^.;\n)]+)/i.exec(text2);
   return m ? absoluteResetTime(m[1]) : null;
 }
-function resetFromText(text, now) {
-  const rel = relativeResetSeconds(text);
+function resetFromText(text2, now) {
+  const rel = relativeResetSeconds(text2);
   if (rel !== null) return resetsInSeconds(rel, now);
-  return absoluteResetFromText(text);
+  return absoluteResetFromText(text2);
 }
 
 // src/agents/claude-code.ts
@@ -53760,12 +53874,12 @@ function parseClaudeRefusal(stdout, now = /* @__PURE__ */ new Date(), env = proc
   if (forced) return forced;
   const parsed = parseClaudeResultJson(stdout);
   if (!parsed || !parsed.is_error) return null;
-  const text = parsed.result ?? "";
-  if (text === "") return null;
-  const kind = CLAUDE_QUOTA_RE.test(text) ? "quota" : CLAUDE_RATE_LIMIT_RE.test(text) ? "rate-limit" : CLAUDE_LIMIT_REACHED_RE.test(text) ? "quota" : null;
+  const text2 = parsed.result ?? "";
+  if (text2 === "") return null;
+  const kind = CLAUDE_QUOTA_RE.test(text2) ? "quota" : CLAUDE_RATE_LIMIT_RE.test(text2) ? "rate-limit" : CLAUDE_LIMIT_REACHED_RE.test(text2) ? "quota" : null;
   if (!kind) return null;
-  const pipe2 = /\|\s*(\d{9,13})\s*$/.exec(text);
-  const resets_at = (pipe2 ? absoluteResetTime(Number(pipe2[1])) : null) ?? resetFromText(text, now);
+  const pipe2 = /\|\s*(\d{9,13})\s*$/.exec(text2);
+  const resets_at = (pipe2 ? absoluteResetTime(Number(pipe2[1])) : null) ?? resetFromText(text2, now);
   return { kind, resets_at };
 }
 var CLAUDE_OUTPUT_FORMAT_FLAGS = ["--output-format", "json"];
@@ -54121,30 +54235,30 @@ function errorText(e) {
   push(e.error);
   return parts.join(" ");
 }
-function structuredReset(e, text, now) {
+function structuredReset(e, text2, now) {
   const err = e.error && typeof e.error === "object" ? e.error : {};
   const fromField = resetsInSeconds(err.resets_in_seconds, now) ?? absoluteResetTime(err.resets_at) ?? resetsInSeconds(err.retry_after, now);
   if (fromField) return fromField;
-  const inSec = /"?resets_in_seconds"?\s*[:=]\s*(\d+)/i.exec(text);
+  const inSec = /"?resets_in_seconds"?\s*[:=]\s*(\d+)/i.exec(text2);
   if (inSec) return resetsInSeconds(Number(inSec[1]), now);
-  const at = /"?resets_at"?\s*[:=]\s*"?([0-9T:.\-+Z]+)"?/i.exec(text);
+  const at = /"?resets_at"?\s*[:=]\s*"?([0-9T:.\-+Z]+)"?/i.exec(text2);
   if (at) {
     const t = absoluteResetTime(/^\d+$/.test(at[1]) ? Number(at[1]) : at[1]);
     if (t) return t;
   }
-  const retryAfter = /retry[- _]after\s*[:=]?\s*(\d+)\s*(?:s\b|sec|seconds)?/i.exec(text);
+  const retryAfter = /retry[- _]after\s*[:=]?\s*(\d+)\s*(?:s\b|sec|seconds)?/i.exec(text2);
   if (retryAfter) return resetsInSeconds(Number(retryAfter[1]), now);
-  return resetFromText(text, now);
+  return resetFromText(text2, now);
 }
 function parseCodexRefusal(stdout, now = /* @__PURE__ */ new Date(), env = process.env) {
   const forced = forcedRefusal(env);
   if (forced) return forced;
   const failures = events(stdout).filter((e) => e.type === "error" || e.type === "turn.failed");
   for (const e of failures.reverse()) {
-    const text = errorText(e);
-    if (text === "") continue;
-    const kind = CODEX_QUOTA_RE.test(text) ? "quota" : CODEX_RATE_LIMIT_RE.test(text) ? "rate-limit" : null;
-    if (kind) return { kind, resets_at: structuredReset(e, text, now) };
+    const text2 = errorText(e);
+    if (text2 === "") continue;
+    const kind = CODEX_QUOTA_RE.test(text2) ? "quota" : CODEX_RATE_LIMIT_RE.test(text2) ? "rate-limit" : null;
+    if (kind) return { kind, resets_at: structuredReset(e, text2, now) };
   }
   return null;
 }
@@ -55388,6 +55502,7 @@ function registerTools(disabledFeatures) {
     listActivityTool,
     listWorkflowTransitionsTool,
     listMembersTool,
+    ...sourceTools,
     saveKnowledgeQuestionTool,
     previewKnowledgeQuestionsTool,
     importKnowledgeQuestionsTool,
@@ -55520,6 +55635,15 @@ async function handleToolCall(name, args, client, projectId, userId) {
         break;
       case "bulk_update_tasks":
         result = await bulkUpdateTasks(client, projectId, args);
+        break;
+      case "publish_source_inventory":
+        result = await publishSourceInventory(client, projectId, args);
+        break;
+      case "read_source_inventory":
+        result = await readSourceInventory(client, projectId, args);
+        break;
+      case "compare_source_coverage":
+        result = await comparePublishedCoverage(client, projectId, args);
         break;
       case "save_knowledge_question":
         result = await saveKnowledgeQuestion(client, projectId, args);

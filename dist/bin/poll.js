@@ -11028,14 +11028,14 @@ var require_foldFlowLines = __commonJS({
     var FOLD_FLOW = "flow";
     var FOLD_BLOCK = "block";
     var FOLD_QUOTED = "quoted";
-    function foldFlowLines(text, indent, mode = "flow", { indentAtStart, lineWidth = 80, minContentWidth = 20, onFold, onOverflow } = {}) {
+    function foldFlowLines(text2, indent, mode = "flow", { indentAtStart, lineWidth = 80, minContentWidth = 20, onFold, onOverflow } = {}) {
       if (!lineWidth || lineWidth < 0)
-        return text;
+        return text2;
       if (lineWidth < minContentWidth)
         minContentWidth = 0;
       const endStep = Math.max(1 + minContentWidth, 1 + lineWidth - indent.length);
-      if (text.length <= endStep)
-        return text;
+      if (text2.length <= endStep)
+        return text2;
       const folds = [];
       const escapedFolds = {};
       let end = lineWidth - indent.length;
@@ -11052,14 +11052,14 @@ var require_foldFlowLines = __commonJS({
       let escStart = -1;
       let escEnd = -1;
       if (mode === FOLD_BLOCK) {
-        i = consumeMoreIndentedLines(text, i, indent.length);
+        i = consumeMoreIndentedLines(text2, i, indent.length);
         if (i !== -1)
           end = i + endStep;
       }
-      for (let ch; ch = text[i += 1]; ) {
+      for (let ch; ch = text2[i += 1]; ) {
         if (mode === FOLD_QUOTED && ch === "\\") {
           escStart = i;
-          switch (text[i + 1]) {
+          switch (text2[i + 1]) {
             case "x":
               i += 3;
               break;
@@ -11076,12 +11076,12 @@ var require_foldFlowLines = __commonJS({
         }
         if (ch === "\n") {
           if (mode === FOLD_BLOCK)
-            i = consumeMoreIndentedLines(text, i, indent.length);
+            i = consumeMoreIndentedLines(text2, i, indent.length);
           end = i + indent.length + endStep;
           split = void 0;
         } else {
           if (ch === " " && prev && prev !== " " && prev !== "\n" && prev !== "	") {
-            const next = text[i + 1];
+            const next = text2[i + 1];
             if (next && next !== " " && next !== "\n" && next !== "	")
               split = i;
           }
@@ -11093,12 +11093,12 @@ var require_foldFlowLines = __commonJS({
             } else if (mode === FOLD_QUOTED) {
               while (prev === " " || prev === "	") {
                 prev = ch;
-                ch = text[i += 1];
+                ch = text2[i += 1];
                 overflow = true;
               }
               const j = i > escEnd + 1 ? i - 2 : escStart - 1;
               if (escapedFolds[j])
-                return text;
+                return text2;
               folds.push(j);
               escapedFolds[j] = true;
               end = j + endStep;
@@ -11113,39 +11113,39 @@ var require_foldFlowLines = __commonJS({
       if (overflow && onOverflow)
         onOverflow();
       if (folds.length === 0)
-        return text;
+        return text2;
       if (onFold)
         onFold();
-      let res = text.slice(0, folds[0]);
+      let res = text2.slice(0, folds[0]);
       for (let i2 = 0; i2 < folds.length; ++i2) {
         const fold = folds[i2];
-        const end2 = folds[i2 + 1] || text.length;
+        const end2 = folds[i2 + 1] || text2.length;
         if (fold === 0)
           res = `
-${indent}${text.slice(0, end2)}`;
+${indent}${text2.slice(0, end2)}`;
         else {
           if (mode === FOLD_QUOTED && escapedFolds[fold])
-            res += `${text[fold]}\\`;
+            res += `${text2[fold]}\\`;
           res += `
-${indent}${text.slice(fold + 1, end2)}`;
+${indent}${text2.slice(fold + 1, end2)}`;
         }
       }
       return res;
     }
-    function consumeMoreIndentedLines(text, i, indent) {
+    function consumeMoreIndentedLines(text2, i, indent) {
       let end = i;
       let start = i + 1;
-      let ch = text[start];
+      let ch = text2[start];
       while (ch === " " || ch === "	") {
         if (i < start + indent) {
-          ch = text[++i];
+          ch = text2[++i];
         } else {
           do {
-            ch = text[++i];
+            ch = text2[++i];
           } while (ch && ch !== "\n");
           end = i;
           start = i + 1;
-          ch = text[start];
+          ch = text2[start];
         }
       }
       return end;
@@ -22322,9 +22322,9 @@ function createFetchClient(options) {
         },
         body: body ? JSON.stringify(body) : void 0
       });
-      const text = await res.text();
+      const text2 = await res.text();
       const isJson = (res.headers.get("content-type") || "").includes("application/json");
-      const data = isJson && text ? JSON.parse(text) : text;
+      const data = isJson && text2 ? JSON.parse(text2) : text2;
       if (!res.ok) {
         const errBody = isJson ? data : void 0;
         const errorDetail = errBody?.error;
@@ -29918,9 +29918,9 @@ var SnapshotSchema = external_exports.object({
   fetched_at: external_exports.string(),
   content: external_exports.string()
 });
-function parseSnapshotText(text) {
+function parseSnapshotText(text2) {
   try {
-    const r = SnapshotSchema.safeParse(JSON.parse(text));
+    const r = SnapshotSchema.safeParse(JSON.parse(text2));
     return r.success ? r.data : null;
   } catch {
     return null;
@@ -30049,27 +30049,27 @@ function zodIssuesToConfigIssues(file, issues, root) {
 function customFix(message) {
   return message.includes("secret VALUE") ? "store the value in Secret Manager and put only the secret NAME here" : message === SUPABASE_URL_NEEDS_CUSTOM ? 'add "target": "custom" or remove supabase_url' : "correct the value to match the schema";
 }
-function lineColOf(text, pos) {
-  const before = text.slice(0, pos);
+function lineColOf(text2, pos) {
+  const before = text2.slice(0, pos);
   const line = before.split("\n").length;
   return { line, col: pos - (before.lastIndexOf("\n") + 1) + 1 };
 }
-function parseJsonText(file, text) {
+function parseJsonText(file, text2) {
   try {
-    return { ok: true, value: JSON.parse(text) };
+    return { ok: true, value: JSON.parse(text2) };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     let where = "";
     if (!/line \d+ column \d+/.test(msg)) {
       const m = /position (\d+)/.exec(msg);
       if (m) {
-        const { line, col } = lineColOf(text, Number(m[1]));
+        const { line, col } = lineColOf(text2, Number(m[1]));
         where = ` (line ${line}, column ${col})`;
       } else {
         const snip = /\.\.\."?([\s\S]*?)"? is not valid JSON/.exec(msg)?.[1] ?? /"([\s\S]*?)" is not valid JSON/.exec(msg)?.[1];
-        const at = snip ? text.indexOf(snip) : -1;
+        const at = snip ? text2.indexOf(snip) : -1;
         if (at >= 0) {
-          const { line, col } = lineColOf(text, at + Math.max(0, snip.length - 1));
+          const { line, col } = lineColOf(text2, at + Math.max(0, snip.length - 1));
           where = ` (near line ${line}, column ${col})`;
         }
       }
@@ -30080,15 +30080,15 @@ function parseJsonText(file, text) {
     };
   }
 }
-function validateText(file, text, schema) {
-  const parsed = parseJsonText(file, text);
+function validateText(file, text2, schema) {
+  const parsed = parseJsonText(file, text2);
   if (!parsed.ok) return { ok: false, issues: [parsed.issue] };
   const r = schema.safeParse(parsed.value);
   if (r.success) return { ok: true, value: r.data };
   return { ok: false, issues: zodIssuesToConfigIssues(file, r.error.issues, schema) };
 }
-function validateProjectFileText(file, text) {
-  return validateText(file, text, ProjectFileSchema);
+function validateProjectFileText(file, text2) {
+  return validateText(file, text2, ProjectFileSchema);
 }
 var BUILTIN_PROFILES = {
   cloud: {
@@ -30447,9 +30447,9 @@ function evaluateConductorConfig(opts = {}) {
       projectFailed = true;
       issues.push({ file: label, key: "(file)", problem: `not found at ${paths.projectFile}`, fix: "create it, or unset HARMONY_CONDUCTOR_PROJECT_FILE" });
     } else {
-      const text = readText(paths.projectFile, label);
-      if (text !== null) {
-        const v = validateProjectFileText(label, text);
+      const text2 = readText(paths.projectFile, label);
+      if (text2 !== null) {
+        const v = validateProjectFileText(label, text2);
         if (v.ok) {
           projectLayer = v.value;
           sources.push(`project: ${paths.projectFile}`);
@@ -30460,9 +30460,9 @@ function evaluateConductorConfig(opts = {}) {
       } else projectFailed = true;
     }
   } else if (hasSnapshot) {
-    const text = readText(paths.snapshotFile, "conductor-snapshot.json");
-    if (text !== null) {
-      const snap = parseSnapshotText(text);
+    const text2 = readText(paths.snapshotFile, "conductor-snapshot.json");
+    if (text2 !== null) {
+      const snap = parseSnapshotText(text2);
       if (!snap) {
         warnings.push(`snapshot ${paths.snapshotFile} is unreadable or malformed; ignoring it (run \`harmony conductor config sync\` to rewrite it)`);
       } else {
@@ -30479,9 +30479,9 @@ function evaluateConductorConfig(opts = {}) {
   }
   let hostLayer;
   if (hasHost) {
-    const text = readText(paths.hostFile, HOST_FILE_LABEL);
-    if (text !== null) {
-      const v = validateText(HOST_FILE_LABEL, text, HostFileSchema);
+    const text2 = readText(paths.hostFile, HOST_FILE_LABEL);
+    if (text2 !== null) {
+      const v = validateText(HOST_FILE_LABEL, text2, HostFileSchema);
       if (v.ok) {
         hostLayer = v.value;
         sources.push(`host: ${paths.hostFile}`);
@@ -30726,6 +30726,41 @@ function encodeClaim(content, claim, source = "authored") {
 
 ${stripClaim(content)}`;
 }
+
+// src/tools/knowledge-sources.ts
+var text = external_exports.string().trim().min(1);
+var sourceValueSchema = external_exports.object({
+  key: text,
+  kind: external_exports.enum(["default", "error", "file-shape", "measurement", "explanation"]),
+  title: text,
+  content: text,
+  spellings: external_exports.array(text).min(1),
+  tags: external_exports.array(text).optional(),
+  source: external_exports.object({
+    path: text.refine((p) => !p.startsWith("/") && !p.split("/").includes(".."), "Source path must be repository-relative"),
+    sha: external_exports.string().regex(/^[a-f0-9]{40,64}$/),
+    publisher: text,
+    publisher_version: text,
+    run_url: text,
+    line_start: external_exports.number().int().positive().optional(),
+    line_end: external_exports.number().int().positive().optional(),
+    measurement: external_exports.object({ command: text, parameters: external_exports.unknown(), tool_versions: external_exports.unknown(), result: external_exports.unknown() }).optional()
+  }).passthrough()
+}).strict().superRefine((v, ctx) => {
+  if (v.kind === "measurement" && !v.source.measurement) ctx.addIssue({ code: "custom", message: "Measurement requires command, parameters, tool versions and captured result" });
+  if (v.source.line_end && v.source.line_start && v.source.line_end < v.source.line_start) ctx.addIssue({ code: "custom", message: "Invalid source line span" });
+});
+var sourceInventorySchema = external_exports.object({
+  repository: text,
+  surface: text,
+  expected_revision: external_exports.string().uuid().nullable(),
+  run_id: text,
+  source_sha: external_exports.string().regex(/^[a-f0-9]{40,64}$/),
+  values: external_exports.array(sourceValueSchema).max(1e3)
+}).strict().superRefine((v, ctx) => {
+  if (new Set(v.values.map((x) => x.key)).size !== v.values.length) ctx.addIssue({ code: "custom", message: "Duplicate inventory keys" });
+  if (v.values.some((x) => x.source.sha !== v.source_sha)) ctx.addIssue({ code: "custom", message: "Source revision mismatch" });
+});
 
 // src/tools/provenance.ts
 var PROVENANCE_HUMAN_IN_SESSION = "human-in-session";
@@ -31172,23 +31207,23 @@ var kw = (re, senseOk) => ({ re, senseOk });
 var AUTH_WORD_REGEX = /\bauth(?:entication|orization|z|n)?\b/i;
 var OAUTH_WORD_REGEX = /\boauth\b/i;
 var AUTH_TOKEN_QUALIFIER = /\b(?:auth|access|api|bearer|jwt|session|refresh|csrf)\b/i;
-function tokenIsAuthSense(text, start, end) {
-  const before = text.slice(Math.max(0, start - 24), start);
-  const after = text.slice(end, end + 24);
+function tokenIsAuthSense(text2, start, end) {
+  const before = text2.slice(Math.max(0, start - 24), start);
+  const after = text2.slice(end, end + 24);
   const window2 = before + " " + after;
   return AUTH_TOKEN_QUALIFIER.test(window2);
 }
 var MIGRATION_CI_TRIGGER_QUALIFIER = /^\s*(?:PRs?|pull[\s-]?requests?)\b/i;
-function migrationSenseOk(text, _start, end) {
-  const after = text.slice(end, end + 20);
+function migrationSenseOk(text2, _start, end) {
+  const after = text2.slice(end, end + 20);
   return !MIGRATION_CI_TRIGGER_QUALIFIER.test(after);
 }
 var AUTH_AUTHORING_VERBS = /\b(?:add(?:s|ed|ing)?|creat(?:e|es|ed|ing)|chang(?:e|es|ed|ing)|implement(?:s|ed|ing)?|requir(?:e|es|ed|ing))\b/i;
 var READING_QUALIFIER_WORDS = /\b(?:existing|current|exercised|accessed|observed|inside|under)\b/i;
 var READING_QUALIFIER_WINDOW = 56;
-function notReadingQualifiedSense(text, start, end) {
-  const before = text.slice(Math.max(0, start - READING_QUALIFIER_WINDOW), start);
-  const after = text.slice(end, end + READING_QUALIFIER_WINDOW);
+function notReadingQualifiedSense(text2, start, end) {
+  const before = text2.slice(Math.max(0, start - READING_QUALIFIER_WINDOW), start);
+  const after = text2.slice(end, end + READING_QUALIFIER_WINDOW);
   const window2 = before + " " + after;
   if (AUTH_AUTHORING_VERBS.test(window2)) return true;
   return !READING_QUALIFIER_WORDS.test(window2);
@@ -31203,7 +31238,7 @@ var KEYWORD_TABLE = {
     kw(/\bsign[\s-]?in\b/i),
     kw(/\bsign[\s-]?out\b/i),
     kw(/\bsession\b/i, notReadingQualifiedSense),
-    kw(/\btokens?\b/i, (text, start, end) => tokenIsAuthSense(text, start, end) && notReadingQualifiedSense(text, start, end)),
+    kw(/\btokens?\b/i, (text2, start, end) => tokenIsAuthSense(text2, start, end) && notReadingQualifiedSense(text2, start, end)),
     kw(/\bpasswords?\b/i),
     kw(/\bcredentials?\b/i, notReadingQualifiedSense),
     kw(/\bRLS\b/i),
@@ -31262,8 +31297,8 @@ var SUBJECT_STARTER_WORDS = /* @__PURE__ */ new Set([
 ]);
 var CLAUSE_BOUNDARY_PUNCT = /[,;:.–—]/;
 var ASCII_LETTER = /[a-z]/;
-function precedingTokens(text, matchStart) {
-  const slice = text.slice(Math.max(0, matchStart - 80), matchStart).toLowerCase();
+function precedingTokens(text2, matchStart) {
+  const slice = text2.slice(Math.max(0, matchStart - 80), matchStart).toLowerCase();
   const isWordChar = (k) => {
     const c = slice[k];
     if (c === void 0) return false;
@@ -31295,26 +31330,26 @@ function precedingTokens(text, matchStart) {
   }
   return inClause;
 }
-function isNegated(text, start) {
-  for (const tok of precedingTokens(text, start)) {
+function isNegated(text2, start) {
+  for (const tok of precedingTokens(text2, start)) {
     if (NEGATION_CUES.has(tok)) return true;
     if (tok.endsWith("n't")) return true;
   }
   return false;
 }
-function textHitsClass(text, cls) {
+function textHitsClass(text2, cls) {
   for (const keyword of KEYWORD_TABLE[cls]) {
     const g = new RegExp(keyword.re.source, keyword.re.flags.includes("g") ? keyword.re.flags : keyword.re.flags + "g");
     let m;
-    while ((m = g.exec(text)) !== null) {
+    while ((m = g.exec(text2)) !== null) {
       const start = m.index;
       const end = m.index + m[0].length;
       if (m[0].length === 0) {
         g.lastIndex++;
         continue;
       }
-      if (keyword.senseOk && !keyword.senseOk(text, start, end)) continue;
-      if (isNegated(text, start)) continue;
+      if (keyword.senseOk && !keyword.senseOk(text2, start, end)) continue;
+      if (isNegated(text2, start)) continue;
       return true;
     }
   }
@@ -31422,7 +31457,7 @@ function pathHitsClass(paths, cls) {
 }
 function detectRiskClasses(input) {
   const hits = /* @__PURE__ */ new Set();
-  const text = typeof input.text === "string" ? input.text : "";
+  const text2 = typeof input.text === "string" ? input.text : "";
   const paths = Array.isArray(input.changedPaths) ? input.changedPaths.filter((p) => typeof p === "string") : [];
   const labels = Array.isArray(input.labels) ? input.labels.filter((l) => typeof l === "string") : [];
   const hasDiff = paths.length > 0;
@@ -31433,10 +31468,10 @@ function detectRiskClasses(input) {
   for (const cls of RISK_CLASSES) {
     if (pathHitsClass(paths, cls)) hits.add(cls);
   }
-  if (text.length > 0) {
+  if (text2.length > 0) {
     for (const cls of RISK_CLASSES) {
       if (hits.has(cls)) continue;
-      if (!textHitsClass(text, cls)) continue;
+      if (!textHitsClass(text2, cls)) continue;
       const demotedByCleanDiff = hasDiff && PATH_GLOB_TABLE[cls].length > 0 && !pathHitsClass(paths, cls);
       if (!demotedByCleanDiff) hits.add(cls);
     }
@@ -31723,40 +31758,40 @@ function proposedAcLines(payload) {
   return (payload ?? []).filter((p) => p.write_kind === "acceptance_criterion" && typeof p.content === "string" && p.content.trim().length > 0).map((p) => `- ${p.content}`);
 }
 function promisedWriteLine(item) {
-  const text = (v) => typeof v === "string" && v.trim() ? v.trim() : null;
+  const text2 = (v) => typeof v === "string" && v.trim() ? v.trim() : null;
   switch (item.write_kind) {
     case "acceptance_criterion": {
-      const content = text(item.content);
+      const content = text2(item.content);
       return content ? `- acceptance criterion \u2014 ${content}` : null;
     }
     case "child_ticket": {
-      const title = text(item.title);
+      const title = text2(item.title);
       return title ? `- new child ticket \u2014 ${title}` : null;
     }
     case "checklist_item": {
-      const title = text(item.title);
+      const title = text2(item.title);
       return title ? `- checklist item \u2014 ${title}` : null;
     }
     case "ac_transfer": {
-      const content = text(item.content);
-      return content ? `- moves an acceptance criterion to ${text(item.target_child_ref) ?? "(unnamed child)"} \u2014 ${content}` : null;
+      const content = text2(item.content);
+      return content ? `- moves an acceptance criterion to ${text2(item.target_child_ref) ?? "(unnamed child)"} \u2014 ${content}` : null;
     }
     case "label_add":
-      return `- label \u2014 ${text(item.label_name) ?? "decision-only"}`;
+      return `- label \u2014 ${text2(item.label_name) ?? "decision-only"}`;
     case "knowledge_entry_content":
       return "- the linked decision entry, written from THIS brief (derived, never separately authored)";
     case "gate_slot":
-      return `- the ${text(item.gate) ?? "gate"} section on the ticket \u2014 this brief's ratified content, kept visible after the gate closes`;
+      return `- the ${text2(item.gate) ?? "gate"} section on the ticket \u2014 this brief's ratified content, kept visible after the gate closes`;
     case "supersede_decision": {
-      const label = text(item.title);
-      return `- supersede decision \u2014 ${label ? `"${label}"` : text(item.decision_id) ?? text(item.ref) ?? "(unnamed)"}, retired with no successor authored here`;
+      const label = text2(item.title);
+      return `- supersede decision \u2014 ${label ? `"${label}"` : text2(item.decision_id) ?? text2(item.ref) ?? "(unnamed)"}, retired with no successor authored here`;
     }
     case "implements_entities": {
       const names = Array.isArray(item.names) ? item.names : [];
       return `- the confirmed feature-entity name(s) \u2014 ${names.length ? names.join(", ") : "(none)"} \u2014 landed on the ticket`;
     }
     case "entity_link": {
-      const name = text(item.entity_name);
+      const name = text2(item.entity_name);
       return name ? `- links this ticket${item.decision_id ? " and this decision" : ""} to the entity "${name}"` : null;
     }
     default:
@@ -31852,8 +31887,8 @@ function decidedItems(doc) {
 }
 function renderEntry(doc, ctx) {
   const briefContent = renderBrief(doc, ctx?.decisionRef ?? null, ctx);
-  const isRatified = (text) => !text.trim() || briefContent.includes(text);
-  const mark = (text) => isRatified(text) ? text : `${text} ${NOT_RATIFIED_MARK}`;
+  const isRatified = (text2) => !text2.trim() || briefContent.includes(text2);
+  const mark = (text2) => isRatified(text2) ? text2 : `${text2} ${NOT_RATIFIED_MARK}`;
   const markAll = (lines) => lines.map(mark);
   const isItemRatified = (item) => isRatified(item.text) && isRatified(item.recommendation ?? "");
   const out = [entryProvenanceStamp(ctx), ""];

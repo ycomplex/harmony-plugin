@@ -8,7 +8,7 @@ function mock(row: any, metadata: boolean | 'missing' = false) {
  chain.then = (resolve: any) => Promise.resolve({ data: row, error: null }).then(resolve);
  chain.single.mockResolvedValue({ data: row, error: null });
  const ws: any = { select: vi.fn().mockReturnThis(), eq: vi.fn().mockReturnThis(), single: vi.fn().mockResolvedValue({ data: { workspace_id: 'ws' }, error: null }) };
- const client: any = { from: vi.fn((table: string) => table === 'projects' ? ws : chain), rpc: vi.fn().mockImplementation(async (name: string) => name === 'knowledge_metadata_capable'
+ const client: any = { from: vi.fn((table: string) => table === 'projects' ? ws : chain), rpc: vi.fn().mockImplementation(async (name: string) => name === 'read_knowledge_source_values' ? { data: {values: [], total_count: 0}, error: null } : name === 'knowledge_metadata_capable'
   ? { data: typeof metadata === 'boolean' ? metadata : null, error: metadata === 'missing' ? { code: 'PGRST202', message: 'older schema' } : null }
   : name === 'read_knowledge_definitions'
   ? { data: null, error: { code: 'PGRST202', message: 'Could not find function read_knowledge_definitions' } }
@@ -48,7 +48,7 @@ describe('claim contracts across surfaces', () => {
  it.each([true, false, 'missing', 'denied'])('guards claimed prepends against capability %s', async capability => {
   const row = { id: 'entry', title: 'Teams save views.', content: encodeClaim('Old body.', 'Teams save views.') };
   const { client } = mock(row);
-  client.rpc.mockImplementation(async (name: string) => name === 'knowledge_claim_amendment_capable'
+  client.rpc.mockImplementation(async (name: string) => name === 'read_knowledge_source_values' ? { data: {values: [], total_count: 0}, error: null } : name === 'knowledge_claim_amendment_capable'
     ? { data: capability === true, error: typeof capability === 'string' ? { code: capability === 'missing' ? 'PGRST202' : '42501', message: capability } : null }
     : name === 'knowledge_metadata_capable' ? { data: true, error: null } : { data: row, error: null });
   const write = updateKnowledgeEntry(client, 'proj', { entry_id: 'entry', content: 'New section.', content_mode: 'prepend_section' });

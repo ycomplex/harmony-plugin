@@ -1,3 +1,4 @@
+import { registerSourceCommands } from './knowledge-sources.js';
 import { readFile } from 'node:fs/promises';
 import { saveKnowledgeQuestion, previewKnowledgeQuestions, importKnowledgeQuestions } from '../../tools/knowledge-questions.js';
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -19,6 +20,7 @@ import { formatTable, formatDetail, formatDate } from '../formatter.js';
 export function registerKnowledgeCommands(program: Command): void {
   const knowledge = program.command('knowledge').description('Manage workspace knowledge base');
 
+  registerSourceCommands(knowledge, program);
   const questions = knowledge.command('questions').description('Manage unresolved knowledge; question state never implies shipped behaviour');
   questions.command('save').requiredOption('--state <state>', 'open, parked or decided')
     .option('--claim <claim>', 'Authored one-sentence claim; omitted claims remain derived proposals')
@@ -85,7 +87,8 @@ export function registerKnowledgeCommands(program: Command): void {
               transform: (v: string) => v.slice(0, 8),
             },
             { key: 'title', header: 'Title', width: 40 },
-            { key: 'content', header: 'Definition', width: 60 },
+            { key: 'content', header: 'Definition / value', width: 60 },
+            { key: 'source', header: 'Generated source', transform: (v: unknown) => v ? JSON.stringify(v) : '' },
             { key: 'claim', header: 'Claim', width: 60 },
             { key: 'claim_source', header: 'Claim source' },
             { key: 'snippet', header: 'Matched passage', width: 60 },
