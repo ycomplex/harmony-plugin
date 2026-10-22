@@ -23,6 +23,7 @@ import { handleToolCall } from './index.js';
 /** Read-only tools: results pass through unchanged BY DESIGN (no ack decision needed). A new READ
  *  tool must be added here; a new WRITE tool must get a projection or an ACK_PASS_THROUGH entry. */
 const READ_TOOLS = [
+  'preview_knowledge_questions',
   'get_project',
   'list_epics',
   'list_tasks',
@@ -38,6 +39,8 @@ const READ_TOOLS = [
   'list_workflow_transitions',
   'list_members',
   'query_knowledge',
+  'read_source_inventory',
+  'compare_source_coverage',
   'list_knowledge_tags',
   'search_ticket_intents',
   'get_knowledge_entry',

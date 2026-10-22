@@ -1,3 +1,6 @@
+import { registerSourceCommands } from './knowledge-sources.js';
+import { readFile } from 'node:fs/promises';
+import { saveKnowledgeQuestion, previewKnowledgeQuestions, importKnowledgeQuestions } from '../../tools/knowledge-questions.js';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { previewMetadataRepair, applyMetadataRepair, tagReleasedKnowledge } from '../../tools/knowledge-repair.js';
 import { listKnowledgeTags, registerKnowledgeTag } from '../../tools/knowledge-metadata.js';
@@ -17,6 +20,33 @@ import { formatTable, formatDetail, formatDate } from '../formatter.js';
 export function registerKnowledgeCommands(program: Command): void {
   const knowledge = program.command('knowledge').description('Manage workspace knowledge base');
 
+  registerSourceCommands(knowledge, program);
+  const questions = knowledge.command('questions').description('Manage unresolved knowledge; question state never implies shipped behaviour');
+  questions.command('save').requiredOption('--state <state>', 'open, parked or decided')
+    .option('--claim <claim>', 'Authored one-sentence claim; omitted claims remain derived proposals')
+    .option('--id <id>', 'Existing question UUID').option('--expected-updated-at <timestamp>', 'Fresh read timestamp for changes')
+    .option('--title <title>').option('--content <content>').option('--scope <scope>', 'product or deployment; required for creates')
+    .option('--decision <id>', 'Accepted resulting decision in this project').option('--reopen', 'Explicitly reopen a decided question')
+    .option('--domain <domains>', 'Comma-separated subject domains; defaults to product on create')
+    .option('--provenance <value>', 'Declare how this write was authorized')
+    .action(async opts => runCommand(program.opts(), ctx => saveKnowledgeQuestion(ctx.client, ctx.projectId, {
+      question_id: opts.id, expected_updated_at: opts.expectedUpdatedAt, title: opts.title, content: opts.content,
+      state: opts.state, scope: opts.scope, claim: opts.claim, resulting_decision_id: opts.decision, reopen: opts.reopen,
+      domain: opts.domain?.split(',').map((value: string) => value.trim()).filter(Boolean), provenance: opts.provenance,
+    }), data => JSON.stringify(data, null, 2)));
+  questions.command('preview').argument('<milestone-id>').description('Read-only manifest; review historical themes and mark chosen items approved:true')
+    .action(async id => runCommand(program.opts(), ctx => previewKnowledgeQuestions(ctx.client, ctx.projectId, { milestone_id: id }),
+      data => JSON.stringify(data, null, 2)));
+  questions.command('import').argument('<manifest-file>').description('Explicitly apply approved entries from a reviewed manifest')
+    .option('--provenance <value>', 'Declare how this import was authorized')
+    .action(async (file, opts) => {
+      const manifest = JSON.parse(await readFile(file, 'utf8'));
+      await runCommand(program.opts(), ctx => importKnowledgeQuestions(ctx.client, ctx.projectId, {
+        manifest, provenance: opts.provenance,
+      }), data => JSON.stringify(data, null, 2));
+    });
+
+
   knowledge
     .command('list')
     .description('List knowledge entries with optional filters')
@@ -30,6 +60,7 @@ export function registerKnowledgeCommands(program: Command): void {
       [] as string[],
     )
     .option('--search <text>', 'Search term matched against title and content')
+    .option('--question-state <state>', 'Filter-only: open, parked or decided; search combination requires B-1223')
     .option('--definitions-only', 'Return only current term definitions', false)
     .option('--all', 'Include superseded entries', false)
     .option('--no-bookkeeping', 'Exclude explicitly marked procedural gate records')
@@ -46,6 +77,7 @@ export function registerKnowledgeCommands(program: Command): void {
             search: opts.search,
             include_superseded: opts.all,
             include_bookkeeping: opts.bookkeeping,
+            question_state: opts.questionState,
           }),
         (data) =>
           formatTable(data, [
@@ -55,12 +87,16 @@ export function registerKnowledgeCommands(program: Command): void {
               transform: (v: string) => v.slice(0, 8),
             },
             { key: 'title', header: 'Title', width: 40 },
-            { key: 'content', header: 'Definition', width: 60 },
+            { key: 'content', header: 'Definition / value', width: 60 },
+            { key: 'source', header: 'Generated source', transform: (v: unknown) => v ? JSON.stringify(v) : '' },
             { key: 'claim', header: 'Claim', width: 60 },
             { key: 'claim_source', header: 'Claim source' },
             { key: 'snippet', header: 'Matched passage', width: 60 },
             { key: 'type', header: 'Type (advisory)', width: 16 },
             { key: 'status', header: 'Status', width: 12 },
+            { key: 'question_state', header: 'Question', width: 10 },
+            { key: 'answer', header: 'Answer', width: 24 },
+            { key: 'resulting_decision_id', header: 'Resulting decision', width: 36 },
             { key: 'superseded_by', header: 'Superseded by', transform: (v: string | null) => v ?? '—' },
             { key: 'supersedes', header: 'Supersedes', transform: (v: string[]) => (v ?? []).join(', ') || '—' },
             { key: 'invalidations', header: 'Invalidation', transform: (links: Array<{ effective_at: string | null }> = []) => links.some(link => link.effective_at) ? 'Retired' : links.length ? 'Removal pending' : '' },
@@ -129,6 +165,9 @@ export function registerKnowledgeCommands(program: Command): void {
             { label: 'Tags', value: entry.tags?.length ? entry.tags.join(', ') : '(none)' },
             { label: 'Project', value: entry.project_id ?? '(workspace-wide)' },
             { label: 'Updated', value: formatDate(entry.updated_at) },
+            { label: 'Question', value: entry.question_state ?? '(not a question)' },
+            { label: 'Answer', value: entry.answer ?? '' },
+            { label: 'Resulting decision', value: entry.resulting_decision_id ?? '' },
             { label: 'Removal capability', value: entry.invalidations_available === false ? 'unavailable' : 'available' },
             { label: 'Invalidators', value: (entry.invalidations ?? []).map(link => `${link.invalidator_title} (${link.invalidator_id}): ${link.effective_at ? 'retired' : 'removal agreed, not yet effective'}`).join('\n') || '(none)' },
             ...(entry.invalidation_rollout_available === false ? [{ label: 'Rollout capability', value: 'unavailable; no retirement inferred' }] : []),

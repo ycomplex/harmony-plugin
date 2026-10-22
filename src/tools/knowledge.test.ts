@@ -1,3 +1,4 @@
+vi.mock('./knowledge-sources.js', async importOriginal => ({ ...await importOriginal<typeof import('./knowledge-sources.js')>(), readSourceValues: async () => ({ values: [], total_count: 0 }) }));
 // Legacy-contract tests intentionally run with the new capability absent; metadata tests cover both schemas.
 vi.mock('./knowledge-metadata.js', async importOriginal => ({
  ...await importOriginal<typeof import('./knowledge-metadata.js')>(),
@@ -238,6 +239,46 @@ function rrfMock(response: { data: any[]; error?: any }) {
 }
 
 describe('queryKnowledge', () => {
+  it('refuses search plus question_state explicitly before retrieving or embedding', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: [] });
+    client.rpc = vi.fn();
+    client.functions = { invoke: vi.fn() };
+    await expect(queryKnowledge(client, PROJECT_ID, { search: 'topic', question_state: 'open' }))
+      .rejects.toThrow('B-1223');
+    expect(client.rpc).not.toHaveBeenCalled();
+    expect(client.functions.invoke).not.toHaveBeenCalled();
+  });
+
+  it('keeps ordinary empty legacy search results without probing a question RPC', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: [] });
+    client.rpc = rrfMock({ data: [] });
+    await expect(queryKnowledge(client, PROJECT_ID, { search: 'topic' })).resolves.toEqual([]);
+    expect(client.rpc.mock.calls.every(([name]: string[]) => name === 'knowledge_search_rrf')).toBe(true);
+  });
+
+  it('preserves legacy search errors without treating authorization as missing capability', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: [] });
+    client.rpc = rrfMock({ data: [], error: { code: '42501', message: 'permission denied' } });
+    await expect(queryKnowledge(client, PROJECT_ID, { search: 'topic' })).rejects.toThrow('permission denied');
+  });
+
+  it('prioritises unresolved questions only in the returned page after bookkeeping ordering', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: [] });
+    const question = (id: string, state: string, tags: string[] = []) => ({ id, tags,
+      madr: { question: { version: 1, state, scope: 'product' } } });
+    client.rpc = rrfMock({ data: [
+      { id: 'decision', tags: [] }, question('parked', 'parked'), question('open', 'open'),
+      { id: 'bookkeeping-decision', tags: ['harmony:bookkeeping'] },
+      question('bookkeeping-question', 'open', ['harmony:bookkeeping']),
+    ] });
+    const result = await queryKnowledge(client, PROJECT_ID, { search: 'topic', limit: 5 });
+    expect(result.map(row => row.id)).toEqual(['parked', 'open', 'decision', 'bookkeeping-question', 'bookkeeping-decision']);
+    expect(result[0]).toMatchObject({ question_state: 'parked', question_scope: 'product', answer: 'not yet decided' });
+    expect(result.every(row => !('score' in row))).toBe(true);
+    const limited = await queryKnowledge(client, PROJECT_ID, { search: 'topic', limit: 1 });
+    expect(limited.map(row => row.id)).toEqual(['decision']); // No before-limit guarantee.
+  });
+
   it('applies default filters (status=accepted, no type/tags) and scopes to token project', async () => {
     const { client, wsChain, secondChain } = buildWorkspaceAndQueryClient({
       data: sampleSummaries,
@@ -329,8 +370,8 @@ describe('queryKnowledge', () => {
       queryKnowledge(client, PROJECT_ID, { search: 'auth', include_superseded: true }),
     ).rejects.toThrow(/cannot be combined with/);
     await expect(
-      queryKnowledge(client, PROJECT_ID, { search: 'auth', type: 'architecture' }),
-    ).rejects.toThrow(/type/);
+      queryKnowledge(client, PROJECT_ID, { search: 'auth', as_of: '2026-01-01T00:00:00Z' }),
+    ).rejects.toThrow(/as_of/);
   });
 
   it('allows search combined with domain + limit', async () => {

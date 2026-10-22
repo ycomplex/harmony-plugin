@@ -1,3 +1,5 @@
+import { sourceTools, publishSourceInventory, readSourceInventory, comparePublishedCoverage } from './knowledge-sources.js';
+import { saveKnowledgeQuestionTool, saveKnowledgeQuestion, previewKnowledgeQuestionsTool, previewKnowledgeQuestions, importKnowledgeQuestionsTool, importKnowledgeQuestions } from './knowledge-questions.js';
 import { listKnowledgeTagsTool, registerKnowledgeTagTool, listKnowledgeTags, registerKnowledgeTag } from './knowledge-metadata.js';
 import { setClaimContext, setClaimContextTool } from './claim-context.js';
 import { publishDefinition, publishDefinitionTool, type PublishDefinitionArgs } from './knowledge-definitions.js';
@@ -174,7 +176,8 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
     listActivityTool,
     listWorkflowTransitionsTool,
     listMembersTool,
-    setClaimContextTool, listKnowledgeTagsTool, registerKnowledgeTagTool, publishDefinitionTool, queryKnowledgeTool, searchTicketIntentsTool, getKnowledgeEntryTool, createKnowledgeEntryTool, updateKnowledgeEntryTool, supersedeKnowledgeEntryTool,
+    setClaimContextTool, ...sourceTools, saveKnowledgeQuestionTool, previewKnowledgeQuestionsTool, importKnowledgeQuestionsTool,
+    listKnowledgeTagsTool, registerKnowledgeTagTool, publishDefinitionTool, queryKnowledgeTool, searchTicketIntentsTool, getKnowledgeEntryTool, createKnowledgeEntryTool, updateKnowledgeEntryTool, supersedeKnowledgeEntryTool,
     recordDecisionTool, supersedeDecisionTool, queryFactsTool, assertFactTool, invalidateFactTool, queryEntitiesTool,
     createEntityTool, updateEntityTool, reconcileEntityTool,
     composeBriefTool, getBriefTool, listBriefsTool, resolveBriefTool, reshapeBriefTool, consumeAcceptRemarkTool,
@@ -293,6 +296,24 @@ export async function handleToolCall(
         break;
       case 'bulk_update_tasks':
         result = await bulkUpdateTasks(client, projectId, args as any);
+        break;
+      case 'publish_source_inventory':
+        result = await publishSourceInventory(client, projectId, args as any);
+        break;
+      case 'read_source_inventory':
+        result = await readSourceInventory(client, projectId, args as any);
+        break;
+      case 'compare_source_coverage':
+        result = await comparePublishedCoverage(client, projectId, args as any);
+        break;
+      case 'save_knowledge_question':
+        result = await saveKnowledgeQuestion(client, projectId, args as any);
+        break;
+      case 'preview_knowledge_questions':
+        result = await previewKnowledgeQuestions(client, projectId, args as any);
+        break;
+      case 'import_knowledge_questions':
+        result = await importKnowledgeQuestions(client, projectId, args as any);
         break;
       case 'list_knowledge_tags':
         result = await listKnowledgeTags(client, projectId);
