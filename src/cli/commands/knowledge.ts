@@ -124,6 +124,8 @@ export function registerKnowledgeCommands(program: Command): void {
     .argument('<id>', 'Entry UUID')
     .option('--title <title>', 'New title')
     .option('--content <content>', 'New markdown content')
+    .option('--content-mode <mode>', 'replace, prepend_section, or append_section')
+    .option('--allow-shrink', 'Explicitly permit a destructive shorter replacement')
     .option('--type <type>', 'New entry type')
     .option('--status <status>', 'New status')
     .option('--tags <tags>', 'Comma-separated list of tags (replaces existing tags)')
@@ -152,6 +154,8 @@ export function registerKnowledgeCommands(program: Command): void {
             entry_id: id,
             new_title: opts.title,
             content: opts.content,
+            content_mode: opts.contentMode,
+            allow_shrink: opts.allowShrink,
             type: opts.type,
             status: opts.status,
             tags,
