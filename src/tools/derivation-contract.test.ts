@@ -686,3 +686,16 @@ it('B-1224 keeps explicit bookkeeping metadata through the derived design entry 
   await applyAcceptanceEventPayload({ rpc } as any, event);
   expect(rpc).toHaveBeenCalledWith('consume_knowledge_entry_content_write', expect.objectContaining({ _tags: ['b-1224', 'harmony:bookkeeping'] }));
 });
+describe('sentence-safe generated entry titles', () => {
+  it('uses the first sentence of multi-sentence recommendations for legacy callers', () => {
+    const title = deriveEntryTitle({ decide: 'x', recommend: { text: 'Teams can save views. More context. Another reason.' } },
+      'design-decision-draft', { visualId: 'B-1141', decisionRef: { type: 'product-design', id: 'x' } });
+    expect(title).toBe('B-1141: product design — Teams can save views.');
+  });
+  it('uses the approved claim and keeps the generated title within the database word limit', () => {
+    const title = deriveEntryTitle({ decide: 'x', claim: 'Teams ' + 'save '.repeat(48) + 'views.', recommend: { text: 'Long. Recommendation.' } },
+      'design-decision-draft', { visualId: 'B-1136', decisionRef: { type: 'product-design', id: 'x' } });
+    expect(title!.split(/\s+/)).toHaveLength(50);
+    expect(title).not.toContain('Recommendation');
+  });
+});

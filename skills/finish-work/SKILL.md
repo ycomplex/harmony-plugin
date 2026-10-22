@@ -7,6 +7,8 @@ disallowed-tools: mcp__harmony__supersede_decision
 <!-- record_decision + update_knowledge_entry are permitted (B-836): O2's convention-entry writer needs both; supersede_decision stays disallowed because a convention-entry amend is always an in-place update_knowledge_entry, never a supersede, mirroring record_decision's own tool description (prefer update_knowledge_entry + a dated banner for in-part repairs). -->
 ---
 
+**Knowledge claims:** Author `claim` as one quotable sentence (at most 50 words) on every `record_decision` / `create_knowledge_entry` write, and on `update_knowledge_entry` when confirming or replacing a claim. A successor uses `claim` in `supersede_decision` or `new_claim` in `supersede_knowledge_entry`; retire-only calls have no successor claim. On every entry-producing `compose_brief`, author the exact approved sentence as `doc.claim`, separately from the recommendation. Use a sentence-shaped title; compatibility-derived proposals are unconfirmed, not authored statements.
+
 # Finish Work
 
 Safely land completed work: verify readiness, rebase, squash merge, update main, and clean up the worktree and branch.
@@ -939,6 +941,7 @@ actually recorded.
 4. **Fresh entry (no match found):**
    ```
    mcp__harmony__record_decision({
+     claim: "<one sentence stating what this entry establishes>",
      type: "convention",
      title: "<short descriptive title mentioning the path>",
      content: "<Decision · Why · How-to-apply · Scope — must contain: (1) the literal invocation(s) that

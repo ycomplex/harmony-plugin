@@ -1,4 +1,5 @@
 import { bookkeepingTags } from './knowledge-bookkeeping.js';
+import { encodeClaim } from './knowledge-claim.js';
 // B-1062 — the RECORDED gate-walk core.
 //
 // `harmony record <ticket>` (CLI: src/cli/commands/record.ts, MCP: the `record` tool in
@@ -472,6 +473,7 @@ async function findRecordedAttestation(client: SupabaseClient, taskId: string): 
 }
 
 interface ComposeAndAcceptArgs {
+  claim?: string;
   reason: string;
   pendingActivity: string | null;
   decide: string;
@@ -515,6 +517,7 @@ async function composeAndAccept(
     doc: {
       decide: args.decide,
       tags: args.tags,
+      claim: args.claim,
       why: args.why,
       items: [],
       frame: args.frame,
@@ -561,6 +564,7 @@ async function coupleDecomposeNoSplitConvention(
     const created: KnowledgeDecisionFull = await recordDecision(client, projectId, userId, {
       type: 'convention',
       title: 'Decompose: when a ticket does not split',
+      claim: 'A ticket that does not split keeps the work on its parent.',
       content:
         'Decision: a ticket that does not need to split into children records no split rationale of ' +
         "its own. Why: per-ticket \"no split\" entries crowd out load-bearing knowledge with " +
@@ -678,6 +682,7 @@ export async function runRecordedWalk(
     const clarifyDecision = await recordDecision(client, projectId, userId, {
       type: 'specification',
       title: `${args.task_id}: clarified intent (recorded)`,
+      claim: summary,
       content: `<placeholder — one line: 'clarified intent for ${args.task_id}; body derived from the ratified brief'>`,
       domain: ['product'],
       source_type: 'manual',
@@ -699,6 +704,7 @@ export async function runRecordedWalk(
         in_scope: [summary],
         not_solving: [],
       },
+      claim: summary,
       decisionRef: { type: 'specification', id: clarifyDecision.id },
     });
     gates.push({ gate: 'clarify', reason: GATE_REASONS.clarify, landed: true });
@@ -778,6 +784,7 @@ export async function runRecordedWalk(
       type: 'technical-design',
       title: `${args.task_id}: technical-design — no new decision needed (recorded)`,
       tags: bookkeepingTags(ticketTags),
+      claim: 'This recorded change requires no new design decision.',
       content: `<placeholder — one line: 'technical-design decision for ${args.task_id}; body derived from the ratified brief'>`,
       domain: ['engineering'],
       source_type: 'manual',
@@ -802,6 +809,7 @@ export async function runRecordedWalk(
         ],
         reach: [],
       },
+      claim: 'This recorded change requires no new design decision.',
       decisionRef: { type: 'technical-design', id: designDecision.id },
     });
     gates.push({ gate: 'design', reason: GATE_REASONS.design, landed: true });
@@ -810,13 +818,14 @@ export async function runRecordedWalk(
 
     if (runs('plan')) {
     // ——— PLAN ——————————————————————————————————————————————————————————————————————————————
-    const planEntryContent =
+    const planEntryContent = encodeClaim(
       `Decision: record ${args.task_id}'s plan from the supplied summary and evidence (recorded, not ` +
-      `conducted). Why: ${summary} Scope: this ticket only.`;
+      `conducted). Why: ${summary} Scope: this ticket only.`, summary);
     const planDecision = await recordDecision(client, projectId, userId, {
       type: 'specification',
       title: `${args.task_id}: recorded plan`,
       tags: bookkeepingTags(ticketTags),
+      claim: summary,
       content: planEntryContent,
       domain: ['process'],
       source_type: 'manual',
@@ -828,6 +837,7 @@ export async function runRecordedWalk(
 
     await composeAndAccept(client, projectId, userId, taskId, {
       reason: GATE_REASONS.plan!,
+      claim: summary,
       pendingActivity: 'planning',
       decide: `Record ${args.task_id}'s plan from the supplied summary and evidence (recorded, not conducted).`,
       frame: {
