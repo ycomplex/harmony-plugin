@@ -36653,6 +36653,23 @@ function removalLines(doc) {
   ];
 }
 
+// src/tools/knowledge-truth.ts
+var FIELDS = ["verified_against", "rollout_state", "open_steps"];
+function truthStatePatch(args) {
+  return Object.fromEntries(FIELDS.filter((k) => args[k] !== void 0).map((k) => [k, args[k]]));
+}
+function missingTruthColumns(error) {
+  return !!error && ["42703", "PGRST204"].includes(error.code ?? "") && FIELDS.some((k) => error.message?.includes(k));
+}
+async function truthCompatibleRead(read) {
+  const result = await read(", verified_against, rollout_state, open_steps");
+  if (!missingTruthColumns(result.error)) return result;
+  const legacy = await read("");
+  const missing = { verified_against: null, rollout_state: null, open_steps: null };
+  const normalize = (row) => ({ ...row, ...missing });
+  return { ...legacy, data: Array.isArray(legacy.data) ? legacy.data.map(normalize) : legacy.data ? normalize(legacy.data) : legacy.data };
+}
+
 // src/tools/knowledge-bookkeeping.ts
 var BOOKKEEPING_TAG = "harmony:bookkeeping";
 function bookkeepingTags(tags = []) {
@@ -36855,7 +36872,7 @@ async function queryKnowledge(client, projectId, args) {
       );
     }
     const queryEmbedding = await embedText(client, args.search);
-    const data = await bookkeepingPage(({ bookkeeping, offset, limit, count }) => {
+    const data = await bookkeepingPage(({ bookkeeping, offset, limit, count }) => truthCompatibleRead((extraColumns) => {
       let query = client.rpc("knowledge_search_rrf", {
         _workspace_id: workspaceId,
         _project_id: projectId,
@@ -36863,10 +36880,10 @@ async function queryKnowledge(client, projectId, args) {
         _query_text: args.search,
         _domain: args.domain && args.domain.length > 0 ? args.domain : null,
         _match_limit: null
-      }, count ? { count: "exact" } : {}).select("*");
+      }, count ? { count: "exact" } : {}).select("id, title, content, type, status, domain, tags, project_id, updated_at" + extraColumns);
       query = bookkeeping ? query.contains("tags", [BOOKKEEPING_TAG]) : query.or(SUBSTANTIVE_TAG_FILTER);
       return query.range(offset, offset + limit - 1);
-    }, args);
+    }), args);
     const matches = (data ?? []).map((d) => ({
       id: d.id,
       title: d.title,
@@ -36877,7 +36894,10 @@ async function queryKnowledge(client, projectId, args) {
       domain: d.domain,
       tags: d.tags,
       project_id: d.project_id,
-      updated_at: d.updated_at
+      updated_at: d.updated_at,
+      verified_against: d.verified_against ?? null,
+      rollout_state: d.rollout_state ?? null,
+      open_steps: d.open_steps ?? null
     }));
     if (!matches.length) return [];
     return withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, matches));
@@ -36893,7 +36913,7 @@ async function queryKnowledge(client, projectId, args) {
     query = bookkeeping ? query.contains("tags", [BOOKKEEPING_TAG]) : query.or(SUBSTANTIVE_TAG_FILTER);
     return query.order("type", { ascending: true }).order("id", { ascending: true }).range(offset, offset + limit - 1);
   }, args);
-  return withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, rows.map((d) => ({ id: d.id, title: d.title, type: d.type, status: d.status, domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d) }))));
+  return withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, rows.map((d) => ({ id: d.id, title: d.title, type: d.type, status: d.status, domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d), verified_against: d.verified_against ?? null, rollout_state: d.rollout_state ?? null, open_steps: d.open_steps ?? null }))));
 }
 async function hydrateSupersession(client, workspaceId, projectId, rows) {
   const edges = [];
@@ -36924,7 +36944,7 @@ async function getKnowledgeEntry(client, projectId, args) {
   }
   const { data, error } = await query.single();
   if (error) throw error;
-  return (await withInvalidations(client, [{ ...data, ...claimFields(data) }]))[0];
+  return (await withInvalidations(client, [{ ...data, ...claimFields(data), verified_against: data.verified_against ?? null, rollout_state: data.rollout_state ?? null, open_steps: data.open_steps ?? null }]))[0];
 }
 async function createKnowledgeEntry(client, projectId, userId, args) {
   if (!args.title?.trim()) {
@@ -36976,7 +36996,9 @@ async function updateKnowledgeEntry(client, projectId, args) {
   if (mode !== "replace" && !args.content?.trim()) {
     throw new Error("Amendment section must not be blank");
   }
-  const hasUpdates = args.claim !== void 0 || args.new_title !== void 0 || args.content !== void 0 || args.type !== void 0 || args.status !== void 0 || args.tags !== void 0 || args.domain !== void 0 || args.madr !== void 0 || args.realization !== void 0 || args.review_by !== void 0;
+  const truthPatch = truthStatePatch(args);
+  const hasTruthUpdates = Object.keys(truthPatch).length > 0;
+  const hasUpdates = args.claim !== void 0 || hasTruthUpdates || args.new_title !== void 0 || args.content !== void 0 || args.type !== void 0 || args.status !== void 0 || args.tags !== void 0 || args.domain !== void 0 || args.madr !== void 0 || args.realization !== void 0 || args.review_by !== void 0;
   if (!hasUpdates) {
     throw new Error("At least one field to update must be provided");
   }
@@ -37002,7 +37024,7 @@ async function updateKnowledgeEntry(client, projectId, args) {
   const newTitle = args.new_title !== void 0 ? normalizeHtmlEntities(args.new_title.trim()) : void 0;
   guardKnowledgeWriteProvenance(args.provenance);
   const contentWrite = args.content !== void 0 || args.claim !== void 0;
-  const { data, error } = await client.rpc(contentWrite ? "knowledge_amend_knowledge_entry" : "knowledge_update_knowledge_entry", {
+  const { data, error } = await client.rpc(hasTruthUpdates ? "knowledge_amend_entry_truth" : contentWrite ? "knowledge_amend_knowledge_entry" : "knowledge_update_knowledge_entry", {
     p_project_id: projectId,
     p_entry_id: args.entry_id ?? null,
     p_title: args.title ?? null,
@@ -37021,9 +37043,13 @@ async function updateKnowledgeEntry(client, projectId, args) {
     p_provenance: args.provenance ?? null,
     p_conduction_id: getConductionId() ?? null,
     p_leg: getLeg() ?? null,
-    ...contentWrite ? { p_content_mode: mode, p_allow_shrink: args.allow_shrink ?? false } : {}
+    ...contentWrite || hasTruthUpdates ? { p_content_mode: mode, p_allow_shrink: args.allow_shrink ?? false } : {},
+    ...hasTruthUpdates ? { p_truth_state: truthPatch, p_acting_task_id: args.acting_task_id ?? null } : {}
   });
   if (error) {
+    if (hasTruthUpdates && ["PGRST202", "42883", "42703", "PGRST204"].includes(error.code ?? "")) {
+      throw new Error("Knowledge verification/rollout update unavailable: apply the B-1229 database migration first. No fields were changed.");
+    }
     if (contentWrite && (error.code === "PGRST202" || error.code === "42883")) {
       throw new Error("Knowledge content update unavailable: apply the B-1111 database migration before using content updates. No content was replaced.");
     }
@@ -43296,6 +43322,8 @@ function registerKnowledgeCommands(program3) {
         { key: "superseded_by", header: "Superseded by", transform: (v) => v ?? "\u2014" },
         { key: "supersedes", header: "Supersedes", transform: (v) => (v ?? []).join(", ") || "\u2014" },
         { key: "invalidations", header: "Invalidation", transform: (links = []) => links.some((link) => link.effective_at) ? "Retired" : links.length ? "Removal pending" : "" },
+        { key: "rollout_state", header: "Rollout", transform: (v) => v ?? "unknown" },
+        { key: "verified_against", header: "Verification", transform: (v) => v ? JSON.stringify(v) : "not verified" },
         {
           key: "tags",
           header: "Tags",
@@ -43325,6 +43353,9 @@ function registerKnowledgeCommands(program3) {
         { label: "Title", value: entry.title },
         { label: "Type", value: entry.type },
         { label: "Status", value: entry.status },
+        { label: "Verification", value: entry.verified_against ? JSON.stringify(entry.verified_against) : "Not verified" },
+        { label: "Rollout", value: entry.rollout_state ?? "Unknown" },
+        { label: "Open steps", value: entry.open_steps?.join("\n") || "(none)" },
         { label: "Tags", value: entry.tags?.length ? entry.tags.join(", ") : "(none)" },
         { label: "Project", value: entry.project_id ?? "(workspace-wide)" },
         { label: "Updated", value: formatDate(entry.updated_at) },
@@ -43356,7 +43387,7 @@ function registerKnowledgeCommands(program3) {
     "Domain (repeat for multiple): engineering, operations, data, product, customer, process",
     (v, prev) => [...prev, v],
     []
-  ).option("--madr <json>", "Structured MADR body as a JSON object (full-object replace)").option("--realization <state>", "Realization state: agreed, live, deprecating, or retired").option("--review-by <iso>", "ISO timestamp; freshness/decay date").action(async (id, opts) => {
+  ).option("--madr <json>", "Structured MADR body as a JSON object (full-object replace)").option("--realization <state>", "Realization state: agreed, live, deprecating, or retired").option("--acting-task <uuid>", "Acting ticket UUID for a verification/rollout write").option("--verified-against <json>", "Verification stamp {plugin_version, web_sha, at}; null to clear").option("--rollout-state <state>", "Production rollout: designed (staging-only), partly-live (part in production), live (production), retired; null to clear").option("--open-steps <json>", "JSON array of remaining rollout steps; null to clear").option("--review-by <iso>", "ISO timestamp; freshness/decay date").action(async (id, opts) => {
     const tags = opts.tags ? opts.tags.split(",").map((t) => t.trim()).filter(Boolean) : void 0;
     const domain = opts.domain && opts.domain.length > 0 ? opts.domain : void 0;
     const madr = opts.madr ? JSON.parse(opts.madr) : void 0;
@@ -43375,7 +43406,11 @@ function registerKnowledgeCommands(program3) {
         domain,
         madr,
         realization: opts.realization,
-        review_by: opts.reviewBy
+        review_by: opts.reviewBy,
+        acting_task_id: opts.actingTask,
+        verified_against: opts.verifiedAgainst !== void 0 ? JSON.parse(opts.verifiedAgainst) : void 0,
+        rollout_state: opts.rolloutState === "null" ? null : opts.rolloutState,
+        open_steps: opts.openSteps !== void 0 ? JSON.parse(opts.openSteps) : void 0
       }),
       (entry) => `Updated knowledge entry: "${entry.title}" (${entry.id})`
     );

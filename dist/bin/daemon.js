@@ -22833,6 +22833,20 @@ function removalLines(doc) {
   ];
 }
 
+// src/tools/knowledge-truth.ts
+var FIELDS = ["verified_against", "rollout_state", "open_steps"];
+function missingTruthColumns(error) {
+  return !!error && ["42703", "PGRST204"].includes(error.code ?? "") && FIELDS.some((k) => error.message?.includes(k));
+}
+async function truthCompatibleRead(read) {
+  const result = await read(", verified_against, rollout_state, open_steps");
+  if (!missingTruthColumns(result.error)) return result;
+  const legacy = await read("");
+  const missing = { verified_against: null, rollout_state: null, open_steps: null };
+  const normalize = (row) => ({ ...row, ...missing });
+  return { ...legacy, data: Array.isArray(legacy.data) ? legacy.data.map(normalize) : legacy.data ? normalize(legacy.data) : legacy.data };
+}
+
 // src/tools/knowledge-bookkeeping.ts
 var BOOKKEEPING_TAG = "harmony:bookkeeping";
 function bookkeepingTags(tags = []) {
@@ -22994,7 +23008,7 @@ async function queryKnowledge(client, projectId, args) {
       );
     }
     const queryEmbedding = await embedText(client, args.search);
-    const data = await bookkeepingPage(({ bookkeeping, offset, limit, count }) => {
+    const data = await bookkeepingPage(({ bookkeeping, offset, limit, count }) => truthCompatibleRead((extraColumns) => {
       let query = client.rpc("knowledge_search_rrf", {
         _workspace_id: workspaceId,
         _project_id: projectId,
@@ -23002,10 +23016,10 @@ async function queryKnowledge(client, projectId, args) {
         _query_text: args.search,
         _domain: args.domain && args.domain.length > 0 ? args.domain : null,
         _match_limit: null
-      }, count ? { count: "exact" } : {}).select("*");
+      }, count ? { count: "exact" } : {}).select("id, title, content, type, status, domain, tags, project_id, updated_at" + extraColumns);
       query = bookkeeping ? query.contains("tags", [BOOKKEEPING_TAG]) : query.or(SUBSTANTIVE_TAG_FILTER);
       return query.range(offset, offset + limit - 1);
-    }, args);
+    }), args);
     const matches = (data ?? []).map((d) => ({
       id: d.id,
       title: d.title,
@@ -23016,7 +23030,10 @@ async function queryKnowledge(client, projectId, args) {
       domain: d.domain,
       tags: d.tags,
       project_id: d.project_id,
-      updated_at: d.updated_at
+      updated_at: d.updated_at,
+      verified_against: d.verified_against ?? null,
+      rollout_state: d.rollout_state ?? null,
+      open_steps: d.open_steps ?? null
     }));
     if (!matches.length) return [];
     return withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, matches));
@@ -23032,7 +23049,7 @@ async function queryKnowledge(client, projectId, args) {
     query = bookkeeping ? query.contains("tags", [BOOKKEEPING_TAG]) : query.or(SUBSTANTIVE_TAG_FILTER);
     return query.order("type", { ascending: true }).order("id", { ascending: true }).range(offset, offset + limit - 1);
   }, args);
-  return withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, rows.map((d) => ({ id: d.id, title: d.title, type: d.type, status: d.status, domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d) }))));
+  return withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, rows.map((d) => ({ id: d.id, title: d.title, type: d.type, status: d.status, domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d), verified_against: d.verified_against ?? null, rollout_state: d.rollout_state ?? null, open_steps: d.open_steps ?? null }))));
 }
 async function hydrateSupersession(client, workspaceId, projectId, rows) {
   const edges = [];
