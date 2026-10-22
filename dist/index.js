@@ -1686,10 +1686,10 @@ var require_defaults = __commonJS({
     var codegen_1 = require_codegen();
     var util_1 = require_util();
     function assignDefaults(it, ty) {
-      const { properties, items } = it.schema;
-      if (ty === "object" && properties) {
-        for (const key in properties) {
-          assignDefault(it, key, properties[key].default);
+      const { properties: properties2, items } = it.schema;
+      if (ty === "object" && properties2) {
+        for (const key in properties2) {
+          assignDefault(it, key, properties2[key].default);
         }
       } else if (ty === "array" && Array.isArray(items)) {
         items.forEach((sch, i) => assignDefault(it, i, sch.default));
@@ -1732,8 +1732,8 @@ var require_code2 = __commonJS({
       });
     }
     exports.checkReportMissingProp = checkReportMissingProp;
-    function checkMissingProp({ gen, data, it: { opts } }, properties, missing) {
-      return (0, codegen_1.or)(...properties.map((prop) => (0, codegen_1.and)(noPropertyInData(gen, data, prop, opts.ownProperties), (0, codegen_1._)`${missing} = ${prop}`)));
+    function checkMissingProp({ gen, data, it: { opts } }, properties2, missing) {
+      return (0, codegen_1.or)(...properties2.map((prop) => (0, codegen_1.and)(noPropertyInData(gen, data, prop, opts.ownProperties), (0, codegen_1._)`${missing} = ${prop}`)));
     }
     exports.checkMissingProp = checkMissingProp;
     function reportMissingProp(cxt, missing) {
@@ -5626,11 +5626,11 @@ var require_properties = __commonJS({
         if (it.opts.unevaluated && allProps.length && it.props !== true) {
           it.props = util_1.mergeEvaluated.props(gen, (0, util_1.toHash)(allProps), it.props);
         }
-        const properties = allProps.filter((p) => !(0, util_1.alwaysValidSchema)(it, schema[p]));
-        if (properties.length === 0)
+        const properties2 = allProps.filter((p) => !(0, util_1.alwaysValidSchema)(it, schema[p]));
+        if (properties2.length === 0)
           return;
         const valid = gen.name("valid");
-        for (const prop of properties) {
+        for (const prop of properties2) {
           if (hasDefault(prop)) {
             applyPropertySchema(prop);
           } else {
@@ -12373,7 +12373,7 @@ var require_fetch = __commonJS({
     }
     function _generateLinkResponse(data) {
       const { action_link, email_otp, hashed_token, redirect_to, verification_type } = data, rest = tslib_1.__rest(data, ["action_link", "email_otp", "hashed_token", "redirect_to", "verification_type"]);
-      const properties = {
+      const properties2 = {
         action_link,
         email_otp,
         hashed_token,
@@ -12383,7 +12383,7 @@ var require_fetch = __commonJS({
       const user = Object.assign({}, rest);
       return {
         data: {
-          properties,
+          properties: properties2,
           user
         },
         error: null
@@ -40900,11 +40900,11 @@ var BaseApiClient = class {
   * }
   * ```
   */
-  async handleOperation(operation) {
+  async handleOperation(operation2) {
     var _this = this;
     try {
       return {
-        data: await operation(),
+        data: await operation2(),
         error: null
       };
     } catch (error2) {
@@ -43594,6 +43594,209 @@ async function createAuthenticatedClient(auth2) {
   });
 }
 
+// src/tools/feature-accounts.ts
+var uuid2 = external_exports.string().uuid();
+var operation = external_exports.discriminatedUnion("op", [
+  external_exports.object({ op: external_exports.literal("replace"), clause_id: external_exports.string().trim().min(1), content: external_exports.string() }).strict(),
+  external_exports.object({
+    op: external_exports.literal("insert"),
+    clause_id: external_exports.string().trim().min(1),
+    content: external_exports.string(),
+    ordinal: external_exports.number().int().positive()
+  }).strict()
+]);
+var createAccountSchema = external_exports.object({ owner_surface: external_exports.string().trim().min(1), concept_id: uuid2.optional() }).strict();
+var readAccountsSchema = external_exports.object({
+  account_id: uuid2.optional(),
+  owner_surface: external_exports.string().optional(),
+  history_limit: external_exports.number().int().min(1).max(100).optional(),
+  history_before: external_exports.number().int().positive().optional()
+}).strict();
+var previewAmendmentSchema = external_exports.object({
+  account_id: uuid2,
+  expected_revision: external_exports.number().int().nonnegative(),
+  operations: external_exports.array(operation).min(1)
+}).strict();
+var proposeAmendmentSchema = previewAmendmentSchema.extend({
+  source_decision_id: uuid2,
+  source_task_id: uuid2,
+  idempotency_key: external_exports.string().trim().min(1),
+  leaves_untouched: external_exports.array(
+    external_exports.object({
+      account_id: uuid2.optional(),
+      entry_id: uuid2.optional(),
+      owner_surface: external_exports.string().min(1).optional(),
+      clause_id: external_exports.string().min(1).optional()
+    }).strict().refine((value) => Object.keys(value).length > 0, "Name the untouched scope")
+  ),
+  evidence: external_exports.object({ pr_url: external_exports.string().url().optional(), commit: external_exports.string().min(1).optional() }).strict().optional()
+});
+var applyAmendmentSchema = external_exports.object({
+  amendment_id: uuid2,
+  production_event_id: uuid2.optional(),
+  confirm_production: external_exports.boolean().optional()
+}).strict().refine(
+  (value) => !!value.production_event_id !== (value.confirm_production === true),
+  "Provide one production event or explicitly confirm post-promotion production"
+);
+function missingAccountCapability(error2) {
+  return ["PGRST202", "42883", "42P01", "PGRST205"].includes(error2.code ?? "") && /(?:feature_account|feature_amendment|knowledge_feature_)/i.test(error2.message ?? "");
+}
+async function call(client, name, projectId, args, read = false) {
+  const parameters = Object.fromEntries(
+    Object.entries(args).filter(([, value]) => value !== void 0).map(([key, value]) => [`p_${key}`, value])
+  );
+  const { data, error: error2 } = await client.rpc(name, { p_project_id: projectId, ...parameters });
+  if (error2) {
+    if (missingAccountCapability(error2)) {
+      if (read) return { availability: "unavailable", accounts: [] };
+      throw new Error(
+        "Current account storage is unavailable. Deploy the web migration before writing; no change was made."
+      );
+    }
+    throw new Error(
+      `Current account operation failed (${error2.code ?? "unknown"}): ${error2.message}`
+    );
+  }
+  if (!data || typeof data !== "object") throw new Error("Invalid current account response");
+  return data;
+}
+async function createFeatureAccount(client, projectId, args) {
+  return call(client, "create_feature_account", projectId, createAccountSchema.parse(args));
+}
+async function readFeatureAccounts(client, projectId, args = {}) {
+  const result = await call(
+    client,
+    "read_feature_accounts",
+    projectId,
+    readAccountsSchema.parse(args),
+    true
+  );
+  if (!["available", "unavailable", "not-found"].includes(result.availability) || !Array.isArray(result.accounts))
+    throw new Error("Invalid current account read response");
+  return result;
+}
+async function previewFeatureAmendment(client, projectId, args) {
+  return call(client, "preview_feature_amendment", projectId, previewAmendmentSchema.parse(args));
+}
+async function proposeFeatureAmendment(client, projectId, args) {
+  return call(client, "propose_feature_amendment", projectId, proposeAmendmentSchema.parse(args));
+}
+async function applyFeatureAmendment(client, projectId, args) {
+  return call(client, "apply_feature_amendment", projectId, applyAmendmentSchema.parse(args));
+}
+var properties = {
+  account_id: { type: "string", description: "Stable account UUID" },
+  expected_revision: { type: "integer", minimum: 0 },
+  operations: {
+    type: "array",
+    minItems: 1,
+    items: {
+      type: "object",
+      properties: {
+        op: { type: "string", enum: ["replace", "insert"] },
+        clause_id: { type: "string" },
+        content: { type: "string" },
+        ordinal: { type: "integer", minimum: 1 }
+      },
+      required: ["op", "clause_id", "content"],
+      additionalProperties: false
+    },
+    description: "Ordered replacements or insertions. Insert requires a new clause_id and final ordinal. Replace preserves order."
+  }
+};
+var featureAccountTools = [
+  {
+    name: "create_feature_account",
+    description: "Create a project/surface current-account identity with no live text. Existing normalized surface returns the same identity. Optional concept_id shares the workspace concept UUID.",
+    inputSchema: {
+      type: "object",
+      properties: { owner_surface: { type: "string" }, concept_id: { type: "string" } },
+      required: ["owner_surface"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "read_feature_accounts",
+    description: "Read live current_text and ordered clauses separately from labelled pending_amendments and immutable history. Returns available, not-found or unavailable; permission/network errors stay errors. History is newest first; pass its last revision as history_before for the next page.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        account_id: properties.account_id,
+        owner_surface: { type: "string" },
+        history_limit: { type: "integer", minimum: 1, maximum: 100 },
+        history_before: { type: "integer", minimum: 1 }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "preview_feature_amendment",
+    description: "Preview named clause operations at the expected live revision without proposing or publishing. Returns preview_text labelled live=false.",
+    inputSchema: {
+      type: "object",
+      properties,
+      required: ["account_id", "expected_revision", "operations"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "propose_feature_amendment",
+    description: "Register an idempotent pending amendment from an accepted project decision and source ticket. Names clauses replaced, insertion order and neighbours left untouched. Records amendment-proposed; does not change live current_text. PR/commit evidence optional.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...properties,
+        source_decision_id: { type: "string" },
+        source_task_id: { type: "string" },
+        idempotency_key: { type: "string" },
+        leaves_untouched: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              account_id: { type: "string" },
+              entry_id: { type: "string" },
+              owner_surface: { type: "string" },
+              clause_id: { type: "string" }
+            },
+            additionalProperties: false
+          }
+        },
+        evidence: {
+          type: "object",
+          properties: { pr_url: { type: "string" }, commit: { type: "string" } },
+          additionalProperties: false
+        }
+      },
+      required: [
+        "account_id",
+        "expected_revision",
+        "operations",
+        "leaves_untouched",
+        "source_decision_id",
+        "source_task_id",
+        "idempotency_key"
+      ],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "apply_feature_amendment",
+    description: "Publish a pending amendment atomically ONLY with a trusted production-live re-stamped event, or confirm_production=true explicitly after promotion. Never call merely because a ticket merged, reached Deployed or Verified. Stale revision fails unchanged; successful retry creates no duplicate history/events.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        amendment_id: { type: "string" },
+        production_event_id: { type: "string" },
+        confirm_production: { type: "boolean" }
+      },
+      required: ["amendment_id"],
+      additionalProperties: false
+    }
+  }
+];
+
 // src/tools/knowledge-metadata.ts
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -43608,7 +43811,7 @@ async function metadataCapable(client) {
     "Invalid knowledge metadata capability response; legacy fallback refused."
   );
 }
-async function metadataRpc(client, operation, scope, args) {
+async function metadataRpc(client, operation2, scope, args) {
   const capable = await metadataCapable(client);
   if (scope !== void 0 && !["product", "deployment"].includes(scope))
     throw new Error("scope must be product or deployment");
@@ -43616,12 +43819,12 @@ async function metadataRpc(client, operation, scope, args) {
     throw new Error(
       "Knowledge scope unavailable until the schema is promoted; nothing was saved."
     );
-  if (capable && (operation === "knowledge_record_decision" || operation === "knowledge_supersede_knowledge_entry" || operation === "knowledge_supersede_decision" && args.p_type) && !scope)
+  if (capable && (operation2 === "knowledge_record_decision" || operation2 === "knowledge_supersede_knowledge_entry" || operation2 === "knowledge_supersede_decision" && args.p_type) && !scope)
     throw new Error(
       "New knowledge requires product or deployment scope. Separate mixed claims."
     );
   const result = await client.rpc(
-    capable ? `${operation}_metadata` : operation,
+    capable ? `${operation2}_metadata` : operation2,
     { ...args, ...capable ? { p_scope: scope ?? null } : {} }
   );
   if (result.error?.details)
@@ -52761,7 +52964,7 @@ async function applyAcceptanceEventPayload(client, event) {
         if (!item.content) throw new Error(`knowledge_entry_content item '${item.ref}' is missing content \u2014 the payload CARRIES the entry text; it is never synthesized from doc fields`);
         const metadata = item.scope !== void 0;
         if (metadata && !await metadataCapable(client)) throw new Error("Accepted scope metadata unavailable until the schema is promoted; acceptance remains pending.");
-        const operation = metadata ? "consume_knowledge_entry_content_write_metadata" : "consume_knowledge_entry_content_write";
+        const operation2 = metadata ? "consume_knowledge_entry_content_write_metadata" : "consume_knowledge_entry_content_write";
         let includeTitle = true;
         let includeTags = true;
         const callArgs = () => ({
@@ -52773,7 +52976,7 @@ async function applyAcceptanceEventPayload(client, event) {
           ...includeTitle ? { _title: item.title ?? null } : {},
           ...includeTags ? { _tags: item.tags ?? null } : {}
         });
-        let { data, error: error2 } = await client.rpc(operation, callArgs());
+        let { data, error: error2 } = await client.rpc(operation2, callArgs());
         for (let round = 0; round < 2 && error2 && !metadata; round++) {
           if (includeTags && isMissingTagsParam(error2.message)) {
             includeTags = false;
@@ -52782,7 +52985,7 @@ async function applyAcceptanceEventPayload(client, event) {
           } else {
             break;
           }
-          ({ data, error: error2 } = await client.rpc(operation, callArgs()));
+          ({ data, error: error2 } = await client.rpc(operation2, callArgs()));
         }
         if (error2) {
           if (isMissingRelationOrFunction(error2)) throw new WriteKindSubstrateAbsentError("knowledge_entry_content");
@@ -54570,6 +54773,9 @@ function batchIdsAck(result) {
 var knowledgeCreatedAck = (row) => pick2(row, ["id", "status", "created_at"]);
 var supersededAck = (row) => pick2(row, ["id", "status", "superseded_by"]);
 var ackProjections = {
+  create_feature_account: (row) => pick2(row, ["account_id", "entry_id", "current_revision", "created_at"]),
+  propose_feature_amendment: (row) => pick2(row, ["amendment_id", "account_id", "proposal_event_id", "created_at", "applied_revision", "applied_at"]),
+  apply_feature_amendment: (row) => pick2(row, ["amendment_id", "account_id", "applied_revision", "applied_at", "application_evidence"]),
   publish_definition: (result) => pick2(result, ["id", "concept_id", "current_revision"]),
   // ——— tasks ———
   create_task: (result) => createdTaskAck(result),
@@ -55485,6 +55691,7 @@ var LEG_OUTPUT_TAIL_BYTES = 64 * 1024;
 // src/tools/index.ts
 function registerTools(disabledFeatures) {
   const tools = [
+    ...featureAccountTools,
     // Core tools (always visible)
     getProjectTool,
     listTasksTool,
@@ -55635,6 +55842,21 @@ async function handleToolCall(name, args, client, projectId, userId) {
         break;
       case "bulk_update_tasks":
         result = await bulkUpdateTasks(client, projectId, args);
+        break;
+      case "create_feature_account":
+        result = await createFeatureAccount(client, projectId, args);
+        break;
+      case "read_feature_accounts":
+        result = await readFeatureAccounts(client, projectId, args);
+        break;
+      case "preview_feature_amendment":
+        result = await previewFeatureAmendment(client, projectId, args);
+        break;
+      case "propose_feature_amendment":
+        result = await proposeFeatureAmendment(client, projectId, args);
+        break;
+      case "apply_feature_amendment":
+        result = await applyFeatureAmendment(client, projectId, args);
         break;
       case "publish_source_inventory":
         result = await publishSourceInventory(client, projectId, args);

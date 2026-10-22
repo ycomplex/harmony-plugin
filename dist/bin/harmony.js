@@ -8897,7 +8897,7 @@ var require_fetch = __commonJS({
     }
     function _generateLinkResponse(data) {
       const { action_link, email_otp, hashed_token, redirect_to, verification_type } = data, rest = tslib_1.__rest(data, ["action_link", "email_otp", "hashed_token", "redirect_to", "verification_type"]);
-      const properties = {
+      const properties2 = {
         action_link,
         email_otp,
         hashed_token,
@@ -8907,7 +8907,7 @@ var require_fetch = __commonJS({
       const user = Object.assign({}, rest);
       return {
         data: {
-          properties,
+          properties: properties2,
           user
         },
         error: null
@@ -28634,11 +28634,11 @@ var BaseApiClient = class {
   * }
   * ```
   */
-  async handleOperation(operation) {
+  async handleOperation(operation2) {
     var _this = this;
     try {
       return {
-        data: await operation(),
+        data: await operation2(),
         error: null
       };
     } catch (error) {
@@ -36579,7 +36579,7 @@ async function metadataCapable(client) {
     "Invalid knowledge metadata capability response; legacy fallback refused."
   );
 }
-async function metadataRpc(client, operation, scope, args) {
+async function metadataRpc(client, operation2, scope, args) {
   const capable = await metadataCapable(client);
   if (scope !== void 0 && !["product", "deployment"].includes(scope))
     throw new Error("scope must be product or deployment");
@@ -36587,12 +36587,12 @@ async function metadataRpc(client, operation, scope, args) {
     throw new Error(
       "Knowledge scope unavailable until the schema is promoted; nothing was saved."
     );
-  if (capable && (operation === "knowledge_record_decision" || operation === "knowledge_supersede_knowledge_entry" || operation === "knowledge_supersede_decision" && args.p_type) && !scope)
+  if (capable && (operation2 === "knowledge_record_decision" || operation2 === "knowledge_supersede_knowledge_entry" || operation2 === "knowledge_supersede_decision" && args.p_type) && !scope)
     throw new Error(
       "New knowledge requires product or deployment scope. Separate mixed claims."
     );
   const result = await client.rpc(
-    capable ? `${operation}_metadata` : operation,
+    capable ? `${operation2}_metadata` : operation2,
     { ...args, ...capable ? { p_scope: scope ?? null } : {} }
   );
   if (result.error?.details)
@@ -42034,7 +42034,7 @@ async function applyAcceptanceEventPayload(client, event) {
         if (!item.content) throw new Error(`knowledge_entry_content item '${item.ref}' is missing content \u2014 the payload CARRIES the entry text; it is never synthesized from doc fields`);
         const metadata = item.scope !== void 0;
         if (metadata && !await metadataCapable(client)) throw new Error("Accepted scope metadata unavailable until the schema is promoted; acceptance remains pending.");
-        const operation = metadata ? "consume_knowledge_entry_content_write_metadata" : "consume_knowledge_entry_content_write";
+        const operation2 = metadata ? "consume_knowledge_entry_content_write_metadata" : "consume_knowledge_entry_content_write";
         let includeTitle = true;
         let includeTags = true;
         const callArgs = () => ({
@@ -42046,7 +42046,7 @@ async function applyAcceptanceEventPayload(client, event) {
           ...includeTitle ? { _title: item.title ?? null } : {},
           ...includeTags ? { _tags: item.tags ?? null } : {}
         });
-        let { data, error } = await client.rpc(operation, callArgs());
+        let { data, error } = await client.rpc(operation2, callArgs());
         for (let round = 0; round < 2 && error && !metadata; round++) {
           if (includeTags && isMissingTagsParam(error.message)) {
             includeTags = false;
@@ -42055,7 +42055,7 @@ async function applyAcceptanceEventPayload(client, event) {
           } else {
             break;
           }
-          ({ data, error } = await client.rpc(operation, callArgs()));
+          ({ data, error } = await client.rpc(operation2, callArgs()));
         }
         if (error) {
           if (isMissingRelationOrFunction(error)) throw new WriteKindSubstrateAbsentError("knowledge_entry_content");
@@ -43735,6 +43735,209 @@ function registerBulkCommands(program3) {
   });
 }
 
+// src/tools/feature-accounts.ts
+var uuid = external_exports.string().uuid();
+var operation = external_exports.discriminatedUnion("op", [
+  external_exports.object({ op: external_exports.literal("replace"), clause_id: external_exports.string().trim().min(1), content: external_exports.string() }).strict(),
+  external_exports.object({
+    op: external_exports.literal("insert"),
+    clause_id: external_exports.string().trim().min(1),
+    content: external_exports.string(),
+    ordinal: external_exports.number().int().positive()
+  }).strict()
+]);
+var createAccountSchema = external_exports.object({ owner_surface: external_exports.string().trim().min(1), concept_id: uuid.optional() }).strict();
+var readAccountsSchema = external_exports.object({
+  account_id: uuid.optional(),
+  owner_surface: external_exports.string().optional(),
+  history_limit: external_exports.number().int().min(1).max(100).optional(),
+  history_before: external_exports.number().int().positive().optional()
+}).strict();
+var previewAmendmentSchema = external_exports.object({
+  account_id: uuid,
+  expected_revision: external_exports.number().int().nonnegative(),
+  operations: external_exports.array(operation).min(1)
+}).strict();
+var proposeAmendmentSchema = previewAmendmentSchema.extend({
+  source_decision_id: uuid,
+  source_task_id: uuid,
+  idempotency_key: external_exports.string().trim().min(1),
+  leaves_untouched: external_exports.array(
+    external_exports.object({
+      account_id: uuid.optional(),
+      entry_id: uuid.optional(),
+      owner_surface: external_exports.string().min(1).optional(),
+      clause_id: external_exports.string().min(1).optional()
+    }).strict().refine((value) => Object.keys(value).length > 0, "Name the untouched scope")
+  ),
+  evidence: external_exports.object({ pr_url: external_exports.string().url().optional(), commit: external_exports.string().min(1).optional() }).strict().optional()
+});
+var applyAmendmentSchema = external_exports.object({
+  amendment_id: uuid,
+  production_event_id: uuid.optional(),
+  confirm_production: external_exports.boolean().optional()
+}).strict().refine(
+  (value) => !!value.production_event_id !== (value.confirm_production === true),
+  "Provide one production event or explicitly confirm post-promotion production"
+);
+function missingAccountCapability(error) {
+  return ["PGRST202", "42883", "42P01", "PGRST205"].includes(error.code ?? "") && /(?:feature_account|feature_amendment|knowledge_feature_)/i.test(error.message ?? "");
+}
+async function call(client, name, projectId, args, read = false) {
+  const parameters = Object.fromEntries(
+    Object.entries(args).filter(([, value]) => value !== void 0).map(([key, value]) => [`p_${key}`, value])
+  );
+  const { data, error } = await client.rpc(name, { p_project_id: projectId, ...parameters });
+  if (error) {
+    if (missingAccountCapability(error)) {
+      if (read) return { availability: "unavailable", accounts: [] };
+      throw new Error(
+        "Current account storage is unavailable. Deploy the web migration before writing; no change was made."
+      );
+    }
+    throw new Error(
+      `Current account operation failed (${error.code ?? "unknown"}): ${error.message}`
+    );
+  }
+  if (!data || typeof data !== "object") throw new Error("Invalid current account response");
+  return data;
+}
+async function createFeatureAccount(client, projectId, args) {
+  return call(client, "create_feature_account", projectId, createAccountSchema.parse(args));
+}
+async function readFeatureAccounts(client, projectId, args = {}) {
+  const result = await call(
+    client,
+    "read_feature_accounts",
+    projectId,
+    readAccountsSchema.parse(args),
+    true
+  );
+  if (!["available", "unavailable", "not-found"].includes(result.availability) || !Array.isArray(result.accounts))
+    throw new Error("Invalid current account read response");
+  return result;
+}
+async function previewFeatureAmendment(client, projectId, args) {
+  return call(client, "preview_feature_amendment", projectId, previewAmendmentSchema.parse(args));
+}
+async function proposeFeatureAmendment(client, projectId, args) {
+  return call(client, "propose_feature_amendment", projectId, proposeAmendmentSchema.parse(args));
+}
+async function applyFeatureAmendment(client, projectId, args) {
+  return call(client, "apply_feature_amendment", projectId, applyAmendmentSchema.parse(args));
+}
+var properties = {
+  account_id: { type: "string", description: "Stable account UUID" },
+  expected_revision: { type: "integer", minimum: 0 },
+  operations: {
+    type: "array",
+    minItems: 1,
+    items: {
+      type: "object",
+      properties: {
+        op: { type: "string", enum: ["replace", "insert"] },
+        clause_id: { type: "string" },
+        content: { type: "string" },
+        ordinal: { type: "integer", minimum: 1 }
+      },
+      required: ["op", "clause_id", "content"],
+      additionalProperties: false
+    },
+    description: "Ordered replacements or insertions. Insert requires a new clause_id and final ordinal. Replace preserves order."
+  }
+};
+var featureAccountTools = [
+  {
+    name: "create_feature_account",
+    description: "Create a project/surface current-account identity with no live text. Existing normalized surface returns the same identity. Optional concept_id shares the workspace concept UUID.",
+    inputSchema: {
+      type: "object",
+      properties: { owner_surface: { type: "string" }, concept_id: { type: "string" } },
+      required: ["owner_surface"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "read_feature_accounts",
+    description: "Read live current_text and ordered clauses separately from labelled pending_amendments and immutable history. Returns available, not-found or unavailable; permission/network errors stay errors. History is newest first; pass its last revision as history_before for the next page.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        account_id: properties.account_id,
+        owner_surface: { type: "string" },
+        history_limit: { type: "integer", minimum: 1, maximum: 100 },
+        history_before: { type: "integer", minimum: 1 }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "preview_feature_amendment",
+    description: "Preview named clause operations at the expected live revision without proposing or publishing. Returns preview_text labelled live=false.",
+    inputSchema: {
+      type: "object",
+      properties,
+      required: ["account_id", "expected_revision", "operations"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "propose_feature_amendment",
+    description: "Register an idempotent pending amendment from an accepted project decision and source ticket. Names clauses replaced, insertion order and neighbours left untouched. Records amendment-proposed; does not change live current_text. PR/commit evidence optional.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...properties,
+        source_decision_id: { type: "string" },
+        source_task_id: { type: "string" },
+        idempotency_key: { type: "string" },
+        leaves_untouched: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              account_id: { type: "string" },
+              entry_id: { type: "string" },
+              owner_surface: { type: "string" },
+              clause_id: { type: "string" }
+            },
+            additionalProperties: false
+          }
+        },
+        evidence: {
+          type: "object",
+          properties: { pr_url: { type: "string" }, commit: { type: "string" } },
+          additionalProperties: false
+        }
+      },
+      required: [
+        "account_id",
+        "expected_revision",
+        "operations",
+        "leaves_untouched",
+        "source_decision_id",
+        "source_task_id",
+        "idempotency_key"
+      ],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "apply_feature_amendment",
+    description: "Publish a pending amendment atomically ONLY with a trusted production-live re-stamped event, or confirm_production=true explicitly after promotion. Never call merely because a ticket merged, reached Deployed or Verified. Stale revision fails unchanged; successful retry creates no duplicate history/events.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        amendment_id: { type: "string" },
+        production_event_id: { type: "string" },
+        confirm_production: { type: "boolean" }
+      },
+      required: ["amendment_id"],
+      additionalProperties: false
+    }
+  }
+];
+
 // src/cli/commands/knowledge-sources.ts
 import { readFileSync as readFileSync5, writeFileSync } from "node:fs";
 import { resolve as resolve2 } from "node:path";
@@ -44032,6 +44235,22 @@ async function tagReleasedKnowledge(client, projectId, taskId, repo, pr) {
 // src/cli/commands/knowledge.ts
 function registerKnowledgeCommands(program3) {
   const knowledge = program3.command("knowledge").description("Manage workspace knowledge base");
+  const accounts = knowledge.command("accounts").description("Live feature accounts and pending clause amendments");
+  accounts.command("list").option("--surface <surface>").option("--account <id>").option("--history-limit <n>").option("--history-before <n>").action(async (opts) => {
+    await runCommand(program3.opts(), (ctx) => readFeatureAccounts(ctx.client, ctx.projectId, { owner_surface: opts.surface, account_id: opts.account, history_limit: opts.historyLimit ? Number(opts.historyLimit) : void 0, history_before: opts.historyBefore ? Number(opts.historyBefore) : void 0 }), (data) => JSON.stringify(data, null, 2));
+  });
+  accounts.command("create").requiredOption("--surface <surface>").option("--concept <id>").action(async (opts) => {
+    await runCommand(program3.opts(), (ctx) => createFeatureAccount(ctx.client, ctx.projectId, { owner_surface: opts.surface, concept_id: opts.concept }), (data) => JSON.stringify(data, null, 2));
+  });
+  for (const [name, handler] of [["preview", previewFeatureAmendment], ["propose", proposeFeatureAmendment]]) {
+    accounts.command(name).requiredOption("--file <path>", "JSON argument file; same fields as MCP").action(async (opts) => {
+      const args = JSON.parse(readFileSync6(opts.file, "utf8"));
+      await runCommand(program3.opts(), (ctx) => handler(ctx.client, ctx.projectId, args), (data) => JSON.stringify(data, null, 2));
+    });
+  }
+  accounts.command("apply").argument("<amendment-id>").option("--production-event <id>").option("--confirm-production", "Explicitly confirm production promotion has completed").action(async (id, opts) => {
+    await runCommand(program3.opts(), (ctx) => applyFeatureAmendment(ctx.client, ctx.projectId, { amendment_id: id, production_event_id: opts.productionEvent, confirm_production: opts.confirmProduction }), (data) => JSON.stringify(data, null, 2));
+  });
   registerSourceCommands(knowledge, program3);
   const questions = knowledge.command("questions").description("Manage unresolved knowledge; question state never implies shipped behaviour");
   questions.command("save").requiredOption("--state <state>", "open, parked or decided").option("--claim <claim>", "Authored one-sentence claim; omitted claims remain derived proposals").option("--id <id>", "Existing question UUID").option("--expected-updated-at <timestamp>", "Fresh read timestamp for changes").option("--title <title>").option("--content <content>").option("--scope <scope>", "product or deployment; required for creates").option("--decision <id>", "Accepted resulting decision in this project").option("--reopen", "Explicitly reopen a decided question").option("--domain <domains>", "Comma-separated subject domains; defaults to product on create").option("--provenance <value>", "Declare how this write was authorized").action(async (opts) => runCommand(program3.opts(), (ctx) => saveKnowledgeQuestion(ctx.client, ctx.projectId, {
@@ -46790,7 +47009,7 @@ var isMissing = (err) => {
 };
 function createRegistryClient(deps) {
   const defaultTimeout = deps.timeoutMs ?? DEFAULT_RPC_TIMEOUT_MS;
-  const call = (name, args, cls, timeoutMs = defaultTimeout) => withWriteRetry(
+  const call2 = (name, args, cls, timeoutMs = defaultTimeout) => withWriteRetry(
     deps,
     { class: cls, endpoint: `rpc(${name})` },
     () => new Promise((resolve7, reject) => {
@@ -46839,7 +47058,7 @@ function createRegistryClient(deps) {
   return {
     async acquire(id, opts = {}) {
       try {
-        const data = await call("conductor_acquire", { ...idArgs(id), p_takeover_dead_pid: opts.takeoverDeadPid === true }, "cas");
+        const data = await call2("conductor_acquire", { ...idArgs(id), p_takeover_dead_pid: opts.takeoverDeadPid === true }, "cas");
         const o = payload(data);
         const status = o && str(o.status);
         if (!o || status !== "acquired" && status !== "taken_over" && status !== "refused") {
@@ -46870,7 +47089,7 @@ function createRegistryClient(deps) {
     },
     async heartbeat(id) {
       try {
-        const data = await call("conductor_heartbeat", idArgs(id), "idempotent");
+        const data = await call2("conductor_heartbeat", idArgs(id), "idempotent");
         const o = payload(data);
         const status = o && str(o.status);
         if (o && status === "ok") return { kind: "held", reasserted: o.reasserted === true, request: parsePending(o.request) };
@@ -46884,7 +47103,7 @@ function createRegistryClient(deps) {
     },
     async release(holderId, opts = {}) {
       try {
-        const data = await call("conductor_release", { p_holder_id: holderId, p_slot: DEFAULT_SLOT }, "cas", opts.timeoutMs);
+        const data = await call2("conductor_release", { p_holder_id: holderId, p_slot: DEFAULT_SLOT }, "cas", opts.timeoutMs);
         const status = str(payload(data)?.status);
         if (status === "ok") return { kind: "ok" };
         if (status === "not_holder") return { kind: "not_holder" };
@@ -46895,7 +47114,7 @@ function createRegistryClient(deps) {
     },
     async claimRequest(holderId, requestId) {
       try {
-        const data = await call("conductor_claim_request", { p_holder_id: holderId, p_request_id: requestId, p_slot: DEFAULT_SLOT }, "cas");
+        const data = await call2("conductor_claim_request", { p_holder_id: holderId, p_request_id: requestId, p_slot: DEFAULT_SLOT }, "cas");
         const o = payload(data);
         const status = o && str(o.status);
         if (o && status === "claimed") return { kind: "claimed", action: str(o.action) };
@@ -46907,7 +47126,7 @@ function createRegistryClient(deps) {
     },
     async completeRequest(holderId, args) {
       try {
-        const data = await call(
+        const data = await call2(
           "conductor_complete_request",
           {
             p_holder_id: holderId,
@@ -46931,7 +47150,7 @@ function createRegistryClient(deps) {
     },
     async request(action) {
       try {
-        const data = await call("conductor_request", { p_action: action }, "cas");
+        const data = await call2("conductor_request", { p_action: action }, "cas");
         const o = payload(data);
         const status = o && str(o.status);
         if (o && status === "queued") {
@@ -46950,7 +47169,7 @@ function createRegistryClient(deps) {
     },
     async status() {
       try {
-        const data = await call("conductor_status", {}, "idempotent");
+        const data = await call2("conductor_status", {}, "idempotent");
         const o = payload(data);
         const state = o && str(o.state);
         if (!o || o.available === false || state !== "running" && state !== "stale" && state !== "not_running") {
@@ -49362,9 +49581,9 @@ async function callWithHardTimeout(io, subscriptions, timeoutMs) {
     timer.unref?.();
   });
   try {
-    const call = Promise.resolve(io.callSyncRpc(subscriptions, controller.signal));
-    call.catch(() => void 0);
-    return await Promise.race([call, expiry]);
+    const call2 = Promise.resolve(io.callSyncRpc(subscriptions, controller.signal));
+    call2.catch(() => void 0);
+    return await Promise.race([call2, expiry]);
   } finally {
     if (timer) clearTimeout(timer);
   }
