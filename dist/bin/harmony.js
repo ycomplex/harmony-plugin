@@ -36970,24 +36970,68 @@ async function referenceKnowledge(client, projectId, args) {
   if (error) throw error;
   return { task_id: id, decision_id: args.decision_id, linked: true };
 }
+var KNOWLEDGE_PROJECTION = "decision_id, knowledge_decisions(id, type, status, title, domain, source_activity, content)";
+var KNOWLEDGE_PAGE_SIZE = 500;
 async function listTicketKnowledge(client, projectId, args) {
-  const id = await resolveTaskId(client, projectId, args.task_id);
-  const { data, error } = await client.from("ticket_references_knowledge").select("decision_id, knowledge_decisions(id, type, status, title, domain, source_activity, content)").eq("task_id", id);
-  if (error) throw error;
-  const rows = data ?? [];
-  const affectedByDecision = await fetchAffectedEntities(client, rows.map((r) => r.decision_id));
-  return rows.map((r) => ({
-    decision_id: r.decision_id,
-    ...r.knowledge_decisions ?? {},
-    affected_entities: affectedByDecision[r.decision_id] ?? []
-  }));
+  const single = args.task_id !== void 0;
+  const batch = args.task_ids !== void 0;
+  if (single === batch) throw new Error("Provide exactly one of task_id or task_ids.");
+  const inputs = single ? [args.task_id] : args.task_ids;
+  if (!Array.isArray(inputs) || inputs.length < 1 || inputs.length > 20 || inputs.some((input) => typeof input !== "string" || !input.trim())) {
+    throw new Error("Provide a non-blank task_id or task_ids containing 1\u201320 non-blank ticket identifiers.");
+  }
+  const resolved = single ? [await resolveTaskId(client, projectId, inputs[0])] : await resolveTaskIds(client, projectId, inputs);
+  const ids = [...new Set(resolved.map((id) => id.toLowerCase()))];
+  const { data: tasks, error: taskError } = await client.from("tasks").select("id").eq("project_id", projectId).in("id", ids);
+  if (taskError) throw taskError;
+  const found = new Set((tasks ?? []).map((task) => task.id.toLowerCase()));
+  if (ids.some((id) => !found.has(id))) throw new Error("One or more requested tickets were not found in this project.");
+  const rows = [];
+  if (single) {
+    const { data, error } = await client.from("ticket_references_knowledge").select(KNOWLEDGE_PROJECTION).eq("task_id", ids[0]);
+    if (error) throw error;
+    rows.push(...data ?? []);
+  } else {
+    for (let offset = 0; ; ) {
+      const { data, error } = await client.from("ticket_references_knowledge").select(`task_id, ${KNOWLEDGE_PROJECTION}`).in("task_id", ids).order("task_id").order("decision_id").range(offset, offset + KNOWLEDGE_PAGE_SIZE - 1);
+      if (error) throw error;
+      if (!data?.length) break;
+      rows.push(...data);
+      offset += data.length;
+    }
+  }
+  const affected = await fetchAffectedEntities(client, rows.map((row) => row.decision_id), batch);
+  const projectEntry = (row) => ({
+    decision_id: row.decision_id,
+    ...row.knowledge_decisions ?? {},
+    affected_entities: affected[row.decision_id] ?? []
+  });
+  if (single) return rows.map(projectEntry);
+  const groups = new Map(ids.map((id) => [id, []]));
+  for (const row of rows) groups.get(row.task_id)?.push(projectEntry(row));
+  return { tickets: ids.map((task_id) => ({ task_id, entries: groups.get(task_id) })) };
 }
-async function fetchAffectedEntities(client, decisionIds) {
+async function fetchAffectedEntities(client, decisionIds, paged = false) {
   if (decisionIds.length === 0) return {};
-  const { data, error } = await client.from("decision_affects_entity").select("decision_id, entity_id, knowledge_entities(name, kind)").in("decision_id", decisionIds);
-  if (error) throw error;
+  const rows = [];
+  if (!paged) {
+    const { data, error } = await client.from("decision_affects_entity").select("decision_id, entity_id, knowledge_entities(name, kind)").in("decision_id", decisionIds);
+    if (error) throw error;
+    rows.push(...data ?? []);
+  } else {
+    const unique = [...new Set(decisionIds)];
+    for (let start = 0; start < unique.length; start += 100) {
+      for (let offset = 0; ; ) {
+        const { data, error } = await client.from("decision_affects_entity").select("decision_id, entity_id, knowledge_entities(name, kind)").in("decision_id", unique.slice(start, start + 100)).order("decision_id").order("entity_id").range(offset, offset + KNOWLEDGE_PAGE_SIZE - 1);
+        if (error) throw error;
+        if (!data?.length) break;
+        rows.push(...data);
+        offset += data.length;
+      }
+    }
+  }
   const map = {};
-  for (const row of data ?? []) {
+  for (const row of rows) {
     const entity = row.knowledge_entities;
     if (!entity?.name) continue;
     const list = map[row.decision_id] ?? (map[row.decision_id] = []);
