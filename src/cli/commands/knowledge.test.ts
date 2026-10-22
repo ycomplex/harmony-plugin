@@ -1,15 +1,20 @@
 import { Command } from 'commander';
 import { describe, it, expect, vi } from 'vitest';
 import { registerKnowledgeCommands } from './knowledge.js';
-import { updateKnowledgeEntry } from '../../tools/knowledge.js';
+import { updateKnowledgeEntry, queryKnowledge } from '../../tools/knowledge.js';
 
 vi.mock('../../tools/knowledge.js', () => ({
   queryKnowledge: vi.fn(), getKnowledgeEntry: vi.fn(), createKnowledgeEntry: vi.fn(),
   updateKnowledgeEntry: vi.fn().mockResolvedValue({ id: 'entry', title: 'Specimen' }),
   supersedeKnowledgeEntry: vi.fn(),
 }));
+const output = vi.hoisted(() => ({ text: '' }));
 vi.mock('../run-command.js', () => ({
-  runCommand: async (_opts: unknown, action: (ctx: unknown) => unknown) => action({ client: 'client', projectId: 'project' }),
+  runCommand: async (_opts: unknown, action: (ctx: unknown) => unknown, format?: (data: unknown) => string) => {
+    const data = await action({ client: 'client', projectId: 'project' });
+    if (format) output.text = format(data);
+    return data;
+  },
 }));
 
 describe('knowledge update command', () => {
@@ -28,5 +33,19 @@ describe('knowledge update command', () => {
     expect(updateKnowledgeEntry).toHaveBeenLastCalledWith('client', 'project', expect.objectContaining({
       content: 'Replacement', content_mode: undefined, allow_shrink: undefined,
     }));
+  });
+});
+
+describe('knowledge list human output', () => {
+  it('prints both first-class supersession fields including null and empty values', async () => {
+    vi.mocked(queryKnowledge).mockResolvedValue([{ id: 'new-id', title: 'New policy', type: 'architecture', status: 'Accepted', tags: [], updated_at: '2026-10-01T00:00:00Z', superseded_by: null, supersedes: ['old-id'] },
+      { id: 'old-id', title: 'Old policy', type: 'architecture', status: 'Superseded', tags: [], updated_at: '2026-10-01T00:00:00Z', superseded_by: 'new-id', supersedes: [] }]);
+    const program = new Command(); registerKnowledgeCommands(program);
+    await program.parseAsync(['knowledge', 'list', '--all'], { from: 'user' });
+    expect(output.text).toContain('Superseded by');
+    expect(output.text).toContain('Supersedes');
+    expect(output.text).toContain('old-id');
+    expect(output.text).toContain('new-id');
+    expect(queryKnowledge).toHaveBeenCalledWith('client', 'project', expect.objectContaining({ include_superseded: true }));
   });
 });

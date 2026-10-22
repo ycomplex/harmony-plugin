@@ -1,3 +1,4 @@
+import { projectSupersession } from './knowledge-supersession.js';
 import { BOOKKEEPING_TAG, SUBSTANTIVE_TAG_FILTER, bookkeepingPage } from './knowledge-bookkeeping.js';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { normalizeHtmlEntities } from './text-normalize.js';
@@ -17,6 +18,8 @@ export interface KnowledgeEntrySummary {
   tags: string[];
   project_id: string | null;
   updated_at: string;
+  superseded_by?: string | null;
+  supersedes?: string[];
 }
 
 export interface KnowledgeEntryFull {
@@ -96,7 +99,7 @@ const ENTITY_COLS = 'id, workspace_id, project_id, kind, name, description, meta
 export const queryKnowledgeTool = {
   name: 'query_knowledge',
   description:
-    'Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Check this before making significant implementation choices. Defaults to "Accepted" entries only, with explicitly marked bookkeeping ranked last; include_bookkeeping:false excludes it before pagination. When `search` is given, retrieval is semantic (RRF) and composes with `domain`, `limit` and `include_bookkeeping`; the other structured filters (`type`, `status`, `tags`, `as_of`, `include_superseded`, `offset`) apply to the non-search structured path only.',
+    'Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Results include nullable superseded_by and inverse supersedes UUIDs; matching successors precede replaced entries. Check this before making significant implementation choices. Defaults to "Accepted" entries only, with explicitly marked bookkeeping ranked last; include_bookkeeping:false excludes it before pagination. When `search` is given, retrieval is semantic (RRF) and composes with `domain`, `limit` and `include_bookkeeping`; the other structured filters (`type`, `status`, `tags`, `as_of`, `include_superseded`, `offset`) apply to the non-search structured path only.',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -416,16 +419,23 @@ export async function queryKnowledge(
       query = bookkeeping ? query.contains('tags', [BOOKKEEPING_TAG]) : query.or(SUBSTANTIVE_TAG_FILTER);
       return query.range(offset, offset + limit - 1);
     }, args);
-    return (data ?? []).map((d: any) => ({
+    const matches = (data ?? []).map((d: any) => ({
       id: d.id, title: d.title, type: d.type, status: d.status,
       domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at,
     })) as KnowledgeEntrySummary[];
+    if (!matches.length) return [];
+    return projectSupersession(matches, await readSupersessionEdges(client, workspaceId, projectId));
   }
 
-  // Structured retrieval uses the same class boundary and applies every filter before pagination.
-  return bookkeepingPage<KnowledgeEntrySummary>(({ bookkeeping, offset, limit, count }) => {
+  // Preserve substantive-first ranking, but collect the matching set before successor
+  // precedence and final pagination. Partition filters still run on the server.
+  if (!Number.isInteger(args.limit ?? 50) || (args.limit ?? 50) < 0 || !Number.isInteger(args.offset ?? 0) || (args.offset ?? 0) < 0) {
+    throw new Error('Knowledge limit and offset must be non-negative integers');
+  }
+  if (args.limit === 0) return [];
+  const partition = (bookkeeping: boolean) => readAllPages<KnowledgeEntrySummary>(() => {
     let query = client.from('knowledge_decisions')
-      .select('id, title, type, status, domain, tags, project_id, updated_at', count ? { count: 'exact' } : {})
+      .select('id, title, type, status, domain, tags, project_id, updated_at')
       .eq('workspace_id', workspaceId)
       .eq('project_id', projectId);
     if (args.status) query = query.eq('status', args.status);
@@ -435,9 +445,35 @@ export async function queryKnowledge(
     if (args.as_of) query = query.lte('valid_from', args.as_of);
     if (args.tags && args.tags.length > 0) query = query.contains('tags', args.tags);
     query = bookkeeping ? query.contains('tags', [BOOKKEEPING_TAG]) : query.or(SUBSTANTIVE_TAG_FILTER);
-    return query.order('type', { ascending: true }).order('id', { ascending: true })
-      .range(offset, offset + limit - 1);
-  }, args);
+    return query.order('type', { ascending: true }).order('id', { ascending: true });
+  });
+  const substantive = await partition(false);
+  const rows = args.include_bookkeeping === false ? substantive : [...substantive, ...await partition(true)];
+  const ordered = projectSupersession(rows, await readSupersessionEdges(client, workspaceId, projectId));
+  const offset = args.offset ?? 0;
+  return ordered.slice(offset, offset + (args.limit ?? 50));
+}
+
+// Use explicit pages below the standard PostgREST cap so both matching sets and
+// relationship metadata can exceed a single server response.
+async function readAllPages<T>(makeQuery: () => any): Promise<T[]> {
+  const rows: T[] = [];
+  for (;;) {
+    const { data, error } = await makeQuery().range(rows.length, rows.length + 499);
+    if (error) throw new Error(error.message);
+    if (!data?.length) return rows;
+    rows.push(...data);
+    // A normal 500-row response can be continued; short pages are complete under PostgREST's
+    // range contract when below the explicit request size.
+    if (data.length < 500) return rows;
+  }
+}
+
+async function readSupersessionEdges(client: SupabaseClient, workspaceId: string, projectId: string) {
+  return readAllPages<{ id: string; superseded_by?: string | null }>(() => client
+    .from('knowledge_decisions').select('id, superseded_by')
+    .eq('workspace_id', workspaceId).eq('project_id', projectId)
+    .neq('type', 'intent').order('id', { ascending: true }));
 }
 
 // ---------------------------------------------------------------------------
