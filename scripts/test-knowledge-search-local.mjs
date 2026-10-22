@@ -26,7 +26,7 @@ const probe=async(c,args)=>{
  assert(elapsed<6200,`deadline exceeded ${elapsed}ms`);return {result,elapsed};
 };
 try {
- sql('begin;\n'+fixture+'\ncommit;');
+ sql('begin;\n'+fixture+`\ninsert into public.knowledge_tag_vocabulary(project_id,name,description) values ('${project}','relevance-probe','test relevance'),('${project}','question-probe','test questions');\ncommit;`);
  let {result,elapsed}=await probe(client,{search:' quasar ',tags:[' RARE ',' SURFACE '],type:'technical-design',domain:['engineering'],limit:1});
  assert.equal(result.capability,'scored'); assert.equal(result.matches[0].id,'00000000-0000-0000-0000-000001223206');
  assert.equal(result.matches[0].score,2/61); assert.equal(result.below_cutoff_count,0);

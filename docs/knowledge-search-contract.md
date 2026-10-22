@@ -3,7 +3,7 @@
 `query_knowledge` and `harmony knowledge list --search` accept free text together with `type`,
 `status`, `domain` (any) and `tags` (all). Status defaults to Accepted. Tags are trimmed,
 lowercased, deduplicated, and empty tags removed. Search compares normalized existing tags;
-the write trigger normalizes future writes without rewriting history. Filter-only queries keep
+the write trigger normalizes future writes without rewriting history. B-1141 vocabulary enforcement remains active and compares registered spellings after the same lowercase/trim normalization, so a registered mixed-case name survives normalized writes; genuinely unknown tags still fail. Filter-only queries keep
 their existing array/table shape. Historical filters, include_superseded and offset remain list-only.
 
 Free-text responses are an envelope:
