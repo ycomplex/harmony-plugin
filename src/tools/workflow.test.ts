@@ -229,8 +229,8 @@ describe('listTicketKnowledge', () => {
     const { client } = mockTicketKnowledgeClient(rows);
     const res = await listTicketKnowledge(client, 'proj', { task_id: 'B-1' });
     expect(res).toEqual([
-      { decision_id: 'd1', id: 'd1', type: 'product-design', status: 'Accepted', title: 'PD', affected_entities: [] },
-      { decision_id: 'd2', id: 'd2', type: 'technical-design', status: 'Asserted', title: 'TD', affected_entities: [] },
+      { decision_id: 'd1', id: 'd1', type: 'product-design', status: 'Accepted', title: 'PD', claim: null, claim_source: null, affected_entities: [] },
+      { decision_id: 'd2', id: 'd2', type: 'technical-design', status: 'Asserted', title: 'TD', claim: null, claim_source: null, affected_entities: [] },
     ]);
   });
 
@@ -258,7 +258,7 @@ describe('listTicketKnowledge', () => {
     expect(selectSpy).toHaveBeenCalledWith(expect.stringContaining('source_activity'));
     // And it must flow through into the flattened row, not get dropped on the way out.
     expect(res).toEqual([
-      { decision_id: 'd1', id: 'd1', type: 'specification', status: 'Accepted', title: 'clarified intent', source_activity: 'clarify', affected_entities: [] },
+      { decision_id: 'd1', id: 'd1', type: 'specification', status: 'Accepted', title: 'clarified intent', source_activity: 'clarify', claim: null, claim_source: null, affected_entities: [] },
     ]);
   });
 

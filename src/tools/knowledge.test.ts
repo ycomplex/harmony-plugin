@@ -1,3 +1,4 @@
+import { encodeClaim } from './knowledge-claim.js';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   queryKnowledge,
@@ -44,6 +45,7 @@ const sampleWorkspaceRow = { workspace_id: WORKSPACE_ID };
 
 const sampleSummaries = [
   {
+    claim: null, claim_source: null,
     id: 'ke-1',
     title: 'Use TypeScript strict mode',
     type: 'convention',
@@ -54,6 +56,7 @@ const sampleSummaries = [
     updated_at: '2026-03-10T00:00:00Z',
   },
   {
+    claim: null, claim_source: null,
     id: 'ke-2',
     title: 'PostgreSQL for all persistence',
     type: 'architecture',
@@ -66,11 +69,12 @@ const sampleSummaries = [
 ];
 
 const sampleFullEntry = {
+  claim: 'The team follows this recorded decision.', claim_source: 'authored',
   id: 'ke-1',
   workspace_id: WORKSPACE_ID,
   project_id: PROJECT_ID,
   title: 'Use TypeScript strict mode',
-  content: 'We use TypeScript strict mode across all projects.',
+  content: encodeClaim('We use TypeScript strict mode across all projects.', 'The team follows this recorded decision.'),
   type: 'convention',
   status: 'Accepted',
   superseded_by: null,
@@ -160,7 +164,7 @@ function buildEmbedAwareClient(opts: {
   wsChain.single = vi.fn().mockResolvedValue({ data: { workspace_id: WORKSPACE_ID }, error: null });
 
   function queuedChain(result?: { data: any; error?: any } | Array<{ data: any; error?: any }>) {
-    const queue = result === undefined ? [{ data: null }] : Array.isArray(result) ? [...result] : [result];
+    const queue = result === undefined ? [{ data: sampleFullEntry }] : Array.isArray(result) ? [...result] : [result];
     const chain: any = {};
     chain.select = vi.fn().mockReturnValue(chain);
     chain.insert = vi.fn().mockReturnValue(chain);
@@ -571,11 +575,12 @@ describe('getKnowledgeEntry', () => {
 
 describe('createKnowledgeEntry', () => {
   const newEntry = {
+    claim: 'The team follows this recorded decision.', claim_source: 'authored',
     id: 'ke-new',
     workspace_id: WORKSPACE_ID,
     project_id: PROJECT_ID,
     title: 'New Convention',
-    content: 'Always use const for variables.',
+    content: encodeClaim('Always use const for variables.', 'The team follows this recorded decision.'),
     type: 'convention',
     status: 'draft',
     superseded_by: null,
@@ -589,9 +594,9 @@ describe('createKnowledgeEntry', () => {
   it('stamps project_id from the token even when arg is omitted', async () => {
     const { client, secondChain } = buildWorkspaceAndQueryClient({ data: newEntry });
 
-    const result = await createKnowledgeEntry(client, PROJECT_ID, USER_ID, {
+    const result = await createKnowledgeEntry(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',
       title: 'New Convention',
-      content: 'Always use const for variables.',
+      content: encodeClaim('Always use const for variables.', 'The team follows this recorded decision.'),
       type: 'convention',
     });
 
@@ -601,7 +606,7 @@ describe('createKnowledgeEntry', () => {
         workspace_id: WORKSPACE_ID,
         project_id: PROJECT_ID,
         title: 'New Convention',
-        content: 'Always use const for variables.',
+        content: encodeClaim('Always use const for variables.', 'The team follows this recorded decision.'),
         type: 'convention',
         status: 'draft',
         created_by: USER_ID,
@@ -614,7 +619,7 @@ describe('createKnowledgeEntry', () => {
     const specEntry = { ...newEntry, type: 'specification' };
     const { client, secondChain } = buildWorkspaceAndQueryClient({ data: specEntry });
 
-    await createKnowledgeEntry(client, PROJECT_ID, USER_ID, {
+    await createKnowledgeEntry(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',
       title: 'Spec doc',
       content: 'Design for feature X',
       type: 'specification',
@@ -630,7 +635,7 @@ describe('createKnowledgeEntry', () => {
 
   it('accepts optional fields: status, tags, source_task_id', async () => {
     const { client, secondChain } = buildWorkspaceAndQueryClient({ data: newEntry });
-    await createKnowledgeEntry(client, PROJECT_ID, USER_ID, {
+    await createKnowledgeEntry(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',
       title: 'New Convention',
       content: 'content',
       type: 'convention',
@@ -651,7 +656,7 @@ describe('createKnowledgeEntry', () => {
 
   it('trims whitespace from title', async () => {
     const { client, secondChain } = buildWorkspaceAndQueryClient({ data: newEntry });
-    await createKnowledgeEntry(client, PROJECT_ID, USER_ID, {
+    await createKnowledgeEntry(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',
       title: '  New Convention  ',
       content: 'content',
       type: 'convention',
@@ -664,7 +669,7 @@ describe('createKnowledgeEntry', () => {
   it('throws when title is empty', async () => {
     const { client } = buildWorkspaceAndQueryClient({ data: null });
     await expect(
-      createKnowledgeEntry(client, PROJECT_ID, USER_ID, {
+      createKnowledgeEntry(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',
         title: '   ',
         content: 'x',
         type: 'convention',
@@ -678,7 +683,7 @@ describe('createKnowledgeEntry', () => {
       error: { code: '23505', message: 'unique violation' },
     });
     await expect(
-      createKnowledgeEntry(client, PROJECT_ID, USER_ID, {
+      createKnowledgeEntry(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',
         title: 'Existing',
         content: 'x',
         type: 'convention',
@@ -692,7 +697,7 @@ describe('createKnowledgeEntry', () => {
       error: { message: 'DB failure' },
     });
     await expect(
-      createKnowledgeEntry(client, PROJECT_ID, USER_ID, {
+      createKnowledgeEntry(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',
         title: 'Test',
         content: 'x',
         type: 'convention',
@@ -704,7 +709,7 @@ describe('createKnowledgeEntry', () => {
     const created = { ...sampleFullEntry, id: 'ke-new', title: 'Brand new', content: 'body' };
     const { client, baseChain } = buildEmbedAwareClient({ viewResult: { data: created } });
 
-    await createKnowledgeEntry(client, PROJECT_ID, USER_ID, { title: 'Brand new', content: 'body', type: 'convention' });
+    await createKnowledgeEntry(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',  title: 'Brand new', content: 'body', type: 'convention' });
 
     expect(client.functions.invoke).toHaveBeenCalledWith('embed-knowledge', { body: { text: 'Brand new\nbody' } });
     expect(client.from).toHaveBeenCalledWith('knowledge_decisions');
@@ -722,7 +727,7 @@ describe('createKnowledgeEntry', () => {
       embedding: null,
     });
 
-    const result = await createKnowledgeEntry(client, PROJECT_ID, USER_ID, { title: 'x', content: 'y', type: 'convention' });
+    const result = await createKnowledgeEntry(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',  title: 'x', content: 'y', type: 'convention' });
 
     expect(result).toEqual(created);
     expect(baseChain.update).not.toHaveBeenCalled(); // null embedding → no base write
@@ -731,21 +736,21 @@ describe('createKnowledgeEntry', () => {
   it('normalizes v1-capitalized status to legacy vocab on insert (B-415 sibling)', async () => {
     const created = { ...sampleFullEntry, id: 'ke-new', status: 'accepted' };
     const { client, viewChain } = buildEmbedAwareClient({ viewResult: { data: created } });
-    await createKnowledgeEntry(client, PROJECT_ID, USER_ID, { title: 'x', content: 'y', type: 'convention', status: 'Accepted' });
+    await createKnowledgeEntry(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',  title: 'x', content: 'y', type: 'convention', status: 'Accepted' });
     expect(viewChain.insert).toHaveBeenCalledWith(expect.objectContaining({ status: 'accepted' }));
   });
 
   it('maps v1 Asserted to legacy draft on insert', async () => {
     const created = { ...sampleFullEntry, id: 'ke-new', status: 'draft' };
     const { client, viewChain } = buildEmbedAwareClient({ viewResult: { data: created } });
-    await createKnowledgeEntry(client, PROJECT_ID, USER_ID, { title: 'x', content: 'y', type: 'convention', status: 'Asserted' });
+    await createKnowledgeEntry(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',  title: 'x', content: 'y', type: 'convention', status: 'Asserted' });
     expect(viewChain.insert).toHaveBeenCalledWith(expect.objectContaining({ status: 'draft' }));
   });
 
   it('rejects an unrecognized status on create', async () => {
     const { client, viewChain } = buildEmbedAwareClient({ viewResult: { data: sampleFullEntry } });
     await expect(
-      createKnowledgeEntry(client, PROJECT_ID, USER_ID, { title: 'x', content: 'y', type: 'convention', status: 'bogus' }),
+      createKnowledgeEntry(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',  title: 'x', content: 'y', type: 'convention', status: 'bogus' }),
     ).rejects.toThrow(/Unsupported status/);
     expect(viewChain.insert).not.toHaveBeenCalled();
   });
@@ -753,7 +758,7 @@ describe('createKnowledgeEntry', () => {
   it('defaults to draft when no status is given (unchanged)', async () => {
     const created = { ...sampleFullEntry, id: 'ke-new' };
     const { client, viewChain } = buildEmbedAwareClient({ viewResult: { data: created } });
-    await createKnowledgeEntry(client, PROJECT_ID, USER_ID, { title: 'x', content: 'y', type: 'convention' });
+    await createKnowledgeEntry(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',  title: 'x', content: 'y', type: 'convention' });
     expect(viewChain.insert).toHaveBeenCalledWith(expect.objectContaining({ status: 'draft' }));
   });
 
@@ -761,7 +766,7 @@ describe('createKnowledgeEntry', () => {
     const echoed    = { ...sampleFullEntry, id: 'ke-new', status: 'accepted' };                           // view insert echo
     const persisted = { ...sampleFullEntry, id: 'ke-new', status: 'Accepted', title: 'persisted title' }; // base re-read
     const { client } = buildEmbedAwareClient({ viewResult: { data: echoed }, baseResult: { data: persisted } });
-    const result = await createKnowledgeEntry(client, PROJECT_ID, USER_ID, { title: 'x', content: 'y', type: 'convention' });
+    const result = await createKnowledgeEntry(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',  title: 'x', content: 'y', type: 'convention' });
     expect(result.title).toBe('persisted title');
     expect(result.status).toBe('Accepted');   // base-table (v1) vocab, not the view echo
   });
@@ -848,7 +853,7 @@ describe('updateKnowledgeEntry', () => {
       content: 'new content',
     });
     expect(client.rpc).toHaveBeenCalledWith('knowledge_amend_knowledge_entry', expect.objectContaining({
-      p_project_id: PROJECT_ID, p_title: 'Use TypeScript strict mode', p_content: 'new content',
+      p_project_id: PROJECT_ID, p_title: 'Use TypeScript strict mode', p_content: encodeClaim('new content', 'The team follows this recorded decision.'),
     }));
   });
 
@@ -862,7 +867,7 @@ describe('updateKnowledgeEntry', () => {
       tags: ['new-tag'],
     });
     expect(client.rpc).toHaveBeenCalledWith('knowledge_amend_knowledge_entry', expect.objectContaining({
-      p_content: 'new content',
+      p_content: encodeClaim('new content', 'The team follows this recorded decision.'),
       p_type: 'business',
       p_status: 'Accepted',   // base table speaks v1 vocab; legacy lowercase is normalized up
       p_tags: ['new-tag'],
@@ -885,9 +890,9 @@ describe('updateKnowledgeEntry', () => {
 
   it('throws friendly message on duplicate title', async () => {
     const { client } = buildWorkspaceAndQueryClient({
-      data: null,
-      error: { code: '23505', message: 'unique violation' },
+      data: sampleFullEntry,
     });
+    client.rpc.mockResolvedValue({ data: null, error: { code: '23505', message: 'unique violation' } });
     await expect(
       updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', new_title: 'Taken' }),
     ).rejects.toThrow('A knowledge entry titled "Taken" already exists in this project');
@@ -970,7 +975,7 @@ describe('updateKnowledgeEntry', () => {
     const result = await updateKnowledgeEntry(client, PROJECT_ID, { entry_id: 'ke-1', status: 'Accepted' });
     expect(result).toEqual(persisted);
     expect(viewChain.single).not.toHaveBeenCalled();          // view never touched
-    expect(baseChain.single).not.toHaveBeenCalled();          // base table touched only for the RPC's own write, not via .single()
+    expect(baseChain.single).toHaveBeenCalledTimes(1);         // pre-read validates effective fields; RPC remains authoritative, base table touched only for the RPC's own write, not via .single()
     expect(client.rpc).toHaveBeenCalledTimes(1);              // exactly the one governed RPC call
   });
 
@@ -1107,7 +1112,7 @@ describe('supersedeKnowledgeEntry', () => {
   it('supersedes old entry and creates replacement scoped to token project', async () => {
     const { client } = buildSupersedeClient();
 
-    const result = await supersedeKnowledgeEntry(client, PROJECT_ID, USER_ID, {
+    const result = await supersedeKnowledgeEntry(client, PROJECT_ID, USER_ID, { new_claim: 'The team follows this recorded decision.',
       entry_id: 'ke-1',
       new_title: 'Use TypeScript strict mode v2',
       new_content: 'Updated content for strict mode.',
@@ -1123,7 +1128,7 @@ describe('supersedeKnowledgeEntry', () => {
       p_project_id: PROJECT_ID,
       p_entry_id: 'ke-1',
       p_new_title: 'Use TypeScript strict mode v2',
-      p_new_content: 'Updated content for strict mode.',
+      p_new_content: encodeClaim('Updated content for strict mode.', 'The team follows this recorded decision.'),
     }));
   });
 
@@ -1132,7 +1137,7 @@ describe('supersedeKnowledgeEntry', () => {
     // existing entry happens to carry), so this is now a structural guarantee rather than something
     // that needs a "legacy entry missing project_id" simulation to exercise.
     const { client } = buildSupersedeClient();
-    const result = await supersedeKnowledgeEntry(client, PROJECT_ID, USER_ID, {
+    const result = await supersedeKnowledgeEntry(client, PROJECT_ID, USER_ID, { new_claim: 'The team follows this recorded decision.',
       entry_id: 'ke-1',
       new_title: 'Use TypeScript strict mode v2',
       new_content: 'Updated content.',
@@ -1143,7 +1148,7 @@ describe('supersedeKnowledgeEntry', () => {
   it('throws when neither entry_id nor title provided to identify old entry', async () => {
     const { client } = buildWorkspaceAndQueryClient({ data: null });
     await expect(
-      supersedeKnowledgeEntry(client, PROJECT_ID, USER_ID, {
+      supersedeKnowledgeEntry(client, PROJECT_ID, USER_ID, { new_claim: 'The team follows this recorded decision.',
         new_title: 'New',
         new_content: 'content',
       }),
@@ -1157,7 +1162,7 @@ describe('supersedeKnowledgeEntry', () => {
       rpcResult: { data: { superseded: supersededRow, replacement } },
     });
 
-    const result = await supersedeKnowledgeEntry(client, PROJECT_ID, USER_ID, {
+    const result = await supersedeKnowledgeEntry(client, PROJECT_ID, USER_ID, { new_claim: 'The team follows this recorded decision.',
       entry_id: 'ke-old', new_title: 'New ruling', new_content: 'updated body',
     });
 
@@ -1169,7 +1174,7 @@ describe('supersedeKnowledgeEntry', () => {
 
   it('threads an explicit provenance and the run-config conduction id, defaulting p_leg to null', async () => {
     const { client } = buildSupersedeClient();
-    await supersedeKnowledgeEntry(client, PROJECT_ID, USER_ID, {
+    await supersedeKnowledgeEntry(client, PROJECT_ID, USER_ID, { new_claim: 'The team follows this recorded decision.',
       entry_id: 'ke-1', new_title: 'v2', new_content: 'c', provenance: 'agent-synthesized:unattended',
     });
     expect(client.rpc).toHaveBeenCalledWith('knowledge_supersede_knowledge_entry', expect.objectContaining({
@@ -1181,7 +1186,7 @@ describe('supersedeKnowledgeEntry', () => {
     const { client } = buildSupersedeClient();
     process.env.HARMONY_LEG = '4';
     try {
-      await supersedeKnowledgeEntry(client, PROJECT_ID, USER_ID, {
+      await supersedeKnowledgeEntry(client, PROJECT_ID, USER_ID, { new_claim: 'The team follows this recorded decision.',
         entry_id: 'ke-1', new_title: 'v2', new_content: 'c', provenance: 'agent-synthesized:unattended',
       });
       expect(client.rpc).toHaveBeenCalledWith('knowledge_supersede_knowledge_entry', expect.objectContaining({ p_leg: 4 }));
@@ -1194,7 +1199,7 @@ describe('supersedeKnowledgeEntry', () => {
   it('B-1021: rejects human-in-browser and never calls the RPC', async () => {
     const { client } = buildSupersedeClient();
     await expect(
-      supersedeKnowledgeEntry(client, PROJECT_ID, USER_ID, {
+      supersedeKnowledgeEntry(client, PROJECT_ID, USER_ID, { new_claim: 'The team follows this recorded decision.',
         entry_id: 'ke-1', new_title: 'v2', new_content: 'c', provenance: 'human-in-browser',
       }),
     ).rejects.toThrow(/human-in-browser/);
@@ -1204,7 +1209,7 @@ describe('supersedeKnowledgeEntry', () => {
   it('B-1021: accepts both closed agent-on-behalf values', async () => {
     for (const provenance of ['agent-on-behalf:human-in-session', 'agent-on-behalf:human-in-browser']) {
       const { client } = buildSupersedeClient();
-      await supersedeKnowledgeEntry(client, PROJECT_ID, USER_ID, {
+      await supersedeKnowledgeEntry(client, PROJECT_ID, USER_ID, { new_claim: 'The team follows this recorded decision.',
         entry_id: 'ke-1', new_title: 'v2', new_content: 'c', provenance,
       });
       expect(client.rpc).toHaveBeenCalledWith('knowledge_supersede_knowledge_entry', expect.objectContaining({ p_provenance: provenance }));
@@ -1678,6 +1683,7 @@ describe('updateEntity', () => {
 
 describe('resolveOrCreateEntity — B-993 HTML entity normalization + repair-at-touch', () => {
   const decisionRow = {
+    claim: null, claim_source: null,
     id: 'dec-b993', workspace_id: WORKSPACE_ID, project_id: PROJECT_ID,
     title: 'x', content: '', type: 'business', status: 'Asserted', domain: [], confidence: 1.0,
     review_by: null, drift_risk: false, superseded_by: null, affected_entity_ids: [], madr: null,
@@ -1691,7 +1697,7 @@ describe('resolveOrCreateEntity — B-993 HTML entity normalization + repair-at-
       { knowledge_entities: [{ data: existing }] },
       { knowledge_record_decision: { data: { ...decisionRow, affected_entity_ids: ['ent-1'] } } },
     );
-    const result = await recordDecision(client, PROJECT_ID, USER_ID, {
+    const result = await recordDecision(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',
       type: 'business', title: 'x', affected_entity_names: ['Save &amp; Continue'],
     });
     expect(chains.knowledge_entities.eq).toHaveBeenCalledWith('name', 'Save & Continue');
@@ -1710,7 +1716,7 @@ describe('resolveOrCreateEntity — B-993 HTML entity normalization + repair-at-
       { knowledge_entities: [{ data: null }, { data: legacy }, { data: renamed }] },
       { knowledge_record_decision: { data: { ...decisionRow, affected_entity_ids: ['ent-legacy'] } } },
     );
-    const result = await recordDecision(client, PROJECT_ID, USER_ID, {
+    const result = await recordDecision(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',
       type: 'business', title: 'x', affected_entity_names: ['Save &amp; Continue'],
     });
     expect(chains.knowledge_entities.update).toHaveBeenCalledWith({ name: 'Save & Continue' });
@@ -1724,7 +1730,7 @@ describe('resolveOrCreateEntity — B-993 HTML entity normalization + repair-at-
       { knowledge_entities: [{ data: null }, { data: null }, { data: null }, { data: { id: 'ent-new' } }] },
       { knowledge_record_decision: { data: { ...decisionRow, affected_entity_ids: ['ent-new'] } } },
     );
-    const result = await recordDecision(client, PROJECT_ID, USER_ID, {
+    const result = await recordDecision(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',
       type: 'business', title: 'x', affected_entity_names: ['Save &amp; Continue'],
     });
     expect(chains.knowledge_entities.insert).toHaveBeenCalledWith(
@@ -1740,7 +1746,7 @@ describe('resolveOrCreateEntity — B-993 HTML entity normalization + repair-at-
       { knowledge_entities: [{ data: null }, { data: null }, { data: { id: 'ent-plain' } }] },
       { knowledge_record_decision: { data: { ...decisionRow, affected_entity_ids: ['ent-plain'] } } },
     );
-    const result = await recordDecision(client, PROJECT_ID, USER_ID, {
+    const result = await recordDecision(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',
       type: 'business', title: 'x', affected_entity_names: ['Checkout flow'],
     });
     expect(chains.knowledge_entities.insert).toHaveBeenCalledWith(
@@ -1918,6 +1924,7 @@ describe('entity-authoring tool schemas (B-397)', () => {
 
 describe('recordDecision', () => {
   const decisionRow = {
+    claim: null, claim_source: null,
     id: 'dec-1', workspace_id: WORKSPACE_ID, project_id: PROJECT_ID,
     title: 'Adopt RRF for hybrid search', content: '', type: 'technical-design',
     status: 'Asserted', domain: ['engineering'], confidence: 1.0, review_by: null, drift_risk: false,
@@ -1929,7 +1936,7 @@ describe('recordDecision', () => {
 
   it('writes a decision defaulting status=Asserted and stamps token project via knowledge_record_decision', async () => {
     const { client } = buildWorkspaceAndQueryClient({ data: decisionRow });
-    const result = await recordDecision(client, PROJECT_ID, USER_ID, {
+    const result = await recordDecision(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',
       type: 'technical-design',
       title: 'Adopt RRF for hybrid search',
       domain: ['engineering'],
@@ -1947,21 +1954,21 @@ describe('recordDecision', () => {
   it('throws when type is missing', async () => {
     const { client } = buildWorkspaceAndQueryClient({ data: null });
     await expect(
-      recordDecision(client, PROJECT_ID, USER_ID, { title: 'x' } as any),
+      recordDecision(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',  title: 'x' } as any),
     ).rejects.toThrow('type is required');
   });
 
   it('maps a duplicate-title violation to a friendly error', async () => {
     const { client } = buildWorkspaceAndQueryClient({ data: null, error: { code: '23505', message: 'dup' } });
     await expect(
-      recordDecision(client, PROJECT_ID, USER_ID, { type: 'business', title: 'Existing' }),
+      recordDecision(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',  type: 'business', title: 'Existing' }),
     ).rejects.toThrow('A decision titled "Existing" already exists in this project');
   });
 
   it('embeds the decision on write and includes the pgvector literal', async () => {
     const { client } = buildWorkspaceAndQueryClient({ data: decisionRow });
     (client as any).functions = { invoke: vi.fn().mockResolvedValue({ data: { embedding: [0.1, 0.2], stub: true }, error: null }) };
-    await recordDecision(client, PROJECT_ID, USER_ID, { type: 'business', title: 'Adopt RRF' });
+    await recordDecision(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',  type: 'business', title: 'Adopt RRF' });
     expect((client as any).functions.invoke).toHaveBeenCalledWith('embed-knowledge', { body: { text: expect.stringContaining('Adopt RRF') } });
     expect(client.rpc).toHaveBeenCalledWith('knowledge_record_decision', expect.objectContaining({ p_embedding: '[0.1,0.2]' }));
   });
@@ -1969,7 +1976,7 @@ describe('recordDecision', () => {
   it('still writes the decision when embedding fails (embedding omitted, best-effort)', async () => {
     const { client } = buildWorkspaceAndQueryClient({ data: decisionRow });
     (client as any).functions = { invoke: vi.fn().mockResolvedValue({ data: null, error: { message: 'down' } }) };
-    await recordDecision(client, PROJECT_ID, USER_ID, { type: 'business', title: 'Adopt RRF' });
+    await recordDecision(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',  type: 'business', title: 'Adopt RRF' });
     expect(client.rpc).toHaveBeenCalledWith('knowledge_record_decision', expect.objectContaining({ p_embedding: null }));
   });
 
@@ -1977,7 +1984,7 @@ describe('recordDecision', () => {
     const { client } = buildWorkspaceAndQueryClient({
       data: { ...decisionRow, source_type: 'research', review_by: '2026-08-27T00:00:00Z' },
     });
-    await recordDecision(client, PROJECT_ID, USER_ID, {
+    await recordDecision(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',
       type: 'specification', title: 'researched finding', source_type: 'research',
       review_by: '2026-08-27T00:00:00Z',
     });
@@ -1990,7 +1997,7 @@ describe('recordDecision', () => {
     const { client } = buildWorkspaceAndQueryClient({
       data: { ...decisionRow, realization: 'agreed' },
     });
-    await recordDecision(client, PROJECT_ID, USER_ID, {
+    await recordDecision(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',
       type: 'technical-design', title: 'decided not yet built', realization: 'agreed',
     });
     expect(client.rpc).toHaveBeenCalledWith('knowledge_record_decision', expect.objectContaining({ p_realization: 'agreed' }));
@@ -1998,7 +2005,7 @@ describe('recordDecision', () => {
 
   it('passes p_realization: null when not provided (NULL ≡ live, B-400)', async () => {
     const { client } = buildWorkspaceAndQueryClient({ data: decisionRow });
-    await recordDecision(client, PROJECT_ID, USER_ID, {
+    await recordDecision(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',
       type: 'business', title: 'no realization given',
     });
     expect(client.rpc).toHaveBeenCalledWith('knowledge_record_decision', expect.objectContaining({ p_realization: null }));
@@ -2012,7 +2019,7 @@ describe('recordDecision', () => {
       "defaults realization='agreed' for type=%s when omitted",
       async (type) => {
         const { client } = buildWorkspaceAndQueryClient({ data: { ...decisionRow, type, realization: 'agreed' } });
-        await recordDecision(client, PROJECT_ID, USER_ID, { type, title: `a ${type} decision` });
+        await recordDecision(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',  type, title: `a ${type} decision` });
         expect(client.rpc).toHaveBeenCalledWith('knowledge_record_decision', expect.objectContaining({ p_realization: 'agreed' }));
       },
     );
@@ -2021,7 +2028,7 @@ describe('recordDecision', () => {
       const { client } = buildWorkspaceAndQueryClient({
         data: { ...decisionRow, type: 'technical-design', realization: 'live' },
       });
-      await recordDecision(client, PROJECT_ID, USER_ID, {
+      await recordDecision(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',
         type: 'technical-design', title: 'already shipped', realization: 'live',
       });
       expect(client.rpc).toHaveBeenCalledWith('knowledge_record_decision', expect.objectContaining({ p_realization: 'live' }));
@@ -2031,7 +2038,7 @@ describe('recordDecision', () => {
       'every OTHER decision type (%s) keeps the NULL≡live default UNTOUCHED — p_realization: null',
       async (type) => {
         const { client } = buildWorkspaceAndQueryClient({ data: { ...decisionRow, type } });
-        await recordDecision(client, PROJECT_ID, USER_ID, { type, title: `a ${type} decision` });
+        await recordDecision(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',  type, title: `a ${type} decision` });
         expect(client.rpc).toHaveBeenCalledWith('knowledge_record_decision', expect.objectContaining({ p_realization: null }));
       },
     );
@@ -2040,7 +2047,7 @@ describe('recordDecision', () => {
   // B-645: elicitation claims — provenance + brief coupling.
   it('includes claim_provenance + underwriting_brief_id in the RPC call when provided (B-645)', async () => {
     const { client } = buildWorkspaceAndQueryClient({ data: decisionRow });
-    await recordDecision(client, PROJECT_ID, USER_ID, {
+    await recordDecision(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',
       type: 'specification', title: 'claim: exports must be CSV-first',
       claim_provenance: 'human-stated', underwriting_brief_id: 'brief-1',
     });
@@ -2051,7 +2058,7 @@ describe('recordDecision', () => {
 
   it('passes p_claim_provenance/p_underwriting_brief_id as null when not provided (a non-claim decision, B-645)', async () => {
     const { client } = buildWorkspaceAndQueryClient({ data: decisionRow });
-    await recordDecision(client, PROJECT_ID, USER_ID, { type: 'business', title: 'ordinary decision' });
+    await recordDecision(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',  type: 'business', title: 'ordinary decision' });
     expect(client.rpc).toHaveBeenCalledWith('knowledge_record_decision', expect.objectContaining({
       p_claim_provenance: null, p_underwriting_brief_id: null,
     }));
@@ -2060,7 +2067,7 @@ describe('recordDecision', () => {
   it('rejects an invalid claim_provenance (enum check, B-645)', async () => {
     const { client } = buildWorkspaceAndQueryClient({ data: null });
     await expect(
-      recordDecision(client, PROJECT_ID, USER_ID, {
+      recordDecision(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',
         type: 'specification', title: 'x', claim_provenance: 'vibes',
       }),
     ).rejects.toThrow(/claim_provenance must be one of: human-stated, agent-inferred-human-validated, force-quit/);
@@ -2069,7 +2076,7 @@ describe('recordDecision', () => {
 
   it("accepts the 'force-quit' provenance (the quarantined ground)", async () => {
     const { client } = buildWorkspaceAndQueryClient({ data: decisionRow });
-    await recordDecision(client, PROJECT_ID, USER_ID, {
+    await recordDecision(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',
       type: 'specification', title: 'assumed under force-quit',
       claim_provenance: 'force-quit', underwriting_brief_id: 'brief-1',
     });
@@ -2078,7 +2085,7 @@ describe('recordDecision', () => {
 
   it('threads an explicit provenance and the run-config conduction id, defaulting p_leg to null', async () => {
     const { client } = buildWorkspaceAndQueryClient({ data: decisionRow });
-    await recordDecision(client, PROJECT_ID, USER_ID, {
+    await recordDecision(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',
       type: 'business', title: 'x', provenance: 'agent-synthesized:unattended',
     });
     expect(client.rpc).toHaveBeenCalledWith('knowledge_record_decision', expect.objectContaining({
@@ -2090,7 +2097,7 @@ describe('recordDecision', () => {
     const { client } = buildWorkspaceAndQueryClient({ data: decisionRow });
     process.env.HARMONY_LEG = '4';
     try {
-      await recordDecision(client, PROJECT_ID, USER_ID, {
+      await recordDecision(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',
         type: 'business', title: 'x', provenance: 'agent-synthesized:unattended',
       });
       expect(client.rpc).toHaveBeenCalledWith('knowledge_record_decision', expect.objectContaining({ p_leg: 4 }));
@@ -2103,7 +2110,7 @@ describe('recordDecision', () => {
   it('B-1021: rejects human-in-browser and never calls the RPC', async () => {
     const { client } = buildWorkspaceAndQueryClient({ data: decisionRow });
     await expect(
-      recordDecision(client, PROJECT_ID, USER_ID, { type: 'business', title: 'x', provenance: 'human-in-browser' }),
+      recordDecision(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',  type: 'business', title: 'x', provenance: 'human-in-browser' }),
     ).rejects.toThrow(/human-in-browser/);
     expect(client.rpc).not.toHaveBeenCalled();
   });
@@ -2111,7 +2118,7 @@ describe('recordDecision', () => {
   it('B-1021: accepts both closed agent-on-behalf values', async () => {
     for (const provenance of ['agent-on-behalf:human-in-session', 'agent-on-behalf:human-in-browser']) {
       const { client } = buildWorkspaceAndQueryClient({ data: decisionRow });
-      await recordDecision(client, PROJECT_ID, USER_ID, { type: 'business', title: 'x', provenance });
+      await recordDecision(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',  type: 'business', title: 'x', provenance });
       expect(client.rpc).toHaveBeenCalledWith('knowledge_record_decision', expect.objectContaining({ p_provenance: provenance }));
     }
   });
@@ -2151,7 +2158,7 @@ describe('supersedeDecision', () => {
     const supersededOld = { id: 'dec-1', status: 'Superseded', superseded_by: 'dec-2' };
     const { client } = buildWorkspaceAndQueryClient({ data: { superseded: supersededOld, replacement } });
 
-    const result = await supersedeDecision(client, PROJECT_ID, USER_ID, {
+    const result = await supersedeDecision(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',
       old_decision_id: 'dec-1',
       type: 'business',
       title: 'v2',
@@ -2168,7 +2175,7 @@ describe('supersedeDecision', () => {
   it('throws when old_decision_id is missing', async () => {
     const { client } = buildWorkspaceAndQueryClient({ data: null });
     await expect(
-      supersedeDecision(client, PROJECT_ID, USER_ID, { type: 'business', title: 'v2' } as any),
+      supersedeDecision(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',  type: 'business', title: 'v2' } as any),
     ).rejects.toThrow('old_decision_id is required');
   });
 
@@ -2178,7 +2185,7 @@ describe('supersedeDecision', () => {
       error: { message: 'knowledge_supersede_decision: decision missing not found in this project' },
     });
     await expect(
-      supersedeDecision(client, PROJECT_ID, USER_ID, { old_decision_id: 'missing', type: 'business', title: 'v2' }),
+      supersedeDecision(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',  old_decision_id: 'missing', type: 'business', title: 'v2' }),
     ).rejects.toThrow('not found');
     expect(client.rpc).toHaveBeenCalledTimes(1);   // one atomic call — no separate fetch, no separate insert
   });
@@ -2187,7 +2194,7 @@ describe('supersedeDecision', () => {
     const supersededOld = { id: 'dec-1', status: 'Superseded', superseded_by: null };
     const { client } = buildWorkspaceAndQueryClient({ data: { superseded: supersededOld, replacement: null } });
 
-    const result = await supersedeDecision(client, PROJECT_ID, USER_ID, {
+    const result = await supersedeDecision(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',
       old_decision_id: 'dec-1',
       reason: 'backing the ticket up to re-clarify natively — successor authored later, not here',
     });
@@ -2203,10 +2210,10 @@ describe('supersedeDecision', () => {
   it('throws when exactly ONE of type/title is provided (ambiguous — B-534), before touching the DB', async () => {
     const client: any = { from: vi.fn(), rpc: vi.fn() };
     await expect(
-      supersedeDecision(client, PROJECT_ID, USER_ID, { old_decision_id: 'dec-1', type: 'business' }),
+      supersedeDecision(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',  old_decision_id: 'dec-1', type: 'business' }),
     ).rejects.toThrow(/exactly one of type\/title|retire/i);
     await expect(
-      supersedeDecision(client, PROJECT_ID, USER_ID, { old_decision_id: 'dec-1', title: 'v2' }),
+      supersedeDecision(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',  old_decision_id: 'dec-1', title: 'v2' }),
     ).rejects.toThrow(/exactly one of type\/title|retire/i);
     expect(client.from).not.toHaveBeenCalled();   // validation precedes any DB access
     expect(client.rpc).not.toHaveBeenCalled();
@@ -2220,7 +2227,7 @@ describe('supersedeDecision', () => {
       { knowledge_supersede_decision: { data: { superseded: supersededOld, replacement } } },
     );
 
-    await supersedeDecision(client, PROJECT_ID, USER_ID, {
+    await supersedeDecision(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',
       old_decision_id: 'dec-1', type: 'business', title: 'v2', affected_entity_names: ['Checkout'],
     });
 
@@ -2234,7 +2241,7 @@ describe('supersedeDecision', () => {
     const replacement = { id: 'dec-2', title: 'v2', status: 'Accepted', type: 'business' };
     const supersededOld = { id: 'dec-1', status: 'Superseded', superseded_by: 'dec-2' };
     const { client } = buildWorkspaceAndQueryClient({ data: { superseded: supersededOld, replacement } });
-    await supersedeDecision(client, PROJECT_ID, USER_ID, {
+    await supersedeDecision(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',
       old_decision_id: 'dec-1', type: 'business', title: 'v2', provenance: 'human-in-session',
     });
     expect(client.rpc).toHaveBeenCalledWith('knowledge_supersede_decision', expect.objectContaining({
@@ -2248,7 +2255,7 @@ describe('supersedeDecision', () => {
     const { client } = buildWorkspaceAndQueryClient({ data: { superseded: supersededOld, replacement } });
     process.env.HARMONY_LEG = '4';
     try {
-      await supersedeDecision(client, PROJECT_ID, USER_ID, {
+      await supersedeDecision(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',
         old_decision_id: 'dec-1', type: 'business', title: 'v2', provenance: 'human-in-session',
       });
       expect(client.rpc).toHaveBeenCalledWith('knowledge_supersede_decision', expect.objectContaining({ p_leg: 4 }));
@@ -2261,7 +2268,7 @@ describe('supersedeDecision', () => {
   it('B-1021: rejects human-in-browser and never calls the RPC', async () => {
     const { client } = buildWorkspaceAndQueryClient({ data: null });
     await expect(
-      supersedeDecision(client, PROJECT_ID, USER_ID, {
+      supersedeDecision(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',
         old_decision_id: 'dec-1', type: 'business', title: 'v2', provenance: 'human-in-browser',
       }),
     ).rejects.toThrow(/human-in-browser/);
@@ -2273,7 +2280,7 @@ describe('supersedeDecision', () => {
       const replacement = { id: 'dec-2', title: 'v2', status: 'Accepted', type: 'business' };
       const supersededOld = { id: 'dec-1', status: 'Superseded', superseded_by: 'dec-2' };
       const { client } = buildWorkspaceAndQueryClient({ data: { superseded: supersededOld, replacement } });
-      await supersedeDecision(client, PROJECT_ID, USER_ID, {
+      await supersedeDecision(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',
         old_decision_id: 'dec-1', type: 'business', title: 'v2', provenance,
       });
       expect(client.rpc).toHaveBeenCalledWith('knowledge_supersede_decision', expect.objectContaining({ p_provenance: provenance }));

@@ -1,3 +1,4 @@
+import { claimFields } from './knowledge-claim.js';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveTaskId, resolveTaskIds } from './resolve-task-id.js';
 import { resolveOrCreateEntity, getWorkspaceId } from './knowledge.js';
@@ -248,6 +249,7 @@ export async function listTicketKnowledge(
   const projectEntry = (row: KnowledgeReferenceRow): TicketKnowledgeEntry => ({
     decision_id: row.decision_id,
     ...(row.knowledge_decisions ?? {}),
+    ...claimFields(row.knowledge_decisions ?? {}),
     affected_entities: affected[row.decision_id] ?? [],
   });
   if (single) return rows.map(projectEntry);

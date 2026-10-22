@@ -1,3 +1,4 @@
+import { encodeClaim, isSingleSentenceShaped, validateClaimEntry } from './knowledge-claim.js';
 // P3: Brief substrate + command set (gate-ui-conductor §3, §4). The structured doc is canonical; the
 // Markdown blob is DERIVED by renderBrief(). The §3.2 disciplines are a mechanical lint over the same
 // canonical doc — so what's checked is exactly what's rendered.
@@ -301,6 +302,7 @@ export const FRAME_KIND_FOR_REASON: Record<string, GateFrame['kind']> = {
 
 /** The canonical structured brief (the BLUF skeleton as data). renderBrief() is its only renderer. */
 export interface BriefDoc {
+  claim?: string;
   decide: string;
   recommend?: { text: string; confidence?: 'high' | 'medium' | 'low'; cede?: boolean };
   why?: string[];
@@ -996,6 +998,7 @@ export function renderBrief(doc: BriefDoc, decisionRef?: DecisionRef | null, ctx
   if (frame?.kind === 'clarify') out.push(...renderFrame(frame), '');
 
   out.push(`## DECIDE: ${doc.decide}`, '');
+  if (doc.claim) out.push(`**Claim:** ${doc.claim}`, '');
 
   // B-876 — release's frame sits below DECIDE and ABOVE Recommend: at the one gate with a measured wrong
   // accept, the object of the decision must be named before an opinion is offered about it.
@@ -1249,7 +1252,8 @@ export function renderEntry(doc: BriefDoc, ctx?: EntryRenderContext): string {
   const changes = revisionLines(doc);
   if (changes.length) out.push('**Changed in the final round:**', ...markAll(changes), '');
 
-  return out.join('\n').trimEnd();
+  const body = out.join('\n').trimEnd();
+  return doc.claim ? encodeClaim(body, doc.claim) : body;
 }
 
 /**
@@ -2192,6 +2196,7 @@ export function withDerivedEntryContent(
   // round. `undefined` (missing visualId, missing recommendation, or — for design-decide — missing
   // decisionRef.type) means "leave the entry's title exactly as it already is", never a broken title.
   const title = deriveEntryTitle(staged, reason, { ...ctx, decisionRef });
+  if (doc.claim && title) validateClaimEntry(title, doc.claim);
   // B-1046 — the entry's `tags`, computed ONCE here (not scattered across every gate skill's own
   // `record_decision` call): the ticket's own tag (lowercased visual id, e.g. 'b-1046') from
   // `ctx.visualId` — now fetched for every `derives_entry_content` reason, see the visualId fetch above
@@ -2776,6 +2781,11 @@ export async function composeBrief(
   // never losing prose silently, and a loud refusal loses nothing.
   const priorDoc: BriefDoc | null = existingRow?.doc ?? null;
   const mergedDoc = mergeBriefDoc(priorDoc, args.doc);
+  if (derivesEntryContent(args.reason) && mergedDecisionRef?.id) {
+    const claim = args.doc.claim ?? (args.doc.recommend ? args.doc.recommend.text : mergedDoc.claim ?? mergedDoc.recommend?.text);
+    if (!claim || !isSingleSentenceShaped(claim)) throw new Error('doc.claim must be one sentence of at most 50 words; supply it explicitly when the recommendation is longer');
+    mergedDoc.claim = claim.trim().replace(/\s+/g, ' ');
+  }
   // B-1158: refuse malformed supplied/inherited frames before any derivation can render or persist them.
   validateBriefFrame(mergedDoc.frame, FRAME_KIND_FOR_REASON[args.reason]);
   // The prior round's diff-derived classes, and ONLY on the revision path — `undefined` on a first
@@ -3219,6 +3229,7 @@ export const composeBriefTool = {
         description: 'The canonical structured BLUF brief. The rendered Markdown blob is derived from this.',
         properties: {
           decide: { type: 'string', description: 'One-line statement of the decision needed' },
+          claim: { type: 'string', description: 'Exact one-sentence claim stored in the derived entry; a valid recommendation seeds it at composition only' },
           recommend: { type: 'object', description: '{ text, confidence?: "high" | "medium" | "low", cede?: boolean } — omit when load_bearing_gap (research-first)' },
           why: { type: 'array', items: { type: 'string' }, description: '2–3 bullets of reasoning' },
           alternatives: { type: 'array', items: { type: 'object' }, description: '[{ option, rejection }]' },

@@ -1,4 +1,5 @@
 import { BOOKKEEPING_TAG, SUBSTANTIVE_TAG_FILTER, bookkeepingPage } from './knowledge-bookkeeping.js';
+import { claimFields, encodeClaim, editedClaimContent, validateClaimEntry, matchedPassage, proposeClaim } from './knowledge-claim.js';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { normalizeHtmlEntities } from './text-normalize.js';
 import { getConductionId, getLeg } from '../config/run-config.js';
@@ -9,6 +10,9 @@ import { guardKnowledgeWriteProvenance } from './provenance.js';
 // ---------------------------------------------------------------------------
 
 export interface KnowledgeEntrySummary {
+  snippet?: string | null;
+  claim?: string | null;
+  claim_source?: 'authored' | 'derived' | null;
   id: string;
   title: string;
   type: string;
@@ -20,6 +24,8 @@ export interface KnowledgeEntrySummary {
 }
 
 export interface KnowledgeEntryFull {
+  claim?: string | null;
+  claim_source?: 'authored' | 'derived' | null;
   id: string;
   workspace_id: string;
   project_id: string | null;
@@ -43,6 +49,8 @@ export interface KnowledgeEntryFull {
 }
 
 export interface KnowledgeDecisionFull {
+  claim?: string | null;
+  claim_source?: 'authored' | 'derived' | null;
   id: string;
   workspace_id: string;
   project_id: string | null;
@@ -143,6 +151,7 @@ export const getKnowledgeEntryTool = {
   inputSchema: {
     type: 'object' as const,
     properties: {
+      id: { type: 'string', description: 'Alias of entry_id; conflicting values are rejected' },
       entry_id: { type: 'string', description: 'Knowledge entry UUID' },
       title: { type: 'string', description: 'Entry title (exact match)' },
     },
@@ -156,6 +165,7 @@ export const createKnowledgeEntryTool = {
   inputSchema: {
     type: 'object' as const,
     properties: {
+      claim: { type: 'string', description: 'Authored one-sentence claim, at most 50 words; required for new entries and legacy edits' },
       title: { type: 'string', description: 'Entry title (must be unique within the project)' },
       content: { type: 'string', description: 'Markdown content of the entry' },
       type: {
@@ -176,7 +186,7 @@ export const createKnowledgeEntryTool = {
         description: 'Task ID that triggered this knowledge entry',
       },
     },
-    required: ['title', 'content', 'type'],
+    required: ['title', 'claim', 'content', 'type'],
   },
 };
 
@@ -186,6 +196,7 @@ export const updateKnowledgeEntryTool = {
   inputSchema: {
     type: 'object' as const,
     properties: {
+      claim: { type: 'string', description: 'Authored one-sentence claim, at most 50 words; required for new entries and legacy edits' },
       entry_id: { type: 'string', description: 'Knowledge entry UUID' },
       title: { type: 'string', description: 'Current entry title (used to find the entry if entry_id not provided)' },
       new_title: { type: 'string', description: 'New title for the entry' },
@@ -226,6 +237,7 @@ export const supersedeKnowledgeEntryTool = {
   inputSchema: {
     type: 'object' as const,
     properties: {
+      new_claim: { type: 'string', description: 'One-sentence authored claim for a new replacement entry' },
       entry_id: { type: 'string', description: 'UUID of the entry to supersede' },
       title: { type: 'string', description: 'Title of the entry to supersede (used if entry_id not provided)' },
       new_title: { type: 'string', description: 'Title for the replacement entry' },
@@ -238,7 +250,7 @@ export const supersedeKnowledgeEntryTool = {
       },
       provenance: { type: 'string', description: 'Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>", or "agent-on-behalf:human-in-session"/"agent-on-behalf:human-in-browser"/"agent-on-behalf:human-recorded" when an agent writes on a human\'s already-made decision). Omit for NULL — the reader\'s rule then falls back to conduction-only or untracked classification. B-1021 (widened B-1062): bare "human-in-browser" is REJECTED — that value is the web client\'s alone, and "agent-on-behalf:" accepts only the three closed suffixes above.' },
     },
-    required: ['new_title', 'new_content'],
+    required: ['new_title', 'new_claim', 'new_content'],
   },
 };
 
@@ -412,20 +424,21 @@ export async function queryKnowledge(
         _query_text: args.search,
         _domain: args.domain && args.domain.length > 0 ? args.domain : null,
         _match_limit: null,
-      }, count ? { count: 'exact' } : {}).select('id, title, type, status, domain, tags, project_id, updated_at');
+      }, count ? { count: 'exact' } : {}).select('*');
       query = bookkeeping ? query.contains('tags', [BOOKKEEPING_TAG]) : query.or(SUBSTANTIVE_TAG_FILTER);
       return query.range(offset, offset + limit - 1);
     }, args);
     return (data ?? []).map((d: any) => ({
       id: d.id, title: d.title, type: d.type, status: d.status,
+      ...claimFields(d), snippet: matchedPassage(d.content ?? '', args.search!),
       domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at,
     })) as KnowledgeEntrySummary[];
   }
 
   // Structured retrieval uses the same class boundary and applies every filter before pagination.
-  return bookkeepingPage<KnowledgeEntrySummary>(({ bookkeeping, offset, limit, count }) => {
+  const rows = await bookkeepingPage<KnowledgeEntrySummary>(({ bookkeeping, offset, limit, count }) => {
     let query = client.from('knowledge_decisions')
-      .select('id, title, type, status, domain, tags, project_id, updated_at', count ? { count: 'exact' } : {})
+      .select('*', count ? { count: 'exact' } : {})
       .eq('workspace_id', workspaceId)
       .eq('project_id', projectId);
     if (args.status) query = query.eq('status', args.status);
@@ -438,6 +451,7 @@ export async function queryKnowledge(
     return query.order('type', { ascending: true }).order('id', { ascending: true })
       .range(offset, offset + limit - 1);
   }, args);
+  return rows.map(d => ({ ...d, ...claimFields(d) }));
 }
 
 // ---------------------------------------------------------------------------
@@ -532,8 +546,10 @@ export const searchTicketIntentsTool = {
 export async function getKnowledgeEntry(
   client: SupabaseClient,
   projectId: string,
-  args: { entry_id?: string; title?: string },
+  args: { entry_id?: string; id?: string; title?: string },
 ): Promise<KnowledgeEntryFull> {
+  if (args.id && args.entry_id && args.id !== args.entry_id) throw new Error('id and entry_id must identify the same entry');
+  args = { ...args, entry_id: args.entry_id ?? args.id };
   if (!args.entry_id && !args.title) {
     throw new Error('Either entry_id or title must be provided');
   }
@@ -547,7 +563,7 @@ export async function getKnowledgeEntry(
   let query = client
     .from('knowledge_decisions')
     .select(
-      'id, workspace_id, project_id, title, content, type, status, realization, superseded_by, tags, source_task_id, created_by, created_at, updated_at',
+      '*',
     )
     .eq('workspace_id', workspaceId)
     .eq('project_id', projectId);
@@ -560,7 +576,7 @@ export async function getKnowledgeEntry(
 
   const { data, error } = await query.single();
   if (error) throw error;
-  return data as KnowledgeEntryFull;
+  return { ...data, ...claimFields(data) } as KnowledgeEntryFull;
 }
 
 // ---------------------------------------------------------------------------
@@ -568,6 +584,7 @@ export async function getKnowledgeEntry(
 // ---------------------------------------------------------------------------
 
 export interface CreateKnowledgeEntryArgs {
+  claim?: string;
   title: string;
   content: string;
   type: string;
@@ -586,13 +603,16 @@ export async function createKnowledgeEntry(
     throw new Error('title is required');
   }
 
+  const title = normalizeHtmlEntities(args.title.trim());
+  const claim = normalizeHtmlEntities(args.claim ?? '');
+  validateClaimEntry(title, claim);
   const workspaceId = await getWorkspaceId(client, projectId);
 
   const record: Record<string, unknown> = {
     workspace_id: workspaceId,
     project_id: projectId,
     title: normalizeHtmlEntities(args.title.trim()),
-    content: normalizeHtmlEntities(args.content ?? ''),
+    content: encodeClaim(normalizeHtmlEntities(args.content ?? ''), claim),
     type: args.type,
     status: args.status !== undefined ? toLegacyStatus(args.status) : 'draft',
     created_by: userId,
@@ -630,6 +650,7 @@ export async function createKnowledgeEntry(
 // ---------------------------------------------------------------------------
 
 export interface UpdateKnowledgeEntryArgs {
+  claim?: string;
   entry_id?: string;
   title?: string;
   new_title?: string;
@@ -677,6 +698,7 @@ export async function updateKnowledgeEntry(
   }
 
   const hasUpdates =
+    args.claim !== undefined ||
     args.new_title !== undefined ||
     args.content !== undefined ||
     args.type !== undefined ||
@@ -693,6 +715,12 @@ export async function updateKnowledgeEntry(
 
   const workspaceId = await getWorkspaceId(client, projectId);
 
+  let currentQuery = client.from('knowledge_decisions').select('*').eq('workspace_id', workspaceId).eq('project_id', projectId);
+  currentQuery = args.entry_id ? currentQuery.eq('id', args.entry_id) : currentQuery.eq('title', args.title!);
+  const { data: current, error: readError } = await currentQuery.single();
+  if (readError) throw readError;
+  if (!current) throw new Error('Knowledge entry not found');
+  const content = editedClaimContent(current, { title: args.new_title !== undefined ? normalizeHtmlEntities(args.new_title.trim()) : undefined, content: args.content !== undefined ? normalizeHtmlEntities(args.content) : undefined, claim: args.claim !== undefined ? normalizeHtmlEntities(args.claim) : undefined });
   const newTitle = args.new_title !== undefined ? normalizeHtmlEntities(args.new_title.trim()) : undefined;
 
   // B-1021: fence out human-in-browser / validate agent-on-behalf:* before the write.
@@ -705,7 +733,7 @@ export async function updateKnowledgeEntry(
     p_entry_id: args.entry_id ?? null,
     p_title: args.title ?? null,
     p_new_title: newTitle ?? null,
-    p_content: args.content !== undefined ? normalizeHtmlEntities(args.content) : null,
+    p_content: content,
     p_type: args.type ?? null,
     p_status: args.status !== undefined ? toBaseStatus(args.status) : null,
     p_tags: args.tags ?? null,
@@ -743,10 +771,10 @@ export async function updateKnowledgeEntry(
   // and is invisible to knowledge_search_rrf. embedDecisionById writes the fresh vector
   // by id, using the merged title/content returned by the RPC's RETURNING row.
   const updated = data as unknown as KnowledgeEntryFull;
-  if (args.new_title !== undefined || args.content !== undefined) {
+  if (args.new_title !== undefined || args.content !== undefined || args.claim !== undefined) {
     await embedDecisionById(client, workspaceId, projectId, updated.id, updated.title, updated.content);
   }
-  return updated;
+  return { ...updated, ...claimFields(updated) };
 }
 
 // ---------------------------------------------------------------------------
@@ -873,6 +901,7 @@ export async function resolveOrCreateEntity(
 // ---------------------------------------------------------------------------
 
 export interface RecordDecisionArgs {
+  claim?: string;
   type: string;
   title: string;
   content?: string;
@@ -933,6 +962,10 @@ export async function recordDecision(
     throw new Error(`claim_provenance must be one of: ${CLAIM_PROVENANCES.join(', ')}`);
   }
 
+  const title = normalizeHtmlEntities(args.title.trim());
+  const claim = normalizeHtmlEntities(args.claim ?? '');
+  validateClaimEntry(title, claim);
+  const content = encodeClaim(normalizeHtmlEntities(args.content ?? ''), claim);
   const workspaceId = await getWorkspaceId(client, projectId);
 
   const affectedIds: string[] = [];
@@ -940,7 +973,7 @@ export async function recordDecision(
     affectedIds.push(await resolveOrCreateEntity(client, workspaceId, projectId, name));
   }
 
-  const embedding = await embedText(client, `${args.title}\n${args.content ?? ''}`);
+  const embedding = await embedText(client, `${title}\n${content}`);
 
   let realization: string | undefined = args.realization;
   if (realization === undefined && DESIGN_DECISION_TYPES.has(args.type)) {
@@ -951,9 +984,9 @@ export async function recordDecision(
   guardKnowledgeWriteProvenance(args.provenance);
   const { data, error } = await client.rpc('knowledge_record_decision', {
     p_project_id: projectId,
-    p_title: normalizeHtmlEntities(args.title.trim()),
+    p_title: title,
     p_type: args.type,
-    p_content: normalizeHtmlEntities(args.content ?? ''),
+    p_content: content,
     p_status: args.status ?? 'Asserted',
     p_domain: args.domain ?? [],
     p_madr: args.madr ?? null,
@@ -978,7 +1011,7 @@ export async function recordDecision(
     }
     throw new Error(error.message);
   }
-  return data as unknown as KnowledgeDecisionFull;
+  return { ...data, ...claimFields(data) } as unknown as KnowledgeDecisionFull;
 }
 
 // ---------------------------------------------------------------------------
@@ -986,6 +1019,7 @@ export async function recordDecision(
 // ---------------------------------------------------------------------------
 
 export interface SupersedeDecisionArgs {
+  claim?: string;
   old_decision_id: string;
   // type+title are BOTH required for successor-mode, BOTH omitted for retire-mode (B-534).
   type?: string;
@@ -1033,6 +1067,7 @@ export async function supersedeDecision(
     );
   }
 
+  if (hasTitle) validateClaimEntry(normalizeHtmlEntities(args.title!.trim()), normalizeHtmlEntities(args.claim ?? ''));
   const workspaceId = await getWorkspaceId(client, projectId);
 
   // Preserve today's affected_entity_names -> ids resolution (B-993 normalize-before-lookup +
@@ -1049,7 +1084,7 @@ export async function supersedeDecision(
     p_project_id: projectId,
     p_type: args.type ?? null,
     p_title: hasTitle ? normalizeHtmlEntities(args.title!.trim()) : null,
-    p_content: args.content !== undefined ? normalizeHtmlEntities(args.content) : null,
+    p_content: hasTitle ? encodeClaim(normalizeHtmlEntities(args.content ?? ''), normalizeHtmlEntities(args.claim!)) : null,
     p_madr: args.madr ?? null,
     p_domain: args.domain ?? null,
     p_affected_entity_ids: args.affected_entity_names !== undefined ? affectedIds : null,
@@ -1076,6 +1111,7 @@ export const supersedeDecisionTool = {
   inputSchema: {
     type: 'object' as const,
     properties: {
+      claim: { type: 'string', description: 'One-sentence authored claim for a new replacement entry' },
       old_decision_id: { type: 'string', description: 'UUID of the decision being superseded' },
       type: { type: 'string', description: 'Type for the replacement decision. Omit BOTH type and title to retire the decision without a successor (retire-mode).' },
       title: { type: 'string', description: 'Title for the replacement decision. Omit BOTH type and title to retire the decision without a successor (retire-mode).' },
@@ -1097,6 +1133,7 @@ export const recordDecisionTool = {
   inputSchema: {
     type: 'object' as const,
     properties: {
+      claim: { type: 'string', description: 'Authored one-sentence claim, at most 50 words; required for new entries and legacy edits' },
       type: { type: 'string', description: 'product-design | technical-design | ux-ui-design | architecture | business | convention | specification | deferral' },
       title: { type: 'string', description: 'Decision title (unique within the project)' },
       content: { type: 'string', description: 'Optional human-readable markdown body' },
@@ -1115,7 +1152,7 @@ export const recordDecisionTool = {
       underwriting_brief_id: { type: 'string', description: 'B-645: the brief (UUID) this Asserted claim underwrites — resolve_brief disposes coupled claims on accept/defer; compose_brief prunes dropped claims on iterate. Omit for a non-claim decision.' },
       provenance: { type: 'string', description: 'Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>", or "agent-on-behalf:human-in-session"/"agent-on-behalf:human-in-browser"/"agent-on-behalf:human-recorded" when an agent writes on a human\'s already-made decision). Omit for NULL — the reader\'s rule then falls back to conduction-only or untracked classification. B-1021 (widened B-1062): bare "human-in-browser" is REJECTED — that value is the web client\'s alone, and "agent-on-behalf:" accepts only the three closed suffixes above.' },
     },
-    required: ['type', 'title'],
+    required: ['type', 'title', 'claim'],
   },
 };
 
@@ -1648,6 +1685,7 @@ export const queryFactsTool = {
 // ---------------------------------------------------------------------------
 
 export interface SupersedeKnowledgeEntryArgs {
+  new_claim?: string;
   entry_id?: string;
   title?: string;
   new_title: string;
@@ -1675,6 +1713,7 @@ export async function supersedeKnowledgeEntry(
     throw new Error('Either entry_id or title must be provided to identify the entry to supersede');
   }
 
+  validateClaimEntry(normalizeHtmlEntities(args.new_title), normalizeHtmlEntities(args.new_claim ?? ''));
   const workspaceId = await getWorkspaceId(client, projectId);
 
   // B-1021: fence out human-in-browser / validate agent-on-behalf:* before the write.
@@ -1682,7 +1721,7 @@ export async function supersedeKnowledgeEntry(
   const { data, error } = await client.rpc('knowledge_supersede_knowledge_entry', {
     p_project_id: projectId,
     p_new_title: normalizeHtmlEntities(args.new_title),
-    p_new_content: normalizeHtmlEntities(args.new_content),
+    p_new_content: encodeClaim(normalizeHtmlEntities(args.new_content), normalizeHtmlEntities(args.new_claim!)),
     p_entry_id: args.entry_id ?? null,
     p_title: args.title ?? null,
     p_type: args.type ?? null,
@@ -1698,4 +1737,27 @@ export async function supersedeKnowledgeEntry(
     client, workspaceId, projectId, result.replacement.id, result.replacement.title, result.replacement.content,
   );
   return result;
+}
+
+/** Explicit maintenance action; never runs as a side effect of a read. */
+export async function proposeLegacyClaims(client: SupabaseClient, projectId: string, apply = false) {
+  const workspaceId = await getWorkspaceId(client, projectId);
+  const { data, error } = await client.from('knowledge_decisions').select('*').eq('workspace_id', workspaceId).eq('project_id', projectId).neq('type', 'intent');
+  if (error) throw error;
+  const results = [];
+  for (const row of data ?? []) {
+    if (claimFields(row).claim) { results.push({ id: row.id, status: 'skipped-existing' }); continue; }
+    const claim = proposeClaim(row.content ?? '');
+    if (!claim) { results.push({ id: row.id, status: 'no-usable-sentence' }); continue; }
+    if (apply) {
+      const { data: written, error: writeError } = await client.from('knowledge_decisions')
+        .update({ content: encodeClaim(row.content ?? '', claim, 'derived') })
+        .eq('id', row.id).eq('workspace_id', workspaceId).eq('project_id', projectId)
+        .eq('content', row.content ?? '').select('id');
+      if (writeError) throw writeError;
+      if (!written?.length) { results.push({ id: row.id, status: 'skipped-changed' }); continue; }
+    }
+    results.push({ id: row.id, claim, claim_source: 'derived', status: apply ? 'applied' : 'proposed' });
+  }
+  return results;
 }

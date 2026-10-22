@@ -443,3 +443,7 @@ children Verified) is the precondition, never the verify itself.
 The stale-patch-review, revise-scope-review, and umbrella verification-ack briefs inherit the
 shared core and the legibility contract above. Their gate-specific question and must-haves
 stay in their owning skills (`harmony-stale-patch`, `harmony-revise-scope`, `finish-work`).
+
+### Knowledge claims (B-1136)
+
+Every new knowledge entry needs an authored one-sentence `claim` (at most 50 words), as well as a sentence-shaped title. Supply `claim` to `record_decision` / `create_knowledge_entry`; on an entry edit supply it when missing or derived. A retained authored claim may be reused. For an entry-producing brief author `doc.claim`: it is shown before approval and projected verbatim above the entry scaffolding. A valid one-sentence recommendation seeds it at compose time; long recommendations need an explicit claim. On iteration review the claim with the recommendation. Historical accepted payloads are replayed as approved, never re-inferred. `claim_source: derived` means a legacy proposal awaiting explicit confirmation, not a mechanically projected but approved brief. Search/list rows return the claim; search also returns a separate matched passage. Use `id` or `entry_id` for lookup.
