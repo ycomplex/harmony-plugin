@@ -991,3 +991,11 @@ mcp__harmony__add_comment(task_id, "PR created: <url>")
 ```
 
 This applies regardless of which execution route was chosen. The task should be a living record of what happened.
+
+
+### Knowledge metadata (B-1141)
+
+Follow `skills/harmony-shared/knowledge-discipline.md` §Scope, vocabulary and surface identity for
+knowledge writes: new entries declare product/deployment scope, authored tags use the explicit project
+vocabulary, type is advisory, and composed entries carry `doc.knowledge_scope`. Keep legacy operations
+usable before schema promotion; never drop an explicitly requested scope or filter on error.

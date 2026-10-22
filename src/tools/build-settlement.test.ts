@@ -16,17 +16,17 @@ function client(rows: unknown = [], error: unknown = null) {
 describe('build settlement advisory', () => {
   it('warns for an explicit empty report touching an Accepted exact surface entry, scoped to project and workspace', async () => {
     const c = client([{ id: 'entry', title: 'Current settings' }]);
-    expect(await settlementWarning(c.db, 'project', doc(), ['./src/settings.ts', 'src/settings.ts'])).toContain('Current settings (entry)');
+    expect(await settlementWarning(c.db, 'project', doc(), ['./web/src/settings.ts', 'web/src/settings.ts'])).toContain('Current settings (entry)');
     expect(c.query.eq.mock.calls).toEqual([['workspace_id', 'workspace'], ['project_id', 'project'], ['status', 'Accepted']]);
-    expect(c.query.overlaps).toHaveBeenCalledWith('tags', ['surface:src/settings.ts']);
+    expect(c.query.overlaps).toHaveBeenCalledWith('tags', ['surface:web/src']);
   });
   it('does not warn when no current-state surface matches', async () => {
     const c = client();
-    expect(await settlementWarning(c.db, 'project', doc(), ['src/unknown.ts'])).toBeUndefined();
+    expect(await settlementWarning(c.db, 'project', doc(), ['web/src/unknown.ts'])).toBeUndefined();
   });
   it.each([undefined, [{ behaviour: 'Keeps stale value', ac: 'AC1', knowledge_entry_id: 'entry' }]])('skips lookups for absent or populated reports', async report => {
     const c = client(); const input = report === undefined ? { frame: { kind: 'release' } } as BriefDoc : doc(report);
-    expect(await settlementWarning(c.db, 'project', input, ['src/settings.ts'])).toBeUndefined();
+    expect(await settlementWarning(c.db, 'project', input, ['web/src/settings.ts'])).toBeUndefined();
     expect(c.from).not.toHaveBeenCalled();
   });
   it('skips other gates and unavailable diffs', async () => {
@@ -37,8 +37,8 @@ describe('build settlement advisory', () => {
   });
   it('reports query errors without throwing or pretending no match exists', async () => {
     const c = client(null, { message: 'network error' });
-    expect(await settlementWarning(c.db, 'project', doc(), ['src/settings.ts'])).toContain('Could not check');
+    expect(await settlementWarning(c.db, 'project', doc(), ['web/src/settings.ts'])).toContain('Could not check');
     c.from.mockImplementation(() => { throw Error('offline'); });
-    expect(await settlementWarning(c.db, 'project', doc(), ['src/settings.ts'])).toContain('Advisory only');
+    expect(await settlementWarning(c.db, 'project', doc(), ['web/src/settings.ts'])).toContain('Advisory only');
   });
 });

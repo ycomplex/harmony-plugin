@@ -1,3 +1,4 @@
+import { metadataCapable, type KnowledgeScope } from './knowledge-metadata.js';
 // B-797 (extended by B-904) — the conductor's consume path for an accepted gate brief's deferred payload.
 // Accept becomes a consumed EVENT for the agent-owned-payload reasons — clarification-draft,
 // decomposition-proposal, plan-draft, design-decision-draft (EVERY track: product, technical, ux-ui — B-904
@@ -98,6 +99,7 @@ export const DECISION_ONLY_LABEL_CONTRACT = {
  *  item (clarify); release and verify have no acceptance event to ride and reach the same helper through
  *  the `write_gate_slot` MCP tool. */
 export interface AcceptanceEventPayloadItem {
+  scope?: KnowledgeScope;
   write_kind: 'acceptance_criterion' | 'child_ticket' | 'checklist_item' | 'ac_transfer' | 'label_add' | 'knowledge_entry_content' | 'gate_slot' | 'supersede_decision' | 'implements_entities' | 'entity_link';
   ref: string;
   content?: string;
@@ -499,14 +501,18 @@ export async function applyAcceptanceEventPayload(
         // ONE param per round — never both from a single error — re-checking the fresh error after each
         // drop. A DB missing both chains two rounds, regardless of which param name the first error
         // happens to mention.
+        const metadata = item.scope !== undefined;
+        if (metadata && !await metadataCapable(client)) throw new Error('Accepted scope metadata unavailable until the schema is promoted; acceptance remains pending.');
+        const operation = metadata ? 'consume_knowledge_entry_content_write_metadata' : 'consume_knowledge_entry_content_write';
         let includeTitle = true;
         let includeTags = true;
         const callArgs = () => ({
           _event_id: event.id, _external_ref: item.ref, _content: item.content, _entry_id: item.entry_id ?? null,
+          ...(metadata ? {_scope:item.scope} : {}),
           ...(includeTitle ? { _title: item.title ?? null } : {}),
           ...(includeTags ? { _tags: item.tags ?? null } : {}),
         });
-        let { data, error } = await client.rpc('consume_knowledge_entry_content_write', callArgs());
+        let { data, error } = await client.rpc(operation, callArgs());
         // B-921 / B-1046: write-side schema drift, same class/shape as briefs.ts's isMissingRemarkParam —
         // the companion web migrations (harmony-web PR #485 for `_title`; the B-1046 migration for
         // `_tags`) each widen this RPC with a new trailing param, so a not-yet-migrated DB rejects the
@@ -517,7 +523,7 @@ export async function applyAcceptanceEventPayload(
         // entirely, which the B-843 mechanism this rides must never do. At most two rounds (one per
         // param); each round drops exactly the one param the CURRENT error names, never guessing both
         // are gone from a single error.
-        for (let round = 0; round < 2 && error; round++) {
+        for (let round = 0; round < 2 && error && !metadata; round++) {
           if (includeTags && isMissingTagsParam(error.message)) {
             includeTags = false;
           } else if (includeTitle && isMissingTitleParam(error.message)) {
@@ -525,7 +531,7 @@ export async function applyAcceptanceEventPayload(
           } else {
             break;
           }
-          ({ data, error } = await client.rpc('consume_knowledge_entry_content_write', callArgs()));
+          ({ data, error } = await client.rpc(operation, callArgs()));
         }
         if (error) {
           // Same B-383 window as label_add below: harmony-web's migration reaches prod only at the next

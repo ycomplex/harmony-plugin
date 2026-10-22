@@ -203,6 +203,45 @@ uses existing tag storage and works without a schema promotion. The query adapte
 partitions before pagination, including on older RPC deployments; sorting a limited page is insufficient.
 
 
+## Scope, vocabulary and surface identity (B-1141)
+
+Every new authored entry declares `scope: product | deployment`: product describes behaviour for users;
+deployment describes a particular installation's hosts, jobs, scripts, logins or operational values.
+Separate mixed claims. Null scope on history means unresolved, never product. Type is an advisory
+authoring classification, not verified semantic content. Retrieval may request `scope: product`;
+unsupported scope filtering fails explicitly rather than returning unfiltered results.
+
+Use `list_knowledge_tags` for the project's checked vocabulary. Unknown authored tags are refused
+atomically with up to five known suggestions. Explicitly call `register_knowledge_tag` with a description
+before using a new authored name; entry writes never extend vocabulary. Existing knowledge writers
+hold that action. Ticket-shaped names, `surface:` and `harmony:bookkeeping` are generated namespaces,
+exempt from authored checks for legacy-writer compatibility; never manually register them.
+
+For composed gate entries, set `doc.knowledge_scope` to the entry's applicability, alongside the scope
+on the initial `record_decision`. Compose carries it in the snapshotted `knowledge_entry_content`
+payload; accepted metadata lands through its ledgered transaction, not a second unledgered write.
+Before schema promotion ordinary legacy operations remain usable; explicit unsupported metadata
+requests fail visibly. A missing function probe is the only reason to take a legacy operation route.
+
+Surface identity is `surface:<repo>/<immediate changed source directory>`, for example
+`surface:web/src/features/queue`. Use the canonical `surfaceTags` mapping in
+`src/tools/knowledge-metadata.ts` for release, historical repair and settlement overlap. No ancestor
+tags, hand-typed paths, or prose-derived surface guesses. Supply repository-prefixed `changed_paths`
+when composing release briefs so settlement warnings match these exact tags.
+
+Historical repair: `harmony knowledge preview-metadata-repair <file>` produces a project-scoped
+manifest with fingerprints, scope evidence, mixed/uncertain/missing-PR cases and counts. Review each
+proposal, adjust scope and set `reviewed: true` only for approved rows; then run
+`harmony knowledge apply-metadata-repair <file>`. Apply independently re-fetches merged PR paths,
+refuses stale entry fingerprints, preserves tags and is repeatable. No schema migration classifies
+production knowledge.
+
+During schema skew, probe `list_knowledge_tags` before selecting the new authoring contract. A
+confirmed unavailable capability means use the still-supported legacy operation WITHOUT `scope`
+and omit `doc.knowledge_scope`; state that the saved applicability remains unresolved until reviewed
+repair. This selects a legacy contract up front. It is never a retry that drops an explicit metadata
+request after refusal, and it never reports that scope was saved. Once capable, new entries always
+require scope and authored vocabulary validation.
 ## Maintaining current term definitions
 
 When a decision explicitly changes a product term's meaning, show the full proposed replacement wording in that gate's brief. Do not publish proposed or unaccepted wording. An unrelated accept never rewrites definitions.
