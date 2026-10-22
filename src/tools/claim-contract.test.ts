@@ -20,16 +20,18 @@ describe('claim contracts across surfaces', () => {
   await expect(getKnowledgeEntry(other.client, 'proj', { id: 'a', entry_id: 'b' })).rejects.toThrow(/same entry/);
   expect(other.client.from).not.toHaveBeenCalled();
  });
- it('refuses missing/invalid claims before creating entries or resolving affected entities', async () => {
+ it('refuses explicitly invalid claims before creating entries or resolving affected entities', async () => {
   const { client } = mock(null);
-  await expect(createKnowledgeEntry(client, 'proj', 'user', { title: 'Teams save views.', content: 'Body', type: 'specification' })).rejects.toThrow(/claim/);
+  await expect(createKnowledgeEntry(client, 'proj', 'user', { title: 'Teams save views.', claim: '', content: 'Body', type: 'specification' })).rejects.toThrow(/claim/);
   await expect(recordDecision(client, 'proj', 'user', { title: 'Teams save views.', claim: 'One. Two.', type: 'specification', affected_entity_names: ['Entity'] })).rejects.toThrow(/claim/);
   expect(client.from).not.toHaveBeenCalled(); expect(client.rpc).not.toHaveBeenCalled();
  });
- it('refuses a legacy edit without an explicit claim, with no mutation', async () => {
+ it('keeps an old caller legacy edit compatible and marks its proposal derived', async () => {
   const { client } = mock({ id: 'entry', title: 'Teams save views.', content: 'Historical body.' });
-  await expect(updateKnowledgeEntry(client, 'proj', { entry_id: 'entry', content: 'New body.' })).rejects.toThrow(/claim/);
-  expect(client.rpc).not.toHaveBeenCalled();
+  await updateKnowledgeEntry(client, 'proj', { entry_id: 'entry', content: 'New body.' });
+  expect(client.rpc).toHaveBeenCalledWith('knowledge_update_knowledge_entry', expect.objectContaining({
+    p_content: encodeClaim('New body.', 'New body.', 'derived'),
+  }));
  });
  it('returns slim structured rows with claims on the old schema and retains project scoping', async () => {
   const { client, chain } = mock([{ id: 'entry', title: 'Teams save views.', content: encodeClaim('Body', 'Teams retain their filters.'), project_id: 'proj' }]);
