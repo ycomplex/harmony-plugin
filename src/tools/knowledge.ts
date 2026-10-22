@@ -185,7 +185,7 @@ export const createKnowledgeEntryTool = {
       content: { type: 'string', description: 'Markdown content of the entry' },
       type: {
         type: 'string',
-        description: 'Entry type: "architecture", "business", "convention", or "specification"',
+        description: 'Advisory authoring classification, not verified: "architecture", "business", "convention", or "specification"',
       },
       status: {
         type: 'string',
@@ -1194,12 +1194,12 @@ export const supersedeDecisionTool = {
 export const recordDecisionTool = {
   name: 'record_decision',
   description:
-    'Record a knowledge decision produced by a gate/skill. Author ONE ATOMIC claim, not a document — shape the `content` as Decision · Why · How-to-apply · Scope. Pick the NARROWEST fitting `type` (product-design / technical-design / ux-ui-design for the design sub-tracks, or architecture / business / convention / specification / deferral) and multi-tag every `domain` a querying skill would filter on (engineering, operations, data, product, customer, process). Lifecycle: enters "Asserted" by default and a HUMAN promotes it to "Accepted" — never pre-mark a replacement Accepted before the decision is made. To retire an entry, SUPERSEDE it (do not edit it into irrelevance); for an in-part repair use update_knowledge_entry plus a dated banner. Migration window: supersede the old decision at decision-time, keep the old fact valid until cutover, and mark in-flight state with `realization`. Elicitation claims (B-645): a claim mined from an elicitation exchange sets `claim_provenance` + `underwriting_brief_id` so brief resolution disposes it mechanically (accept promotes human-grounded claims, defer archives; force-quit claims never promote at their own brief\'s accept).',
+    'Record a knowledge decision produced by a gate/skill. Type is an advisory authoring classification, not verified semantic content. Author ONE ATOMIC claim, not a document — shape the `content` as Decision · Why · How-to-apply · Scope. Pick the NARROWEST fitting `type` (product-design / technical-design / ux-ui-design for the design sub-tracks, or architecture / business / convention / specification / deferral) and multi-tag every `domain` a querying skill would filter on (engineering, operations, data, product, customer, process). Lifecycle: enters "Asserted" by default and a HUMAN promotes it to "Accepted" — never pre-mark a replacement Accepted before the decision is made. To retire an entry, SUPERSEDE it (do not edit it into irrelevance); for an in-part repair use update_knowledge_entry plus a dated banner. Migration window: supersede the old decision at decision-time, keep the old fact valid until cutover, and mark in-flight state with `realization`. Elicitation claims (B-645): a claim mined from an elicitation exchange sets `claim_provenance` + `underwriting_brief_id` so brief resolution disposes it mechanically (accept promotes human-grounded claims, defer archives; force-quit claims never promote at their own brief\'s accept).',
   inputSchema: {
     type: 'object' as const,
     properties: {
       claim: { type: 'string', description: 'Authored one-sentence claim, at most 50 words; omission derives an unconfirmed proposal during rollout' },
-      type: { type: 'string', description: 'product-design | technical-design | ux-ui-design | architecture | business | convention | specification | deferral' },
+      type: { type: 'string', description: 'Advisory authoring classification, not verified: product-design | technical-design | ux-ui-design | architecture | business | convention | specification | deferral' },
       title: { type: 'string', description: 'Decision title (unique within the project)' },
       content: { type: 'string', description: 'Optional human-readable markdown body' },
       madr: { type: 'object', description: 'Structured MADR body: { context, decision_drivers, considered_options, decision_outcome, consequences }' },
