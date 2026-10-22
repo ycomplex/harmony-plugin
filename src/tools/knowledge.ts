@@ -1,4 +1,5 @@
 import { readSourceValues } from './knowledge-sources.js';
+import { questionProjection } from './knowledge-questions.js';
 import { metadataCapable, metadataRpc, type KnowledgeScope } from './knowledge-metadata.js';
 import { readDefinitions, type Definition } from './knowledge-definitions.js';
 import { projectSupersession } from './knowledge-supersession.js';
@@ -20,6 +21,11 @@ export interface KnowledgeEntrySummary extends KnowledgeTruthState {
   snippet?: string | null;
   claim?: string | null;
   claim_source?: 'authored' | 'derived' | null;
+  question_state?: 'open' | 'parked' | 'decided';
+  question_scope?: 'product' | 'deployment';
+  answer?: string;
+  resulting_decision_id?: string | null;
+  score?: number;
   invalidations?: InvalidationLink[];
   invalidations_available?: boolean;
   invalidation_rollout_available?: boolean;
@@ -39,6 +45,10 @@ export interface KnowledgeEntryFull extends KnowledgeTruthState {
   scope?: KnowledgeScope | null;
   claim?: string | null;
   claim_source?: 'authored' | 'derived' | null;
+  question_state?: 'open' | 'parked' | 'decided';
+  question_scope?: 'product' | 'deployment';
+  answer?: string;
+  resulting_decision_id?: string | null;
   invalidations?: InvalidationLink[];
   invalidations_available?: boolean;
   invalidation_rollout_available?: boolean;
@@ -91,6 +101,11 @@ export interface KnowledgeDecisionFull extends KnowledgeTruthState {
   created_by: string;
   created_at: string;
   updated_at: string;
+  question_state?: string;
+  question_scope?: string;
+  answer?: string;
+  resulting_decision_id?: string | null;
+  score?: number;
 }
 
 export interface KnowledgeFactFull {
@@ -121,7 +136,7 @@ const ENTITY_COLS = 'id, workspace_id, project_id, kind, name, description, meta
 export const queryKnowledgeTool = {
   name: 'query_knowledge',
   description:
-    'Find current term definitions first, then linked refinements, current source-generated deployment facts with inspectable provenance, and ordinary decisions. Generated facts remain Asserted and are not human-ratified decisions. definitions_only returns full quotable current definitions; unavailable storage is reported explicitly. Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Results include nullable superseded_by and inverse supersedes UUIDs; matching successors precede replaced entries. Check this before making significant implementation choices. Ordinary decisions default to "Accepted"; current generated evidence is included separately, with explicitly marked bookkeeping ranked last; include_bookkeeping:false excludes it before pagination. When `search` is given, retrieval is semantic (RRF) and composes with `domain`, `limit` and `include_bookkeeping`; the other structured filters (`type`, `status`, `tags`, `as_of`, `include_superseded`, `offset`) apply to the non-search structured path only. Optional scope (product | deployment) filters by declared scope when the metadata schema is present; unsupported scope filtering fails explicitly.',
+    'Find current term definitions first, then linked refinements, current source-generated deployment facts with inspectable provenance, and ordinary decisions. Generated facts remain Asserted and are not human-ratified decisions. definitions_only returns full quotable current definitions; unavailable storage is reported explicitly. Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Results include nullable superseded_by and inverse supersedes UUIDs; matching successors precede replaced entries. Check this before making significant implementation choices. Ordinary decisions default to "Accepted"; current generated evidence is included separately, with explicitly marked bookkeeping ranked last; include_bookkeeping:false excludes it before pagination. When `search` is given, retrieval is semantic (RRF) and composes with `domain`, `limit` and `include_bookkeeping`; the other structured filters (`type`, `status`, `tags`, `as_of`, `include_superseded`, `offset`) apply to the non-search structured path only. Optional scope (product | deployment) filters by declared scope when the metadata schema is present; unsupported scope filtering fails explicitly. question_state (open | parked | decided) is a filter-only argument until B-1223 lands the scored path; combining it with search fails explicitly.',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -132,7 +147,7 @@ export const queryKnowledgeTool = {
       },
       status: {
         type: 'string',
-        description: 'Filter by status. Default: "Accepted". (structured-filter path; not combinable with `search`)',
+        description: 'Filter by status. Default: "Accepted".',
       },
       domain: {
         type: 'array',
@@ -141,7 +156,7 @@ export const queryKnowledgeTool = {
       },
       as_of: {
         type: 'string',
-        description: 'ISO timestamp — return entries valid at or before this instant (temporal query). (structured-filter path; not combinable with `search`)',
+        description: 'ISO timestamp — return entries valid at or before this instant (temporal query).',
       },
       scope: { type: 'string', enum: ['product', 'deployment'], description: 'Product behaviour or deployment operations. Explicit filters exclude unresolved legacy scope and fail visibly before schema promotion.' },
       tags: {
@@ -153,6 +168,7 @@ export const queryKnowledgeTool = {
         type: 'string',
         description: 'Free-text search query — hybrid semantic + trigram retrieval, ranked by relevance (RRF). Composes with `domain`, `limit` and `include_bookkeeping`.',
       },
+      question_state: { type: 'string', enum: ['open', 'parked', 'decided'], description: 'Filter-only lists: open, parked or decided questions. Cannot combine with search until B-1223 shared ranking.' },
       include_bookkeeping: { type: 'boolean', description: 'Include explicitly marked procedural gate records after substantive knowledge (default true). False excludes them before pagination.' },
       include_superseded: {
         type: 'boolean',
@@ -412,6 +428,7 @@ export interface QueryKnowledgeArgs {
   include_bookkeeping?: boolean;
   limit?: number;
   offset?: number;
+  question_state?: 'open' | 'parked' | 'decided';
 }
 
 export async function queryKnowledge(
@@ -420,6 +437,9 @@ export async function queryKnowledge(
   args: QueryKnowledgeArgs,
 ): Promise<Array<KnowledgeEntrySummary | Definition>> {
   const workspaceId = await getWorkspaceId(client, projectId);
+  if (args.question_state && !['open', 'parked', 'decided'].includes(args.question_state)) {
+    throw new Error('question_state must be open, parked or decided');
+  }
   if (args.scope !== undefined) {
     if (!['product', 'deployment'].includes(args.scope)) throw new Error('scope must be product or deployment');
     if (!await metadataCapable(client)) throw new Error('Scope filtering unavailable until the schema is promoted; no unfiltered results returned.');
@@ -431,6 +451,9 @@ export async function queryKnowledge(
   if (args.limit === 0) return [];
   if (args.search) {
     const incompatible: string[] = [];
+    if (args.question_state) {
+      throw new Error('query_knowledge: search + question_state is unavailable until B-1223 shared ranking; omit search for structured question filtering');
+    }
     if (args.status) incompatible.push('status');
     if (args.include_superseded) incompatible.push('include_superseded');
     if (args.type) incompatible.push('type');
@@ -502,11 +525,17 @@ export async function queryKnowledge(
     }), decisionArgs);
     const matches = (data ?? []).map((d: any) => ({
       id: d.id, title: d.title, type: d.type, status: d.status, ...(d.scope !== undefined ? {scope:d.scope} : {}),
+      ...questionProjection(d),
       ...claimFields(d), snippet: matchedPassage(d.content ?? '', args.search!),
       domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at,
       verified_against: d.verified_against ?? null, rollout_state: d.rollout_state ?? null, open_steps: d.open_steps ?? null,
     })) as KnowledgeEntrySummary[];
     if (!matches.length) return prepend([]);
+    // Full relevance-gated promotion BEFORE limiting belongs to B-1223.
+    const questionRank = (row: KnowledgeEntrySummary) =>
+      Number(row.tags?.includes(BOOKKEEPING_TAG) ?? false) * 2 +
+      (row.question_state === 'open' || row.question_state === 'parked' ? 0 : 1);
+    matches.sort((left, right) => questionRank(left) - questionRank(right));
     return prepend(await withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, matches)));
   }
 
@@ -518,8 +547,9 @@ export async function queryKnowledge(
       .eq('project_id', projectId);
     if (args.scope) query = query.eq('scope', args.scope);
     if (args.status) query = query.eq('status', args.status);
-    else if (!args.include_superseded) query = query.eq('status', 'Accepted');
+    else if (!args.include_superseded) query = query.eq('status', args.question_state === 'decided' ? 'Superseded' : 'Accepted');
     if (args.type) query = query.eq('type', args.type);
+    if (args.question_state) query = query.eq('source_activity', 'knowledge-question').eq('madr->question->>state', args.question_state);
     if (args.domain && args.domain.length > 0) query = query.overlaps('domain', args.domain);
     if (args.as_of) query = query.lte('valid_from', args.as_of);
     if (args.tags && args.tags.length > 0) query = query.contains('tags', args.tags);
@@ -528,7 +558,7 @@ export async function queryKnowledge(
       .range(offset, offset + limit - 1);
   }, decisionArgs);
   // B-1136 claim fields first, then B-1230 page-bounded supersession hydration (both page-local).
-  return prepend(await withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, rows.map(d => ({ id: d.id, title: d.title, type: d.type, status: d.status, ...(d.scope !== undefined ? {scope:d.scope} : {}), domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d), verified_against: d.verified_against ?? null, rollout_state: d.rollout_state ?? null, open_steps: d.open_steps ?? null })))));
+  return prepend(await withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, rows.map(d => ({ id: d.id, title: d.title, type: d.type, status: d.status, ...(d.scope !== undefined ? {scope:d.scope} : {}), domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d), ...questionProjection(d), verified_against: d.verified_against ?? null, rollout_state: d.rollout_state ?? null, open_steps: d.open_steps ?? null })))));
 }
 
 // Hydrate only returned IDs, in batches below PostgREST's row cap. Never scan the corpus
@@ -670,7 +700,7 @@ export async function getKnowledgeEntry(
 
   const { data, error } = await query.single();
   if (error) throw error;
-  return (await withInvalidations(client, [{ ...data, ...claimFields(data), verified_against: data.verified_against ?? null, rollout_state: data.rollout_state ?? null, open_steps: data.open_steps ?? null } as KnowledgeEntryFull]))[0];
+  return (await withInvalidations(client, [{ ...data, ...claimFields(data), ...questionProjection(data), verified_against: data.verified_against ?? null, rollout_state: data.rollout_state ?? null, open_steps: data.open_steps ?? null } as KnowledgeEntryFull]))[0];
 }
 
 // ---------------------------------------------------------------------------
