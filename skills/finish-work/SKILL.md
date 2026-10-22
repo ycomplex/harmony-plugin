@@ -367,6 +367,16 @@ full at O2 below, where it also governs the merge-time CI wait) applied at brief
 proceed-worthy read failure, since branch protection independently backs whatever the checks would have
 shown.
 
+**Build-settled knowledge on the release brief (B-1143).**
+
+Every release compose, including one performed by start-work, carries
+`frame.settled_beyond_design: [{ behaviour, ac, knowledge_entry_id }]`, or explicit `[]` when no
+additional behaviour was settled. Preserve the build's recorded report on release re-entry; never
+replace a nonempty report with an empty guess. Read back the named destinations if recovering it
+from the ticket trail. If the report is missing, compare resolved criteria to the Accepted design
+and follow `skills/harmony-shared/knowledge-discipline.md` §Record behaviour settled during build
+before composing. See brief-authoring.md §Release for the rendering contract and advisory warning.
+
 **The release frame (B-876) — author `doc.frame` on every release brief you compose or re-compose.**
 Every recompose that is NOT a send-back passes `revision_cause` — see `skills/harmony-shared/brief-authoring.md` §Stating the cause of a redraft (B-1017).
 A lint-warning-driven recompose is capped at one per lineage per leg — see the same file's §Fixing a lint warning in the leg that raised it (B-1054).
