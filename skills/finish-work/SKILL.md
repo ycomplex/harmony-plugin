@@ -1477,3 +1477,19 @@ The task should be a living record of what happened — see the full task lifecy
 ### 9. Report completion
 
 Confirm that main is updated, the worktree is removed, and branches are pruned.
+
+
+### Knowledge metadata (B-1141)
+
+Follow `skills/harmony-shared/knowledge-discipline.md` §Scope, vocabulary and surface identity for
+knowledge writes: new entries declare product/deployment scope, authored tags use the explicit project
+vocabulary, type is advisory, and composed entries carry `doc.knowledge_scope`. Keep legacy operations
+usable before schema promotion; never drop an explicitly requested scope or filter on error.
+
+After each successful PR merge, before composing verification, run
+`harmony knowledge tag-release --task <ticket-uuid> --repo <owner/repository> --pr <number>`
+for EACH merged repo. This reads verified GitHub file paths (including deletions), unions canonical
+surface tags onto the ticket's referenced entries and preserves existing ticket tags. It uses legacy
+metadata-free operations too, so it does not wait for a production schema promote. On failure retain
+the exact invocation as a release failure to fix before verification; never claim tags were derived
+without verified paths. Compose release with repository-prefixed `changed_paths` for the same mapping.

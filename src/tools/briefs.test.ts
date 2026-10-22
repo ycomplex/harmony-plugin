@@ -5457,7 +5457,7 @@ describe('release build-settlement report', () => {
     project.single = vi.fn(async () => ({ data: { workspace_id: 'workspace' } }));
     c.from = vi.fn((table: string) => table === 'projects' ? project : table === 'knowledge_decisions' ? surface : priorFrom(table));
     const result = await composeBrief(c, PROJECT_ID, USER_ID, { task_id: 'task-1', reason: 'release-decision-pending', pending_activity: null,
-      doc: baseDoc({ frame: { ...releaseFrame(), settled_beyond_design: [] } as GateFrame }), changed_paths: ['src/settings.ts'] });
+      doc: baseDoc({ frame: { ...releaseFrame(), settled_beyond_design: [] } as GateFrame }), changed_paths: ['web/src/settings.ts'] });
     expect(result.lint.ok).toBe(true);
     expect(result.lint.warnings.join(' ')).toContain('settled_beyond_design is empty');
     expect(c.insert).toHaveBeenCalled();

@@ -1,3 +1,9 @@
+// Legacy-contract tests intentionally run with the new capability absent; metadata tests cover both schemas.
+vi.mock('./knowledge-metadata.js', async importOriginal => ({
+ ...await importOriginal<typeof import('./knowledge-metadata.js')>(),
+ metadataCapable: async () => false,
+ metadataRpc: async (client: any, operation: string, _scope: unknown, args: unknown) => client.rpc(operation,args),
+}));
 import { encodeClaim } from './knowledge-claim.js';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {

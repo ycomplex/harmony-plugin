@@ -522,3 +522,11 @@ For a policy-only removal with nothing to deploy, a HUMAN may explicitly choose
 `removal_policy_only: true` plus `removal_effective_on_accept: true` on the brief. This writes the same
 live rollout state at acceptance; the default is false. An agent-synthesized acceptance cannot make
 that choice. Clause amendments remain the separate B-1138 contract; preserve affected entry prose.
+
+
+### Knowledge metadata (B-1141)
+
+Follow `skills/harmony-shared/knowledge-discipline.md` §Scope, vocabulary and surface identity for
+knowledge writes: new entries declare product/deployment scope, authored tags use the explicit project
+vocabulary, type is advisory, and composed entries carry `doc.knowledge_scope`. Keep legacy operations
+usable before schema promotion; never drop an explicitly requested scope or filter on error.

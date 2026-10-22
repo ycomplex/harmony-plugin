@@ -182,6 +182,7 @@ export const ackProjections: Record<string, AckProjection> = {
 
   // ——— knowledge entries / decisions / facts / entities ———
   create_knowledge_entry: knowledgeCreatedAck,
+  register_knowledge_tag: result => pick(result, ['project_id','name']),
   record_decision: knowledgeCreatedAck,
   update_knowledge_entry: (result, args) => {
     if (!isRecord(result)) return result;

@@ -337,6 +337,7 @@ export interface BriefDoc {
    *  entry (`withDerivedEntryContent` folds these into the entry's `tags`). The ticket's own `b-NNN` tag
    *  is always added regardless of whether this field is populated. */
   tags?: string[];
+  knowledge_scope?: 'product' | 'deployment';
 }
 
 export interface BriefLintResult {
@@ -2197,7 +2198,7 @@ export function withDerivedEntryContent(
   // `entry_id` is set explicitly rather than left for the DB to resolve from the brief's decision_ref:
   // the snapshotted payload is then self-describing, and the item's ref and its target agree by
   // construction.
-  const stub: AcceptanceEventPayloadItem = { write_kind: 'knowledge_entry_content', ref, entry_id: decisionRef.id };
+  const stub: AcceptanceEventPayloadItem = { write_kind: 'knowledge_entry_content', ref, entry_id: decisionRef.id, ...(doc.knowledge_scope ? {scope:doc.knowledge_scope} : {}) };
   const staged: BriefDoc = { ...doc, payload: [...others, stub] };
   const content = renderEntry(staged, { ...ctx, decisionRef });
   // B-921 — re-derive the title the SAME way, at the SAME call, riding the SAME payload item: an
@@ -3298,6 +3299,7 @@ export const composeBriefTool = {
                 target_child_ref: { type: 'string', description: "ac_transfer only — the destination child_ticket item's own `ref` from this SAME payload" },
                 from_ac_id: { type: ['string', 'null'], description: "ac_transfer only — the parent AC's own id being removed; omit only for the rare copy-not-move case" },
                 label_name: { type: 'string', description: "label_add only (B-688) — the label to add; defaults to 'decision-only' when omitted (the only real-world caller today)" },
+                scope: { type: 'string', enum: ['product','deployment'], description: 'Accepted applicability metadata, applied in the same ledgered transaction.' },
                 entry_id: { type: ['string', 'null'], description: "knowledge_entry_content only (B-843) — the target knowledge entry; omit to let the DB resolve it from this brief's own decision_ref (the normal case)" },
               },
               required: ['write_kind', 'ref'],
