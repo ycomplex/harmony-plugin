@@ -10,7 +10,7 @@ it('shared list and by-id reads both attach pending invalidators', async () => {
   chain.limit = vi.fn().mockResolvedValue({ data: [entry], error: null });
   chain.range = vi.fn().mockResolvedValue({ data: [entry], error: null, count: 1 });
   const project = { select: vi.fn().mockReturnThis(), eq: vi.fn().mockReturnThis(), single: vi.fn().mockResolvedValue({ data: { workspace_id: 'ws' }, error: null }) };
-  const client: any = { from: vi.fn((table: string) => table === 'projects' ? project : chain), rpc: vi.fn().mockResolvedValue({ data: { available: true, rollout_available: false, links: [link] }, error: null }) };
+  const client: any = { from: vi.fn((table: string) => table === 'projects' ? project : chain), rpc: vi.fn(async (name: string) => name === 'read_knowledge_definitions' ? { data: { available: true, definitions: [], total_count: 0 }, error: null } : { data: { available: true, rollout_available: false, links: [link] }, error: null }) };
   expect(await getKnowledgeEntry(client, 'project', { entry_id: 'entry' })).toMatchObject({ invalidations: [link], invalidation_rollout_available: false });
   expect(await queryKnowledge(client, 'project', { limit: 1, include_bookkeeping: false })).toMatchObject([{ invalidations: [link], superseded_by: 'next', claim: 'The old guarantee remains live.' }]);
 });

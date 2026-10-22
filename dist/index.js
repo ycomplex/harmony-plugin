@@ -43594,6 +43594,125 @@ async function createAuthenticatedClient(auth2) {
   });
 }
 
+// src/tools/provenance.ts
+var PROVENANCE_HUMAN_IN_SESSION = "human-in-session";
+var PROVENANCE_AGENT_SYNTHESIZED = "agent-synthesized";
+var PROVENANCE_WEB_ONLY = "human-in-browser";
+var PROVENANCE_AGENT_ON_BEHALF = "agent-on-behalf";
+var PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION = `${PROVENANCE_AGENT_ON_BEHALF}:${PROVENANCE_HUMAN_IN_SESSION}`;
+var PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER = `${PROVENANCE_AGENT_ON_BEHALF}:${PROVENANCE_WEB_ONLY}`;
+var PROVENANCE_HUMAN_RECORDED = "human-recorded";
+var PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED = `${PROVENANCE_AGENT_ON_BEHALF}:${PROVENANCE_HUMAN_RECORDED}`;
+var AGENT_ON_BEHALF_CLOSED_SUFFIXES = [
+  PROVENANCE_HUMAN_IN_SESSION,
+  PROVENANCE_WEB_ONLY,
+  PROVENANCE_HUMAN_RECORDED
+];
+function guardKnowledgeWriteProvenance(provenance) {
+  if (provenance === null || provenance === void 0) return;
+  if (provenance === PROVENANCE_WEB_ONLY) {
+    throw new Error(
+      `provenance '${PROVENANCE_WEB_ONLY}' is the web client's alone \u2014 the plugin is never the browser, and accepting it here would let an agent claim a human clicked. Use '${PROVENANCE_HUMAN_IN_SESSION}' when the human decided in this session, or '${PROVENANCE_AGENT_ON_BEHALF}:<human-provenance>' when an agent is writing on a human's already-made decision (accepted: '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION}', '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER}', or '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED}').`
+    );
+  }
+  if (provenance.startsWith(`${PROVENANCE_AGENT_ON_BEHALF}:`)) {
+    const suffix = provenance.slice(PROVENANCE_AGENT_ON_BEHALF.length + 1);
+    if (AGENT_ON_BEHALF_CLOSED_SUFFIXES.includes(suffix)) return;
+    throw new Error(
+      `invalid provenance '${provenance}' \u2014 '${PROVENANCE_AGENT_ON_BEHALF}:' accepts only '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION}', '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER}', or '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED}', never any other suffix \u2014 an unrecognised suffix would render as an unattributed/unrecognised tag forever.`
+    );
+  }
+}
+
+// src/config/run-config.ts
+import {
+  readFileSync as nodeReadFileSync,
+  writeFileSync as nodeWriteFileSync,
+  mkdirSync as nodeMkdirSync,
+  existsSync as nodeExistsSync,
+  unlinkSync as nodeUnlinkSync
+} from "node:fs";
+
+// src/daemon/gate-phase.ts
+var GATES = ["clarify", "decompose", "design", "plan", "build", "release", "verify"];
+
+// src/tools/knowledge-claim.ts
+var ENVELOPE = /^\*\*Claim:\*\* ([^\n]+)\n\n\*\*Claim source:\*\* (authored|derived)\n\n/;
+function isSingleSentenceShaped(value) {
+  const text = value.trim();
+  if (!text || text.split(/\s+/).length > 50) return false;
+  const neutral = text.replace(/(\d)\.(?=\d)/g, "$1").replace(/\be\.g\.|\bi\.e\./gi, (m) => m.replace(/\./g, ""));
+  return !/[.!?]/.test(neutral.replace(/[.!?]+\s*$/, ""));
+}
+function validateClaimEntry(title, claim) {
+  for (const [field, value] of [["title", title], ["claim", claim]]) {
+    if (!isSingleSentenceShaped(value)) throw new Error(`${field} must be one sentence of at most 50 words`);
+  }
+}
+function decodeClaim(content = "") {
+  const match = ENVELOPE.exec(content);
+  return { claim: match?.[1] ?? null, claim_source: match?.[2] ?? null };
+}
+function claimFields(row) {
+  const decoded = decodeClaim(row.content ?? "");
+  return row.claim && (row.claim_source === "authored" || row.claim_source === "derived") ? { claim: row.claim, claim_source: row.claim_source } : decoded;
+}
+function stripClaim(content = "") {
+  return content.replace(ENVELOPE, "");
+}
+function encodeClaim(content, claim, source = "authored") {
+  return `**Claim:** ${claim.trim().replace(/\s+/g, " ")}
+
+**Claim source:** ${source}
+
+${stripClaim(content)}`;
+}
+function claimContent(title, content, claim) {
+  if (claim !== void 0) {
+    validateClaimEntry(title, claim);
+    return encodeClaim(content, claim);
+  }
+  const proposed = proposeClaim(stripClaim(content)) ?? proposeClaim(title);
+  console.warn("Knowledge claim omitted; using a derived proposal when available. Supply claim to author it.");
+  return proposed ? encodeClaim(content, proposed, "derived") : stripClaim(content);
+}
+function editedClaimContent(current, updates) {
+  const prior = claimFields(current);
+  const title = updates.title ?? current.title;
+  const content = updates.content ?? current.content;
+  if (updates.claim !== void 0) return claimContent(title, content, updates.claim);
+  if (prior.claim_source === "authored" && prior.claim) {
+    return encodeClaim(content, prior.claim);
+  }
+  return claimContent(title, content);
+}
+function plainText(content) {
+  return stripClaim(content).replace(/<[^>]*>/g, " ").replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/[`*_#>|~]/g, "").replace(/\s+/g, " ").trim();
+}
+function matchedPassage(content, query) {
+  const text = [decodeClaim(content).claim, plainText(content)].filter(Boolean).join(" ");
+  const terms = query.toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+  const indexes = terms.map((term) => text.toLocaleLowerCase().indexOf(term)).filter((i) => i >= 0);
+  if (!indexes.length) return null;
+  const at = Math.min(...indexes), start = Math.max(0, at - 60), end = Math.min(text.length, start + 240);
+  return `${start ? "\u2026" : ""}${text.slice(start, end)}${end < text.length ? "\u2026" : ""}`;
+}
+function proposeClaim(content) {
+  if (decodeClaim(content).claim) return null;
+  const lines = content.split("\n").filter((line) => !/^\s*(?:_?Derived from|#{1,6}\s|\*\*(?:Question put to the human|Track|Reach|On accept|Context|Ratified asks):)/i.test(line));
+  const text = plainText(lines.join("\n")).replace(/^Decision:\s*/i, "");
+  const candidates = text.match(/.*?[.!?](?=\s|$)|.+$/g) ?? [];
+  let candidate = "";
+  for (const part of candidates) {
+    candidate += part;
+    if (/\b(?:e\.g\.|i\.e\.)$/i.test(candidate.trim())) continue;
+    const value = candidate.trim();
+    if (isSingleSentenceShaped(value)) return value;
+    return null;
+  }
+  return null;
+}
+
 // src/tools/environment.ts
 import { readFileSync as readFileSync2 } from "node:fs";
 import { dirname, join as join3 } from "node:path";
@@ -44540,93 +44659,124 @@ function loadLegacyDeploymentConfig(opts = {}) {
   return result.data;
 }
 
-// src/config/run-config.ts
-import {
-  readFileSync as nodeReadFileSync,
-  writeFileSync as nodeWriteFileSync,
-  mkdirSync as nodeMkdirSync,
-  existsSync as nodeExistsSync,
-  unlinkSync as nodeUnlinkSync
-} from "node:fs";
-
-// src/daemon/gate-phase.ts
-var GATES = ["clarify", "decompose", "design", "plan", "build", "release", "verify"];
-
-// src/tools/knowledge-claim.ts
-var ENVELOPE = /^\*\*Claim:\*\* ([^\n]+)\n\n\*\*Claim source:\*\* (authored|derived)\n\n/;
-function isSingleSentenceShaped(value) {
-  const text = value.trim();
-  if (!text || text.split(/\s+/).length > 50) return false;
-  const neutral = text.replace(/(\d)\.(?=\d)/g, "$1").replace(/\be\.g\.|\bi\.e\./gi, (m) => m.replace(/\./g, ""));
-  return !/[.!?]/.test(neutral.replace(/[.!?]+\s*$/, ""));
-}
-function validateClaimEntry(title, claim) {
-  for (const [field, value] of [["title", title], ["claim", claim]]) {
-    if (!isSingleSentenceShaped(value)) throw new Error(`${field} must be one sentence of at most 50 words`);
+// src/tools/environment.ts
+var DEFAULT_SUPABASE_URL = "https://eioxsunvhakmelhanmnn.supabase.co";
+var KNOWN_REFS = {
+  eioxsunvhakmelhanmnn: "prod",
+  meqkdgncdzromunylyxf: "staging"
+  // staging.harmony.ad's deployed project
+};
+function resolveKnownRefs(env) {
+  try {
+    const deploymentConfig = loadDeploymentConfig({ env });
+    const configRefs = deploymentConfig?.launcher?.supabase_refs;
+    return configRefs ? { ...KNOWN_REFS, ...configRefs } : KNOWN_REFS;
+  } catch {
+    return KNOWN_REFS;
   }
 }
-function decodeClaim(content = "") {
-  const match = ENVELOPE.exec(content);
-  return { claim: match?.[1] ?? null, claim_source: match?.[2] ?? null };
-}
-function claimFields(row) {
-  const decoded = decodeClaim(row.content ?? "");
-  return row.claim && (row.claim_source === "authored" || row.claim_source === "derived") ? { claim: row.claim, claim_source: row.claim_source } : decoded;
-}
-function stripClaim(content = "") {
-  return content.replace(ENVELOPE, "");
-}
-function encodeClaim(content, claim, source = "authored") {
-  return `**Claim:** ${claim.trim().replace(/\s+/g, " ")}
-
-**Claim source:** ${source}
-
-${stripClaim(content)}`;
-}
-function claimContent(title, content, claim) {
-  if (claim !== void 0) {
-    validateClaimEntry(title, claim);
-    return encodeClaim(content, claim);
-  }
-  const proposed = proposeClaim(stripClaim(content)) ?? proposeClaim(title);
-  console.warn("Knowledge claim omitted; using a derived proposal when available. Supply claim to author it.");
-  return proposed ? encodeClaim(content, proposed, "derived") : stripClaim(content);
-}
-function editedClaimContent(current, updates) {
-  const prior = claimFields(current);
-  const title = updates.title ?? current.title;
-  const content = updates.content ?? current.content;
-  if (updates.claim !== void 0) return claimContent(title, content, updates.claim);
-  if (prior.claim_source === "authored" && prior.claim) {
-    return encodeClaim(content, prior.claim);
-  }
-  return claimContent(title, content);
-}
-function plainText(content) {
-  return stripClaim(content).replace(/<[^>]*>/g, " ").replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/[`*_#>|~]/g, "").replace(/\s+/g, " ").trim();
-}
-function matchedPassage(content, query) {
-  const text = [decodeClaim(content).claim, plainText(content)].filter(Boolean).join(" ");
-  const terms = query.toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
-  const indexes = terms.map((term) => text.toLocaleLowerCase().indexOf(term)).filter((i) => i >= 0);
-  if (!indexes.length) return null;
-  const at = Math.min(...indexes), start = Math.max(0, at - 60), end = Math.min(text.length, start + 240);
-  return `${start ? "\u2026" : ""}${text.slice(start, end)}${end < text.length ? "\u2026" : ""}`;
-}
-function proposeClaim(content) {
-  if (decodeClaim(content).claim) return null;
-  const lines = content.split("\n").filter((line) => !/^\s*(?:_?Derived from|#{1,6}\s|\*\*(?:Question put to the human|Track|Reach|On accept|Context|Ratified asks):)/i.test(line));
-  const text = plainText(lines.join("\n")).replace(/^Decision:\s*/i, "");
-  const candidates = text.match(/.*?[.!?](?=\s|$)|.+$/g) ?? [];
-  let candidate = "";
-  for (const part of candidates) {
-    candidate += part;
-    if (/\b(?:e\.g\.|i\.e\.)$/i.test(candidate.trim())) continue;
-    const value = candidate.trim();
-    if (isSingleSentenceShaped(value)) return value;
+function readManifestVersion(manifestPath) {
+  try {
+    const parsed = JSON.parse(readFileSync2(manifestPath, "utf8"));
+    return typeof parsed.version === "string" ? parsed.version : null;
+  } catch {
     return null;
   }
+}
+function resolvePluginVersion(env, moduleUrl) {
+  const root = env.CLAUDE_PLUGIN_ROOT;
+  if (root) {
+    const version4 = readManifestVersion(join3(root, ".claude-plugin", "plugin.json"));
+    if (version4 !== null) return version4;
+  }
+  try {
+    let dir = dirname(fileURLToPath(moduleUrl));
+    for (let i = 0; i < 3; i++) {
+      dir = dirname(dir);
+      const version4 = readManifestVersion(join3(dir, ".claude-plugin", "plugin.json"));
+      if (version4 !== null) return version4;
+    }
+  } catch {
+  }
   return null;
+}
+function readEnvRunConfig(env) {
+  try {
+    return getRunConfig(env);
+  } catch {
+    return null;
+  }
+}
+async function resolveEnvironment(env = process.env, moduleUrl = import.meta.url, client) {
+  const supabase_url = harmonyEnv("HARMONY_SUPABASE_URL", env) ?? DEFAULT_SUPABASE_URL;
+  let supabase_project_ref = "";
+  try {
+    supabase_project_ref = new URL(supabase_url).hostname.split(".")[0] ?? "";
+  } catch {
+  }
+  const conduction_id = getConductionId(env) ?? null;
+  const runConfig = await resolveRunConfigFromConduction(client, conduction_id) ?? readEnvRunConfig(env);
+  let operator_note = null;
+  let auto_approve_gates = null;
+  let fast_track = false;
+  if (runConfig) {
+    try {
+      operator_note = getOperatorNote(runConfig) ?? null;
+    } catch {
+      operator_note = null;
+    }
+    try {
+      const gates = Array.from(getAutoApproveGates(runConfig));
+      auto_approve_gates = gates.length > 0 ? gates : null;
+    } catch {
+      auto_approve_gates = null;
+    }
+    try {
+      fast_track = isFastTrackEnabled(runConfig);
+    } catch {
+      fast_track = false;
+    }
+  }
+  return {
+    supabase_url,
+    supabase_project_ref,
+    target: resolveKnownRefs(env)[supabase_project_ref] ?? "custom",
+    plugin_version: resolvePluginVersion(env, moduleUrl),
+    conduction_id,
+    operator_note,
+    auto_approve_gates,
+    fast_track
+  };
+}
+
+// src/tools/trust-model.ts
+var LEVELS = ["cautious", "balanced", "autonomous"];
+var DEFAULT_TRUST_LEVEL = "balanced";
+function resolveTrustLevel(raw) {
+  const level = raw?.level;
+  return LEVELS.includes(level) ? level : DEFAULT_TRUST_LEVEL;
+}
+
+// src/tools/project.ts
+var getProjectTool = {
+  name: "get_project",
+  description: "Get project details including workflow mode (manual|opinionated), statuses, field definitions, epics, the owning workspace's agent-trust dial (level + safety-rail overrides), and the runtime environment (Supabase target prod|staging|custom + plugin version).",
+  inputSchema: { type: "object", properties: {} }
+};
+var PROJECT_COLS = "id, name, key, description, mode, custom_statuses, field_definitions, archived, workspace:workspaces!projects_workspace_id_fkey(agent_trust)";
+async function getProject(client, projectId) {
+  const { data, error: error2 } = await client.from("projects").select(PROJECT_COLS).eq("id", projectId).single();
+  if (error2) throw error2;
+  const row = data;
+  const ws = Array.isArray(row.workspace) ? row.workspace[0] : row.workspace;
+  const rawTrust = ws?.agent_trust ?? {};
+  const agent_trust = {
+    level: resolveTrustLevel(rawTrust),
+    overrides: rawTrust.overrides ?? {}
+  };
+  const { workspace: _workspace, ...project } = row;
+  const environment = await resolveEnvironment(void 0, void 0, client);
+  return { ...project, agent_trust, environment };
 }
 
 // src/tools/resolve-task-id.ts
@@ -44924,45 +45074,16 @@ function validateTitle(title, cap = 200) {
   }
 }
 
-// src/tools/provenance.ts
-var PROVENANCE_HUMAN_IN_SESSION = "human-in-session";
-var PROVENANCE_AGENT_SYNTHESIZED = "agent-synthesized";
-var PROVENANCE_WEB_ONLY = "human-in-browser";
-var PROVENANCE_AGENT_ON_BEHALF = "agent-on-behalf";
-var PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION = `${PROVENANCE_AGENT_ON_BEHALF}:${PROVENANCE_HUMAN_IN_SESSION}`;
-var PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER = `${PROVENANCE_AGENT_ON_BEHALF}:${PROVENANCE_WEB_ONLY}`;
-var PROVENANCE_HUMAN_RECORDED = "human-recorded";
-var PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED = `${PROVENANCE_AGENT_ON_BEHALF}:${PROVENANCE_HUMAN_RECORDED}`;
-var AGENT_ON_BEHALF_CLOSED_SUFFIXES = [
-  PROVENANCE_HUMAN_IN_SESSION,
-  PROVENANCE_WEB_ONLY,
-  PROVENANCE_HUMAN_RECORDED
-];
-function guardKnowledgeWriteProvenance(provenance) {
-  if (provenance === null || provenance === void 0) return;
-  if (provenance === PROVENANCE_WEB_ONLY) {
-    throw new Error(
-      `provenance '${PROVENANCE_WEB_ONLY}' is the web client's alone \u2014 the plugin is never the browser, and accepting it here would let an agent claim a human clicked. Use '${PROVENANCE_HUMAN_IN_SESSION}' when the human decided in this session, or '${PROVENANCE_AGENT_ON_BEHALF}:<human-provenance>' when an agent is writing on a human's already-made decision (accepted: '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION}', '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER}', or '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED}').`
-    );
-  }
-  if (provenance.startsWith(`${PROVENANCE_AGENT_ON_BEHALF}:`)) {
-    const suffix = provenance.slice(PROVENANCE_AGENT_ON_BEHALF.length + 1);
-    if (AGENT_ON_BEHALF_CLOSED_SUFFIXES.includes(suffix)) return;
-    throw new Error(
-      `invalid provenance '${provenance}' \u2014 '${PROVENANCE_AGENT_ON_BEHALF}:' accepts only '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION}', '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER}', or '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED}', never any other suffix \u2014 an unrecognised suffix would render as an unattributed/unrecognised tag forever.`
-    );
-  }
-}
-
 // src/tools/knowledge.ts
 var FACT_COLS = "id, workspace_id, project_id, subject_entity_id, predicate, object, confidence, status, domain, source_type, source_id, valid_from, valid_to, recorded_at, created_by";
 var ENTITY_COLS = "id, workspace_id, project_id, kind, name, description, metadata, created_at";
 var queryKnowledgeTool = {
   name: "query_knowledge",
-  description: 'Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Results include nullable superseded_by and inverse supersedes UUIDs; matching successors precede replaced entries. Check this before making significant implementation choices. Defaults to "Accepted" entries only, with explicitly marked bookkeeping ranked last; include_bookkeeping:false excludes it before pagination. When `search` is given, retrieval is semantic (RRF) and composes with `domain`, `limit` and `include_bookkeeping`; the other structured filters (`type`, `status`, `tags`, `as_of`, `include_superseded`, `offset`) apply to the non-search structured path only.',
+  description: 'Find current term definitions first, then linked refinements and ordinary decisions. definitions_only returns full quotable current definitions; unavailable storage is reported explicitly. Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Results include nullable superseded_by and inverse supersedes UUIDs; matching successors precede replaced entries. Check this before making significant implementation choices. Defaults to "Accepted" entries only, with explicitly marked bookkeeping ranked last; include_bookkeeping:false excludes it before pagination. When `search` is given, retrieval is semantic (RRF) and composes with `domain`, `limit` and `include_bookkeeping`; the other structured filters (`type`, `status`, `tags`, `as_of`, `include_superseded`, `offset`) apply to the non-search structured path only.',
   inputSchema: {
     type: "object",
     properties: {
+      definitions_only: { type: "boolean", description: "Return only current accepted term definitions; unavailable storage is reported explicitly" },
       type: {
         type: "string",
         description: 'Filter by entry type (e.g. "architecture", "business", "convention", "specification"). (structured-filter path; not combinable with `search`)'
@@ -45163,6 +45284,10 @@ function toBaseStatus(status) {
 }
 async function queryKnowledge(client, projectId, args) {
   const workspaceId = await getWorkspaceId(client, projectId);
+  if (args.definitions_only && (args.type || args.status || args.tags?.length || args.as_of || args.include_superseded)) {
+    throw new Error("definitions_only supports search, domain, limit and offset; ordinary decision filters are not definition filters");
+  }
+  if (args.limit === 0) return [];
   if (args.search) {
     const incompatible = [];
     if (args.status) incompatible.push("status");
@@ -45176,6 +45301,43 @@ async function queryKnowledge(client, projectId, args) {
         `query_knowledge: "search" (semantic retrieval) cannot be combined with: ${incompatible.join(", ")}. Semantic search returns Accepted decisions ranked by relevance, optionally filtered by "domain". Omit "search" to use the structured filters.`
       );
     }
+  }
+  const definitions = await readDefinitions(client, workspaceId, projectId, args);
+  if (args.definitions_only) {
+    if (!definitions.available) throw new Error("Definitions are not available in this environment yet.");
+    return definitions.definitions;
+  }
+  const includeDefinitions = !args.type && !args.status && !args.tags?.length && !args.as_of && !args.include_superseded;
+  const prepend = async (entries) => {
+    if (!includeDefinitions) return entries;
+    const ids2 = args.search ? [...new Set(definitions.definitions.flatMap((d) => d.refinements.map((r) => r.id)))] : [];
+    let refinements = [];
+    if (ids2.length) {
+      let query = client.from("knowledge_decisions").select("id,title,type,status,content,domain,tags,project_id,updated_at").eq("workspace_id", workspaceId).eq("project_id", projectId).eq("status", "Accepted").in("id", ids2);
+      if (args.domain?.length) query = query.overlaps("domain", args.domain);
+      const { data, error: error2 } = await query;
+      if (error2) throw new Error(`Cannot read definition refinements: ${error2.message}`);
+      refinements = await withInvalidations(client, await hydrateSupersession(
+        client,
+        workspaceId,
+        projectId,
+        (data ?? []).map((d) => ({ id: d.id, title: d.title, type: d.type, status: d.status, domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d), snippet: matchedPassage(d.content ?? "", args.search) }))
+      ));
+    }
+    const seen = /* @__PURE__ */ new Set();
+    return [...definitions.definitions, ...refinements, ...entries].filter((entry) => {
+      if (seen.has(entry.id)) return false;
+      seen.add(entry.id);
+      return true;
+    }).slice(0, args.limit ?? 50);
+  };
+  const decisionArgs = includeDefinitions && definitions.available ? {
+    ...args,
+    offset: Math.max(0, (args.offset ?? 0) - (definitions.total_count ?? definitions.definitions.length)),
+    limit: Math.max(1, (args.limit ?? 50) - definitions.definitions.length)
+  } : args;
+  if (includeDefinitions && definitions.definitions.length >= (args.limit ?? 50)) return definitions.definitions;
+  if (args.search) {
     const queryEmbedding = await embedText(client, args.search);
     const data = await bookkeepingPage(({ bookkeeping, offset, limit, count }) => truthCompatibleRead((extraColumns) => {
       let query = client.rpc("knowledge_search_rrf", {
@@ -45188,7 +45350,7 @@ async function queryKnowledge(client, projectId, args) {
       }, count ? { count: "exact" } : {}).select("id, title, content, type, status, domain, tags, project_id, updated_at" + extraColumns);
       query = bookkeeping ? query.contains("tags", [BOOKKEEPING_TAG]) : query.or(SUBSTANTIVE_TAG_FILTER);
       return query.range(offset, offset + limit - 1);
-    }), args);
+    }), decisionArgs);
     const matches = (data ?? []).map((d) => ({
       id: d.id,
       title: d.title,
@@ -45204,8 +45366,8 @@ async function queryKnowledge(client, projectId, args) {
       rollout_state: d.rollout_state ?? null,
       open_steps: d.open_steps ?? null
     }));
-    if (!matches.length) return [];
-    return withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, matches));
+    if (!matches.length) return prepend([]);
+    return prepend(await withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, matches)));
   }
   const rows = await bookkeepingPage(({ bookkeeping, offset, limit, count }) => {
     let query = client.from("knowledge_decisions").select("*", count ? { count: "exact" } : {}).eq("workspace_id", workspaceId).eq("project_id", projectId);
@@ -45217,8 +45379,8 @@ async function queryKnowledge(client, projectId, args) {
     if (args.tags && args.tags.length > 0) query = query.contains("tags", args.tags);
     query = bookkeeping ? query.contains("tags", [BOOKKEEPING_TAG]) : query.or(SUBSTANTIVE_TAG_FILTER);
     return query.order("type", { ascending: true }).order("id", { ascending: true }).range(offset, offset + limit - 1);
-  }, args);
-  return withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, rows.map((d) => ({ id: d.id, title: d.title, type: d.type, status: d.status, domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d), verified_against: d.verified_against ?? null, rollout_state: d.rollout_state ?? null, open_steps: d.open_steps ?? null }))));
+  }, decisionArgs);
+  return prepend(await withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, rows.map((d) => ({ id: d.id, title: d.title, type: d.type, status: d.status, domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d), verified_against: d.verified_against ?? null, rollout_state: d.rollout_state ?? null, open_steps: d.open_steps ?? null })))));
 }
 async function hydrateSupersession(client, workspaceId, projectId, rows) {
   const edges = [];
@@ -46551,125 +46713,64 @@ async function resolveModelCatalog(client) {
   return { entries: MODEL_CATALOG_FALLBACK, source: "fallback" };
 }
 
-// src/tools/environment.ts
-var DEFAULT_SUPABASE_URL = "https://eioxsunvhakmelhanmnn.supabase.co";
-var KNOWN_REFS = {
-  eioxsunvhakmelhanmnn: "prod",
-  meqkdgncdzromunylyxf: "staging"
-  // staging.harmony.ad's deployed project
+// src/tools/knowledge-definitions.ts
+async function readDefinitions(client, workspaceId, projectId, args = {}) {
+  const definitions = [];
+  const requested = args.limit ?? 50;
+  if (!Number.isInteger(requested) || requested < 1 || !Number.isInteger(args.offset ?? 0) || (args.offset ?? 0) < 0) throw new Error("Invalid definition page");
+  let total_count;
+  for (; ; ) {
+    const pageSize = Math.min(500, requested - definitions.length);
+    const { data, error: error2 } = await client.rpc("read_knowledge_definitions", {
+      p_workspace_id: workspaceId,
+      p_project_id: projectId,
+      p_search: args.search?.trim() || null,
+      p_domain: args.domain?.length ? args.domain : null,
+      p_limit: pageSize,
+      p_offset: (args.offset ?? 0) + definitions.length
+    });
+    if (error2) {
+      if ((error2.code === "PGRST202" || error2.code === "42883") && error2.message.includes("read_knowledge_definitions")) return { available: false, definitions: [] };
+      throw new Error(`Cannot read definitions: ${error2.message}`);
+    }
+    if (!data || data.available !== true || !Array.isArray(data.definitions)) throw new Error("Invalid definition capability response");
+    definitions.push(...data.definitions);
+    total_count = data.total_count;
+    if (data.definitions.length < pageSize || definitions.length >= requested) return { available: true, definitions, total_count };
+  }
+}
+async function publishDefinition(client, projectId, args) {
+  guardKnowledgeWriteProvenance(args.provenance);
+  if (!args.wording?.trim()) throw new Error("Definition wording is required");
+  if (args.expected_revision === void 0) throw new Error("Provide expected_revision (null for a new definition)");
+  const { data, error: error2 } = await client.rpc("publish_knowledge_definition", {
+    p_project_id: projectId,
+    p_concept_id: args.concept_id,
+    p_expected_revision: args.expected_revision,
+    p_source_decision_id: args.source_decision_id,
+    p_wording: args.wording.trim(),
+    p_metadata: args.metadata ?? {},
+    p_refinement_ids: args.refinement_ids ?? [],
+    p_provenance: args.provenance ?? null,
+    p_conduction_id: getConductionId() ?? null,
+    p_leg: getLeg() ?? null
+  });
+  if (error2) throw new Error(`Cannot publish definition: ${error2.message}`);
+  return data;
+}
+var publishDefinitionTool = {
+  name: "publish_definition",
+  description: "Explicitly publish changed term wording from an Accepted project decision. Reuses a concept UUID; expected_revision provides compare-and-swap protection (null on first publication). Retains immutable history and refinement links. Unrelated decision acceptance never publishes automatically.",
+  inputSchema: { type: "object", properties: {
+    concept_id: { type: "string", description: "Existing concept entity UUID in this workspace" },
+    expected_revision: { type: ["string", "null"], description: "Current revision UUID; null only for first publication" },
+    source_decision_id: { type: "string", description: "Accepted decision explicitly authorizing this definition change in the current project" },
+    wording: { type: "string", description: "Full quotable current wording; no ticket prefixes" },
+    provenance: { type: "string", description: "Knowledge-write provenance; agent-on-behalf:<human provenance> when executing an accepted definition change" },
+    metadata: { type: "object", description: "Source ticket, PR and commit references" },
+    refinement_ids: { type: "array", items: { type: "string" }, description: "Project decision UUIDs to link; existing links survive updates" }
+  }, required: ["concept_id", "expected_revision", "source_decision_id", "wording"] }
 };
-function resolveKnownRefs(env) {
-  try {
-    const deploymentConfig = loadDeploymentConfig({ env });
-    const configRefs = deploymentConfig?.launcher?.supabase_refs;
-    return configRefs ? { ...KNOWN_REFS, ...configRefs } : KNOWN_REFS;
-  } catch {
-    return KNOWN_REFS;
-  }
-}
-function readManifestVersion(manifestPath) {
-  try {
-    const parsed = JSON.parse(readFileSync2(manifestPath, "utf8"));
-    return typeof parsed.version === "string" ? parsed.version : null;
-  } catch {
-    return null;
-  }
-}
-function resolvePluginVersion(env, moduleUrl) {
-  const root = env.CLAUDE_PLUGIN_ROOT;
-  if (root) {
-    const version4 = readManifestVersion(join3(root, ".claude-plugin", "plugin.json"));
-    if (version4 !== null) return version4;
-  }
-  try {
-    let dir = dirname(fileURLToPath(moduleUrl));
-    for (let i = 0; i < 3; i++) {
-      dir = dirname(dir);
-      const version4 = readManifestVersion(join3(dir, ".claude-plugin", "plugin.json"));
-      if (version4 !== null) return version4;
-    }
-  } catch {
-  }
-  return null;
-}
-function readEnvRunConfig(env) {
-  try {
-    return getRunConfig(env);
-  } catch {
-    return null;
-  }
-}
-async function resolveEnvironment(env = process.env, moduleUrl = import.meta.url, client) {
-  const supabase_url = harmonyEnv("HARMONY_SUPABASE_URL", env) ?? DEFAULT_SUPABASE_URL;
-  let supabase_project_ref = "";
-  try {
-    supabase_project_ref = new URL(supabase_url).hostname.split(".")[0] ?? "";
-  } catch {
-  }
-  const conduction_id = getConductionId(env) ?? null;
-  const runConfig = await resolveRunConfigFromConduction(client, conduction_id) ?? readEnvRunConfig(env);
-  let operator_note = null;
-  let auto_approve_gates = null;
-  let fast_track = false;
-  if (runConfig) {
-    try {
-      operator_note = getOperatorNote(runConfig) ?? null;
-    } catch {
-      operator_note = null;
-    }
-    try {
-      const gates = Array.from(getAutoApproveGates(runConfig));
-      auto_approve_gates = gates.length > 0 ? gates : null;
-    } catch {
-      auto_approve_gates = null;
-    }
-    try {
-      fast_track = isFastTrackEnabled(runConfig);
-    } catch {
-      fast_track = false;
-    }
-  }
-  return {
-    supabase_url,
-    supabase_project_ref,
-    target: resolveKnownRefs(env)[supabase_project_ref] ?? "custom",
-    plugin_version: resolvePluginVersion(env, moduleUrl),
-    conduction_id,
-    operator_note,
-    auto_approve_gates,
-    fast_track
-  };
-}
-
-// src/tools/trust-model.ts
-var LEVELS = ["cautious", "balanced", "autonomous"];
-var DEFAULT_TRUST_LEVEL = "balanced";
-function resolveTrustLevel(raw) {
-  const level = raw?.level;
-  return LEVELS.includes(level) ? level : DEFAULT_TRUST_LEVEL;
-}
-
-// src/tools/project.ts
-var getProjectTool = {
-  name: "get_project",
-  description: "Get project details including workflow mode (manual|opinionated), statuses, field definitions, epics, the owning workspace's agent-trust dial (level + safety-rail overrides), and the runtime environment (Supabase target prod|staging|custom + plugin version).",
-  inputSchema: { type: "object", properties: {} }
-};
-var PROJECT_COLS = "id, name, key, description, mode, custom_statuses, field_definitions, archived, workspace:workspaces!projects_workspace_id_fkey(agent_trust)";
-async function getProject(client, projectId) {
-  const { data, error: error2 } = await client.from("projects").select(PROJECT_COLS).eq("id", projectId).single();
-  if (error2) throw error2;
-  const row = data;
-  const ws = Array.isArray(row.workspace) ? row.workspace[0] : row.workspace;
-  const rawTrust = ws?.agent_trust ?? {};
-  const agent_trust = {
-    level: resolveTrustLevel(rawTrust),
-    overrides: rawTrust.overrides ?? {}
-  };
-  const { workspace: _workspace, ...project } = row;
-  const environment = await resolveEnvironment(void 0, void 0, client);
-  return { ...project, agent_trust, environment };
-}
 
 // src/tools/epics.ts
 var listEpicsTool = {
@@ -54056,6 +54157,7 @@ function batchIdsAck(result) {
 var knowledgeCreatedAck = (row) => pick2(row, ["id", "status", "created_at"]);
 var supersededAck = (row) => pick2(row, ["id", "status", "superseded_by"]);
 var ackProjections = {
+  publish_definition: (result) => pick2(result, ["id", "concept_id", "current_revision"]),
   // ——— tasks ———
   create_task: (result) => createdTaskAck(result),
   bulk_create_tasks: (result) => {
@@ -54985,6 +55087,7 @@ function registerTools(disabledFeatures) {
     listActivityTool,
     listWorkflowTransitionsTool,
     listMembersTool,
+    publishDefinitionTool,
     queryKnowledgeTool,
     searchTicketIntentsTool,
     getKnowledgeEntryTool,
@@ -55111,6 +55214,9 @@ async function handleToolCall(name, args, client, projectId, userId) {
         break;
       case "bulk_update_tasks":
         result = await bulkUpdateTasks(client, projectId, args);
+        break;
+      case "publish_definition":
+        result = await publishDefinition(client, projectId, args);
         break;
       case "query_knowledge":
         result = await queryKnowledge(client, projectId, args);

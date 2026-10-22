@@ -1,3 +1,4 @@
+import { publishDefinition } from '../../tools/knowledge-definitions.js';
 import { Command } from 'commander';
 import {
   queryKnowledge,
@@ -25,6 +26,7 @@ export function registerKnowledgeCommands(program: Command): void {
       [] as string[],
     )
     .option('--search <text>', 'Search term matched against title and content')
+    .option('--definitions-only', 'Return only current term definitions', false)
     .option('--all', 'Include superseded entries', false)
     .option('--no-bookkeeping', 'Exclude explicitly marked procedural gate records')
     .action(async (opts) => {
@@ -32,6 +34,7 @@ export function registerKnowledgeCommands(program: Command): void {
         program.opts(),
         async (ctx) =>
           queryKnowledge(ctx.client, ctx.projectId, {
+            definitions_only: opts.definitionsOnly,
             type: opts.type,
             status: opts.status,
             tags: opts.tag && opts.tag.length > 0 ? opts.tag : undefined,
@@ -47,6 +50,7 @@ export function registerKnowledgeCommands(program: Command): void {
               transform: (v: string) => v.slice(0, 8),
             },
             { key: 'title', header: 'Title', width: 40 },
+            { key: 'content', header: 'Definition', width: 60 },
             { key: 'claim', header: 'Claim', width: 60 },
             { key: 'claim_source', header: 'Claim source' },
             { key: 'snippet', header: 'Matched passage', width: 60 },
@@ -70,6 +74,15 @@ export function registerKnowledgeCommands(program: Command): void {
             },
           ]),
       );
+    });
+
+  knowledge.command('publish-definition').requiredOption('--concept <uuid>').requiredOption('--expected-revision <uuid-or-null>')
+    .requiredOption('--source <uuid>').requiredOption('--wording <text>')
+    .option('--metadata <json>', 'Source references', '{}').option('--provenance <value>', 'Knowledge-write provenance').action(async opts => {
+      await runCommand(program.opts(), ctx => publishDefinition(ctx.client, ctx.projectId, {
+        concept_id: opts.concept, expected_revision: opts.expectedRevision === 'null' ? null : opts.expectedRevision,
+        source_decision_id: opts.source, wording: opts.wording, provenance: opts.provenance, metadata: JSON.parse(opts.metadata),
+      }), data => JSON.stringify(data, null, 2));
     });
 
   knowledge.command('propose-claims').description('Propose missing legacy claims; dry run unless --apply').option('--apply', 'Store missing proposals as derived', false).action(async opts => {

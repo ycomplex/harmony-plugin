@@ -22745,6 +22745,63 @@ async function resolveTaskIds(client, projectId, inputs) {
   return classified.map((c) => c.kind === "uuid" ? c.id : idByNumber.get(c.taskNumber));
 }
 
+// src/tools/provenance.ts
+var PROVENANCE_HUMAN_IN_SESSION = "human-in-session";
+var PROVENANCE_AGENT_SYNTHESIZED = "agent-synthesized";
+var PROVENANCE_WEB_ONLY = "human-in-browser";
+var PROVENANCE_AGENT_ON_BEHALF = "agent-on-behalf";
+var PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION = `${PROVENANCE_AGENT_ON_BEHALF}:${PROVENANCE_HUMAN_IN_SESSION}`;
+var PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER = `${PROVENANCE_AGENT_ON_BEHALF}:${PROVENANCE_WEB_ONLY}`;
+var PROVENANCE_HUMAN_RECORDED = "human-recorded";
+var PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED = `${PROVENANCE_AGENT_ON_BEHALF}:${PROVENANCE_HUMAN_RECORDED}`;
+var AGENT_ON_BEHALF_CLOSED_SUFFIXES = [
+  PROVENANCE_HUMAN_IN_SESSION,
+  PROVENANCE_WEB_ONLY,
+  PROVENANCE_HUMAN_RECORDED
+];
+function guardKnowledgeWriteProvenance(provenance) {
+  if (provenance === null || provenance === void 0) return;
+  if (provenance === PROVENANCE_WEB_ONLY) {
+    throw new Error(
+      `provenance '${PROVENANCE_WEB_ONLY}' is the web client's alone \u2014 the plugin is never the browser, and accepting it here would let an agent claim a human clicked. Use '${PROVENANCE_HUMAN_IN_SESSION}' when the human decided in this session, or '${PROVENANCE_AGENT_ON_BEHALF}:<human-provenance>' when an agent is writing on a human's already-made decision (accepted: '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION}', '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER}', or '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED}').`
+    );
+  }
+  if (provenance.startsWith(`${PROVENANCE_AGENT_ON_BEHALF}:`)) {
+    const suffix = provenance.slice(PROVENANCE_AGENT_ON_BEHALF.length + 1);
+    if (AGENT_ON_BEHALF_CLOSED_SUFFIXES.includes(suffix)) return;
+    throw new Error(
+      `invalid provenance '${provenance}' \u2014 '${PROVENANCE_AGENT_ON_BEHALF}:' accepts only '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION}', '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER}', or '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED}', never any other suffix \u2014 an unrecognised suffix would render as an unattributed/unrecognised tag forever.`
+    );
+  }
+}
+
+// src/tools/knowledge-definitions.ts
+async function readDefinitions(client, workspaceId, projectId, args = {}) {
+  const definitions = [];
+  const requested = args.limit ?? 50;
+  if (!Number.isInteger(requested) || requested < 1 || !Number.isInteger(args.offset ?? 0) || (args.offset ?? 0) < 0) throw new Error("Invalid definition page");
+  let total_count;
+  for (; ; ) {
+    const pageSize = Math.min(500, requested - definitions.length);
+    const { data, error } = await client.rpc("read_knowledge_definitions", {
+      p_workspace_id: workspaceId,
+      p_project_id: projectId,
+      p_search: args.search?.trim() || null,
+      p_domain: args.domain?.length ? args.domain : null,
+      p_limit: pageSize,
+      p_offset: (args.offset ?? 0) + definitions.length
+    });
+    if (error) {
+      if ((error.code === "PGRST202" || error.code === "42883") && error.message.includes("read_knowledge_definitions")) return { available: false, definitions: [] };
+      throw new Error(`Cannot read definitions: ${error.message}`);
+    }
+    if (!data || data.available !== true || !Array.isArray(data.definitions)) throw new Error("Invalid definition capability response");
+    definitions.push(...data.definitions);
+    total_count = data.total_count;
+    if (data.definitions.length < pageSize || definitions.length >= requested) return { available: true, definitions, total_count };
+  }
+}
+
 // src/tools/knowledge-supersession.ts
 function projectSupersession(entries, edges) {
   const successor = new Map(edges.map((e) => [e.id, e.superseded_by ?? null]));
@@ -22947,36 +23004,6 @@ function validateTitle(title, cap = 200) {
   }
 }
 
-// src/tools/provenance.ts
-var PROVENANCE_HUMAN_IN_SESSION = "human-in-session";
-var PROVENANCE_AGENT_SYNTHESIZED = "agent-synthesized";
-var PROVENANCE_WEB_ONLY = "human-in-browser";
-var PROVENANCE_AGENT_ON_BEHALF = "agent-on-behalf";
-var PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION = `${PROVENANCE_AGENT_ON_BEHALF}:${PROVENANCE_HUMAN_IN_SESSION}`;
-var PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER = `${PROVENANCE_AGENT_ON_BEHALF}:${PROVENANCE_WEB_ONLY}`;
-var PROVENANCE_HUMAN_RECORDED = "human-recorded";
-var PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED = `${PROVENANCE_AGENT_ON_BEHALF}:${PROVENANCE_HUMAN_RECORDED}`;
-var AGENT_ON_BEHALF_CLOSED_SUFFIXES = [
-  PROVENANCE_HUMAN_IN_SESSION,
-  PROVENANCE_WEB_ONLY,
-  PROVENANCE_HUMAN_RECORDED
-];
-function guardKnowledgeWriteProvenance(provenance) {
-  if (provenance === null || provenance === void 0) return;
-  if (provenance === PROVENANCE_WEB_ONLY) {
-    throw new Error(
-      `provenance '${PROVENANCE_WEB_ONLY}' is the web client's alone \u2014 the plugin is never the browser, and accepting it here would let an agent claim a human clicked. Use '${PROVENANCE_HUMAN_IN_SESSION}' when the human decided in this session, or '${PROVENANCE_AGENT_ON_BEHALF}:<human-provenance>' when an agent is writing on a human's already-made decision (accepted: '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION}', '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER}', or '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED}').`
-    );
-  }
-  if (provenance.startsWith(`${PROVENANCE_AGENT_ON_BEHALF}:`)) {
-    const suffix = provenance.slice(PROVENANCE_AGENT_ON_BEHALF.length + 1);
-    if (AGENT_ON_BEHALF_CLOSED_SUFFIXES.includes(suffix)) return;
-    throw new Error(
-      `invalid provenance '${provenance}' \u2014 '${PROVENANCE_AGENT_ON_BEHALF}:' accepts only '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_SESSION}', '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER}', or '${PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED}', never any other suffix \u2014 an unrecognised suffix would render as an unattributed/unrecognised tag forever.`
-    );
-  }
-}
-
 // src/tools/knowledge.ts
 async function getWorkspaceId(client, projectId) {
   const { data, error } = await client.from("projects").select("workspace_id").eq("id", projectId).single();
@@ -22994,6 +23021,10 @@ async function embedText(client, text) {
 }
 async function queryKnowledge(client, projectId, args) {
   const workspaceId = await getWorkspaceId(client, projectId);
+  if (args.definitions_only && (args.type || args.status || args.tags?.length || args.as_of || args.include_superseded)) {
+    throw new Error("definitions_only supports search, domain, limit and offset; ordinary decision filters are not definition filters");
+  }
+  if (args.limit === 0) return [];
   if (args.search) {
     const incompatible = [];
     if (args.status) incompatible.push("status");
@@ -23007,6 +23038,43 @@ async function queryKnowledge(client, projectId, args) {
         `query_knowledge: "search" (semantic retrieval) cannot be combined with: ${incompatible.join(", ")}. Semantic search returns Accepted decisions ranked by relevance, optionally filtered by "domain". Omit "search" to use the structured filters.`
       );
     }
+  }
+  const definitions = await readDefinitions(client, workspaceId, projectId, args);
+  if (args.definitions_only) {
+    if (!definitions.available) throw new Error("Definitions are not available in this environment yet.");
+    return definitions.definitions;
+  }
+  const includeDefinitions = !args.type && !args.status && !args.tags?.length && !args.as_of && !args.include_superseded;
+  const prepend = async (entries) => {
+    if (!includeDefinitions) return entries;
+    const ids = args.search ? [...new Set(definitions.definitions.flatMap((d) => d.refinements.map((r) => r.id)))] : [];
+    let refinements = [];
+    if (ids.length) {
+      let query = client.from("knowledge_decisions").select("id,title,type,status,content,domain,tags,project_id,updated_at").eq("workspace_id", workspaceId).eq("project_id", projectId).eq("status", "Accepted").in("id", ids);
+      if (args.domain?.length) query = query.overlaps("domain", args.domain);
+      const { data, error } = await query;
+      if (error) throw new Error(`Cannot read definition refinements: ${error.message}`);
+      refinements = await withInvalidations(client, await hydrateSupersession(
+        client,
+        workspaceId,
+        projectId,
+        (data ?? []).map((d) => ({ id: d.id, title: d.title, type: d.type, status: d.status, domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d), snippet: matchedPassage(d.content ?? "", args.search) }))
+      ));
+    }
+    const seen = /* @__PURE__ */ new Set();
+    return [...definitions.definitions, ...refinements, ...entries].filter((entry) => {
+      if (seen.has(entry.id)) return false;
+      seen.add(entry.id);
+      return true;
+    }).slice(0, args.limit ?? 50);
+  };
+  const decisionArgs = includeDefinitions && definitions.available ? {
+    ...args,
+    offset: Math.max(0, (args.offset ?? 0) - (definitions.total_count ?? definitions.definitions.length)),
+    limit: Math.max(1, (args.limit ?? 50) - definitions.definitions.length)
+  } : args;
+  if (includeDefinitions && definitions.definitions.length >= (args.limit ?? 50)) return definitions.definitions;
+  if (args.search) {
     const queryEmbedding = await embedText(client, args.search);
     const data = await bookkeepingPage(({ bookkeeping, offset, limit, count }) => truthCompatibleRead((extraColumns) => {
       let query = client.rpc("knowledge_search_rrf", {
@@ -23019,7 +23087,7 @@ async function queryKnowledge(client, projectId, args) {
       }, count ? { count: "exact" } : {}).select("id, title, content, type, status, domain, tags, project_id, updated_at" + extraColumns);
       query = bookkeeping ? query.contains("tags", [BOOKKEEPING_TAG]) : query.or(SUBSTANTIVE_TAG_FILTER);
       return query.range(offset, offset + limit - 1);
-    }), args);
+    }), decisionArgs);
     const matches = (data ?? []).map((d) => ({
       id: d.id,
       title: d.title,
@@ -23035,8 +23103,8 @@ async function queryKnowledge(client, projectId, args) {
       rollout_state: d.rollout_state ?? null,
       open_steps: d.open_steps ?? null
     }));
-    if (!matches.length) return [];
-    return withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, matches));
+    if (!matches.length) return prepend([]);
+    return prepend(await withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, matches)));
   }
   const rows = await bookkeepingPage(({ bookkeeping, offset, limit, count }) => {
     let query = client.from("knowledge_decisions").select("*", count ? { count: "exact" } : {}).eq("workspace_id", workspaceId).eq("project_id", projectId);
@@ -23048,8 +23116,8 @@ async function queryKnowledge(client, projectId, args) {
     if (args.tags && args.tags.length > 0) query = query.contains("tags", args.tags);
     query = bookkeeping ? query.contains("tags", [BOOKKEEPING_TAG]) : query.or(SUBSTANTIVE_TAG_FILTER);
     return query.order("type", { ascending: true }).order("id", { ascending: true }).range(offset, offset + limit - 1);
-  }, args);
-  return withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, rows.map((d) => ({ id: d.id, title: d.title, type: d.type, status: d.status, domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d), verified_against: d.verified_against ?? null, rollout_state: d.rollout_state ?? null, open_steps: d.open_steps ?? null }))));
+  }, decisionArgs);
+  return prepend(await withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, rows.map((d) => ({ id: d.id, title: d.title, type: d.type, status: d.status, domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d), verified_against: d.verified_against ?? null, rollout_state: d.rollout_state ?? null, open_steps: d.open_steps ?? null })))));
 }
 async function hydrateSupersession(client, workspaceId, projectId, rows) {
   const edges = [];
