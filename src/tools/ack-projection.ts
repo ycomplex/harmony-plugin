@@ -331,6 +331,7 @@ export const ackProjections: Record<string, AckProjection> = {
  * annotated pass-throughs (value = why), so the pin test can prove every write tool was decided.
  */
 export const ACK_PASS_THROUGH: Record<string, string> = {
+  publish_source_inventory: 'Server-computed inventory revision, count and replay flag only; no value echo.',
   resolve_brief:
     'RPC result is already a compact state-confirming ack ({task_id, brief_id, workflow_state, brief_status, command, idempotent}); skills read workflow_state off it. ' +
     'B-883: when the caller supplied a remark, the ack additionally carries `remark_recorded` (true when it landed, false when the database predated the p_remark parameter and the call was retried without it) — the caller must be able to see that a supplied remark was dropped, so this flag is part of the ack, not something to strip.',

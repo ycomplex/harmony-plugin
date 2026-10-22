@@ -1,3 +1,4 @@
+import { readSourceValues } from './knowledge-sources.js';
 import { metadataCapable, metadataRpc, type KnowledgeScope } from './knowledge-metadata.js';
 import { readDefinitions, type Definition } from './knowledge-definitions.js';
 import { projectSupersession } from './knowledge-supersession.js';
@@ -120,7 +121,7 @@ const ENTITY_COLS = 'id, workspace_id, project_id, kind, name, description, meta
 export const queryKnowledgeTool = {
   name: 'query_knowledge',
   description:
-    'Find current term definitions first, then linked refinements and ordinary decisions. definitions_only returns full quotable current definitions; unavailable storage is reported explicitly. Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Results include nullable superseded_by and inverse supersedes UUIDs; matching successors precede replaced entries. Check this before making significant implementation choices. Defaults to "Accepted" entries only, with explicitly marked bookkeeping ranked last; include_bookkeeping:false excludes it before pagination. When `search` is given, retrieval is semantic (RRF) and composes with `domain`, `limit` and `include_bookkeeping`; the other structured filters (`type`, `status`, `tags`, `as_of`, `include_superseded`, `offset`) apply to the non-search structured path only. Optional scope (product | deployment) filters by declared scope when the metadata schema is present; unsupported scope filtering fails explicitly.',
+    'Find current term definitions first, then linked refinements, current source-generated deployment facts with inspectable provenance, and ordinary decisions. Generated facts remain Asserted and are not human-ratified decisions. definitions_only returns full quotable current definitions; unavailable storage is reported explicitly. Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Results include nullable superseded_by and inverse supersedes UUIDs; matching successors precede replaced entries. Check this before making significant implementation choices. Ordinary decisions default to "Accepted"; current generated evidence is included separately, with explicitly marked bookkeeping ranked last; include_bookkeeping:false excludes it before pagination. When `search` is given, retrieval is semantic (RRF) and composes with `domain`, `limit` and `include_bookkeeping`; the other structured filters (`type`, `status`, `tags`, `as_of`, `include_superseded`, `offset`) apply to the non-search structured path only. Optional scope (product | deployment) filters by declared scope when the metadata schema is present; unsupported scope filtering fails explicitly.',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -451,8 +452,11 @@ export async function queryKnowledge(
   }
   // Explicit historical/type filters remain decision-only. Default lookup gives current terms first.
   const includeDefinitions = !args.type && !args.status && !args.tags?.length && !args.as_of && !args.include_superseded && args.scope !== 'deployment';
+  const includeSources = !args.type && !args.status && !args.tags?.length && !args.as_of && !args.include_superseded && args.scope !== 'product' && (!args.domain?.length || args.domain.includes('operations'));
+  const sourceOffset = Math.max(0, (args.offset ?? 0) - (includeDefinitions ? (definitions.total_count ?? definitions.definitions.length) : 0));
+  const generated = includeSources ? await readSourceValues(client, projectId, { search: args.search, limit: args.limit, offset: sourceOffset }) : { values: [], total_count: 0 };
   const prepend = async (entries: KnowledgeEntrySummary[]) => {
-    if (!includeDefinitions) return entries;
+    if (!includeDefinitions) return [...generated.values, ...entries].slice(0, args.limit ?? 50);
     const ids = args.search ? [...new Set(definitions.definitions.flatMap(d => d.refinements.map(r => r.id)))] : [];
     let refinements: KnowledgeEntrySummary[] = [];
     if (ids.length) {
@@ -465,15 +469,15 @@ export async function queryKnowledge(
         (data ?? []).map(d => ({ id: d.id, title: d.title, type: d.type, status: d.status, domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d), snippet: matchedPassage(d.content ?? '', args.search!) }))));
     }
     const seen = new Set<string>();
-    return [...definitions.definitions, ...refinements, ...entries].filter(entry => {
+    return [...definitions.definitions, ...refinements, ...generated.values, ...entries].filter(entry => {
       if (seen.has(entry.id)) return false;
       seen.add(entry.id); return true;
     }).slice(0, args.limit ?? 50);
   };
-  const decisionArgs = includeDefinitions && definitions.available
-    ? { ...args, offset: Math.max(0, (args.offset ?? 0) - (definitions.total_count ?? definitions.definitions.length)),
-        limit: Math.max(1, (args.limit ?? 50) - definitions.definitions.length) } : args;
-  if (includeDefinitions && definitions.definitions.length >= (args.limit ?? 50)) return definitions.definitions;
+  const prefixCount = (includeDefinitions ? (definitions.total_count ?? definitions.definitions.length) : 0) + generated.total_count;
+  const pagePrefixCount = (includeDefinitions ? definitions.definitions.length : 0) + generated.values.length;
+  const decisionArgs = { ...args, offset: Math.max(0, (args.offset ?? 0) - prefixCount), limit: Math.max(1, (args.limit ?? 50) - pagePrefixCount) };
+  if (pagePrefixCount >= (args.limit ?? 50)) return prepend([]);
   // Semantic path: a free-text query => embed it + fuse vector ⊕ trigram via RRF (Phase C).
   if (args.search) {
     // Semantic retrieval (RRF) returns Accepted decisions ranked by relevance, optionally filtered by
