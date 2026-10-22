@@ -23,7 +23,7 @@ function fixture(options: { lexical?: unknown; semantic?: unknown; embed?: unkno
       return data instanceof Response ? data : json(data ?? [row('a')]);
     }
     if (path === 'knowledge_search_context_tags') return json(options.tags ?? ['surface', 'rare']);
-    if (path === 'knowledge_search_rrf') return json(options.legacy ?? [entry('legacy')]);
+    if (path === 'knowledge_search_rrf' || path === 'knowledge_search_rrf_metadata') return json(options.legacy ?? [entry('legacy')]);
     if (path === 'knowledge_decisions') return json(options.links ?? []);
     throw new Error(`Unexpected request ${path}`);
   } } });
@@ -127,5 +127,74 @@ describe('bounded real handler and Supabase transport contract', () => {
     const second=fixture({lexical:[],semantic:[]});
     expect((await queryKnowledge(second.client,'p',{search:'nope'})).tag_suggestions).toEqual([]);
     expect(second.calls.some(c=>c.path==='knowledge_search_context_tags')).toBe(false);
+  });
+});
+
+const question = (state = 'open', scope = 'product') => ({source_activity:'knowledge-question',madr:{question:{version:1,state,scope}},superseded_by:state==='decided'?'successor':null});
+describe('one scored pool: questions, scope and definitions', () => {
+  it.each([false,true])('preserves semantic proof in either completion order (lexical delayed: %s)', async delayLexical => {
+    const {client} = fixture({delayLexical, lexical:[row('ordinary',1), row('question',3,question())], semantic:[row('ordinary',1,{semantic_distance:0.1}),row('question',3,{...question(),semantic_distance:0.35})]});
+    const answer=await queryKnowledge(client,'p',{search:'quasar'});
+    expect(answer.matches.map(d=>d.id)).toEqual(['question','ordinary']);
+    expect(answer.matches[0]).toMatchObject({question_state:'open',question_scope:'product',answer:'not yet decided',resulting_decision_id:null});
+  });
+  it('applies the inclusive distance gate only to valid unresolved questions, after bookkeeping',async()=>{
+    const {client}=fixture({lexical:[row('ordinary',1),row('lexical',2,question()),row('bad',3,{...question(),madr:{question:{version:2,state:'open',scope:'product'}}})],semantic:[row('above',4,{...question(),semantic_distance:0.350001}),row('at',5,{...question('parked'),semantic_distance:0.35}),row('below',6,{...question(),semantic_distance:0.349999}),row('book',1,{...question(),semantic_distance:0.1,tags:['harmony:bookkeeping']}),row('decided',7,{...question('decided'),semantic_distance:0.1})]});
+    const answer=await queryKnowledge(client,'p',{search:'quasar'});
+    expect(answer.matches.map(d=>d.id)).toEqual(['at','below','ordinary','lexical','bad','above','decided','book']);
+    expect(answer.matches.find(d=>d.id==='bad')).not.toHaveProperty('question_state');
+    expect(answer.matches.find(d=>d.id==='decided')).toMatchObject({resulting_decision_id:'successor',answer:'decided; see resulting decision'});
+  });
+  it('applies cutoff before question priority',async()=>{
+    const {client}=fixture({lexical:[],semantic:[row('below-cutoff',21,{...question(),semantic_distance:0.1}),row('ordinary',1)]});
+    const answer=await queryKnowledge(client,'p',{search:'quasar'});
+    expect(answer.matches.map(d=>d.id)).toEqual(['ordinary']);expect(answer.below_cutoff_count).toBe(1);
+  });
+  it('passes effective scope and separate question filters to both signals and never calls metadata RPC',async()=>{
+    const {client,calls}=fixture();
+    await queryKnowledge(client,'p',{search:'quasar',scope:'product',question_state:'parked',question_scope:'deployment'});
+    for(const c of calls.filter(c=>c.path==='knowledge_search_scored')) expect(c.body).toMatchObject({_scope:'product',_question_state:'parked',_question_scope:'deployment',_status:'Accepted'});
+    expect(calls.some(c=>c.path==='knowledge_search_rrf_metadata')).toBe(false);
+  });
+  it.each([{question_state:'open' as const},{question_scope:'deployment' as const}])('never drops unsupported legacy filters %j',async filters=>{
+    const {client,calls}=fixture({lexical:json({code:'PGRST202'},404)});
+    const answer=await queryKnowledge(client,'p',{search:'quasar',...filters});
+    expect(answer.unscored_matches).toEqual([]);
+    expect(answer.routes_tried).toContainEqual({route:'legacy',outcome:'unsupported',reason:'legacy-scope-or-question-filters-unavailable'});
+    expect(calls.some(c=>c.path==='knowledge_search_rrf_metadata')).toBe(false);
+  });
+  it('uses the existing scope metadata RPC only for ordered unscored legacy fallback',async()=>{
+    const {client,calls}=fixture({lexical:json({code:'PGRST202'},404),legacy:[entry('z',{scope:'product'}),entry('a',{scope:'product'})]});
+    const answer=await queryKnowledge(client,'p',{search:'quasar',scope:'product',limit:2});
+    expect(answer.matches).toEqual([]);expect(answer.unscored_matches.map(d=>d.id)).toEqual(['z','a']);
+    expect(answer.unscored_matches[0].scope).toBe('product');
+    const legacy=calls.find(c=>c.path==='knowledge_search_rrf_metadata')!;expect(legacy.body._scope).toBe('product');expect(legacy.body._match_limit).toBeNull();
+  });
+  it('reserves one shared limit for quotable definitions, refinements, then scored decisions without duplicates',async()=>{
+    const definition={id:'def',kind:'definition',type:'definition',content:'Full wording',refinements:[{id:'linked'}]};
+    const {client}=fixture({definitions:{available:true,definitions:[definition]},links:[entry('linked')],lexical:[row('linked'),row('other',2)],semantic:[]});
+    const answer=await queryKnowledge(client,'p',{search:'quasar',limit:3});
+    expect(answer.definitions[0]).toMatchObject({content:'Full wording'});
+    expect(answer.refinements.map(d=>d.id)).toEqual(['linked']);
+    expect(answer.matches.map(d=>d.id)).toEqual(['other']);
+    expect(answer.definitions[0]).not.toHaveProperty('score');
+  });
+  it('keeps product-scoped definitions available without a decision scoring route',async()=>{
+    const definition={id:'def',kind:'definition',type:'definition',content:'Current wording',refinements:[]};
+    const {client,calls}=fixture({definitions:{available:true,definitions:[definition]}});
+    const answer=await queryKnowledge(client,'p',{search:'quasar',definitions_only:true,scope:'product'});
+    expect(answer.definitions.map(d=>d.id)).toEqual(['def']);expect(answer.definitions_available).toBe(true);
+    expect(calls.some(c=>c.path==='knowledge_search_scored')).toBe(false);
+  });
+  it('definitions_only never launches a decision ranking route and reports absent storage',async()=>{
+    const {client,calls}=fixture({definitions:json({code:'PGRST202'},404)});
+    const answer=await queryKnowledge(client,'p',{search:'quasar',definitions_only:true});
+    expect(answer).toMatchObject({definitions:[],definitions_available:false,matches:[],incomplete:true});
+    expect(calls.some(c=>c.path==='knowledge_search_scored')).toBe(false);
+  });
+  it('hung definition storage cannot extend the common deadline or hide scored hits',async()=>{
+    vi.useFakeTimers();const {client}=fixture({hang:['read_knowledge_definitions']});
+    const pending=queryKnowledge(client,'p',{search:'quasar'});await vi.advanceTimersByTimeAsync(6000);
+    const answer=await pending;expect(answer.matches[0].id).toBe('a');expect(answer.incomplete).toBe(true);
   });
 });

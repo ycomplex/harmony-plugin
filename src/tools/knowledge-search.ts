@@ -149,11 +149,11 @@ export async function searchKnowledge(client: SupabaseClient, projectId: string,
     result.capability = 'scores-unavailable';
     result.reason = 'scored search is not deployed in this environment yet';
     incomplete = true;
-    if (filters.status !== 'Accepted' || filters.tags.length) {
-      routes.push({ route: 'legacy', outcome: 'unsupported', reason: filters.status !== 'Accepted' ? 'legacy-status-accepted-only' : 'normalized-tags-unavailable' });
+    if (filters.status !== 'Accepted' || filters.tags.length || filters.question_state || filters.question_scope) {
+      routes.push({ route: 'legacy', outcome: 'unsupported', reason: filters.question_state || filters.question_scope ? 'legacy-scope-or-question-filters-unavailable' : filters.status !== 'Accepted' ? 'legacy-status-accepted-only' : 'normalized-tags-unavailable' });
     } else {
       const legacy = await bounded<Candidate[]>('legacy', signal => {
-        let q = client.rpc('knowledge_search_rrf', { _workspace_id: scope.workspace_id, _project_id: projectId,
+        let q = client.rpc(filters.scope ? 'knowledge_search_rrf_metadata' : 'knowledge_search_rrf', { ...(filters.scope ? { _scope: filters.scope } : {}), _workspace_id: scope.workspace_id, _project_id: projectId,
           _query_embedding: null, _query_text: result.normalized_query, _domain: filters.domain.length ? filters.domain : null, _match_limit: null }).select('*');
         if (filters.type) q = q.eq('type', filters.type);
         if (!filters.include_bookkeeping) q = q.or('tags.is.null,tags.not.cs.{harmony:bookkeeping}');

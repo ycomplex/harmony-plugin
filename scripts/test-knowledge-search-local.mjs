@@ -78,6 +78,7 @@ try {
  result=await queryKnowledge(client,project,{search:'heliocentric question',scope:'product',question_state:'decided',status:'Superseded'});
  assert.equal(result.matches[0].resulting_decision_id,'00000000-0000-0000-0000-000001223300');
  console.log('PASS real scored question priority, scope/state pre-ranking, decided answer and authoritative successor');
+ sql(`update public.knowledge_decisions set scope='product' where id='00000000-0000-0000-0000-000001223206';`);
  // Legacy deployment skew: rename capability and reload actual PostgREST schema cache.
  sql(`alter function ${signature} rename to b1223_saved_scored; notify pgrst,'reload schema';`);renamed=true;
  for(let n=0;n<30;n++) {const r=await client.rpc('knowledge_search_scored',{});if(r.error?.code==='PGRST202')break;await new Promise(r=>setTimeout(r,100));}
@@ -88,6 +89,8 @@ try {
  assert.deepEqual(result.unscored_matches.map(r=>r.id),expected.data.map(r=>r.id));assert(result.unscored_matches.every(r=>!('score' in r)));
  console.log(`PASS actual missing-RPC deployment preserves bounded legacy API order, no fabricated scores/count; ${elapsed.toFixed(1)}ms`);
  result=await queryKnowledge(client,project,{search:'quasar',tags:['rare']});assert.equal(result.unscored_matches.length,0);assert(result.routes_tried.some(r=>r.reason==='normalized-tags-unavailable'));
+ result=await queryKnowledge(client,project,{search:'quasar',scope:'product'});assert.equal(result.capability,'scores-unavailable');assert.deepEqual(result.unscored_matches.map(r=>r.id),['00000000-0000-0000-0000-000001223206']);
+ console.log('PASS existing metadata RPC preserves scope-filtered ordered unscored fallback');
  console.log('PASS legacy normalized-tag limitation explicit, no silently incorrect matches');
 } finally {
  if(renamed)sql(`alter function public.b1223_saved_scored(uuid,uuid,text,text,text,text,text,text[],text[],boolean) rename to knowledge_search_scored; notify pgrst,'reload schema';`);

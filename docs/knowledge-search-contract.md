@@ -89,3 +89,40 @@ The probe refuses remote databases, restores renamed capabilities/columns in `fi
 its fixtures and uses a persistent deterministic embedding stub. It exercises actual SQL/PostgREST,
 not mocked query builders. Unit tests separately exercise authorization failures, unavailable routes,
 ignored aborts, source identity, cutoff/count semantics and CLI rendering.
+
+## Scope, questions and current definitions
+
+`scope` (product/deployment), `question_state` (open/parked/decided), and `question_scope`
+(product/deployment) compose with free text before global ranks and candidate caps. CLI controls are
+`--scope`, `--question-state`, `--question-scope`. A question must have source_activity
+`knowledge-question`, numeric `madr.question.version: 1`, a valid state and a valid scope.
+Invalid metadata is inert. Effective scope uses valid question scope, otherwise the optional entry
+scope; missing scope never matches an explicit filter. Ordinary entry scope is read through row JSON,
+so this capability works both before and after B-1141's optional column exists.
+
+Question hits expose `question_state`, `question_scope`, `answer` and `resulting_decision_id`.
+The answer is `not yet decided`, or `decided; see resulting decision` with authoritative
+`superseded_by`. Default status stays Accepted; callers must request Superseded to find decided
+questions. Fusion preserves semantic distance regardless of lexical/semantic completion order.
+No second question scorer exists.
+
+Search envelopes also include `definitions`, `refinements` and `definitions_available`.
+Default and product-scoped lookup reserve the caller's shared limit for current full quotable definitions, then linked
+Accepted refinements, then ordinary scored matches. These are distinct result classes; definitions
+and linked refinements never receive invented scores. Identities already shown there are removed
+from ordinary results. `definitions_only` launches no ordinary decision ranking. All definition and
+refinement work shares the original absolute deadline, and storage absence/timeout is explicit.
+Explicit decision filters select decisions only; combining them with definitions_only is rejected.
+Structured definitions-only lists retain their existing array shape.
+
+Scored queries never call `knowledge_search_rrf_metadata`. That transitional B-1141 function must
+remain for older clients and the supported legacy path during rollout: dropping it while the plugin
+runs staging source against the production board would break those callers. The new scored RPC
+supplies scope filtering itself. When that capability is absent, this reader uses the existing metadata RPC for supported legacy scope filtering and reports question
+filters unsupported instead of silently discarding them; the ordered unscored fallback is unchanged.
+The legacy function can be retired only after its supported consumers have migrated.
+
+The candidate relation extension contract now also includes source_activity, guarded question state/
+scope, authoritative successor, optional entry_scope and read_metadata. New sources provide null
+question metadata unless they implement that exact versioned contract. They share the same class
+budgets; no source-local or question-local score/cap is introduced.
