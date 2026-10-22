@@ -1,3 +1,4 @@
+vi.mock('./knowledge-definitions.js', async importOriginal => ({ ...await importOriginal<typeof import('./knowledge-definitions.js')>(), readDefinitions: async () => ({ available: false, definitions: [] }) }));
 import { encodeClaim } from './knowledge-claim.js';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {

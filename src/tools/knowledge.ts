@@ -1,3 +1,4 @@
+import { readDefinitions, type Definition } from './knowledge-definitions.js';
 import { projectSupersession } from './knowledge-supersession.js';
 import { withInvalidations, type InvalidationLink } from './knowledge-invalidations.js';
 import { BOOKKEEPING_TAG, SUBSTANTIVE_TAG_FILTER, bookkeepingPage } from './knowledge-bookkeeping.js';
@@ -114,10 +115,11 @@ const ENTITY_COLS = 'id, workspace_id, project_id, kind, name, description, meta
 export const queryKnowledgeTool = {
   name: 'query_knowledge',
   description:
-    'Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Results include nullable superseded_by and inverse supersedes UUIDs; matching successors precede replaced entries. Check this before making significant implementation choices. Defaults to "Accepted" entries only, with explicitly marked bookkeeping ranked last; include_bookkeeping:false excludes it before pagination. When `search` is given, retrieval is semantic (RRF) and composes with `domain`, `limit` and `include_bookkeeping`; the other structured filters (`type`, `status`, `tags`, `as_of`, `include_superseded`, `offset`) apply to the non-search structured path only.',
+    'Find current term definitions first, then linked refinements and ordinary decisions. definitions_only returns full quotable current definitions; unavailable storage is reported explicitly. Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Results include nullable superseded_by and inverse supersedes UUIDs; matching successors precede replaced entries. Check this before making significant implementation choices. Defaults to "Accepted" entries only, with explicitly marked bookkeeping ranked last; include_bookkeeping:false excludes it before pagination. When `search` is given, retrieval is semantic (RRF) and composes with `domain`, `limit` and `include_bookkeeping`; the other structured filters (`type`, `status`, `tags`, `as_of`, `include_superseded`, `offset`) apply to the non-search structured path only.',
   inputSchema: {
     type: 'object' as const,
     properties: {
+      definitions_only: { type: 'boolean', description: 'Return only current accepted term definitions; unavailable storage is reported explicitly' },
       type: {
         type: 'string',
         description: 'Filter by entry type (e.g. "architecture", "business", "convention", "specification"). (structured-filter path; not combinable with `search`)',
@@ -384,6 +386,7 @@ function toBaseStatus(status: string): string {
 // ---------------------------------------------------------------------------
 
 export interface QueryKnowledgeArgs {
+  definitions_only?: boolean;
   type?: string;
   status?: string;
   domain?: string[];          // NEW: filter to entries tagged with ANY of these domains
@@ -400,15 +403,14 @@ export async function queryKnowledge(
   client: SupabaseClient,
   projectId: string,
   args: QueryKnowledgeArgs,
-): Promise<KnowledgeEntrySummary[]> {
+): Promise<Array<KnowledgeEntrySummary | Definition>> {
   const workspaceId = await getWorkspaceId(client, projectId);
 
-  // Semantic path: a free-text query => embed it + fuse vector ⊕ trigram via RRF (Phase C).
+  if (args.definitions_only && (args.type || args.status || args.tags?.length || args.as_of || args.include_superseded)) {
+    throw new Error('definitions_only supports search, domain, limit and offset; ordinary decision filters are not definition filters');
+  }
+  if (args.limit === 0) return [];
   if (args.search) {
-    // Semantic retrieval (RRF) returns Accepted decisions ranked by relevance, optionally filtered by
-    // `domain` (+ `limit`). It does NOT yet compose with the other structured filters — reject rather than
-    // silently drop them (no silent wrong answer; e.g. search+include_superseded would otherwise return
-    // Accepted-only with no error). Composable semantic+filter search is tracked as a follow-up.
     const incompatible: string[] = [];
     if (args.status) incompatible.push('status');
     if (args.include_superseded) incompatible.push('include_superseded');
@@ -423,6 +425,43 @@ export async function queryKnowledge(
         `Omit "search" to use the structured filters.`,
       );
     }
+  }
+  const definitions = await readDefinitions(client, workspaceId, projectId, args);
+  if (args.definitions_only) {
+    if (!definitions.available) throw new Error('Definitions are not available in this environment yet.');
+    return definitions.definitions;
+  }
+  // Explicit historical/type filters remain decision-only. Default lookup gives current terms first.
+  const includeDefinitions = !args.type && !args.status && !args.tags?.length && !args.as_of && !args.include_superseded;
+  const prepend = async (entries: KnowledgeEntrySummary[]) => {
+    if (!includeDefinitions) return entries;
+    const ids = args.search ? [...new Set(definitions.definitions.flatMap(d => d.refinements.map(r => r.id)))] : [];
+    let refinements: KnowledgeEntrySummary[] = [];
+    if (ids.length) {
+      let query = client.from('knowledge_decisions').select('id,title,type,status,content,domain,tags,project_id,updated_at').eq('workspace_id', workspaceId)
+        .eq('project_id', projectId).eq('status', 'Accepted').in('id', ids);
+      if (args.domain?.length) query = query.overlaps('domain', args.domain);
+      const { data, error } = await query;
+      if (error) throw new Error(`Cannot read definition refinements: ${error.message}`);
+      refinements = await withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId,
+        (data ?? []).map(d => ({ id: d.id, title: d.title, type: d.type, status: d.status, domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d), snippet: matchedPassage(d.content ?? '', args.search!) }))));
+    }
+    const seen = new Set<string>();
+    return [...definitions.definitions, ...refinements, ...entries].filter(entry => {
+      if (seen.has(entry.id)) return false;
+      seen.add(entry.id); return true;
+    }).slice(0, args.limit ?? 50);
+  };
+  const decisionArgs = includeDefinitions && definitions.available
+    ? { ...args, offset: Math.max(0, (args.offset ?? 0) - (definitions.total_count ?? definitions.definitions.length)),
+        limit: Math.max(1, (args.limit ?? 50) - definitions.definitions.length) } : args;
+  if (includeDefinitions && definitions.definitions.length >= (args.limit ?? 50)) return definitions.definitions;
+  // Semantic path: a free-text query => embed it + fuse vector ⊕ trigram via RRF (Phase C).
+  if (args.search) {
+    // Semantic retrieval (RRF) returns Accepted decisions ranked by relevance, optionally filtered by
+    // `domain` (+ `limit`). It does NOT yet compose with the other structured filters — reject rather than
+    // silently drop them (no silent wrong answer; e.g. search+include_superseded would otherwise return
+    // Accepted-only with no error). Composable semantic+filter search is tracked as a follow-up.
     const queryEmbedding = await embedText(client, args.search);   // may be null -> fn degrades to trigram-only
     const data = await bookkeepingPage<any>(({ bookkeeping, offset, limit, count }) => {
       // NULL disables the RPC's INNER limit. PostgREST then filters the SETOF rows before its
@@ -437,14 +476,14 @@ export async function queryKnowledge(
       }, count ? { count: 'exact' } : {}).select('*');
       query = bookkeeping ? query.contains('tags', [BOOKKEEPING_TAG]) : query.or(SUBSTANTIVE_TAG_FILTER);
       return query.range(offset, offset + limit - 1);
-    }, args);
+    }, decisionArgs);
     const matches = (data ?? []).map((d: any) => ({
       id: d.id, title: d.title, type: d.type, status: d.status,
       ...claimFields(d), snippet: matchedPassage(d.content ?? '', args.search!),
       domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at,
     })) as KnowledgeEntrySummary[];
-    if (!matches.length) return [];
-    return withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, matches));
+    if (!matches.length) return prepend([]);
+    return prepend(await withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, matches)));
   }
 
   // Structured retrieval uses the same class boundary and applies every filter before pagination.
@@ -462,9 +501,9 @@ export async function queryKnowledge(
     query = bookkeeping ? query.contains('tags', [BOOKKEEPING_TAG]) : query.or(SUBSTANTIVE_TAG_FILTER);
     return query.order('type', { ascending: true }).order('id', { ascending: true })
       .range(offset, offset + limit - 1);
-  }, args);
+  }, decisionArgs);
   // B-1136 claim fields first, then B-1230 page-bounded supersession hydration (both page-local).
-  return withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, rows.map(d => ({ id: d.id, title: d.title, type: d.type, status: d.status, domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d) }))));
+  return prepend(await withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, rows.map(d => ({ id: d.id, title: d.title, type: d.type, status: d.status, domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d) })))));
 }
 
 // Hydrate only returned IDs, in batches below PostgREST's row cap. Never scan the corpus
