@@ -232,3 +232,10 @@ proposal, adjust scope and set `reviewed: true` only for approved rows; then run
 `harmony knowledge apply-metadata-repair <file>`. Apply independently re-fetches merged PR paths,
 refuses stale entry fingerprints, preserves tags and is repeatable. No schema migration classifies
 production knowledge.
+
+During schema skew, probe `list_knowledge_tags` before selecting the new authoring contract. A
+confirmed unavailable capability means use the still-supported legacy operation WITHOUT `scope`
+and omit `doc.knowledge_scope`; state that the saved applicability remains unresolved until reviewed
+repair. This selects a legacy contract up front. It is never a retry that drops an explicit metadata
+request after refusal, and it never reports that scope was saved. Once capable, new entries always
+require scope and authored vocabulary validation.
