@@ -26,12 +26,26 @@ export function stripClaim(content = ''): string { return content.replace(ENVELO
 export function encodeClaim(content: string, claim: string, source: ClaimSource = 'authored'): string {
   return `**Claim:** ${claim.trim().replace(/\s+/g, ' ')}\n\n**Claim source:** ${source}\n\n${stripClaim(content)}`;
 }
-/** An edit reuses an authored claim; confirming a proposal requires an explicit value. */
+/** Missing claims from older callers remain usable, explicitly marked as unconfirmed. */
+export function claimContent(title: string, content: string, claim?: string): string {
+  if (claim !== undefined) {
+    validateClaimEntry(title, claim);
+    return encodeClaim(content, claim);
+  }
+  const proposed = proposeClaim(stripClaim(content)) ?? proposeClaim(title);
+  console.warn('Knowledge claim omitted; using a derived proposal when available. Supply claim to author it.');
+  return proposed ? encodeClaim(content, proposed, 'derived') : stripClaim(content);
+}
+/** An omitted claim never silently confirms a derived proposal. */
 export function editedClaimContent(current: { title: string; content: string; claim?: string | null; claim_source?: string | null }, updates: { title?: string; content?: string; claim?: string }): string {
   const prior = claimFields(current);
-  const claim = updates.claim ?? (prior.claim_source === 'authored' ? prior.claim : null);
-  validateClaimEntry(updates.title ?? current.title, claim ?? '');
-  return encodeClaim(updates.content ?? current.content, claim!);
+  const title = updates.title ?? current.title;
+  const content = updates.content ?? current.content;
+  if (updates.claim !== undefined) return claimContent(title, content, updates.claim);
+  if (prior.claim_source === 'authored' && prior.claim) {
+    return encodeClaim(content, prior.claim);
+  }
+  return claimContent(title, content);
 }
 export function plainText(content: string): string {
   return stripClaim(content).replace(/<[^>]*>/g, ' ').replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/[`*_#>|~]/g, '').replace(/\s+/g, ' ').trim();

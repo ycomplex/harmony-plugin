@@ -5458,3 +5458,39 @@ describe('release build-settlement report', () => {
     expect(result.brief).toMatchObject({ id: 'brief' });
   });
 });
+
+// B-1136: replay the SAME 18 full retained docs whose frames B-1158 captured.
+// Omit claims exactly as historical callers did; run the actual compose handler and payload path.
+describe('claim rollout compose replay', () => {
+  const samples = JSON.parse(readFileSync(new URL('./brief-claim-replay.json', import.meta.url), 'utf8')) as Array<{
+    ticket: string; id: string; reason: string; doc: BriefDoc;
+  }>;
+  it('contains exactly the B-1158 revision identities', () => {
+    const frames = JSON.parse(readFileSync(new URL('./brief-frame-replay.json', import.meta.url), 'utf8')) as Array<{id: string}>;
+    expect(samples.map(s => s.id).sort()).toEqual(frames.map(s => s.id).sort());
+    expect(samples).toHaveLength(18);
+  });
+  for (const sample of samples) {
+    it(`composes ${sample.ticket}/${sample.id} without an authored claim`, async () => {
+      const doc = structuredClone(sample.doc);
+      delete doc.claim;
+      delete doc.claim_source;
+      const release = sample.reason === 'release-decision-pending';
+      const plan = sample.reason === 'plan-draft';
+      const client = makeClient([
+        ...(release ? [{ data: { field_values: {} } }] : []),
+        { data: null },
+        ...(plan ? [{ data: { workflow_state: 'Designed' } }, { data: { to_state: 'Planned' } }] : []),
+        { data: { id: 'replayed-brief' } }, { data: null },
+      ]);
+      const result = await composeBrief(client, PROJECT_ID, USER_ID, {
+        task_id: 'task-1', reason: sample.reason, doc,
+        pending_activity: plan ? 'planning' : null,
+        decision_ref: ['clarification-draft', 'decomposition-proposal', 'design-decision-draft', 'revise-scope-review'].includes(sample.reason)
+          ? { type: sample.doc.frame?.kind === 'design' ? 'technical-design' : 'specification', id: 'decision-1' } : null,
+      });
+      expect(result.lint.ok).toBe(true);
+      expect(client.insert).toHaveBeenCalled();
+    });
+  }
+});

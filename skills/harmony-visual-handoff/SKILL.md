@@ -5,6 +5,8 @@ capabilities: harmony-mcp read web write shell:open shell:mkdir
 allowed-tools: mcp__harmony__* Read Grep Glob WebSearch WebFetch Write Bash(open *) Bash(mkdir *)
 ---
 
+**Knowledge claims:** Author `claim` as one quotable sentence (at most 50 words) on every `record_decision` / `create_knowledge_entry` write, and on `update_knowledge_entry` when confirming or replacing a claim. A successor uses `claim` in `supersede_decision` or `new_claim` in `supersede_knowledge_entry`; retire-only calls have no successor claim. On every entry-producing `compose_brief`, author the exact approved sentence as `doc.claim`, separately from the recommendation. Use a sentence-shaped title; compatibility-derived proposals are unconfirmed, not authored statements.
+
 > **No `disallowed-tools` here (B-1117, 2026-10-13).** This skill never edits code or runs git — that is
 > its role, stated in prose — but it no longer *revokes* Write/Edit/git: Claude Code applies an invoked
 > skill's `disallowed-tools` to the rest of the session, subagents included, so in an auto-approved run
@@ -88,6 +90,7 @@ ride downstream as if decided (D3 — never just restate the legend). Worked exa
 
 ```
 const decision = mcp__harmony__record_decision({
+  claim: "<one sentence stating what this entry establishes>",
   type: "ux-ui-design",
   title: "<ticket>: UX/UI — onboarding setup-depth = fixed/standard instrument",
   content:
@@ -153,6 +156,7 @@ mcp__harmony__compose_brief({
   pending_activity: "designing",   // <- null if a product/technical sub-track is still open (i.e. not the last)
   decision_ref: { type: "ux-ui-design", id: decision.id },
   doc: {
+    claim: "<the exact one-sentence claim the human will approve>",
     decide: "Onboarding setup-depth for the team-barometer first-run?",
     recommend: { text: "Fixed/standard instrument with a high-friction custom path", confidence: "medium" },
     why: ["Cross-team comparability needs one shared measure", "Lower first-run friction than explicit steps"],
@@ -195,6 +199,7 @@ mcp__harmony__compose_brief({
   discipline P4's gate skills follow). Author the deferral, then park:
   ```
   const deferral = mcp__harmony__record_decision({
+    claim: "<one sentence stating what this entry establishes>",
     type: "deferral", title: "<ticket>: UX/UI decision deferred — <why>",
     content: "<rationale: what we're not deciding now + when to revisit>",
     review_by: "<watch/revisit date, ISO>", domain: ["product", "customer"],

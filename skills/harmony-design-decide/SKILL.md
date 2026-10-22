@@ -5,6 +5,8 @@ capabilities: harmony-mcp read web
 allowed-tools: mcp__harmony__* Read Grep Glob WebSearch WebFetch
 ---
 
+**Knowledge claims:** Author `claim` as one quotable sentence (at most 50 words) on every `record_decision` / `create_knowledge_entry` write, and on `update_knowledge_entry` when confirming or replacing a claim. A successor uses `claim` in `supersede_decision` or `new_claim` in `supersede_knowledge_entry`; retire-only calls have no successor claim. On every entry-producing `compose_brief`, author the exact approved sentence as `doc.claim`, separately from the recommendation. Use a sentence-shaped title; compatibility-derived proposals are unconfirmed, not authored statements.
+
 > **No `disallowed-tools` here (B-1117, 2026-10-13).** This skill never edits code or runs git — that is
 > its role, stated in prose — but it no longer *revokes* Write/Edit/git: Claude Code applies an invoked
 > skill's `disallowed-tools` to the rest of the session, subagents included, so in an auto-approved run
@@ -221,6 +223,7 @@ Then, either way:
 
 ```
 const decision = mcp__harmony__record_decision({
+  claim: "<one sentence stating what this entry establishes>",
   type: "technical-design",            // or product-design / ux-ui-design
   title: "<ticket>: <sub-track> — <decision>",
   content: "<placeholder — one line: '<sub-track> decision for <ticket>; body derived from the ratified brief'>",
@@ -303,6 +306,7 @@ mcp__harmony__compose_brief({
   pending_activity: <"designing" if last required sub-track, else null>,
   decision_ref: { type: "technical-design", id: decision.id },
   doc: {
+    claim: "<the exact one-sentence claim the human will approve>",
     decide: "Technical approach for the saved-filter store?",
     recommend: { text: "Reuse the existing per-user settings JSONB column", confidence: "high" },
     frame: {
@@ -468,6 +472,7 @@ Show the rendered `content`. On the human's command:
   deferral, then park:
   ```
   const deferral = mcp__harmony__record_decision({
+    claim: "<one sentence stating what this entry establishes>",
     type: "deferral", title: "<ticket>: <sub-track> design deferred — <why>",
     content: "<rationale: why this design decision is parked + when/what to revisit>",
     review_by: "<watch/revisit date, ISO>", domain: ["engineering"],

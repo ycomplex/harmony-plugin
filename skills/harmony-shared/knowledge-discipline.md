@@ -1,3 +1,5 @@
+**Knowledge claims:** Author `claim` as one quotable sentence (at most 50 words) on every `record_decision` / `create_knowledge_entry` write, and on `update_knowledge_entry` when confirming or replacing a claim. A successor uses `claim` in `supersede_decision` or `new_claim` in `supersede_knowledge_entry`; retire-only calls have no successor claim. On every entry-producing `compose_brief`, author the exact approved sentence as `doc.claim`, separately from the recommendation. Use a sentence-shaped title; compatibility-derived proposals are unconfirmed, not authored statements.
+
 # Knowledge-query discipline (agent-model §7)
 
 Every Harmony discovery/build skill rests on this. Follow it before proposing any action.
@@ -125,6 +127,7 @@ rationale + a `review_by`/watch date), so it outlives the ticket and resurfaces.
 
 ```
 const deferral = mcp__harmony__record_decision({
+  claim: "<one sentence stating what this entry establishes>",
   type: "deferral",
   title: "<ticket>: deferred — <one-line why>",
   content: "<the rationale: what we're NOT doing now, and the condition/date to revisit>",

@@ -1951,6 +1951,28 @@ describe('recordDecision', () => {
     expect(result).toEqual(decisionRow);
   });
 
+  it('accepts an older record_decision caller with a derived claim and a warning', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: decisionRow });
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await recordDecision(client, PROJECT_ID, USER_ID, {
+      type: 'specification', title: 'Legacy label. More context.',
+      content: 'Teams can save views. This is supporting context.',
+    });
+    expect(client.rpc).toHaveBeenCalledWith('knowledge_record_decision', expect.objectContaining({
+      p_content: encodeClaim('Teams can save views. This is supporting context.', 'Teams can save views.', 'derived'),
+    }));
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('claim omitted'));
+    warning.mockRestore();
+  });
+
+  it('refuses an explicitly invalid claim before writing', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: decisionRow });
+    await expect(recordDecision(client, PROJECT_ID, USER_ID, {
+      type: 'specification', title: 'Teams save views.', content: 'Body.', claim: 'One. Two.',
+    })).rejects.toThrow('claim must be one sentence');
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
   it('throws when type is missing', async () => {
     const { client } = buildWorkspaceAndQueryClient({ data: null });
     await expect(

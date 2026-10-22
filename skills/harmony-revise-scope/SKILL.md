@@ -5,6 +5,8 @@ capabilities: harmony-mcp read web
 allowed-tools: mcp__harmony__* Read Grep Glob WebSearch WebFetch
 ---
 
+**Knowledge claims:** Author `claim` as one quotable sentence (at most 50 words) on every `record_decision` / `create_knowledge_entry` write, and on `update_knowledge_entry` when confirming or replacing a claim. A successor uses `claim` in `supersede_decision` or `new_claim` in `supersede_knowledge_entry`; retire-only calls have no successor claim. On every entry-producing `compose_brief`, author the exact approved sentence as `doc.claim`, separately from the recommendation. Use a sentence-shaped title; compatibility-derived proposals are unconfirmed, not authored statements.
+
 > **No `disallowed-tools` here (B-1117, 2026-10-13).** This skill never edits code or runs git — that is
 > its role, stated in prose — but it no longer *revokes* Write/Edit/git: Claude Code applies an invoked
 > skill's `disallowed-tools` to the rest of the session, subagents included, so in an auto-approved run
@@ -237,6 +239,7 @@ back-up happened*, not what the re-run should conclude.
 
 ```
 const decision = mcp__harmony__record_decision({
+  claim: "<one sentence stating what this entry establishes>",
   type: "specification",
   title: "<ticket>: revise-scope rationale — back up to <target gate>",
   content: "<placeholder — one line: 'revise-scope rationale for <ticket>; body derived from the ratified brief'>",
@@ -277,6 +280,7 @@ mcp__harmony__compose_brief({
                                             // ("revising-clarifying" for decompose, "revising-decomposing" for design)
   decision_ref: { type: "specification", id: decision.id },   // the rationale record (B-763)
   doc: {
+    claim: "<the exact one-sentence claim the human will approve>",
     decide: "Back <ticket> up to re-clarify against the broadened scope (the design gate revealed the spec was too narrow)?",
     recommend: { text: "Revert to Proposed and re-run clarify natively against the real scope", confidence: "high" },
     why: [

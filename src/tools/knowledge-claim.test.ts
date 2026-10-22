@@ -8,11 +8,11 @@ describe('portable knowledge claims', () => {
     expect(encodeClaim(encoded, 'The team keeps its history.')).toBe(encodeClaim(body, 'The team keeps its history.'));
     expect(stripClaim(encoded)).toBe(body);
   });
-  it('retains authored claims but requires explicit confirmation of derived and missing claims', () => {
+  it('keeps omitted claims derived until explicitly confirmed', () => {
     const row = { title: 'The team keeps its history.', content: encodeClaim('Body', 'The team keeps its history.', 'derived') };
-    expect(() => editedClaimContent(row, { content: 'New body' })).toThrow(/claim/);
+    expect(claimFields({ content: editedClaimContent(row, { content: 'New body' }) }).claim_source).toBe('derived');
     expect(claimFields({ content: editedClaimContent(row, { claim: 'The team keeps its history.' }) }).claim_source).toBe('authored');
-    expect(() => editedClaimContent({ ...row, content: 'Legacy' }, {})).toThrow(/claim/);
+    expect(claimFields({ content: editedClaimContent({ ...row, content: 'Legacy' }, {}) }).claim_source).toBe('derived');
   });
   it('uses the existing sentence-shaped contract', () => {
     for (const value of ['v0.16.3 works.', 'Use it, e.g. for teams.', 'Use it, i.e. here.']) expect(isSingleSentenceShaped(value)).toBe(true);
