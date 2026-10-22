@@ -1,3 +1,4 @@
+import { readFeatureAccounts, applyFeatureAmendment } from '../../tools/feature-accounts.js';
 import { publishDefinition } from '../../tools/knowledge-definitions.js';
 vi.mock('../../tools/knowledge-definitions.js', () => ({ publishDefinition: vi.fn().mockResolvedValue({ id: 'definition', current_revision: 'revision' }) }));
 import { Command } from 'commander';
@@ -16,6 +17,9 @@ vi.mock('../../tools/knowledge.js', () => ({
   queryKnowledge: vi.fn(), getKnowledgeEntry: vi.fn(), createKnowledgeEntry: vi.fn(),
   updateKnowledgeEntry: vi.fn().mockResolvedValue({ id: 'entry', title: 'Specimen' }),
   supersedeKnowledgeEntry: vi.fn(),
+}));
+vi.mock('../../tools/feature-accounts.js', () => ({
+  createFeatureAccount: vi.fn(), readFeatureAccounts: vi.fn().mockResolvedValue({availability:'available',accounts:[]}), previewFeatureAmendment: vi.fn(), proposeFeatureAmendment: vi.fn(), applyFeatureAmendment: vi.fn().mockResolvedValue({applied_revision:1}),
 }));
 const output = vi.hoisted(() => ({ text: '' }));
 vi.mock('../run-command.js', () => ({
@@ -67,6 +71,20 @@ describe('knowledge list human output', () => {
     expect(output.text).toContain('old-id');
     expect(output.text).toContain('new-id');
     expect(queryKnowledge).toHaveBeenCalledWith('client', 'project', expect.objectContaining({ include_superseded: true }));
+  });
+});
+
+describe('knowledge accounts CLI',()=>{
+  it('passes scoped history pagination to the shared reader',async()=>{
+    const program=new Command();registerKnowledgeCommands(program);
+    await program.parseAsync(['knowledge','accounts','list','--surface','Project views','--history-before','12','--history-limit','10'],{from:'user'});
+    expect(readFeatureAccounts).toHaveBeenCalledWith('client','project',expect.objectContaining({owner_surface:'Project views',history_before:12,history_limit:10}));
+    expect(output.text).toContain('available');
+  });
+  it('passes only an explicit production confirmation to publication',async()=>{
+    const program=new Command();registerKnowledgeCommands(program);
+    await program.parseAsync(['knowledge','accounts','apply','amendment','--confirm-production'],{from:'user'});
+    expect(applyFeatureAmendment).toHaveBeenCalledWith('client','project',{amendment_id:'amendment',production_event_id:undefined,confirm_production:true});
   });
 });
 
