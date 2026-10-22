@@ -64,6 +64,7 @@ import { recordDecision, queryKnowledge, type KnowledgeDecisionFull } from './kn
 import { referenceKnowledge } from './workflow.js';
 import { slugRef } from './payload-refs.js';
 import { updateTask } from './tasks.js';
+import { getProject } from './project.js';
 
 /** B-1062: the `ratified_by` value stamped on every gate slot this core writes — never the gate's own
  *  name, which is what a live accept would stamp (gate-slots.ts's `WriteGateSlotArgs.ratified_by`). */
@@ -653,12 +654,21 @@ export async function runRecordedWalk(
     // never a pause). A ticket already past Captured (e.g. re-run after a partial walk) skips this.
     const { data: currentTaskRow, error: currentStateErr } = await client
       .from('tasks')
-      .select('workflow_state')
+      .select('workflow_state, task_number')
       .eq('id', taskId)
       .eq('project_id', projectId)
       .single();
     if (currentStateErr) throw currentStateErr;
     const currentWorkflowState = (currentTaskRow as { workflow_state: string | null } | null)?.workflow_state ?? null;
+    // Resolve the canonical identity: callers may supply a UUID or a bare task number.
+    // Only ticket-derived entries get this tag; the shared no-split convention keeps its own tags.
+    let ticketTags: string[] = [];
+    if (runs('clarify') || runs('design') || runs('plan')) {
+      const project = await getProject(client, projectId);
+      const taskNumber = (currentTaskRow as { task_number?: number } | null)?.task_number;
+      if (!project.key || taskNumber == null) throw new Error('Cannot resolve recorded ticket tag');
+      ticketTags = [`${project.key}-${taskNumber}`.toLowerCase()];
+    }
     if (currentWorkflowState === 'Captured') {
       await advanceWorkflow(client, projectId, { task_id: taskId, activity: 'proposing' });
     }
@@ -673,6 +683,7 @@ export async function runRecordedWalk(
       source_type: 'manual',
       source_activity: 'clarify',
       source_task_id: taskId,
+      tags: ticketTags,
       provenance: KNOWLEDGE_WRITE_PROVENANCE_RECORDED,
     });
     await referenceKnowledge(client, projectId, { task_id: taskId, decision_id: clarifyDecision.id });
@@ -766,7 +777,7 @@ export async function runRecordedWalk(
     const designDecision = await recordDecision(client, projectId, userId, {
       type: 'technical-design',
       title: `${args.task_id}: technical-design — no new decision needed (recorded)`,
-      tags: bookkeepingTags(),
+      tags: bookkeepingTags(ticketTags),
       content: `<placeholder — one line: 'technical-design decision for ${args.task_id}; body derived from the ratified brief'>`,
       domain: ['engineering'],
       source_type: 'manual',
@@ -780,7 +791,7 @@ export async function runRecordedWalk(
       reason: GATE_REASONS.design!,
       pendingActivity: 'designing',
       decide: `Confirm ${args.task_id} needs no new design decision (recorded walk).`,
-      tags: bookkeepingTags(),
+      tags: bookkeepingTags(ticketTags),
       frame: {
         kind: 'design',
         track: 'technical-design',
@@ -805,7 +816,7 @@ export async function runRecordedWalk(
     const planDecision = await recordDecision(client, projectId, userId, {
       type: 'specification',
       title: `${args.task_id}: recorded plan`,
-      tags: bookkeepingTags(),
+      tags: bookkeepingTags(ticketTags),
       content: planEntryContent,
       domain: ['process'],
       source_type: 'manual',
@@ -835,7 +846,7 @@ export async function runRecordedWalk(
         ref: slugRef('plan-entry', planEntryContent),
         content: planEntryContent,
         entry_id: planDecision.id,
-        tags: bookkeepingTags(),
+        tags: bookkeepingTags(ticketTags),
       }],
     });
     gates.push({ gate: 'plan', reason: GATE_REASONS.plan, landed: true });
