@@ -5,8 +5,11 @@ const ENVELOPE = /^\*\*Claim:\*\* ([^\n]+)\n\n\*\*Claim source:\*\* (authored|de
 export function isSingleSentenceShaped(value: string): boolean {
   const text = value.trim();
   if (!text || text.split(/\s+/).length > 50) return false;
-  const neutral = text.replace(/(\d)\.(?=\d)/g, '$1').replace(/\be\.g\.|\bi\.e\./gi, m => m.replace(/\./g, ''));
-  return !/[.!?]/.test(neutral.replace(/[.!?]+\s*$/, ''));
+  // Keep code-span words in the length check above, but ignore their punctuation.
+  const neutral = text.replace(/(`+)[\s\S]*?\1/g, 'code')
+    .replace(/(\d)\.(?=\d)/g, '$1').replace(/\be\.g\.|\bi\.e\./gi, m => m.replace(/\./g, ''));
+  // Dots inside tokens (filenames, paths, versions) are not sentence boundaries.
+  return !/[.!?]+(?=\s|$)/.test(neutral.replace(/[.!?]+\s*$/, ''));
 }
 export function validateClaimEntry(title: string, claim: string): void {
   for (const [field, value] of [['title', title], ['claim', claim]]) {
