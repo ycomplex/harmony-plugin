@@ -1,3 +1,4 @@
+import { knowledgeNameTools, readKnowledgeNames, renameKnowledgeConcept, previewKnowledgeMerge, mergeKnowledgeConcepts } from './knowledge-names.js';
 import { surfaceRecordTools, captureSurfaceRecord, readSurfaceRecords } from './surface-records.js';
 import { featureAccountTools, createFeatureAccount, readFeatureAccounts, previewFeatureAmendment, proposeFeatureAmendment, applyFeatureAmendment } from './feature-accounts.js';
 import { sourceTools, publishSourceInventory, readSourceInventory, comparePublishedCoverage } from './knowledge-sources.js';
@@ -181,7 +182,7 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
     listWorkflowTransitionsTool,
     listMembersTool,
     setClaimContextTool, ...sourceTools, saveKnowledgeQuestionTool, previewKnowledgeQuestionsTool, importKnowledgeQuestionsTool,
-    listKnowledgeTagsTool, registerKnowledgeTagTool, publishDefinitionTool, queryKnowledgeTool, searchTicketIntentsTool, getKnowledgeEntryTool, createKnowledgeEntryTool, updateKnowledgeEntryTool, supersedeKnowledgeEntryTool,
+    listKnowledgeTagsTool, registerKnowledgeTagTool, publishDefinitionTool, ...knowledgeNameTools, queryKnowledgeTool, searchTicketIntentsTool, getKnowledgeEntryTool, createKnowledgeEntryTool, updateKnowledgeEntryTool, supersedeKnowledgeEntryTool,
     recordDecisionTool, supersedeDecisionTool, queryFactsTool, assertFactTool, invalidateFactTool, queryEntitiesTool,
     createEntityTool, updateEntityTool, reconcileEntityTool,
     composeBriefTool, getBriefTool, listBriefsTool, resolveBriefTool, reshapeBriefTool, consumeAcceptRemarkTool,
@@ -335,6 +336,15 @@ export async function handleToolCall(
       case 'set_claim_context':
         result = await setClaimContext(client, projectId, args as any);
         break;
+      case 'read_concept_names':
+        result = await readKnowledgeNames(client, projectId, args as any); break;
+      case 'rename_concept':
+        result = await renameKnowledgeConcept(client, projectId, args as any); break;
+      case 'preview_concept_merge':
+        result = await previewKnowledgeMerge(client, projectId, args as any); break;
+      case 'merge_concepts':
+        result = await mergeKnowledgeConcepts(client, projectId, args as any); break;
+
       case 'publish_definition':
         result = await publishDefinition(client, projectId, args as unknown as PublishDefinitionArgs);
         break;

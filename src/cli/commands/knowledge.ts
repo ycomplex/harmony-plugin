@@ -1,3 +1,4 @@
+import { readKnowledgeNames, renameKnowledgeConcept, previewKnowledgeMerge, mergeKnowledgeConcepts } from '../../tools/knowledge-names.js';
 import { captureSurfaceRecord, readSurfaceRecords } from '../../tools/surface-records.js';
 import { createFeatureAccount, readFeatureAccounts, previewFeatureAmendment, proposeFeatureAmendment, applyFeatureAmendment } from '../../tools/feature-accounts.js';
 import { registerSourceCommands } from './knowledge-sources.js';
@@ -180,6 +181,17 @@ export function registerKnowledgeCommands(program: Command): void {
   });
   knowledge.command('tags').action(async () => { await runCommand(program.opts(), ctx => listKnowledgeTags(ctx.client, ctx.projectId), data => JSON.stringify(data, null, 2)); });
   knowledge.command('register-tag').argument('<name>').argument('<description>').action(async (name, description) => { await runCommand(program.opts(), ctx => registerKnowledgeTag(ctx.client, ctx.projectId, name, description), data => JSON.stringify(data, null, 2)); });
+  knowledge.command('names').option('--search <text>').option('--entry <uuid...>').option('--entity <uuid...>')
+    .action(async opts => { await runCommand(program.opts(), ctx => readKnowledgeNames(ctx.client,ctx.projectId,{search:opts.search,entry_ids:opts.entry,entity_ids:opts.entity}), data => JSON.stringify(data,null,2)); });
+  knowledge.command('rename').requiredOption('--concept <uuid>').requiredOption('--expect <name>').requiredOption('--to <name>').requiredOption('--ticket <id>', 'Authorizing ticket UUID or visual ID').requiredOption('--operation-key <key>')
+    .action(async opts => { await runCommand(program.opts(), ctx => renameKnowledgeConcept(ctx.client,ctx.projectId,{concept_id:opts.concept,expected_name:opts.expect,new_name:opts.to,source_task_id:opts.ticket,operation_key:opts.operationKey}), data => JSON.stringify(data,null,2)); });
+  knowledge.command('merge').requiredOption('--source <uuid>').requiredOption('--target <uuid>').requiredOption('--ticket <id>', 'Authorizing ticket UUID or visual ID').option('--preview').option('--confirm <key>')
+    .action(async opts => {
+      if (!!opts.preview === !!opts.confirm) throw new Error('Choose exactly one of --preview or --confirm <key>');
+      const args={source_id:opts.source,target_id:opts.target,source_task_id:opts.ticket};
+      await runCommand(program.opts(),ctx => opts.preview ? previewKnowledgeMerge(ctx.client,ctx.projectId,args) : mergeKnowledgeConcepts(ctx.client,ctx.projectId,{...args,confirmation:opts.confirm}),data => JSON.stringify(data,null,2));
+    });
+
   knowledge.command('publish-definition').requiredOption('--concept <uuid>').requiredOption('--expected-revision <uuid-or-null>')
     .requiredOption('--source <uuid>').requiredOption('--wording <text>')
     .option('--metadata <json>', 'Source references', '{}').option('--provenance <value>', 'Knowledge-write provenance').action(async opts => {

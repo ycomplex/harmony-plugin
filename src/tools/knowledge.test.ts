@@ -1,3 +1,4 @@
+vi.mock('./knowledge-names.js', async importOriginal => ({ ...await importOriginal<typeof import('./knowledge-names.js')>(), readKnowledgeNames: async () => ({available:false,matches:[],entries:[],identities:[]}), withRetiredWording: async (_c:unknown,_p:unknown,entries:unknown[])=>entries }));
 vi.mock('./knowledge-sources.js', async importOriginal => ({ ...await importOriginal<typeof import('./knowledge-sources.js')>(), readSourceValues: async () => ({ values: [], total_count: 0 }) }));
 // Legacy-contract tests intentionally run with the new capability absent; metadata tests cover both schemas.
 vi.mock('./knowledge-metadata.js', async importOriginal => ({

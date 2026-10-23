@@ -8,6 +8,7 @@ function fixture(available=true) {
  chain.single=vi.fn(async()=>({data:{...row,workspace_id:'w'},error:null}));
  const context={claim_id:'claim',question_state:'available',questions:[{text:'Original question?'}],concepts:[{id:'concept',name:'Term'}]};
  const rpc=vi.fn(async(name:string,args:Record<string,unknown>)=>{
+  if(name==='read_knowledge_names')return {data:null,error:{code:'PGRST202',message:'read_knowledge_names missing'}};
   if(name==='knowledge_metadata_capable') return {data:false,error:null};
   if(name==='read_claim_context') return available ? {data:{available:true,contexts:(args.p_claim_ids as string[]).length?[context]:[]},error:null} : {data:null,error:{code:'PGRST202',message:'Could not find function read_claim_context'}};
   if(name==='record_claim_with_context')return {data:{...row,claim_context:context},error:null};

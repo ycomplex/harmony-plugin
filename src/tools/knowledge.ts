@@ -1,3 +1,4 @@
+import { readKnowledgeNames, withRetiredWording } from './knowledge-names.js';
 import { readSourceValues } from './knowledge-sources.js';
 import { questionProjection } from './knowledge-questions.js';
 import { metadataCapable, metadataRpc, type KnowledgeScope } from './knowledge-metadata.js';
@@ -439,7 +440,7 @@ export async function queryKnowledge(
   client: SupabaseClient,
   projectId: string,
   args: QueryKnowledgeArgs,
-): Promise<Array<KnowledgeEntrySummary | Definition>> {
+): Promise<Array<KnowledgeEntrySummary | Definition | ConceptNameResult>> {
   const workspaceId = await getWorkspaceId(client, projectId);
   if (args.question_state && !['open', 'parked', 'decided'].includes(args.question_state)) {
     throw new Error('question_state must be open, parked or decided');
@@ -473,21 +474,23 @@ export async function queryKnowledge(
     }
   }
   const definitions = await readDefinitions(client, workspaceId, projectId, args);
+  const conceptNames = args.search ? await readKnowledgeNames(client,projectId,{search:args.search}) : null;
   if (args.definitions_only) {
     if (!definitions.available) throw new Error('Definitions are not available in this environment yet.');
     return definitions.definitions;
   }
   // Explicit historical/type filters remain decision-only. Default lookup gives current terms first.
   const includeDefinitions = !args.type && !args.status && !args.tags?.length && !args.as_of && !args.include_superseded && args.scope !== 'deployment';
+  const noDefinition: ConceptNameResult[] = (conceptNames?.matches ?? []).filter(m=>m.state==='no-current-definition').map(m=>({id:m.concept_id,kind:'concept',title:m.current_name,concept_id:m.concept_id,state:m.state,matched_alias:m.matched_alias}));
   const includeSources = !args.type && !args.status && !args.tags?.length && !args.as_of && !args.include_superseded && args.scope !== 'product' && (!args.domain?.length || args.domain.includes('operations'));
-  const sourceOffset = Math.max(0, (args.offset ?? 0) - (includeDefinitions ? (definitions.total_count ?? definitions.definitions.length) : 0));
+  const sourceOffset = Math.max(0, (args.offset ?? 0) - (includeDefinitions ? (definitions.total_count ?? definitions.definitions.length) + noDefinition.length : 0));
   const generated = includeSources ? await readSourceValues(client, projectId, { search: args.search, limit: args.limit, offset: sourceOffset }) : { values: [], total_count: 0 };
   const prepend = async (entries: KnowledgeEntrySummary[]) => {
-    // Generated source values (B-1241) carry no claim context; enrich only the decision rows (B-1228).
-    const enrichClaims = async (rows: KnowledgeEntrySummary[]) => {
-      const enriched = await withClaimContexts(client, rows.filter(e => e.type !== 'definition' && (e as { source_type?: string }).source_type !== 'generated'));
-      const contexts = new Map(enriched.map(e=>[e.id,e]));
-      return rows.map(e=>contexts.get(e.id) ?? e);
+    // Enrich decisions only: definitions, source inventories and concept placeholders are separate result kinds.
+    const enrichClaims = async <T extends {id:string}>(rows:T[]):Promise<T[]> => {
+      const enriched=await withClaimContexts(client,rows.filter(e=>{const kind=e as {type?:string;kind?:string;source_type?:string};return kind.type!=='definition' && kind.kind!=='concept' && kind.source_type!=='generated';}));
+      const contexts=new Map(enriched.map(e=>[e.id,e]));
+      return withRetiredWording(client,projectId,rows.map(e=>contexts.get(e.id)??e));
     };
     if (!includeDefinitions) return enrichClaims([...generated.values, ...entries].slice(0, args.limit ?? 50));
     const ids = args.search ? [...new Set(definitions.definitions.flatMap(d => d.refinements.map(r => r.id)))] : [];
@@ -502,14 +505,14 @@ export async function queryKnowledge(
         (data ?? []).map(d => ({ id: d.id, title: d.title, type: d.type, status: d.status, domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d), snippet: matchedPassage(d.content ?? '', args.search!) }))));
     }
     const seen = new Set<string>();
-    const result = [...definitions.definitions, ...refinements, ...generated.values, ...entries].filter(entry => {
+    const result = [...definitions.definitions, ...noDefinition, ...refinements, ...generated.values, ...entries].filter(entry => {
       if (seen.has(entry.id)) return false;
       seen.add(entry.id); return true;
     }).slice(0, args.limit ?? 50);
     return enrichClaims(result);
   };
-  const prefixCount = (includeDefinitions ? (definitions.total_count ?? definitions.definitions.length) : 0) + generated.total_count;
-  const pagePrefixCount = (includeDefinitions ? definitions.definitions.length : 0) + generated.values.length;
+  const prefixCount = (includeDefinitions ? (definitions.total_count ?? definitions.definitions.length) + noDefinition.length : 0) + generated.total_count;
+  const pagePrefixCount = (includeDefinitions ? definitions.definitions.length + noDefinition.length : 0) + generated.values.length;
   const decisionArgs = { ...args, offset: Math.max(0, (args.offset ?? 0) - prefixCount), limit: Math.max(1, (args.limit ?? 50) - pagePrefixCount) };
   if (pagePrefixCount >= (args.limit ?? 50)) return prepend([]);
   // Semantic path: a free-text query => embed it + fuse vector ⊕ trigram via RRF (Phase C).
@@ -711,7 +714,7 @@ export async function getKnowledgeEntry(
 
   const { data, error } = await query.single();
   if (error) throw error;
-  return (await withClaimContexts(client, await withInvalidations(client, [{ ...data, ...claimFields(data), ...questionProjection(data), verified_against: data.verified_against ?? null, rollout_state: data.rollout_state ?? null, open_steps: data.open_steps ?? null } as KnowledgeEntryFull])))[0];
+  return (await withRetiredWording(client,projectId,await withClaimContexts(client, await withInvalidations(client, [{ ...data, ...claimFields(data), ...questionProjection(data), verified_against: data.verified_against ?? null, rollout_state: data.rollout_state ?? null, open_steps: data.open_steps ?? null } as KnowledgeEntryFull]))))[0];
 }
 
 // ---------------------------------------------------------------------------
@@ -1006,6 +1009,10 @@ export async function resolveOrCreateEntity(
   // entity resolve to one node instead of silently forking into two.
   const rawName = name;
   const normalizedName = normalizeHtmlEntities(rawName);
+  const names=await readKnowledgeNames(client,projectId,{search:normalizedName});
+  if(names.matches.length>1) throw new Error('Ambiguous concept name; use an explicit identity');
+  if(names.matches.length===1) return names.matches[0].concept_id;
+
 
   const { data: existing, error: lookupErr } = await client
     .from('knowledge_entities')
@@ -1340,6 +1347,8 @@ export const recordDecisionTool = {
 // Handler: queryEntities
 // ---------------------------------------------------------------------------
 
+interface ConceptNameResult { id: string; kind: 'concept'; title: string; concept_id: string; state: 'no-current-definition' | 'current-definition'; matched_alias: string | null }
+
 export interface QueryEntitiesArgs { kind?: string; name?: string; }
 
 export async function queryEntities(
@@ -1348,9 +1357,12 @@ export async function queryEntities(
   args: QueryEntitiesArgs,
 ): Promise<KnowledgeEntityFull[]> {
   const workspaceId = await getWorkspaceId(client, projectId);
-  let query = client.from('knowledge_entities').select(ENTITY_COLS).eq('workspace_id', workspaceId);
+  const names=await readKnowledgeNames(client,projectId,{search:args.name});
+  let query = client.from(names.available ? 'knowledge_current_entities' : 'knowledge_entities').select(ENTITY_COLS).eq('workspace_id', workspaceId);
+  if(names.matches.length>1 && args.name) throw new Error('Ambiguous concept name; use an explicit identity');
+  if(names.matches.length===1 && args.name) query=query.eq('id',names.matches[0].concept_id);
   if (args.kind) query = query.eq('kind', args.kind);
-  if (args.name) query = query.ilike('name', `%${args.name}%`);
+  if (args.name && !names.matches.length) query = query.ilike('name', `%${args.name}%`);
   const { data, error } = await query.order('name', { ascending: true });
   if (error) throw new Error(error.message);
   return (data ?? []) as KnowledgeEntityFull[];
@@ -1397,10 +1409,14 @@ export async function createEntity(
   // B-993: normalize-before-lookup, so a normalized-name row and a raw-name write of the "same"
   // entity resolve to one node instead of silently forking into two.
   const rawName = args.name.trim();
-  const name = normalizeHtmlEntities(rawName);
+  let name = normalizeHtmlEntities(rawName);
   const description = args.description !== undefined ? normalizeHtmlEntities(args.description) : undefined;
 
   const workspaceId = await getWorkspaceId(client, projectId);
+  const names=await readKnowledgeNames(client,projectId,{search:name});
+  if(names.matches.length>1) throw new Error('Ambiguous concept name; use an explicit identity');
+  if(names.matches.length===1) name=names.matches[0].current_name;
+
 
   // Create-or-skip on (workspace_id, kind, name): a re-seed of the same node is a no-op, unless a
   // description/metadata is supplied — then those fields are refreshed on the existing row (upsert).
@@ -1534,6 +1550,10 @@ export async function updateEntity(
 
   // B-1021: fence out human-in-browser / validate agent-on-behalf:* before the write.
   guardKnowledgeWriteProvenance(args.provenance);
+  const names=await readKnowledgeNames(client,projectId,{search:args.name,entity_ids:args.entity_id?[args.entity_id]:[]});
+  if(names.matches.length>1 && !args.entity_id) throw new Error('Ambiguous concept name; use an explicit identity');
+  const resolved=names.identities[0]?.concept_id ?? names.matches[0]?.concept_id;
+  if(resolved) args={...args,entity_id:resolved};
   const { data, error } = await client.rpc('knowledge_update_entity', {
     p_project_id: projectId,
     p_entity_id: args.entity_id ?? null,
@@ -1709,9 +1729,11 @@ export async function assertFact(
   if (!args.source_type) throw new Error('source_type is required');
 
   const workspaceId = await getWorkspaceId(client, projectId);
-  const subjectKind = args.subject_entity_kind ?? 'concept';
+  const subjectNames=await readKnowledgeNames(client,projectId,{search:args.subject_entity});
+  if(subjectNames.matches.length>1) throw new Error('Ambiguous subject name; use an explicit identity');
+  const subjectKind = subjectNames.matches[0]?.kind ?? args.subject_entity_kind ?? 'concept';
   await resolveOrCreateEntity(client, workspaceId, projectId, args.subject_entity, subjectKind);
-  const subjectName = normalizeHtmlEntities(args.subject_entity);
+  const subjectName = subjectNames.matches[0]?.current_name ?? normalizeHtmlEntities(args.subject_entity);
 
   const embedding = await embedText(client, `${args.subject_entity} ${args.predicate} ${JSON.stringify(args.object)}`);
 
@@ -1829,11 +1851,11 @@ export async function queryFacts(
   // (UNIQUE is (workspace_id, kind, name)), so resolve ALL matches and filter with .in(),
   // and surface a real lookup error rather than masking it as an empty result.
   if (args.entity) {
-    const { data: ents, error: entErr } = await client
-      .from('knowledge_entities')
-      .select('id')
-      .eq('workspace_id', workspaceId)
-      .ilike('name', args.entity);
+    const names=await readKnowledgeNames(client,projectId,{search:args.entity});
+    if(names.matches.length>1) throw new Error('Ambiguous concept name; use an explicit identity');
+    const { data: ents, error: entErr } = names.matches.length
+      ? { data:names.matches.map(m=>({id:m.concept_id})),error:null }
+      : await client.from(names.available?'knowledge_current_entities':'knowledge_entities').select('id').eq('workspace_id',workspaceId).ilike('name',args.entity);
     if (entErr) throw new Error(entErr.message);
     const ids = (ents ?? []).map((e) => (e as { id: string }).id);
     if (ids.length === 0) return [];

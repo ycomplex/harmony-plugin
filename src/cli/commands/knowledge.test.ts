@@ -1,3 +1,5 @@
+import { renameKnowledgeConcept, previewKnowledgeMerge, mergeKnowledgeConcepts } from '../../tools/knowledge-names.js';
+vi.mock('../../tools/knowledge-names.js',()=>({readKnowledgeNames:vi.fn(),renameKnowledgeConcept:vi.fn().mockResolvedValue({entity_id:'c'}),previewKnowledgeMerge:vi.fn().mockResolvedValue({confirmation:'key'}),mergeKnowledgeConcepts:vi.fn().mockResolvedValue({target_entity_id:'now'})}));
 import { captureSurfaceRecord, readSurfaceRecords } from '../../tools/surface-records.js';
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -122,6 +124,23 @@ describe('definition CLI controls', () => {
     await program.parseAsync(['knowledge', 'publish-definition', '--concept', 'concept', '--expected-revision', 'null', '--source', 'source', '--wording', 'Meaning.', '--metadata', '{"ticket":"B-1226"}'], { from: 'user' });
     expect(publishDefinition).toHaveBeenLastCalledWith('client', 'project', expect.objectContaining({ concept_id: 'concept', expected_revision: null, source_decision_id: 'source', wording: 'Meaning.', metadata: { ticket: 'B-1226' } }));
   });
+});
+
+describe('explicit name mutation commands',()=>{
+ it('passes rename expectation and operation key without assuming a merge',async()=>{
+  const program=new Command();registerKnowledgeCommands(program);
+  await program.parseAsync(['knowledge','rename','--concept','c','--expect','Old','--to','Now','--ticket','B-1227','--operation-key','once'],{from:'user'});
+  expect(renameKnowledgeConcept).toHaveBeenLastCalledWith('client','project',{concept_id:'c',expected_name:'Old',new_name:'Now',source_task_id:'B-1227',operation_key:'once'});
+ });
+ it('separates preview and explicit confirmation',async()=>{
+  const make=()=>{const p=new Command();registerKnowledgeCommands(p);return p;};
+  const args=['knowledge','merge','--source','old','--target','now','--ticket','B-1227'];
+  await make().parseAsync([...args,'--preview'],{from:'user'});
+  expect(previewKnowledgeMerge).toHaveBeenLastCalledWith('client','project',{source_id:'old',target_id:'now',source_task_id:'B-1227'});
+  await make().parseAsync([...args,'--confirm','reviewed-key'],{from:'user'});
+  expect(mergeKnowledgeConcepts).toHaveBeenLastCalledWith('client','project',{source_id:'old',target_id:'now',source_task_id:'B-1227',confirmation:'reviewed-key'});
+  await expect(make().parseAsync([...args,'--preview','--confirm','key'],{from:'user'})).rejects.toThrow('exactly one');
+ });
 });
 
 describe('knowledge surfaces CLI',()=>{

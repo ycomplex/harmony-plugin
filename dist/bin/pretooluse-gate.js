@@ -22557,6 +22557,16 @@ async function resolveTaskId(client, projectId, input) {
   return data.id;
 }
 
+// src/tools/knowledge-names.ts
+var property = (description) => ({ type: "string", description });
+var mergeProperties = { source_id: property("Source identity UUID to retire in place"), target_id: property("Surviving current identity UUID"), source_task_id: property("Authorizing ticket UUID or visual ID in this project") };
+var knowledgeNameTools = [
+  { name: "read_concept_names", description: "Exact current/retired name lookup, bounded retired-word scans and transitive historical identity resolution. Missing capability is explicit, never a clean scan. At most 500 entry or entity UUIDs per call.", inputSchema: { type: "object", properties: { search: property("Exact name, ignoring case and surrounding whitespace"), entry_ids: { type: "array", items: { type: "string" } }, entity_ids: { type: "array", items: { type: "string" } } } } },
+  { name: "rename_concept", description: "Explicit atomic rename with expected current name, source ticket and idempotency key. Collisions never merge identities.", inputSchema: { type: "object", properties: { concept_id: property("Concept UUID"), expected_name: property("Exact current name"), new_name: property("New canonical name"), source_task_id: property("Authorizing ticket UUID or visual ID"), operation_key: property("Unique idempotency key; never reuse with different inputs") }, required: ["concept_id", "expected_name", "new_name", "source_task_id", "operation_key"] } },
+  { name: "preview_concept_merge", description: "Inventory every mutable reference and immutable historical event before an explicit merge. Returns blockers and a confirmation bound to this inventory and source ticket.", inputSchema: { type: "object", properties: mergeProperties, required: Object.keys(mergeProperties) } },
+  { name: "merge_concepts", description: "Execute a reviewed preview using its confirmation; stale inventories and conflicts refuse atomically. Retains source row and original event ids; resolves retired identity transitively. Never use as an implicit rename collision fallback.", inputSchema: { type: "object", properties: { ...mergeProperties, confirmation: property("Exact reviewed preview confirmation") }, required: [...Object.keys(mergeProperties), "confirmation"] } }
+];
+
 // src/tools/knowledge-sources.ts
 var text = external_exports.string().trim().min(1);
 var sourceValueSchema = external_exports.object({

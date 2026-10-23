@@ -36557,12 +36557,65 @@ async function resolveTaskIds(client, projectId, inputs) {
     const { data, error } = await client.from("tasks").select("id, task_number").eq("project_id", projectId).in("task_number", neededNumbers);
     if (error) throw error;
     for (const row of data ?? []) idByNumber.set(row.task_number, row.id);
-    const missing = neededNumbers.filter((n) => !idByNumber.has(n));
-    if (missing.length > 0) {
-      throw new Error(`No task(s) with number(s) ${missing.join(", ")} in this project`);
+    const missing2 = neededNumbers.filter((n) => !idByNumber.has(n));
+    if (missing2.length > 0) {
+      throw new Error(`No task(s) with number(s) ${missing2.join(", ")} in this project`);
     }
   }
   return classified.map((c) => c.kind === "uuid" ? c.id : idByNumber.get(c.taskNumber));
+}
+
+// src/tools/knowledge-names.ts
+function missing(error, operation2) {
+  return ["PGRST202", "42883"].includes(error.code ?? "") && error.message.includes(operation2);
+}
+async function invoke(client, operation2, args, optional = false) {
+  const { data, error } = await client.rpc(operation2, args);
+  if (error) {
+    if (missing(error, operation2)) {
+      if (optional) return void 0;
+      throw new Error("Name history is not available in this environment yet.");
+    }
+    throw new Error(`Concept name operation failed: ${error.message}`);
+  }
+  if (data === null || data === void 0) throw new Error("Invalid concept name capability response");
+  return data;
+}
+async function readKnowledgeNames(client, projectId, args = {}) {
+  const data = await invoke(client, "read_knowledge_names", { p_project_id: projectId, p_search: args.search ?? null, p_entry_ids: args.entry_ids ?? [], p_entity_ids: args.entity_ids ?? [] }, true);
+  if (data === void 0) return { available: false, matches: [], entries: [], identities: [] };
+  if (data?.available !== true || !Array.isArray(data.matches) || !Array.isArray(data.entries) || !Array.isArray(data.identities)) throw new Error("Invalid concept name capability response");
+  return data;
+}
+async function renameKnowledgeConcept(client, projectId, args) {
+  return invoke(client, "rename_knowledge_concept", { p_project_id: projectId, p_entity_id: args.concept_id, p_expected_name: args.expected_name, p_new_name: args.new_name, p_source_task_id: await resolveTaskId(client, projectId, args.source_task_id), p_operation_key: args.operation_key });
+}
+async function previewKnowledgeMerge(client, projectId, args) {
+  return invoke(client, "preview_knowledge_merge", { p_project_id: projectId, p_source: args.source_id, p_target: args.target_id, p_source_task_id: await resolveTaskId(client, projectId, args.source_task_id) });
+}
+async function mergeKnowledgeConcepts(client, projectId, args) {
+  if (!args.confirmation?.trim()) throw new Error("An explicit preview confirmation is required");
+  return invoke(client, "merge_knowledge_concepts", { p_project_id: projectId, p_source: args.source_id, p_target: args.target_id, p_source_task_id: await resolveTaskId(client, projectId, args.source_task_id), p_confirmation: args.confirmation });
+}
+var property = (description) => ({ type: "string", description });
+var mergeProperties = { source_id: property("Source identity UUID to retire in place"), target_id: property("Surviving current identity UUID"), source_task_id: property("Authorizing ticket UUID or visual ID in this project") };
+var knowledgeNameTools = [
+  { name: "read_concept_names", description: "Exact current/retired name lookup, bounded retired-word scans and transitive historical identity resolution. Missing capability is explicit, never a clean scan. At most 500 entry or entity UUIDs per call.", inputSchema: { type: "object", properties: { search: property("Exact name, ignoring case and surrounding whitespace"), entry_ids: { type: "array", items: { type: "string" } }, entity_ids: { type: "array", items: { type: "string" } } } } },
+  { name: "rename_concept", description: "Explicit atomic rename with expected current name, source ticket and idempotency key. Collisions never merge identities.", inputSchema: { type: "object", properties: { concept_id: property("Concept UUID"), expected_name: property("Exact current name"), new_name: property("New canonical name"), source_task_id: property("Authorizing ticket UUID or visual ID"), operation_key: property("Unique idempotency key; never reuse with different inputs") }, required: ["concept_id", "expected_name", "new_name", "source_task_id", "operation_key"] } },
+  { name: "preview_concept_merge", description: "Inventory every mutable reference and immutable historical event before an explicit merge. Returns blockers and a confirmation bound to this inventory and source ticket.", inputSchema: { type: "object", properties: mergeProperties, required: Object.keys(mergeProperties) } },
+  { name: "merge_concepts", description: "Execute a reviewed preview using its confirmation; stale inventories and conflicts refuse atomically. Retains source row and original event ids; resolves retired identity transitively. Never use as an implicit rename collision fallback.", inputSchema: { type: "object", properties: { ...mergeProperties, confirmation: property("Exact reviewed preview confirmation") }, required: [...Object.keys(mergeProperties), "confirmation"] } }
+];
+async function withRetiredWording(client, projectId, entries) {
+  const result = [];
+  for (let i = 0; i < entries.length; i += 500) {
+    const page = entries.slice(i, i + 500);
+    const read = await readKnowledgeNames(client, projectId, { entry_ids: page.map((e) => e.id) });
+    for (const entry of page) {
+      const scan = read.entries.find((s) => s.entry_id === entry.id);
+      result.push(Object.assign({}, entry, { name_history_available: read.available }, scan ? { uses_retired_term: scan.uses_retired_term, retired_term_matches: scan.matches } : {}));
+    }
+  }
+  return result;
 }
 
 // src/tools/knowledge-metadata.ts
@@ -37088,8 +37141,8 @@ async function truthCompatibleRead(read) {
   const result = await read(", verified_against, rollout_state, open_steps");
   if (!missingTruthColumns(result.error)) return result;
   const legacy = await read("");
-  const missing = { verified_against: null, rollout_state: null, open_steps: null };
-  const normalize = (row) => ({ ...row, ...missing });
+  const missing2 = { verified_against: null, rollout_state: null, open_steps: null };
+  const normalize = (row) => ({ ...row, ...missing2 });
   return { ...legacy, data: Array.isArray(legacy.data) ? legacy.data.map(normalize) : legacy.data ? normalize(legacy.data) : legacy.data };
 }
 
@@ -37280,19 +37333,24 @@ async function queryKnowledge(client, projectId, args) {
     }
   }
   const definitions = await readDefinitions(client, workspaceId, projectId, args);
+  const conceptNames = args.search ? await readKnowledgeNames(client, projectId, { search: args.search }) : null;
   if (args.definitions_only) {
     if (!definitions.available) throw new Error("Definitions are not available in this environment yet.");
     return definitions.definitions;
   }
   const includeDefinitions = !args.type && !args.status && !args.tags?.length && !args.as_of && !args.include_superseded && args.scope !== "deployment";
+  const noDefinition = (conceptNames?.matches ?? []).filter((m) => m.state === "no-current-definition").map((m) => ({ id: m.concept_id, kind: "concept", title: m.current_name, concept_id: m.concept_id, state: m.state, matched_alias: m.matched_alias }));
   const includeSources = !args.type && !args.status && !args.tags?.length && !args.as_of && !args.include_superseded && args.scope !== "product" && (!args.domain?.length || args.domain.includes("operations"));
-  const sourceOffset = Math.max(0, (args.offset ?? 0) - (includeDefinitions ? definitions.total_count ?? definitions.definitions.length : 0));
+  const sourceOffset = Math.max(0, (args.offset ?? 0) - (includeDefinitions ? (definitions.total_count ?? definitions.definitions.length) + noDefinition.length : 0));
   const generated = includeSources ? await readSourceValues(client, projectId, { search: args.search, limit: args.limit, offset: sourceOffset }) : { values: [], total_count: 0 };
   const prepend = async (entries) => {
     const enrichClaims = async (rows2) => {
-      const enriched = await withClaimContexts(client, rows2.filter((e) => e.type !== "definition" && e.source_type !== "generated"));
+      const enriched = await withClaimContexts(client, rows2.filter((e) => {
+        const kind = e;
+        return kind.type !== "definition" && kind.kind !== "concept" && kind.source_type !== "generated";
+      }));
       const contexts = new Map(enriched.map((e) => [e.id, e]));
-      return rows2.map((e) => contexts.get(e.id) ?? e);
+      return withRetiredWording(client, projectId, rows2.map((e) => contexts.get(e.id) ?? e));
     };
     if (!includeDefinitions) return enrichClaims([...generated.values, ...entries].slice(0, args.limit ?? 50));
     const ids = args.search ? [...new Set(definitions.definitions.flatMap((d) => d.refinements.map((r) => r.id)))] : [];
@@ -37310,15 +37368,15 @@ async function queryKnowledge(client, projectId, args) {
       ));
     }
     const seen = /* @__PURE__ */ new Set();
-    const result = [...definitions.definitions, ...refinements, ...generated.values, ...entries].filter((entry) => {
+    const result = [...definitions.definitions, ...noDefinition, ...refinements, ...generated.values, ...entries].filter((entry) => {
       if (seen.has(entry.id)) return false;
       seen.add(entry.id);
       return true;
     }).slice(0, args.limit ?? 50);
     return enrichClaims(result);
   };
-  const prefixCount = (includeDefinitions ? definitions.total_count ?? definitions.definitions.length : 0) + generated.total_count;
-  const pagePrefixCount = (includeDefinitions ? definitions.definitions.length : 0) + generated.values.length;
+  const prefixCount = (includeDefinitions ? (definitions.total_count ?? definitions.definitions.length) + noDefinition.length : 0) + generated.total_count;
+  const pagePrefixCount = (includeDefinitions ? definitions.definitions.length + noDefinition.length : 0) + generated.values.length;
   const decisionArgs = { ...args, offset: Math.max(0, (args.offset ?? 0) - prefixCount), limit: Math.max(1, (args.limit ?? 50) - pagePrefixCount) };
   if (pagePrefixCount >= (args.limit ?? 50)) return prepend([]);
   if (args.search) {
@@ -37402,7 +37460,7 @@ async function getKnowledgeEntry(client, projectId, args) {
   }
   const { data, error } = await query.single();
   if (error) throw error;
-  return (await withClaimContexts(client, await withInvalidations(client, [{ ...data, ...claimFields(data), ...questionProjection(data), verified_against: data.verified_against ?? null, rollout_state: data.rollout_state ?? null, open_steps: data.open_steps ?? null }])))[0];
+  return (await withRetiredWording(client, projectId, await withClaimContexts(client, await withInvalidations(client, [{ ...data, ...claimFields(data), ...questionProjection(data), verified_against: data.verified_against ?? null, rollout_state: data.rollout_state ?? null, open_steps: data.open_steps ?? null }]))))[0];
 }
 async function createKnowledgeEntry(client, projectId, userId, args) {
   if (!args.title?.trim()) {
@@ -37548,6 +37606,9 @@ function collisionWarning(name, requestedKind, existing) {
 async function resolveOrCreateEntity(client, workspaceId, projectId, name, kind = "concept") {
   const rawName = name;
   const normalizedName = normalizeHtmlEntities(rawName);
+  const names = await readKnowledgeNames(client, projectId, { search: normalizedName });
+  if (names.matches.length > 1) throw new Error("Ambiguous concept name; use an explicit identity");
+  if (names.matches.length === 1) return names.matches[0].concept_id;
   const { data: existing, error: lookupErr } = await client.from("knowledge_entities").select("id").eq("workspace_id", workspaceId).eq("kind", kind).eq("name", normalizedName).maybeSingle();
   if (lookupErr) throw new Error(lookupErr.message);
   if (existing) return existing.id;
@@ -44520,6 +44581,17 @@ function registerKnowledgeCommands(program3) {
   knowledge.command("register-tag").argument("<name>").argument("<description>").action(async (name, description) => {
     await runCommand(program3.opts(), (ctx) => registerKnowledgeTag(ctx.client, ctx.projectId, name, description), (data) => JSON.stringify(data, null, 2));
   });
+  knowledge.command("names").option("--search <text>").option("--entry <uuid...>").option("--entity <uuid...>").action(async (opts) => {
+    await runCommand(program3.opts(), (ctx) => readKnowledgeNames(ctx.client, ctx.projectId, { search: opts.search, entry_ids: opts.entry, entity_ids: opts.entity }), (data) => JSON.stringify(data, null, 2));
+  });
+  knowledge.command("rename").requiredOption("--concept <uuid>").requiredOption("--expect <name>").requiredOption("--to <name>").requiredOption("--ticket <id>", "Authorizing ticket UUID or visual ID").requiredOption("--operation-key <key>").action(async (opts) => {
+    await runCommand(program3.opts(), (ctx) => renameKnowledgeConcept(ctx.client, ctx.projectId, { concept_id: opts.concept, expected_name: opts.expect, new_name: opts.to, source_task_id: opts.ticket, operation_key: opts.operationKey }), (data) => JSON.stringify(data, null, 2));
+  });
+  knowledge.command("merge").requiredOption("--source <uuid>").requiredOption("--target <uuid>").requiredOption("--ticket <id>", "Authorizing ticket UUID or visual ID").option("--preview").option("--confirm <key>").action(async (opts) => {
+    if (!!opts.preview === !!opts.confirm) throw new Error("Choose exactly one of --preview or --confirm <key>");
+    const args = { source_id: opts.source, target_id: opts.target, source_task_id: opts.ticket };
+    await runCommand(program3.opts(), (ctx) => opts.preview ? previewKnowledgeMerge(ctx.client, ctx.projectId, args) : mergeKnowledgeConcepts(ctx.client, ctx.projectId, { ...args, confirmation: opts.confirm }), (data) => JSON.stringify(data, null, 2));
+  });
   knowledge.command("publish-definition").requiredOption("--concept <uuid>").requiredOption("--expected-revision <uuid-or-null>").requiredOption("--source <uuid>").requiredOption("--wording <text>").option("--metadata <json>", "Source references", "{}").option("--provenance <value>", "Knowledge-write provenance").action(async (opts) => {
     await runCommand(program3.opts(), (ctx) => publishDefinition(ctx.client, ctx.projectId, {
       concept_id: opts.concept,
@@ -48978,8 +49050,8 @@ function excludeFromGit(workspaceDir, entries) {
   const excludePath = join12(infoDir, "exclude");
   const current = existsSync4(excludePath) ? readFileSync11(excludePath, "utf8") : "";
   const have = new Set(current.split("\n"));
-  const missing = entries.filter((e) => !have.has(e));
-  if (missing.length) appendFileSync(excludePath, (current === "" || current.endsWith("\n") ? "" : "\n") + missing.join("\n") + "\n");
+  const missing2 = entries.filter((e) => !have.has(e));
+  if (missing2.length) appendFileSync(excludePath, (current === "" || current.endsWith("\n") ? "" : "\n") + missing2.join("\n") + "\n");
 }
 function linkSkills(workspaceDir, pluginDir) {
   const link = join12(workspaceDir, CODEX_SKILLS_LINK);
@@ -49023,7 +49095,7 @@ var MissingHookScriptError = class extends Error {
 };
 function preflightHookScripts(pluginRoot) {
   const paths = hookScriptPaths(pluginRoot);
-  const missing = paths.filter((p) => {
+  const missing2 = paths.filter((p) => {
     if (!isFile(p)) return true;
     try {
       accessSync(p, fsConstants.R_OK);
@@ -49032,7 +49104,7 @@ function preflightHookScripts(pluginRoot) {
       return true;
     }
   });
-  if (missing.length) throw new MissingHookScriptError(missing);
+  if (missing2.length) throw new MissingHookScriptError(missing2);
   return paths;
 }
 function provisionCodex(input) {

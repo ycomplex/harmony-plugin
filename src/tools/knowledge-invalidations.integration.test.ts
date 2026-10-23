@@ -1,3 +1,4 @@
+vi.mock('./knowledge-names.js', async importOriginal => ({ ...await importOriginal<typeof import('./knowledge-names.js')>(), readKnowledgeNames: async () => ({available:false,matches:[],entries:[],identities:[]}), withRetiredWording: async (_c:unknown,_p:unknown,entries:unknown[])=>entries }));
 import { it, expect, vi } from 'vitest';
 import { encodeClaim } from './knowledge-claim.js';
 import { getKnowledgeEntry, queryKnowledge } from './knowledge.js';
