@@ -220,6 +220,16 @@ Apply the dial **ceiling** to the parsed per-run `mode`:
   finer-grained *channel* for the same delegation the dial governs — the cautious kill-switch vetoes both
   exactly as it vetoes `--unattended`: the dial can only *restrict*, never let a more specific flag re-open
   what it closed, contract 4's ceiling invariant.)
+- **`release_delegate` (B-1257) — a delegation of the RELEASE accept, resolved with the same ceiling.**
+  `environment.release_delegate` (`'orchestrator'` | `null`, this iteration's `get_project`, captured at
+  the gate boundary like `overrideGates`) names the orchestrator seat as the one that may accept release
+  for this run. **`cautious` vetoes it exactly as it vetoes `auto_approve_gates`:** treat it as `null`
+  for the rest of the run and ANNOUNCE it (*"…ignoring this run's `release_delegate` — a cautious dial
+  forbids delegation; release needs a human accept"*). The conduct loop does **not** synthesize or
+  auto-advance release on the strength of this field — release stays a hard-floor pause (§4); the field
+  only tells `finish-work` O1 that an `agent-synthesized:orchestrator` accept, made by the seat, **is**
+  the release decision (never re-file a release brief on provenance alone). It never touches verify, and
+  it never makes release auto-advance in any mode.
 - **`agent_trust.level === 'balanced'` or `'autonomous'`**: the dial permits per-run forward delegation,
   including `--escalate` and a per-gate `auto_approve_gates` override — honour the parsed `mode` and
   `overrideGates` as-is. (In v1 the dial does not further gate *which* forward gates may be delegated beyond

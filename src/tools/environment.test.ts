@@ -207,6 +207,29 @@ describe('resolveEnvironment', () => {
     expect(env.auto_approve_gates).toBeNull();
   });
 
+  it('B-1257: release_delegate is null when no run_config delivery var is set', async () => {
+    const env = await resolveEnvironment({}, NOWHERE_URL);
+    expect(env.release_delegate).toBeNull();
+  });
+
+  it("B-1257: release_delegate reads the run_config's release_delegate key", async () => {
+    const inline = Buffer.from(JSON.stringify({ release_delegate: 'orchestrator' }), 'utf8').toString('base64');
+    const env = await resolveEnvironment({ HARMONY_RUN_CONFIG_JSON: inline }, NOWHERE_URL);
+    expect(env.release_delegate).toBe('orchestrator');
+  });
+
+  it('B-1257: release_delegate is null when run_config does not name one', async () => {
+    const inline = Buffer.from(JSON.stringify({ auto_approve_gates: ['clarify'] }), 'utf8').toString('base64');
+    const env = await resolveEnvironment({ HARMONY_RUN_CONFIG_JSON: inline }, NOWHERE_URL);
+    expect(env.release_delegate).toBeNull();
+  });
+
+  it('B-1257: an unknown release_delegate value degrades to null (never throws) — only the orchestrator seat is delegable', async () => {
+    const inline = Buffer.from(JSON.stringify({ release_delegate: 'anyone' }), 'utf8').toString('base64');
+    const env = await resolveEnvironment({ HARMONY_RUN_CONFIG_JSON: inline }, NOWHERE_URL);
+    expect(env.release_delegate).toBeNull();
+  });
+
   it('B-773: auto_approve_gates degrades to null (never throws) on a malformed HARMONY_RUN_CONFIG_JSON — get_project must never break', async () => {
     const env = await resolveEnvironment({ HARMONY_RUN_CONFIG_JSON: 'not-valid-base64-json!!' }, NOWHERE_URL);
     expect(env.auto_approve_gates).toBeNull();

@@ -90,6 +90,7 @@ refuse an irreversible merge justified only by that absence).
 |---|---|
 | the human's accept/defer given in the **running session** — every gate skill's normal accept path | `human-in-session` |
 | **`harmony-conduct` §4b** synthesized the accept under a delegation mode | `agent-synthesized:<mode>` — `<mode>` is the run's effective mode: `unattended`, `escalate`, or `pause-at` — **or `override`** (B-773) when the per-gate `auto_approve_gates` selection (`harmony-conduct`'s delegation-test step 2a), not the ambient mode, is what made THIS gate auto-advance-eligible — declared even when the ambient mode is `controlled` (see `harmony-conduct` §4b's own "`<mode>` is `override`" paragraph) |
+| the **orchestrator seat** accepted the **release** brief under the founder's standing grant (B-1257) | `agent-synthesized:orchestrator` — counts as the human release decision **only** when the run's `release_delegate` is `'orchestrator'` (`get_project` `environment.release_delegate`) and the dial is not `cautious`; otherwise it is refused with one round, never a re-filed brief (`finish-work` O1 step 3a). Never valid at verify |
 | the human clicked Accept/Deny in the **web** | `human-in-browser` — **the web's alone**; the plugin is never the browser, so its `resolve_brief` REJECTS this value |
 
 **One call site, two provenances.** §4b routes a delegated gate through the owning gate skill's *own* accept
