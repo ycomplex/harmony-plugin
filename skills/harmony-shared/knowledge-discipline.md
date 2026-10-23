@@ -79,6 +79,14 @@ accepted**:
 
 - A **dated amendment banner** (`update_knowledge_entry`) is the DEFAULT verb for a partial
   contradiction — the entry mostly still holds, one recorded fact does not.
+  Use a Markdown heading with an ISO date (`YYYY-MM-DD`) and the whole word
+  **amended** or **revised** (case-insensitive), for example `## Amended 2026-10-23`.
+  The history guard also recognizes bold lines beginning with `**` or `__` that
+  contain **revised** and an ISO date. The word **amendment** alone is not protected;
+  fenced examples do not count as history markers. Prefer `prepend_section` or
+  `append_section` to preserve stored history atomically. A shorter replacement
+  that drops protected markers refuses unless `allow_shrink: true` explicitly
+  authorizes the destructive replacement.
 - `supersede_decision` is reserved for a **wholesale replacement** — the entry's whole claim no longer
   holds.
 
