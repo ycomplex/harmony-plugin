@@ -44781,10 +44781,50 @@ async function metadataRpc(client, operation2, scope, args) {
     capable ? `${operation2}_metadata` : operation2,
     { ...args, ...capable ? { p_scope: scope ?? null } : {} }
   );
+  if (result.error && capable && typeof args.p_project_id === "string") {
+    const hints = await refusedTagHints(client, args.p_project_id, result.error);
+    if (hints) result.error.message += `
+${hints}`;
+  }
   if (result.error?.details)
     result.error.message += `
 ${result.error.details}`;
   return result;
+}
+async function refusedTagHints(client, projectId, error2) {
+  if (!error2.message.startsWith("Unknown knowledge tags")) return;
+  try {
+    const detail = JSON.parse(error2.details ?? "null");
+    if (!Array.isArray(detail?.unknown) || !detail.unknown.every((tag) => typeof tag === "string")) return;
+    const { data, error: readError } = await client.rpc("knowledge_list_tags", {
+      p_project_id: projectId
+    });
+    if (readError || !Array.isArray(data)) return;
+    const names = [...new Set(data.filter((row) => typeof row?.name === "string").map((row) => row.name))];
+    return detail.unknown.map((tag) => {
+      const nearest = names.map((name) => ({ name, distance: editDistance(tag, name) })).sort((a, b) => a.distance - b.distance || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)).slice(0, 5).map(({ name }) => name);
+      return `Known tags for ${JSON.stringify(tag)}: ${nearest.length ? nearest.join(", ") : "(none registered)"}`;
+    }).join("\n");
+  } catch {
+    return;
+  }
+}
+function editDistance(left, right) {
+  const a = Array.from(left.toLowerCase());
+  const b = Array.from(right.toLowerCase());
+  let previous = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 0; i < a.length; i++) {
+    const current = [i + 1];
+    for (let j = 0; j < b.length; j++) {
+      current.push(Math.min(
+        current[j] + 1,
+        previous[j + 1] + 1,
+        previous[j] + (a[i] === b[j] ? 0 : 1)
+      ));
+    }
+    previous = current;
+  }
+  return previous[b.length];
 }
 async function listKnowledgeTags(client, projectId) {
   if (!await metadataCapable(client))
@@ -45929,7 +45969,7 @@ var createKnowledgeEntryTool = {
 };
 var updateKnowledgeEntryTool = {
   name: "update_knowledge_entry",
-  description: "DEPRECATED: use record_decision (or supersede_decision to replace an entry). Update an existing knowledge entry in this project by ID or title. Use content_mode prepend_section/append_section to add only a new section while atomically preserving existing content. Shorter replacements that drop dated amendment markers are refused unless allow_shrink is explicitly true. Can also update title, type, status, tags, domain, madr, realization, review_by, verified_against, rollout_state or open_steps.",
+  description: "DEPRECATED: use record_decision (or supersede_decision to replace an entry). Update an existing knowledge entry in this project by ID or title. Use content_mode prepend_section/append_section to add only a new section while atomically preserving existing content. Protected markers are Markdown headings with an ISO date (YYYY-MM-DD) and the whole word amended or revised (case-insensitive), or lines starting with ** or __ and containing revised and an ISO date. The word amendment alone is not protected; fenced examples are ignored. Shorter replacements that drop these markers are refused unless allow_shrink is explicitly true. Can also update title, type, status, tags, domain, madr, realization, review_by, verified_against, rollout_state or open_steps.",
   inputSchema: {
     type: "object",
     properties: {

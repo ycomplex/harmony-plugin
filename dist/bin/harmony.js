@@ -1077,7 +1077,7 @@ var require_option = __commonJS({
 var require_suggestSimilar = __commonJS({
   "node_modules/commander/lib/suggestSimilar.js"(exports) {
     var maxDistance = 3;
-    function editDistance(a3, b) {
+    function editDistance2(a3, b) {
       if (Math.abs(a3.length - b.length) > maxDistance)
         return Math.max(a3.length, b.length);
       const d = [];
@@ -1123,7 +1123,7 @@ var require_suggestSimilar = __commonJS({
       const minSimilarity = 0.4;
       candidates.forEach((candidate) => {
         if (candidate.length <= 1) return;
-        const distance = editDistance(word, candidate);
+        const distance = editDistance2(word, candidate);
         const length = Math.max(word.length, candidate.length);
         const similarity = (length - distance) / length;
         if (similarity > minSimilarity) {
@@ -36739,10 +36739,50 @@ async function metadataRpc(client, operation2, scope, args) {
     capable ? `${operation2}_metadata` : operation2,
     { ...args, ...capable ? { p_scope: scope ?? null } : {} }
   );
+  if (result.error && capable && typeof args.p_project_id === "string") {
+    const hints = await refusedTagHints(client, args.p_project_id, result.error);
+    if (hints) result.error.message += `
+${hints}`;
+  }
   if (result.error?.details)
     result.error.message += `
 ${result.error.details}`;
   return result;
+}
+async function refusedTagHints(client, projectId, error) {
+  if (!error.message.startsWith("Unknown knowledge tags")) return;
+  try {
+    const detail = JSON.parse(error.details ?? "null");
+    if (!Array.isArray(detail?.unknown) || !detail.unknown.every((tag) => typeof tag === "string")) return;
+    const { data, error: readError } = await client.rpc("knowledge_list_tags", {
+      p_project_id: projectId
+    });
+    if (readError || !Array.isArray(data)) return;
+    const names = [...new Set(data.filter((row) => typeof row?.name === "string").map((row) => row.name))];
+    return detail.unknown.map((tag) => {
+      const nearest = names.map((name) => ({ name, distance: editDistance(tag, name) })).sort((a3, b) => a3.distance - b.distance || (a3.name < b.name ? -1 : a3.name > b.name ? 1 : 0)).slice(0, 5).map(({ name }) => name);
+      return `Known tags for ${JSON.stringify(tag)}: ${nearest.length ? nearest.join(", ") : "(none registered)"}`;
+    }).join("\n");
+  } catch {
+    return;
+  }
+}
+function editDistance(left, right) {
+  const a3 = Array.from(left.toLowerCase());
+  const b = Array.from(right.toLowerCase());
+  let previous = Array.from({ length: b.length + 1 }, (_2, i) => i);
+  for (let i = 0; i < a3.length; i++) {
+    const current = [i + 1];
+    for (let j2 = 0; j2 < b.length; j2++) {
+      current.push(Math.min(
+        current[j2] + 1,
+        previous[j2 + 1] + 1,
+        previous[j2] + (a3[i] === b[j2] ? 0 : 1)
+      ));
+    }
+    previous = current;
+  }
+  return previous[b.length];
 }
 async function listKnowledgeTags(client, projectId) {
   if (!await metadataCapable(client))
