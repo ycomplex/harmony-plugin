@@ -1,7 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-export interface ProsePointer { entry_id?: string; source_id: string; repository?: string; path: string; anchor: string; commit: string; linked_commit?: string; resolved?: boolean }
+export interface ProsePointer { part_index?: number; entry_id?: string; source_id: string; repository?: string; path: string; anchor: string; commit: string; linked_commit?: string; resolved?: boolean }
 export interface ProseSource { id:string; source_key:string; repository:string; tracked_ref:string; config:unknown; revision:string; active_generation:string|null; indexed_commit?:string|null; refresh_token?:string|null; enabled:boolean; refresh_state:string; requested_commit:string|null; diagnostics:unknown[] }
-export interface ProseRead { available:boolean; sources:ProseSource[]; pointers:ProsePointer[] }
+export interface ProseRead { chunk_parts?:boolean; available:boolean; sources:ProseSource[]; pointers:ProsePointer[] }
 export function proseLink(p:Pick<ProsePointer,'repository'|'path'|'commit'|'anchor'>):string|undefined {
  if(!p.repository || !/^https:\/\//.test(p.repository)) return undefined;
  return `${p.repository.replace(/\.git$|\/$/g,'')}/blob/${encodeURIComponent(p.commit)}/${p.path.split('/').map(encodeURIComponent).join('/')}#${encodeURIComponent(p.anchor)}`;
