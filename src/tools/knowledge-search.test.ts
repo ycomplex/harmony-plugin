@@ -6,7 +6,7 @@ import { normalizeTags } from './knowledge-search.js';
 const entry = (id: string, extra = {}) => ({ id, source_kind: 'knowledge', title: 'quasar design', content: 'quasar design rule', type: 'technical-design', status: 'Accepted', tags: [], domain: ['engineering'], project_id: 'p', updated_at: '2026-10-22T00:00:00Z', ...extra });
 const row = (id: string, rank = 1, extra = {}) => ({ candidate: entry(id, extra), signal_rank: rank, overflow: false });
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
-function fixture(options: { lexical?: unknown; semantic?: unknown; embed?: unknown; scope?: unknown; legacy?: unknown; tags?: string[]; hang?: string[]; throwRoute?: string; links?: unknown[]; definitions?: unknown; delayLexical?: boolean; prose?:unknown; context?:unknown; names?:unknown } = {}) {
+function fixture(options: { lexical?: unknown; semantic?: unknown; embed?: unknown; scope?: unknown; legacy?: unknown; tags?: string[]; hang?: string[]; throwRoute?: string; links?: unknown[]; definitions?: unknown; admission?: unknown; delayLexical?: boolean; prose?:unknown; context?:unknown; names?:unknown } = {}) {
   const calls: Array<{ path: string; body: any; url: URL; signal?: AbortSignal | null }> = [];
   const client = createClient('http://localhost:5555', 'local-test', { auth: { persistSession: false }, global: { fetch: async (input, init) => {
     const url = new URL(String(input));
@@ -20,6 +20,7 @@ function fixture(options: { lexical?: unknown; semantic?: unknown; embed?: unkno
     if(path==='read_knowledge_prose')return options.prose instanceof Response?options.prose:json(options.prose??{available:true,sources:[],pointers:[]});
     if(path==='read_claim_context')return options.context instanceof Response?options.context:json(options.context??{available:true,contexts:[]});
     if (path === 'projects') return json(options.scope ?? { workspace_id: 'w' });
+    if (path === 'knowledge_search_admission') return options.admission instanceof Response ? options.admission : json(options.admission ?? {version:1,lexical_min_similarity:0.3,semantic_max_distance:0.7});
     if (path === 'embed-knowledge') return options.embed instanceof Response ? options.embed : json(options.embed ?? { embedding: [1, 0] });
     if (path === 'read_knowledge_definitions') return options.definitions instanceof Response ? options.definitions : json(options.definitions ?? {available:true,definitions:[]});
     if (path === 'knowledge_search_scored') {
@@ -278,4 +279,56 @@ describe('source envelope and bounded enrichment',()=>{
   const {client}=fixture({context:json({code:'42501',message:'denied'},403)});
   await expect(queryKnowledge(client,'p',{search:'quasar'})).rejects.toMatchObject({code:'42501'});
  });
+});
+
+it('explains a fully admitted empty answer separately from the rank cutoff', async () => {
+  const {client} = fixture({lexical:[],semantic:[]});
+  const answer = await queryKnowledge(client,'p',{search:'zxqv plorth wimbleflax',limit:5});
+  expect(answer).toMatchObject({matches:[],below_cutoff_count:0,score_cutoff:0.0125,
+    normalized_query:'zxqv plorth wimbleflax',page:{total_matches:0},
+    relevance_admission:{lexical_min_similarity:0.3,semantic_max_distance:0.7,enforcement:{lexical:'enforced',semantic:'enforced'}}});
+  expect(answer.routes_tried).toContainEqual({route:'relevance-admission',outcome:'completed'});
+});
+it('keeps old scored deployments usable with explicitly unknown admission enforcement', async () => {
+  const {client} = fixture({admission:json({code:'PGRST202',message:'missing policy'},404)});
+  const answer = await queryKnowledge(client,'p',{search:'quasar'});
+  expect(answer.matches).toHaveLength(1);
+  expect(answer.relevance_admission).toEqual({lexical_min_similarity:null,semantic_max_distance:null,enforcement:{lexical:'unknown',semantic:'unknown'}});
+  expect(answer.routes_tried).toContainEqual({route:'relevance-admission',outcome:'unsupported',reason:'missing-capability'});
+});
+it('does not claim enforcement from malformed policy metadata', async () => {
+  const {client} = fixture({admission:{version:1,lexical_min_similarity:'0.3',semantic_max_distance:0.7}});
+  const answer = await queryKnowledge(client,'p',{search:'quasar'});
+  expect(answer.matches).toHaveLength(1);
+  expect(answer.relevance_admission.enforcement.lexical).toBe('unknown');
+  expect(answer.routes_tried).toContainEqual({route:'relevance-admission',outcome:'unsupported',reason:'invalid-capability-response'});
+});
+it('reports definitions participation for empty success, filtered-out route and missing storage', async () => {
+  const included = await queryKnowledge(fixture().client,'p',{search:'quasar'});
+  expect(included).toMatchObject({definitions:[],definitions_included:true,definitions_available:true});
+  const filteredFixture=fixture();
+  const filtered = await queryKnowledge(filteredFixture.client,'p',{search:'quasar',type:'convention'});
+  expect(filtered).toMatchObject({definitions_included:false,definitions_available:false});
+  expect(filteredFixture.calls.some(c=>c.path==='read_knowledge_definitions')).toBe(false);
+  const missing = await queryKnowledge(fixture({definitions:json({code:'PGRST202'},404)}).client,'p',{search:'quasar'});
+  expect(missing).toMatchObject({definitions_included:false,definitions_available:false});
+  expect(missing.routes_tried).toContainEqual({route:'definitions',outcome:'unsupported',reason:'missing-capability'});
+});
+it('keeps stable tied prefixes across caller page sizes and reports skipped semantic admission', async () => {
+  const options={lexical:[row('b',1),row('a',1),row('c',1,{source_kind:'document'})],semantic:[],embed:json({},503)};
+  const short=await queryKnowledge(fixture(options).client,'p',{search:'quasar',limit:1});
+  const long=await queryKnowledge(fixture(options).client,'p',{search:'quasar',limit:8});
+  expect(short.matches.map(m=>m.id)).toEqual(long.matches.slice(0,1).map(m=>m.id));
+  expect(long.matches.map(m=>m.id)).toEqual(['c','a','b']);
+  expect(long.relevance_admission.enforcement).toEqual({lexical:'enforced',semantic:'not-run'});
+});
+it('bounds a hung admission probe and labels enforcement unknown without losing hits', async () => {
+  vi.useFakeTimers();
+  const pending=queryKnowledge(fixture({hang:['knowledge_search_admission']}).client,'p',{search:'quasar'});
+  await vi.advanceTimersByTimeAsync(6000);
+  const answer=await pending;
+  expect(answer.matches).toHaveLength(1);
+  expect(answer.elapsed_ms).toBeLessThanOrEqual(6000);
+  expect(answer.relevance_admission.enforcement).toEqual({lexical:'unknown',semantic:'unknown'});
+  expect(answer.routes_tried).toContainEqual({route:'relevance-admission',outcome:'timeout',reason:'deadline'});
 });
