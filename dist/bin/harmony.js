@@ -37691,23 +37691,6 @@ ${content ?? ""}`);
   if (!embedding) return;
   await client.from("knowledge_decisions").update({ embedding }).eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", id);
 }
-var LEGACY_STATUS_MAP = {
-  draft: "draft",
-  accepted: "accepted",
-  superseded: "superseded",
-  Asserted: "draft",
-  Accepted: "accepted",
-  Superseded: "superseded"
-};
-function toLegacyStatus(status) {
-  const legacy = LEGACY_STATUS_MAP[status];
-  if (legacy === void 0) {
-    throw new Error(
-      `Unsupported status "${status}". Use Asserted/draft, Accepted/accepted, or Superseded/superseded \u2014 Archived cannot be set through this tool, which writes the legacy compat view (no Archived state).`
-    );
-  }
-  return legacy;
-}
 var BASE_STATUS_MAP = {
   draft: "Asserted",
   accepted: "Accepted",
@@ -37861,12 +37844,12 @@ async function createKnowledgeEntry(client, projectId, userId, args) {
     title: normalizeHtmlEntities(args.title.trim()),
     content: claimedContent,
     type: args.type,
-    status: args.status !== void 0 ? toLegacyStatus(args.status) : "draft",
+    status: args.status !== void 0 ? toBaseStatus(args.status) : "Asserted",
     created_by: userId
   };
-  if (args.tags !== void 0) record.tags = normalizeTags(args.tags);
+  record.tags = args.tags !== void 0 ? normalizeTags(args.tags) : [];
   if (args.source_task_id !== void 0) record.source_task_id = args.source_task_id;
-  const { data, error } = await client.from("workspace_knowledge").insert(record).select(
+  const { data, error } = await client.from("knowledge_decisions").insert(record).select(
     "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
   ).single();
   if (error) {

@@ -45825,7 +45825,7 @@ var getKnowledgeEntryTool = {
 };
 var createKnowledgeEntryTool = {
   name: "create_knowledge_entry",
-  description: 'Create a new knowledge entry in this project. Entries are created as "draft" by default \u2014 humans review and accept them. Use for architecture decisions, business decisions, conventions, and specifications (spec documents describing work to be built).',
+  description: 'DEPRECATED: use record_decision. Create a new knowledge entry in this project. Entries are created as "draft" by default \u2014 humans review and accept them. Use for architecture decisions, business decisions, conventions, and specifications (spec documents describing work to be built).',
   inputSchema: {
     type: "object",
     properties: {
@@ -45856,7 +45856,7 @@ var createKnowledgeEntryTool = {
 };
 var updateKnowledgeEntryTool = {
   name: "update_knowledge_entry",
-  description: "Update an existing knowledge entry in this project by ID or title. Use content_mode prepend_section/append_section to add only a new section while atomically preserving existing content. Shorter replacements that drop dated amendment markers are refused unless allow_shrink is explicitly true. Can also update title, type, status, tags, domain, madr, realization, review_by, verified_against, rollout_state or open_steps.",
+  description: "DEPRECATED: use record_decision (or supersede_decision to replace an entry). Update an existing knowledge entry in this project by ID or title. Use content_mode prepend_section/append_section to add only a new section while atomically preserving existing content. Shorter replacements that drop dated amendment markers are refused unless allow_shrink is explicitly true. Can also update title, type, status, tags, domain, madr, realization, review_by, verified_against, rollout_state or open_steps.",
   inputSchema: {
     type: "object",
     properties: {
@@ -45900,7 +45900,7 @@ var updateKnowledgeEntryTool = {
 };
 var supersedeKnowledgeEntryTool = {
   name: "supersede_knowledge_entry",
-  description: 'Supersede an existing knowledge entry in this project with a new replacement. Marks the old entry as "superseded" and creates the replacement as "accepted", linking them via superseded_by.',
+  description: 'DEPRECATED: use supersede_decision. Supersede an existing knowledge entry in this project with a new replacement. Marks the old entry as "superseded" and creates the replacement as "accepted", linking them via superseded_by.',
   inputSchema: {
     type: "object",
     properties: {
@@ -45940,23 +45940,6 @@ async function embedDecisionById(client, workspaceId, projectId, id, title, cont
 ${content ?? ""}`);
   if (!embedding) return;
   await client.from("knowledge_decisions").update({ embedding }).eq("workspace_id", workspaceId).eq("project_id", projectId).eq("id", id);
-}
-var LEGACY_STATUS_MAP = {
-  draft: "draft",
-  accepted: "accepted",
-  superseded: "superseded",
-  Asserted: "draft",
-  Accepted: "accepted",
-  Superseded: "superseded"
-};
-function toLegacyStatus(status) {
-  const legacy = LEGACY_STATUS_MAP[status];
-  if (legacy === void 0) {
-    throw new Error(
-      `Unsupported status "${status}". Use Asserted/draft, Accepted/accepted, or Superseded/superseded \u2014 Archived cannot be set through this tool, which writes the legacy compat view (no Archived state).`
-    );
-  }
-  return legacy;
 }
 var BASE_STATUS_MAP = {
   draft: "Asserted",
@@ -46148,12 +46131,12 @@ async function createKnowledgeEntry(client, projectId, userId, args) {
     title: normalizeHtmlEntities(args.title.trim()),
     content: claimedContent,
     type: args.type,
-    status: args.status !== void 0 ? toLegacyStatus(args.status) : "draft",
+    status: args.status !== void 0 ? toBaseStatus(args.status) : "Asserted",
     created_by: userId
   };
-  if (args.tags !== void 0) record2.tags = normalizeTags(args.tags);
+  record2.tags = args.tags !== void 0 ? normalizeTags(args.tags) : [];
   if (args.source_task_id !== void 0) record2.source_task_id = args.source_task_id;
-  const { data, error: error2 } = await client.from("workspace_knowledge").insert(record2).select(
+  const { data, error: error2 } = await client.from("knowledge_decisions").insert(record2).select(
     "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
   ).single();
   if (error2) {
