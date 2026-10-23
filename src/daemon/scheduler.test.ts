@@ -5175,3 +5175,30 @@ describe('B-1185 fireLaunch catalog wiring', () => {
     expect(h.launches()[0]).toContain("--model 'gpt-6-luna'");
   });
 });
+
+
+describe('B-1267 startup-unavailable settlement', () => {
+  it.each([true, false])('parks immediately without retry and posts bounded diagnostics (captured=%s)', async captured => {
+    const diagnostic = 'gke-worker-launch: startup-unavailable: job leg-123: PVC Pending; ProvisioningFailed: quota exhausted';
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() },
+      config: { ...config, retryCap: 2 }, launchExitCode: 74,
+      ...(captured ? { launchOutput: { tail: 'other launcher noise\n' + diagnostic + '\n', bytes: 200 } } : {}) });
+    const addTicketComment = vi.fn(async () => {});
+    h.deps.addTicketComment = addTicketComment;
+    await h.pass();
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    await h.pass();
+    await h.pass();
+    expect(h.getConduction('cond-1').status).toBe('parked');
+    expect(h.getConduction('cond-1').last_worker_exit_class).toBe('startup-unavailable');
+    expect(h.getConduction('cond-1').last_worker_exit_code).toBe(74);
+    expect(h.ready()).toEqual([]);
+    expect(h.reaps()).toHaveLength(1);
+    expect(addTicketComment).toHaveBeenCalledTimes(1);
+    const message = String(addTicketComment.mock.calls[0][1]);
+    expect(message).toContain(captured ? 'ProvisioningFailed: quota exhausted' : 'diagnostic unavailable');
+    expect(message).toContain('ticket disk is retained');
+    expect(message).not.toContain('other launcher noise');
+    expect(h.logs.some(line => line.includes('startup-unavailable') && line.includes(captured ? 'quota exhausted' : 'diagnostic unavailable'))).toBe(true);
+  });
+});
