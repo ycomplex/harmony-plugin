@@ -9,7 +9,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { configureProse, readProse, proseOperation } from '../tools/knowledge-prose.js';
 const pattern=z.string().min(1).refine(s=>!s.startsWith('/')&&!s.split('/').includes('..')&&!s.includes('\\'),'Repository-relative patterns required');
 export const selectorSchema=z.object({include:z.array(pattern).min(1),exclude:z.array(pattern).default([]),kind:z.enum(['document','skill']),scope:z.enum(['product','deployment']).nullable().default(null),domain:z.array(z.string()).default([]),tags:z.array(z.string()).default([]),bookkeeping:z.boolean().default(false)});
-const declarationSchema=z.object({version:z.literal(1),repository:z.string().url().refine(s=>s.startsWith('https://')),ref:z.string().min(1),sources:z.array(z.object({key:z.string().min(1),enabled:z.boolean().default(true),selectors:z.array(selectorSchema).min(1)})).min(1)});
+export const declarationSchema=z.object({version:z.literal(1),repository:z.string().url().refine(s=>s.startsWith('https://')),ref:z.string().min(1),sources:z.array(z.object({key:z.string().min(1),enabled:z.boolean().default(true),selectors:z.array(selectorSchema).min(1)})).min(1)});
 export interface ProseChunk {path:string;anchor:string;heading:string;ancestry:string[];content:string;content_hash:string;kind:'document'|'skill';scope:'product'|'deployment'|null;domain:string[];tags:string[];bookkeeping:boolean}
 const canonical=(value:unknown):string=>JSON.stringify(value,(_key,v)=>v&&typeof v==='object'&&!Array.isArray(v)?Object.fromEntries(Object.entries(v).sort(([a],[b])=>a.localeCompare(b))):v);
 const git=(root:string,args:string[])=>execFileSync('git',['-C',root,...args],{maxBuffer:32*1024*1024});

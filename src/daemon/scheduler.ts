@@ -1758,6 +1758,16 @@ async function settleTrackedLaunch(
       settleLogLine(outcome, cls, after.workflow_state),
   );
 
+  if (cls === 'startup-unavailable') {
+    const line = (tracked.launchOutputTail ?? '').split('\n')
+      .filter(line => line.startsWith('gke-worker-launch: startup-unavailable: ')).at(-1);
+    const detail = line ? line.slice('gke-worker-launch: startup-unavailable: '.length)
+      // eslint-disable-next-line no-control-regex -- platform diagnostics must remain a single safe log line
+      .replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 2800) : 'launcher diagnostic unavailable';
+    deps.log(`${label(row, after, deps.projectKey)}: startup-unavailable — ${detail}`);
+    await commentOnTicket(deps, row, `Conduction parked (startup-unavailable): ${detail}. The ticket disk is retained; address the infrastructure cause before resuming.`);
+  }
+
   // B-1149: any leg that made BOARD progress resets the consecutive-quota-pause count.
   if (progressed && cls !== 'quota' && cls !== 'rate-limit' && quotaPausesOf(runtime, row.id) > 0) {
     await resetQuotaPauses(deps, runtime, row);

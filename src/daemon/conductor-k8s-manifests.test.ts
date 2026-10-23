@@ -202,6 +202,7 @@ describe('ServiceAccount, ConfigMap and RBAC', () => {
     expect(named.resourceNames).toEqual(['harmony-worker-secrets', 'harmony-codex-auth']);
     expect(rule('pods').resources).toEqual(['pods', 'pods/log']);
     expect(rule('pods').verbs).toEqual(['get', 'list']);
+    expect(rule('events').verbs).toEqual(['get', 'list']);
     // no wildcard anywhere
     expect(JSON.stringify(role.rules)).not.toContain('"*"');
   });
