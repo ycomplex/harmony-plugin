@@ -1,3 +1,4 @@
+import { selectEntity, type EntitySelector } from './entity-selector.js';
 import { claimFields } from './knowledge-claim.js';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveTaskId, resolveTaskIds } from './resolve-task-id.js';
@@ -195,7 +196,7 @@ type TicketKnowledgeEntry = Record<string, unknown> & {
 };
 interface TicketKnowledgeBatch { tickets: { task_id: string; entries: TicketKnowledgeEntry[] }[]; }
 interface TicketKnowledgeArgs { task_id?: string; task_ids?: string[]; }
-const KNOWLEDGE_PROJECTION = 'decision_id, knowledge_decisions(id, type, status, title, domain, source_activity, content)';
+const KNOWLEDGE_PROJECTION = 'decision_id, knowledge_decisions(id, type, status, title, domain, source_activity, content, affected_entity_ids)';
 const KNOWLEDGE_PAGE_SIZE = 500;
 
 export function listTicketKnowledge(client: SupabaseClient, projectId: string, args: { task_id: string }): Promise<TicketKnowledgeEntry[]>;
@@ -245,7 +246,7 @@ export async function listTicketKnowledge(
       offset += data.length;
     }
   }
-  const affected = await fetchAffectedEntities(client, rows.map(row => row.decision_id), batch);
+  const affected = await fetchAffectedEntities(client, rows.map(row => row.decision_id), batch, rows);
   const projectEntry = (row: KnowledgeReferenceRow): TicketKnowledgeEntry => ({
     decision_id: row.decision_id,
     ...(row.knowledge_decisions ?? {}),
@@ -269,6 +270,7 @@ async function fetchAffectedEntities(
   client: SupabaseClient,
   decisionIds: string[],
   paged = false,
+  references: KnowledgeReferenceRow[] = [],
 ): Promise<Record<string, AffectedEntityRow[]>> {
   if (decisionIds.length === 0) return {};
   const rows: EntityEdge[] = [];
@@ -301,6 +303,25 @@ async function fetchAffectedEntities(
     const list = map[row.decision_id] ?? (map[row.decision_id] = []);
     list.push({ entity_id: row.entity_id, name: entity.name, kind: entity.kind ?? '' });
   }
+  // The record-decision RPC stores an array; explicit linking stores edges. Preserve both.
+  const storedIds = [...new Set(references.flatMap(row => {
+    const ids = row.knowledge_decisions?.affected_entity_ids;
+    return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === 'string') : [];
+  }))];
+  const visible = new Map<string, AffectedEntityRow>();
+  for (let start = 0; start < storedIds.length; start += 100) {
+    const { data, error } = await client.from('knowledge_entities').select('id, name, kind').in('id', storedIds.slice(start, start + 100));
+    if (error) throw error;
+    for (const entity of data ?? []) visible.set(entity.id, { entity_id: entity.id, name: entity.name, kind: entity.kind });
+  }
+  for (const row of references) {
+    const list = map[row.decision_id] ?? (map[row.decision_id] = []);
+    const ids = row.knowledge_decisions?.affected_entity_ids;
+    for (const id of Array.isArray(ids) ? ids : []) {
+      const entity = visible.get(id);
+      if (entity && !list.some(existing => existing.entity_id === id)) list.push(entity);
+    }
+  }
   return map;
 }
 
@@ -331,32 +352,37 @@ export const linkTicketEntitiesTool = {
     properties: {
       task_id: { type: 'string', description: 'Task identifier — UUID, number, or visual ID' },
       decision_id: { type: 'string', description: 'knowledge_decisions.id — the just-promoted design/visual-handoff decision' },
+      entity_id: { type: 'string', description: 'Single explicit current entity UUID' },
+      kind: { type: 'string', description: 'Kind selector for the supplied identities/names' },
+      entities: { type: 'array', items: { type: 'object', properties: { entity_id: { type: 'string' }, name: { type: 'string' }, kind: { type: 'string' } }, anyOf: [{ required: ['entity_id'] }, { required: ['name'] }] }, description: 'Explicit identity/name/kind references' },
       entity_names: { type: 'array', items: { type: 'string' }, description: 'One or more entity names to resolve-or-create and link' },
-      entity_kind: { type: 'string', description: "Kind used ONLY for entities that don't already exist under any kind. Default 'feature'." },
+      entity_kind: { type: 'string', description: "Optional kind selector; filters name matches before ambiguity detection. New entities default to feature." },
     },
-    required: ['task_id', 'decision_id', 'entity_names'],
+    required: ['task_id', 'decision_id'],
+    anyOf: [{ required: ['entity_names'] }, { required: ['entities'] }, { required: ['entity_id'] }],
   },
 };
 
 export async function linkTicketEntities(
   client: SupabaseClient,
   projectId: string,
-  args: { task_id: string; decision_id: string; entity_names: string[]; entity_kind?: string },
+  args: { task_id: string; decision_id: string; entity_names?: string[]; entity_kind?: string; kind?: string; entity_id?: string; entities?: EntitySelector[] },
 ) {
   if (!args.decision_id) throw new Error('decision_id is required');
   const names = (args.entity_names ?? []).map((n) => n.trim()).filter(Boolean);
-  if (names.length === 0) throw new Error('entity_names must contain at least one non-empty name');
+  const refs: EntitySelector[] = [...names.map(name => ({ name, kind: args.kind ?? args.entity_kind })), ...(args.entities ?? []), ...(args.entity_id ? [{ entity_id: args.entity_id, kind: args.kind ?? args.entity_kind }] : [])];
+  if (!refs.length || refs.some(ref => !ref.entity_id && !ref.name?.trim())) throw new Error('entity_names or entities must identify at least one entity');
 
   const id = await resolveTaskId(client, projectId, args.task_id);
   const workspaceId = await getWorkspaceId(client, projectId);
-  const kind = args.entity_kind ?? 'feature';
 
   const entityIds: string[] = [];
-  for (const name of names) {
-    entityIds.push(await resolveOrCreateEntity(client, workspaceId, projectId, name, kind));
+  for (const ref of refs) {
+    const selected = await selectEntity(client, workspaceId, projectId, ref);
+    entityIds.push(selected?.id ?? await resolveOrCreateEntity(client, workspaceId, projectId, ref.name!, ref.kind ?? 'feature'));
   }
 
-  for (const entityId of entityIds) {
+  for (const entityId of new Set(entityIds)) {
     const { error: implementsErr } = await client
       .from('ticket_implements_entity')
       .upsert({ task_id: id, entity_id: entityId }, { onConflict: 'task_id,entity_id', ignoreDuplicates: true });

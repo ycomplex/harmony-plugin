@@ -1,3 +1,4 @@
+import { selectEntity } from './entity-selector.js';
 import { metadataCapable, type KnowledgeScope } from './knowledge-metadata.js';
 // B-797 (extended by B-904) — the conductor's consume path for an accepted gate brief's deferred payload.
 // Accept becomes a consumed EVENT for the agent-owned-payload reasons — clarification-draft,
@@ -150,10 +151,10 @@ export interface AcceptanceEventPayloadItem {
    *  (`resolveOrCreateEntity`, carrying B-993 normalize/repair-at-touch); the RPC only does the
    *  ledgered edge upserts for an ALREADY-RESOLVED entity_id. */
   entity_name?: string;
-  /** `entity_link` only (B-997) — the entity kind used ONLY when the name resolves to a brand-new
-   *  entity (no existing entity of any kind carries it). Defaults to 'feature' at the dispatch site,
-   *  matching `link_ticket_entities`'s own default — never a different implicit default via this
-   *  field's absence. */
+  entity_id?: string;
+  kind?: string;
+  /** Optional kind selector, applied before ambiguity detection. New entities default to feature.
+   * `kind` is the additive spelling; `entity_kind` remains supported for existing payloads. */
   entity_kind?: string;
 }
 
@@ -582,7 +583,7 @@ export async function applyAcceptanceEventPayload(
         // resolver would either have to reimplement or silently diverge from. `consume_entity_link_write`
         // takes only an ALREADY-RESOLVED entity_id and does the ledgered edge upserts.
         const name = item.entity_name?.trim();
-        if (!name) throw new Error(`entity_link item '${item.ref}' names no entity_name — the entity being linked must be identified`);
+        if (!name && !item.entity_id) throw new Error(`entity_link item '${item.ref}' needs entity_id or entity_name`);
         const { data: taskRow, error: taskErr } = await client
           .from('tasks')
           .select('project_id')
@@ -592,7 +593,9 @@ export async function applyAcceptanceEventPayload(
         const projectId = (taskRow as { project_id?: string } | null)?.project_id;
         if (!projectId) throw new Error(`entity_link item '${item.ref}' — task ${event.task_id} has no project_id, cannot resolve the entity`);
         const workspaceId = await getWorkspaceId(client, projectId);
-        const entityId = await resolveOrCreateEntity(client, workspaceId, projectId, name, item.entity_kind ?? 'feature');
+        const kind = item.kind ?? item.entity_kind;
+        const selected = await selectEntity(client, workspaceId, projectId, { entity_id: item.entity_id, name, kind });
+        const entityId = selected?.id ?? await resolveOrCreateEntity(client, workspaceId, projectId, name!, kind ?? 'feature');
         const { data, error } = await client.rpc('consume_entity_link_write', {
           _event_id: event.id, _external_ref: item.ref, _entity_id: entityId, _decision_id: item.decision_id ?? null,
         });

@@ -1,3 +1,4 @@
+import { selectEntity } from './entity-selector.js';
 import { readKnowledgeNames, withRetiredWording } from './knowledge-names.js';
 import { readSourceValues } from './knowledge-sources.js';
 import { questionProjection } from './knowledge-questions.js';
@@ -947,21 +948,24 @@ export async function resolveOrCreateEntity(
   workspaceId: string,
   projectId: string,
   name: string,
-  kind = 'concept',
+  kind?: string,
 ): Promise<string> {
   // B-993: normalize-before-lookup, so a normalized-name row and a raw-name write of the "same"
   // entity resolve to one node instead of silently forking into two.
   const rawName = name;
   const normalizedName = normalizeHtmlEntities(rawName);
-  const names=await readKnowledgeNames(client,projectId,{search:normalizedName});
-  if(names.matches.length>1) throw new Error('Ambiguous concept name; use an explicit identity');
-  if(names.matches.length===1) return names.matches[0].concept_id;
+  const selected = await selectEntity(client, workspaceId, projectId, { name: normalizedName, kind });
+  if (selected) return selected.id;
+  kind ??= 'concept';
+  const nameHistory = await readKnowledgeNames(client, projectId);
+  const entityTable = nameHistory.available ? 'knowledge_current_entities' : 'knowledge_entities';
 
 
   const { data: existing, error: lookupErr } = await client
-    .from('knowledge_entities')
+    .from(entityTable)
     .select('id')
     .eq('workspace_id', workspaceId)
+    .or(`project_id.is.null,project_id.eq.${projectId}`)
     .eq('kind', kind)
     .eq('name', normalizedName)
     .maybeSingle();
@@ -973,9 +977,10 @@ export async function resolveOrCreateEntity(
   // If so, RENAME it in place rather than minting a second node for the same real-world entity.
   if (normalizedName !== rawName) {
     const { data: legacy, error: legacyErr } = await client
-      .from('knowledge_entities')
+      .from(entityTable)
       .select('id')
       .eq('workspace_id', workspaceId)
+      .or(`project_id.is.null,project_id.eq.${projectId}`)
       .eq('kind', kind)
       .eq('name', rawName)
       .maybeSingle();
@@ -985,6 +990,7 @@ export async function resolveOrCreateEntity(
         .from('knowledge_entities')
         .update({ name: normalizedName })
         .eq('workspace_id', workspaceId)
+      .or(`project_id.is.null,project_id.eq.${projectId}`)
         .eq('id', (legacy as { id: string }).id)
         .select('id')
         .single();
@@ -1293,7 +1299,7 @@ export const recordDecisionTool = {
 
 interface ConceptNameResult { id: string; kind: 'concept'; title: string; concept_id: string; state: 'no-current-definition' | 'current-definition'; matched_alias: string | null }
 
-export interface QueryEntitiesArgs { kind?: string; name?: string; }
+export interface QueryEntitiesArgs { entity_id?: string; kind?: string; name?: string; }
 
 export async function queryEntities(
   client: SupabaseClient,
@@ -1301,12 +1307,13 @@ export async function queryEntities(
   args: QueryEntitiesArgs,
 ): Promise<KnowledgeEntityFull[]> {
   const workspaceId = await getWorkspaceId(client, projectId);
-  const names=await readKnowledgeNames(client,projectId,{search:args.name});
-  let query = client.from(names.available ? 'knowledge_current_entities' : 'knowledge_entities').select(ENTITY_COLS).eq('workspace_id', workspaceId);
-  if(names.matches.length>1 && args.name) throw new Error('Ambiguous concept name; use an explicit identity');
-  if(names.matches.length===1 && args.name) query=query.eq('id',names.matches[0].concept_id);
+  const selected = args.entity_id || args.name ? await selectEntity(client, workspaceId, projectId, args) : null;
+  const names = await readKnowledgeNames(client, projectId);
+  let query = client.from(names.available ? 'knowledge_current_entities' : 'knowledge_entities').select(ENTITY_COLS).eq('workspace_id', workspaceId)
+    .or(`project_id.is.null,project_id.eq.${projectId}`);
+  if (selected) query = query.eq('id', selected.id);
   if (args.kind) query = query.eq('kind', args.kind);
-  if (args.name && !names.matches.length) query = query.ilike('name', `%${args.name}%`);
+  if (args.name && !selected) query = query.ilike('name', `%${args.name}%`);
   const { data, error } = await query.order('name', { ascending: true });
   if (error) throw new Error(error.message);
   return (data ?? []) as KnowledgeEntityFull[];
@@ -1319,7 +1326,8 @@ export const queryEntitiesTool = {
     type: 'object' as const,
     properties: {
       kind: { type: 'string', description: "Entity kind: 'component', 'feature', 'integration', 'concept', 'persona'" },
-      name: { type: 'string', description: 'Case-insensitive substring match on entity name' },
+      name: { type: 'string', description: 'Exact current/retired name selection, otherwise case-insensitive substring discovery' },
+      entity_id: { type: 'string', description: 'Explicit current entity UUID in this authorized project' },
     },
   },
 };

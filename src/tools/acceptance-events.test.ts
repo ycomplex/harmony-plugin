@@ -1,3 +1,5 @@
+// Identity selection has dedicated selector/integration coverage; retain legacy writer fixture queues.
+vi.mock('./entity-selector.js', () => ({ selectEntity: vi.fn(async () => null) }));
 // Original-contract fixtures keep optional name storage absent; knowledge-names tests exercise the boundary.
 vi.mock('./knowledge-names.js', async importOriginal => ({ ...await importOriginal<typeof import('./knowledge-names.js')>(), readKnowledgeNames: async () => ({available:false,matches:[],entries:[],identities:[]}), withRetiredWording: async (_c:unknown,_p:unknown,entries:unknown[])=>entries }));
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -39,7 +41,7 @@ function makeClient(opts: {
     const chain: any = {};
     // B-997: `.neq`/`.insert`/`.update`/`.single` added for the entity_link dispatch's resolveOrCreateEntity/
     // getWorkspaceId calls (knowledge.ts) — unused (and therefore harmless) by every pre-existing test here.
-    for (const m of ['select', 'eq', 'neq', 'limit', 'insert', 'update']) chain[m] = vi.fn(() => chain);
+    for (const m of ['select', 'eq', 'or', 'neq', 'limit', 'insert', 'update']) chain[m] = vi.fn(() => chain);
     chain.maybeSingle = vi.fn(async () => queue.shift() ?? { data: null, error: null });
     chain.single = vi.fn(async () => queue.shift() ?? { data: null, error: null });
     // `.select('id').limit(0)` (the substrate probe) resolves via the thenable itself, not maybeSingle.
@@ -825,10 +827,10 @@ describe('applyAcceptanceEventPayload', () => {
     });
   });
 
-  it('throws a clear error when an entity_link item names no entity_name', async () => {
+  it('throws a clear error when an entity_link item needs entity_id or entity_name', async () => {
     const client = makeClient();
     const event = makeEvent([{ write_kind: 'entity_link', ref: 'entity-1' } as AcceptanceEventPayloadItem]);
-    await expect(applyAcceptanceEventPayload(client, event)).rejects.toThrow(/names no entity_name/);
+    await expect(applyAcceptanceEventPayload(client, event)).rejects.toThrow(/needs entity_id or entity_name/);
     expect(client.rpc).not.toHaveBeenCalled();
   });
 

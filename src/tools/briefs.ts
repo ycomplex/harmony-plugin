@@ -962,7 +962,9 @@ function promisedWriteLine(item: AcceptanceEventPayloadItem): string | null {
       return `- the confirmed feature-entity name(s) — ${names.length ? names.join(', ') : '(none)'} — landed on the ticket`;
     }
     case 'entity_link': {
-      const name = text(item.entity_name);
+      const identity = text(item.entity_name) ?? text(item.entity_id);
+      const kind = text(item.kind) ?? text(item.entity_kind);
+      const name = identity ? `${identity}${item.entity_name && item.entity_id ? ` (${item.entity_id})` : ''}${kind ? ` [${kind}]` : ''}` : null;
       return name ? `- links this ticket${item.decision_id ? ' and this decision' : ''} to the entity "${name}"` : null;
     }
     default:
@@ -3330,7 +3332,12 @@ export const composeBriefTool = {
             items: {
               type: 'object',
               properties: {
-                write_kind: { type: 'string', description: "'acceptance_criterion' | 'child_ticket' | 'checklist_item' | 'ac_transfer' | 'label_add' | 'knowledge_entry_content'" },
+                write_kind: { type: 'string', description: "'acceptance_criterion' | 'child_ticket' | 'checklist_item' | 'ac_transfer' | 'label_add' | 'knowledge_entry_content' | 'entity_link'" },
+                entity_id: { type: 'string', description: 'entity_link: explicit current identity UUID; accepts ID without a name' },
+                entity_name: { type: 'string', description: 'entity_link: exact current/retired name; ambiguity lists candidate identities' },
+                kind: { type: 'string', description: 'entity_link: optional kind selector, applied before ambiguity detection' },
+                entity_kind: { type: 'string', description: 'entity_link: backward-compatible spelling of kind' },
+                decision_id: { type: 'string', description: 'entity_link: optional affected decision UUID' },
                 ref: { type: 'string', description: 'Stable, content-derived, within-payload-unique ref — from slugRef/dedupeRefs (payload-refs.ts)' },
                 content: { type: 'string', description: 'Required for acceptance_criterion, ac_transfer and knowledge_entry_content — the full text, verbatim' },
                 title: { type: 'string', description: 'Required for child_ticket and checklist_item' },
