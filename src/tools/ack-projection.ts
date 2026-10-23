@@ -117,6 +117,9 @@ const supersededAck = (row: unknown) => pick(row, ['id', 'status', 'superseded_b
  * stringify; tools without an entry (all reads) pass through unchanged.
  */
 export const ackProjections: Record<string, AckProjection> = {
+  create_feature_account: row => pick(row, ['account_id','entry_id','current_revision','created_at']),
+  propose_feature_amendment: row => pick(row, ['amendment_id','account_id','proposal_event_id','created_at','applied_revision','applied_at']),
+  apply_feature_amendment: row => pick(row, ['amendment_id','account_id','applied_revision','applied_at','application_evidence']),
   publish_definition: result => pick(result, ['id', 'concept_id', 'current_revision']),
   // ——— tasks ———
   create_task: (result) => createdTaskAck(result),

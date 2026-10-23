@@ -1,3 +1,4 @@
+import { createFeatureAccount, readFeatureAccounts, previewFeatureAmendment, proposeFeatureAmendment, applyFeatureAmendment } from '../../tools/feature-accounts.js';
 import { registerSourceCommands } from './knowledge-sources.js';
 import { readFile } from 'node:fs/promises';
 import { saveKnowledgeQuestion, previewKnowledgeQuestions, importKnowledgeQuestions } from '../../tools/knowledge-questions.js';
@@ -20,6 +21,22 @@ import { formatTable, formatDetail, formatDate } from '../formatter.js';
 export function registerKnowledgeCommands(program: Command): void {
   const knowledge = program.command('knowledge').description('Manage workspace knowledge base');
 
+  const accounts = knowledge.command('accounts').description('Live feature accounts and pending clause amendments');
+  accounts.command('list').option('--surface <surface>').option('--account <id>').option('--history-limit <n>').option('--history-before <n>').action(async opts => {
+    await runCommand(program.opts(), ctx => readFeatureAccounts(ctx.client,ctx.projectId,{owner_surface:opts.surface,account_id:opts.account,history_limit:opts.historyLimit ? Number(opts.historyLimit) : undefined,history_before:opts.historyBefore ? Number(opts.historyBefore) : undefined}), data => JSON.stringify(data,null,2));
+  });
+  accounts.command('create').requiredOption('--surface <surface>').option('--concept <id>').action(async opts => {
+    await runCommand(program.opts(), ctx => createFeatureAccount(ctx.client,ctx.projectId,{owner_surface:opts.surface,concept_id:opts.concept}), data => JSON.stringify(data,null,2));
+  });
+  for (const [name, handler] of [['preview',previewFeatureAmendment],['propose',proposeFeatureAmendment]] as const) {
+    accounts.command(name).requiredOption('--file <path>', 'JSON argument file; same fields as MCP').action(async opts => {
+      const args: unknown = JSON.parse(readFileSync(opts.file,'utf8'));
+      await runCommand(program.opts(), ctx => handler(ctx.client,ctx.projectId,args), data => JSON.stringify(data,null,2));
+    });
+  }
+  accounts.command('apply').argument('<amendment-id>').option('--production-event <id>').option('--confirm-production', 'Explicitly confirm production promotion has completed').action(async (id,opts) => {
+    await runCommand(program.opts(), ctx => applyFeatureAmendment(ctx.client,ctx.projectId,{amendment_id:id,production_event_id:opts.productionEvent,confirm_production:opts.confirmProduction}), data => JSON.stringify(data,null,2));
+  });
   registerSourceCommands(knowledge, program);
   const questions = knowledge.command('questions').description('Manage unresolved knowledge; question state never implies shipped behaviour');
   questions.command('save').requiredOption('--state <state>', 'open, parked or decided')

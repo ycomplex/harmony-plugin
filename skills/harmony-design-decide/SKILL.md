@@ -34,6 +34,12 @@ Invoke with a sub-track: `--track product` | `--track technical` | `--track ux-u
 > + `compose_brief` + `resolve_brief`, advancing to Designed only on the last required sub-track). Do **not**
 > also draft or compose a ux-ui brief here. The Product and Technical sub-tracks continue with the flow below.
 
+For a feature-changing UX/UI hand-off, pass the shared
+`skills/harmony-shared/current-account-maintenance.md` procedure to the owning
+visual-handoff flow as well: capture the clause intent in its ratified brief and
+reconcile after acceptance. Its generated surface does not authorize publishing
+account text. Unchanged behaviour reuses an earlier sub-track's accepted intent.
+
 > Before deciding, follow `skills/harmony-shared/knowledge-discipline.md`.
 
 > **Knowledge-entry shape (B-395).** Author every decision as ONE atomic claim shaped **Decision · Why · How-to-apply · Scope**; pick the narrowest `type`; multi-tag `domain`; respect the Asserted→human-Accept lifecycle (never pre-Accept a replacement). See the *knowledge-entry authoring standard* doctrine and `record_decision`'s description.
@@ -77,6 +83,16 @@ required** one (which decides `pending_activity` in step 4).
 ### 1c. Honor a cross-ticket-completion flag (reconcile before designing)
 
 Before designing, check whether this ticket's work is **already done** by another run (B-643): honor a `possibly-subsumed-by` annotation on the description (grep the `possibly-subsumed-by:` token → `get_task` the covering ticket → subsume + stop if it covers this work), AND independently check for a Verified/Deployed sibling via `search_tasks` (it reaches done work; `find_related_tickets` excludes Verified/Deployed). If a covering done sibling exists → `subsume_task` + stop; else proceed. Full mechanism + rationale: `skills/harmony-shared/ticket-disposition.md` → **"Reconciling a ticket another run already finished."**
+
+### 1d. Reconcile accepted feature-account intents on pickup (B-1235)
+
+Follow `skills/harmony-shared/current-account-maintenance.md` → **Reconcile accepted
+intents** before drafting another sub-track. Consume pending acceptance events through
+the normal owning-gate path first. Read ticket comments and the source decisions,
+including a prior sub-track accepted in the browser with no session running. Resume
+only ratified intents; an Asserted draft's comment does not authorize a proposal.
+Unavailable account tools/storage produce an explicit blocked maintenance record,
+never a generic entry write. This is a side-effect consume, not another gate accept.
 
 ### 2. Query domain knowledge for THIS sub-track
 
@@ -272,6 +288,15 @@ and replace" over "amend" for this revision.
 Author the brief per `skills/harmony-shared/brief-authoring.md` §Design — the question, must-haves,
 and engagement it owes the human, plus the legibility contract. Consult it; do not restate it.
 
+**Affected feature account (B-1235).** Before composing, follow
+`skills/harmony-shared/current-account-maintenance.md` → **Capture the intent before
+the design brief**. Record each affected account's exact clause replacements and
+untouched neighbours on the ticket and include the intent in `doc.context`, linked
+to THIS separate design decision. Do not submit while that decision is Asserted.
+State pending-only authorship explicitly; `current_text` remains live production.
+When no feature is affected, give a concrete `not-applicable` scope reason. Absent
+capability is instead `blocked-unavailable` and stays visible through plan/build and release.
+
 Set `pending_activity: "designing"` **only if this is the last required sub-track** (all others already
 Accepted). Otherwise set `pending_activity: null` — accepting this brief promotes the decision and clears
 the flag without advancing state (state advances to Designed only when *all* required sub-tracks are in).
@@ -459,6 +484,13 @@ Show the rendered `content`. On the human's command:
   measurably inert whenever the accept happened over the web with no session running.
 
   Then report whether the ticket is now Designed or still needs other sub-tracks.
+  **Before returning or advancing to the next gate**, reconcile this track's accepted
+  feature-account intents per `skills/harmony-shared/current-account-maintenance.md`.
+  The source must now be Accepted and its acceptance payload consumed. Read, preview
+  and propose through the guarded foundation tools; record/read back pending amendment
+  ids or explicit blockers. This also runs for non-last tracks. Never publish live
+  text, emit an `amended` claim or use the separate decision's generic edit path as an
+  account writer. A fresh pickup runs §1d when acceptance occurred outside this session.
   **Decision-only fast-forward (B-681):** if the ticket carries the `decision-only` label AND this was the
   LAST required sub-track (the brief carried the completion line), run the trailing mechanical completion
   the accept just authorized:

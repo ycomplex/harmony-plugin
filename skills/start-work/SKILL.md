@@ -50,6 +50,15 @@ the B-609 web migration seeds the `Planned`/`Built` → `revising-decomposing` �
 
 ### O2. Plan (Designed → Planned)
 
+**Affected feature accounts (B-1235).** Follow
+`skills/harmony-shared/current-account-maintenance.md` → **Reconcile accepted intents**
+on pickup, after consuming any pending acceptance event. This covers a last design
+track accepted in the browser with no live session. Include a concrete account
+maintenance step in this plan's `frame.steps` and `checklist_item` payload for each
+affected account: reconcile the ratified clause intent, record pending amendment ids
+or explicit blockers, and carry its separate decision and source links into release
+evidence. A scope-grounded `not-applicable` is different from unavailable capability.
+
 Query `engineering` knowledge (`mcp__harmony__query_knowledge({ domain: ["engineering"] })`) and the
 ticket's accepted design decisions (`query_knowledge({ status: "Accepted" })`). Write the execution plan
 (invoke `superpowers:writing-plans` for anything non-trivial). Author the brief per
@@ -269,6 +278,17 @@ mcp__harmony__consume_pending_acceptance_event({ task_id })
   legitimately never populated) — only THEN fall back to an open question, and only for what the
   snapshot doesn't carry.
 
+**Reconcile affected feature accounts at build pickup and before release (B-1235).**
+Use `skills/harmony-shared/current-account-maintenance.md`, including its durable
+intent/result records. On pickup, reconcile accepted design intents before implementing;
+before release, compare those intents with the implemented behaviour and read back
+their pending amendments. A material difference needs the existing design revision
+route, not an invented replacement clause. Record verified PR/commit evidence alongside
+an existing proposal; retry the identical saved request/key without duplicating it.
+Keep blocked maintenance steps incomplete and use the shared guide's tracked disposition
+before release. Do not check its AC on a preview, unavailable storage or a comment alone.
+Build and staging never authorize `apply_feature_amendment` or a live account write.
+
 Implement, write tests, self-validate against acceptance criteria
 (`mcp__harmony__manage_acceptance_criteria`, `mcp__harmony__manage_test_cases`), and check off each
 checklist step as it lands (`mcp__harmony__manage_checklist_items({ task_id, update: [{ id, completed: true }] })`).
@@ -371,6 +391,14 @@ resolved AC with the Accepted design, write and read back any additional behavio
 explicit `[]`). This narrowly permits recording build observations; it does not permit redesigning
 or superseding decisions. If a delegated builder reports the behaviours, this session performs the
 knowledge writes before composing the release brief.
+
+**Account maintenance evidence (B-1235).** The release brief's `context` lists each
+affected account/surface, source ticket, separate Accepted decision, pending amendment
+id/status and build evidence (or the concrete `not-applicable` reason). Carry capability,
+conflict and uncertain-write blockers as attention items with their tracked dispositions;
+do not describe them as completed maintenance. State that this workflow proposed pending
+changes and left publication to B-1234's production-confirmed path. This supplements the
+`settled_beyond_design` report; account text is never a replacement for that decision record.
 
 **When the tests pass, PRODUCE THE ARTEFACT — the ordered commit→push→verify→PR→record step (B-722,
 NON-OPTIONAL).** A build is not done when its tests pass; it is done when the tested work exists as a
