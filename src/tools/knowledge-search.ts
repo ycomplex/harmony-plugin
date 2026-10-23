@@ -13,7 +13,7 @@ export const SCORE_CUTOFF = 0.0125;
 export const RRF_K = 60;
 export const normalizeTags = (tags: readonly string[] = []): string[] =>
   [...new Set(tags.map(t => t.trim().toLowerCase()).filter(Boolean))];
-export interface SearchMatch extends KnowledgeEntrySummary { source_kind: string; score: number }
+export interface SearchMatch extends KnowledgeEntrySummary { source_kind: string; score: number; provenance?:ProsePointer; authority?:'unratified'|'source-generated'; source_link?:string; source?:unknown; repository?:string; surface?:string; inventory_key?:string; inventory_revision?:string }
 export interface SearchRoute { route: string; outcome: string; reason?: string }
 export interface KnowledgeSearchResult {
   prose_coverage?: ProseRead | { available:false };
