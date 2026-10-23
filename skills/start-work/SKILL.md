@@ -1,6 +1,6 @@
 ---
 name: start-work
-description: Use when the user wants to start working on a task, feature, or bug fix. Triggers on phrases like "work on", "start", "pick up", "implement", "fix", or any mention of a Harmony task ID (e.g., B-123). Also use when the user says "let's do X" or describes work they want to begin. In manual-mode projects this is the entry point for new development work — it behaves exactly as before. In opinionated-mode projects, /harmony-conduct is the entry point that drives the whole lifecycle; this skill implements the planning + building gates the conduct loop delegates to, and can be invoked directly to run just those gates.
+description: Use when the user wants to start working on a task, feature, or bug fix. Triggers on phrases like "work on", "start", "pick up", "implement", "fix", or any mention of a Harmony task ID (e.g., B-123). Also use when the user says "let's do X" or describes work they want to begin. In Freeform-mode projects this is the entry point for new development work — it behaves exactly as before. In Guided-mode projects, /harmony-conduct is the entry point that drives the whole lifecycle; this skill implements the planning + building gates the conduct loop delegates to, and can be invoked directly to run just those gates.
 capabilities: harmony-mcp read write edit shell forbid:harmony-mcp:record_decision forbid:harmony-mcp:supersede_decision
 allowed-tools: mcp__harmony__* Read Grep Glob Write Edit Bash
 disallowed-tools: mcp__harmony__record_decision mcp__harmony__supersede_decision
@@ -12,14 +12,14 @@ Set up everything needed to begin a piece of work: find or create the Harmony ta
 
 ## 0. Check project mode
 
-Call `mcp__harmony__get_project`. If `mode !== 'opinionated'`, follow **Manual mode** (the original
-flow below — unchanged). If `mode === 'opinionated'`, follow **Opinionated mode** instead.
+Call `mcp__harmony__get_project`. If `mode !== 'opinionated'`, follow **Freeform mode** (the original
+flow below — unchanged). If `mode === 'opinionated'`, follow **Guided mode** instead.
 
 ---
 
-## Opinionated mode (planning + building)
+## Guided mode (planning + building)
 
-In opinionated mode the usual entry point is `/harmony-plugin:harmony-conduct`, which drives the whole gate sequence and delegates the plan/build gates to this section; invoking start-work directly runs just these gates.
+In Guided mode the usual entry point is `/harmony-plugin:harmony-conduct`, which drives the whole gate sequence and delegates the plan/build gates to this section; invoking start-work directly runs just these gates.
 
 This path drives `planning` (Designed → Planned) and `building` (Planned → Built) for a ticket that has
 accepted design decisions. It does NOT author design knowledge (build role): if you discover the accepted
@@ -232,7 +232,7 @@ substitute for checking first.
 
 Then, with the floor clear: create the isolated worktree (invoke `superpowers:using-git-worktrees`) and
 save `.harmony-task.json`
-exactly as in the manual flow.
+exactly as in the Freeform flow.
 
 **Read the plan-accept-materialized checklist as the AUTHORITATIVE work list (B-797, closes specimen 6 —
 B-800's build silently dropped reshape-added plan steps because nothing materialized them):**
@@ -814,7 +814,7 @@ Report that the ticket is Built and awaiting release; the human runs the **relea
 
 ---
 
-## Manual mode
+## Freeform mode
 
 *(everything below is the original start-work flow — unchanged)*
 

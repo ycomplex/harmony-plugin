@@ -62,7 +62,7 @@ completion marker**. So a full re-run is a no-op AND a partial/interrupted stamp
 duplicating. **Always start here:**
 
 1. `mcp__harmony__get_project` — confirm you have a project. If `mode !== 'opinionated'` the discovery
-   gates don't apply; inception is an opinionated-mode flow — set the mode in S0 before proceeding.
+   gates don't apply; inception is an Guided-mode flow — set the mode in S0 before proceeding.
 2. **Completion-marker fast path.** `mcp__harmony__query_knowledge({ type: 'convention', search:
    'inception:scaffold-complete' })` (also match by exact title in step 4's convention). **If the marker
    entry exists → inception already ran: report "already seeded" and STOP** (no-op). **If it is absent
@@ -90,7 +90,7 @@ up exactly where it stopped.
 S0 is the substrate the other strata run on. It has two parts.
 
 ### 1a. Instantiate + pick mode + stamp the milestone fence (existing ops)
-Ensure the project entity exists and set the **mode** (opinionated vs manual) via the existing project
+Ensure the project entity exists and set the **mode** (Guided vs Freeform) via the existing project
 ops. This is thin configuration, not knowledge.
 
 Then stamp the **default milestone fence** specified in §3f — `create_milestone` for **`v1`** and

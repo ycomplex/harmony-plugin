@@ -28,7 +28,7 @@ describe('start-work skill contract (evolved)', () => {
   it('branches on project mode and drives the opinionated lifecycle', () => {
     expect(skill.body).toContain('get_project');
     expect(skill.body).toContain('opinionated');
-    expect(skill.body.toLowerCase()).toContain('manual mode');
+    expect(skill.body.toLowerCase()).toContain('freeform mode');
     const tools = referencedHarmonyTools(skill.body);
     expect(tools).toContain('advance_workflow');   // Planned -> Built on tests pass
     expect(tools).toContain('compose_brief');       // plan-draft + release-decision-pending

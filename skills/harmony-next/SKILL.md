@@ -23,7 +23,7 @@ or left blank to take the highest-priority awaiting item.
 
 ### 1. Resolve mode + the target item
 
-Call `mcp__harmony__get_project`; if `mode !== 'opinionated'`, stop (manual-mode projects don't use the
+Call `mcp__harmony__get_project`; if `mode !== 'opinionated'`, stop (Freeform-mode projects don't use the
 queue). If the user named a ticket, `mcp__harmony__get_task({ task_id })`. Otherwise
 `mcp__harmony__query_tasks({ awaiting_human_input: true, sort_by: 'priority', limit: 1 })` and take the
 single result. If the queue is empty, say so and stop.

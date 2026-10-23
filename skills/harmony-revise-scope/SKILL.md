@@ -15,7 +15,7 @@ allowed-tools: mcp__harmony__* Read Grep Glob WebSearch WebFetch
 
 # Harmony Revise-Scope (B-519, B-529)
 
-The mid-run **"revise scope / back up"** flow for the opinionated-mode conduct loop. When a *downstream*
+The mid-run **"revise scope / back up"** flow for the Guided-mode conduct loop. When a *downstream*
 discovery gate's discussion reveals the *upstream* spec was scoped too narrowly, the run must back up to an
 earlier discovery gate and **re-run it natively** against the real scope. This skill is the agent that
 **drafts a concrete back-up proposal** and files it as a `revise-scope-review` brief so a human can **accept**
