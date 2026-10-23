@@ -10,7 +10,8 @@ import { registerSourceCommands } from './knowledge-sources.js';
 import { readFile } from 'node:fs/promises';
 import { saveKnowledgeQuestion, previewKnowledgeQuestions, importKnowledgeQuestions } from '../../tools/knowledge-questions.js';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { previewMetadataRepair, applyMetadataRepair, tagReleasedKnowledge } from '../../tools/knowledge-repair.js';
+import { applyMetadataRepair, tagReleasedKnowledge } from '../../tools/knowledge-repair.js';
+import { previewMetadataRepairToFile } from '../metadata-preview.js';
 import { listKnowledgeTags, registerKnowledgeTag } from '../../tools/knowledge-metadata.js';
 import { publishDefinition } from '../../tools/knowledge-definitions.js';
 import { Command } from 'commander';
@@ -215,9 +216,19 @@ export function registerKnowledgeCommands(program: Command): void {
       );
     });
 
-  knowledge.command('preview-metadata-repair').argument('<file>').action(async file => {
-    await runCommand(program.opts(), async ctx => {const manifest=await previewMetadataRepair(ctx.client,ctx.projectId);writeFileSync(file,JSON.stringify(manifest,null,2));return manifest.counts;}, data=>JSON.stringify(data,null,2));
-  });
+  knowledge.command('preview-metadata-repair').argument('<file>')
+    .description('Write incremental unreviewed JSON snapshots; do not edit until complete. Refuses existing files.')
+    .option('--tag <tag>', 'Require this tag (AND with other selectors)')
+    .option('--type <type>', 'Require this authoring classification')
+    .option('--created-after <ISO>', 'Inclusive creation timestamp, with timezone')
+    .option('--created-before <ISO>', 'Inclusive creation timestamp, with timezone')
+    .option('--limit <n>', 'Maximum entries to inspect (positive integer)')
+    .action(async (file, opts) => {
+      await runCommand(program.opts(), ctx => previewMetadataRepairToFile(ctx.client, ctx.projectId, file, {
+        tag: opts.tag, type: opts.type, created_after: opts.createdAfter,
+        created_before: opts.createdBefore, limit: opts.limit === undefined ? undefined : Number(opts.limit),
+      }), data => JSON.stringify(data, null, 2));
+    });
   knowledge.command('apply-metadata-repair').argument('<reviewed-file>').action(async file => {
     await runCommand(program.opts(), ctx=>applyMetadataRepair(ctx.client,ctx.projectId,JSON.parse(readFileSync(file,'utf8'))),data=>JSON.stringify(data,null,2));
   });

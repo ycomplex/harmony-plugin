@@ -48758,11 +48758,34 @@ function registerSourceCommands(knowledge, program3) {
 
 // src/cli/commands/knowledge.ts
 import { readFile } from "node:fs/promises";
-import { readFileSync as readFileSync6, writeFileSync as writeFileSync3 } from "node:fs";
+import { readFileSync as readFileSync6 } from "node:fs";
 
 // src/tools/knowledge-repair.ts
 import { execFileSync as execFileSync3 } from "node:child_process";
 import { randomUUID } from "node:crypto";
+var previewSelectorsSchema = external_exports.object({
+  tag: external_exports.string().trim().min(1).optional(),
+  type: external_exports.string().trim().min(1).optional(),
+  created_after: external_exports.string().datetime({ offset: true }).optional(),
+  created_before: external_exports.string().datetime({ offset: true }).optional(),
+  limit: external_exports.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional()
+}).strict().refine((value) => !value.created_after || !value.created_before || Date.parse(value.created_after) <= Date.parse(value.created_before), {
+  message: "created-after must be at or before created-before"
+});
+var PREVIEW_PAGE_SIZE = 100;
+function repairCounts(entries) {
+  return {
+    entries: entries.length,
+    product_before: entries.filter((e) => e.current_scope === "product").length,
+    deployment_before: entries.filter((e) => e.current_scope === "deployment").length,
+    unresolved_before: entries.filter((e) => !e.current_scope).length,
+    proposed: entries.filter((e) => e.scope).length,
+    mixed: entries.filter((e) => e.state === "mixed").length,
+    uncertain: entries.filter((e) => e.state === "uncertain").length,
+    missing_pr: entries.filter((e) => !e.prs.some((pr) => !pr.unavailable)).length,
+    tags_before: entries.reduce((n, e) => n + e.tags_before, 0)
+  };
+}
 function verifiedPrPaths(repo, number) {
   if (!/^[-\w]+\/[-\w.]+$/.test(repo) || !Number.isSafeInteger(number) || number < 1)
     throw new Error("Invalid PR identity");
@@ -48800,92 +48823,114 @@ function verifiedPrPaths(repo, number) {
     paths: pages.trim().split("\n").filter(Boolean).map((p) => `${prefix}/${p}`)
   };
 }
-async function previewMetadataRepair(client, projectId) {
-  if (!await metadataCapable(client))
-    throw new Error("Metadata repair unavailable until schema promotion.");
-  const { data, error } = await client.rpc("knowledge_metadata_preview", {
-    p_project_id: projectId
-  });
-  if (error) throw new Error(error.message);
+async function previewMetadataRepair(client, projectId, options = {}) {
+  const { onCheckpoint, ...rawSelectors } = options;
+  const selectors = previewSelectorsSchema.parse(rawSelectors);
   const entries = [];
-  for (const d of data ?? []) {
-    const text4 = `${d.title}
-${d.content}`;
-    const operations = /promote-prod|container\/|\.github\/workflows|staging.*(?:job|host)|\bdeployment\b/i.test(
-      text4
-    );
-    const product = /\b(user|reader|author|product)\b/i.test(text4);
-    const prs = [];
-    const { data: refs, error: refsError } = await client.from("ticket_references_knowledge").select("task_id").eq("decision_id", d.id);
-    if (refsError) throw new Error(refsError.message);
-    const taskIds = [
-      .../* @__PURE__ */ new Set([
-        ...d.source_task_id ? [d.source_task_id] : [],
-        ...(refs ?? []).map((ref) => ref.task_id)
-      ])
-    ];
-    for (const taskId of taskIds) {
-      const { data: task, error: taskError } = await client.from("tasks").select("field_values").eq("id", taskId).eq("project_id", projectId).maybeSingle();
-      if (taskError) throw new Error(taskError.message);
-      for (const ref of [
-        task?.field_values?.build_pr,
-        task?.field_values?.prerequisite_pr
-      ]) {
-        const match2 = ref?.pr_url?.match(
-          /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)$/
-        );
-        if (!match2 || prs.some(
-          (pr) => pr.repo === match2[1] && pr.number === Number(match2[2])
-        ))
-          continue;
-        try {
-          prs.push(verifiedPrPaths(match2[1], Number(match2[2])));
-        } catch (e) {
-          prs.push({
-            repo: match2[1],
-            number: Number(match2[2]),
-            paths: [],
-            unavailable: e.message
-          });
-        }
-      }
-    }
-    entries.push({
-      id: d.id,
-      fingerprint: d.fingerprint,
-      title: d.title,
-      content: d.content,
-      current_scope: d.scope ?? null,
-      reviewed: false,
-      scope: d.scope ?? (operations && !product ? "deployment" : null),
-      evidence: operations ? [
-        "Deployment path or operation mentioned; review the claim before assigning scope."
-      ] : [],
-      state: operations && product ? "mixed" : operations ? "proposed" : "uncertain",
-      surfaces: surfaceTags(
-        prs.filter((pr) => !pr.unavailable).flatMap((pr) => pr.paths)
-      ),
-      prs,
-      tags_before: d.tags?.length ?? 0
-    });
-  }
-  return {
+  const manifest = {
     version: 1,
     project_id: projectId,
     manifest_id: randomUUID(),
     entries,
-    counts: {
-      entries: entries.length,
-      product_before: entries.filter((e) => e.current_scope === "product").length,
-      deployment_before: entries.filter((e) => e.current_scope === "deployment").length,
-      unresolved_before: entries.filter((e) => !e.current_scope).length,
-      proposed: entries.filter((e) => e.scope).length,
-      mixed: entries.filter((e) => e.state === "mixed").length,
-      uncertain: entries.filter((e) => e.state === "uncertain").length,
-      missing_pr: entries.filter((e) => !e.prs.some((pr) => !pr.unavailable)).length,
-      tags_before: entries.reduce((n, e) => n + e.tags_before, 0)
-    }
+    counts: repairCounts(entries),
+    preview: { selectors, complete: false, pages: 0 }
   };
+  const checkpoint = async () => {
+    manifest.counts = repairCounts(entries);
+    await onCheckpoint?.(manifest);
+  };
+  await checkpoint();
+  if (!await metadataCapable(client))
+    throw new Error("Metadata repair unavailable until schema promotion.");
+  let cursor;
+  while (true) {
+    const size = Math.min(PREVIEW_PAGE_SIZE, (selectors.limit ?? Infinity) - entries.length);
+    let query = client.from("knowledge_decisions").select("id,title,content,scope,tags,source_task_id,fingerprint:knowledge_metadata_fingerprint").eq("project_id", projectId).neq("type", "intent").order("id", { ascending: true }).limit(size);
+    if (cursor) query = query.gt("id", cursor);
+    if (selectors.tag) query = query.contains("tags", [selectors.tag]);
+    if (selectors.type) query = query.eq("type", selectors.type);
+    if (selectors.created_after) query = query.gte("created_at", selectors.created_after);
+    if (selectors.created_before) query = query.lte("created_at", selectors.created_before);
+    const { data, error } = await query;
+    if (error) throw new Error(error.message);
+    manifest.preview.pages++;
+    for (const d of data ?? []) {
+      if (typeof d.fingerprint !== "string" || !/^[a-f0-9]{32}$/.test(d.fingerprint))
+        throw new Error("Metadata preview did not return a database fingerprint");
+      const text4 = `${d.title}
+${d.content}`;
+      const operations = /promote-prod|container\/|\.github\/workflows|staging.*(?:job|host)|\bdeployment\b/i.test(
+        text4
+      );
+      const product = /\b(user|reader|author|product)\b/i.test(text4);
+      const prs = [];
+      const { data: refs, error: refsError } = await client.from("ticket_references_knowledge").select("task_id").eq("decision_id", d.id);
+      if (refsError) throw new Error(refsError.message);
+      const taskIds = [
+        .../* @__PURE__ */ new Set([
+          ...d.source_task_id ? [d.source_task_id] : [],
+          ...(refs ?? []).map((ref) => ref.task_id)
+        ])
+      ];
+      for (const taskId of taskIds) {
+        const { data: task, error: taskError } = await client.from("tasks").select("field_values").eq("id", taskId).eq("project_id", projectId).maybeSingle();
+        if (taskError) throw new Error(taskError.message);
+        for (const ref of [
+          task?.field_values?.build_pr,
+          task?.field_values?.prerequisite_pr
+        ]) {
+          const match2 = ref?.pr_url?.match(
+            /^https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)$/
+          );
+          if (!match2 || prs.some(
+            (pr) => pr.repo === match2[1] && pr.number === Number(match2[2])
+          ))
+            continue;
+          try {
+            prs.push(verifiedPrPaths(match2[1], Number(match2[2])));
+          } catch (e) {
+            prs.push({
+              repo: match2[1],
+              number: Number(match2[2]),
+              paths: [],
+              unavailable: e.message
+            });
+          }
+        }
+      }
+      entries.push({
+        id: d.id,
+        fingerprint: d.fingerprint,
+        title: d.title,
+        content: d.content,
+        current_scope: d.scope ?? null,
+        reviewed: false,
+        scope: d.scope ?? (operations && !product ? "deployment" : null),
+        evidence: operations ? [
+          "Deployment path or operation mentioned; review the claim before assigning scope."
+        ] : [],
+        state: operations && product ? "mixed" : operations ? "proposed" : "uncertain",
+        surfaces: surfaceTags(
+          prs.filter((pr) => !pr.unavailable).flatMap((pr) => pr.paths)
+        ),
+        prs,
+        tags_before: d.tags?.length ?? 0
+      });
+      await checkpoint();
+    }
+    if (selectors.limit !== void 0 && entries.length >= selectors.limit) {
+      manifest.preview.stopped_by = "limit";
+      break;
+    }
+    if ((data?.length ?? 0) < size) {
+      manifest.preview.stopped_by = "exhausted";
+      break;
+    }
+    cursor = data[data.length - 1].id;
+  }
+  manifest.preview.complete = true;
+  await checkpoint();
+  return manifest;
 }
 async function applyMetadataRepair(client, projectId, manifest) {
   if (manifest.version !== 1 || manifest.project_id !== projectId)
@@ -48956,6 +49001,33 @@ async function tagReleasedKnowledge(client, projectId, taskId, repo, pr) {
     tagged++;
   }
   return { available: true, tagged, tags };
+}
+
+// src/cli/metadata-preview.ts
+import { linkSync, renameSync, rmSync, writeFileSync as writeFileSync3 } from "node:fs";
+import { randomUUID as randomUUID2 } from "node:crypto";
+async function previewMetadataRepairToFile(client, projectId, file, selectors = {}, progress = (line) => process.stderr.write(`${line}
+`)) {
+  let published = false;
+  const manifest = await previewMetadataRepair(client, projectId, {
+    ...selectors,
+    onCheckpoint(snapshot) {
+      const temporary = `${file}.${randomUUID2()}.tmp`;
+      try {
+        writeFileSync3(temporary, `${JSON.stringify(snapshot, null, 2)}
+`, { flag: "wx", mode: 384 });
+        if (published) renameSync(temporary, file);
+        else {
+          linkSync(temporary, file);
+          published = true;
+        }
+      } finally {
+        rmSync(temporary, { force: true });
+      }
+      progress(`Metadata preview: ${snapshot.counts.entries} entries, ${snapshot.preview.pages} pages \u2014 ${snapshot.preview.complete ? `complete (${snapshot.preview.stopped_by})` : "in progress"}; review file: ${file}`);
+    }
+  });
+  return manifest.counts;
 }
 
 // src/cli/commands/knowledge.ts
@@ -49102,12 +49174,14 @@ ${result.instructions.join("\n")}`);
       ]) : JSON.stringify(data, null, 2)
     );
   });
-  knowledge.command("preview-metadata-repair").argument("<file>").action(async (file) => {
-    await runCommand(program3.opts(), async (ctx) => {
-      const manifest = await previewMetadataRepair(ctx.client, ctx.projectId);
-      writeFileSync3(file, JSON.stringify(manifest, null, 2));
-      return manifest.counts;
-    }, (data) => JSON.stringify(data, null, 2));
+  knowledge.command("preview-metadata-repair").argument("<file>").description("Write incremental unreviewed JSON snapshots; do not edit until complete. Refuses existing files.").option("--tag <tag>", "Require this tag (AND with other selectors)").option("--type <type>", "Require this authoring classification").option("--created-after <ISO>", "Inclusive creation timestamp, with timezone").option("--created-before <ISO>", "Inclusive creation timestamp, with timezone").option("--limit <n>", "Maximum entries to inspect (positive integer)").action(async (file, opts) => {
+    await runCommand(program3.opts(), (ctx) => previewMetadataRepairToFile(ctx.client, ctx.projectId, file, {
+      tag: opts.tag,
+      type: opts.type,
+      created_after: opts.createdAfter,
+      created_before: opts.createdBefore,
+      limit: opts.limit === void 0 ? void 0 : Number(opts.limit)
+    }), (data) => JSON.stringify(data, null, 2));
   });
   knowledge.command("apply-metadata-repair").argument("<reviewed-file>").action(async (file) => {
     await runCommand(program3.opts(), (ctx) => applyMetadataRepair(ctx.client, ctx.projectId, JSON.parse(readFileSync6(file, "utf8"))), (data) => JSON.stringify(data, null, 2));
@@ -50454,7 +50528,7 @@ function registerConfigCommands(program3) {
 
 // src/cli/commands/conductor-config.ts
 import { execFile } from "node:child_process";
-import { chmodSync as chmodSync3, existsSync as fsExistsSync3, mkdirSync as mkdirSync4, readFileSync as fsReadFileSync3, writeFileSync as writeFileSync6 } from "node:fs";
+import { chmodSync as chmodSync3, existsSync as fsExistsSync3, mkdirSync as mkdirSync4, readFileSync as fsReadFileSync3, writeFileSync as writeFileSync7 } from "node:fs";
 import { dirname as dirname7, resolve as resolve6 } from "node:path";
 
 // src/config/conductor-migrate.ts
@@ -50575,7 +50649,7 @@ function buildMigration(input) {
 
 // src/config/conductor-project-source.ts
 import { createHash as createHash3 } from "node:crypto";
-import { chmodSync, mkdirSync as mkdirSync2, readFileSync as readFileSync8, renameSync, rmSync, writeFileSync as writeFileSync4 } from "node:fs";
+import { chmodSync, mkdirSync as mkdirSync2, readFileSync as readFileSync8, renameSync as renameSync2, rmSync as rmSync2, writeFileSync as writeFileSync5 } from "node:fs";
 import { dirname as dirname4 } from "node:path";
 
 // src/config/github-app-token.ts
@@ -50697,12 +50771,12 @@ function writeSnapshot(path4, snap) {
   mkdirSync2(dirname4(path4), { recursive: true });
   const tmp = `${path4}.${process.pid}.${Date.now().toString(36)}.tmp`;
   try {
-    writeFileSync4(tmp, `${JSON.stringify(snap, null, 2)}
+    writeFileSync5(tmp, `${JSON.stringify(snap, null, 2)}
 `, { mode: 384 });
     chmodSync(tmp, 384);
-    renameSync(tmp, path4);
+    renameSync2(tmp, path4);
   } catch (err) {
-    rmSync(tmp, { force: true });
+    rmSync2(tmp, { force: true });
     throw err;
   }
 }
@@ -51574,7 +51648,7 @@ async function runStopRemote(deps, opts = {}, onLine) {
 
 // src/cli/commands/conductor-lifecycle-deps.ts
 import { spawn } from "node:child_process";
-import { chmodSync as chmodSync2, closeSync, existsSync as existsSync4, mkdirSync as mkdirSync3, openSync, readFileSync as readFileSync10, readlinkSync, rmSync as rmSync2, writeFileSync as writeFileSync5 } from "node:fs";
+import { chmodSync as chmodSync2, closeSync, existsSync as existsSync4, mkdirSync as mkdirSync3, openSync, readFileSync as readFileSync10, readlinkSync, rmSync as rmSync3, writeFileSync as writeFileSync6 } from "node:fs";
 import { homedir as homedir3, hostname, userInfo } from "node:os";
 import { dirname as dirname5, resolve as resolve5 } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
@@ -52074,13 +52148,13 @@ function defaultLifecycleDeps() {
     existsSync: existsSync4,
     readFileSync: (p) => readFileSync10(p, "utf8"),
     writeFileSync: (p, text4, mode) => {
-      writeFileSync5(p, text4, { mode });
+      writeFileSync6(p, text4, { mode });
       chmodSync2(p, mode);
     },
     mkdirSync: (p) => {
       mkdirSync3(p, { recursive: true });
     },
-    rmSync: (p) => rmSync2(p, { force: true }),
+    rmSync: (p) => rmSync3(p, { force: true }),
     readBoard: async (env2) => {
       const token = env2.HARMONY_API_TOKEN;
       if (!token) throw new Error("HARMONY_API_TOKEN is not set");
@@ -52886,10 +52960,10 @@ async function runMigrate(deps, opts) {
       return fail(`refusing to overwrite ${existing.join(", ")} (pass --force to replace it; nothing was written)`);
     }
     mkdirSync4(dirname7(outProject), { recursive: true });
-    writeFileSync6(outProject, projectText, { mode: 420 });
+    writeFileSync7(outProject, projectText, { mode: 420 });
     written.push(outProject);
     mkdirSync4(dirname7(outHost), { recursive: true });
-    writeFileSync6(outHost, hostText, { mode: 384 });
+    writeFileSync7(outHost, hostText, { mode: 384 });
     chmodSync3(outHost, 384);
     written.push(outHost);
   }
@@ -53411,7 +53485,7 @@ function encodeNulArgv(argv) {
 }
 
 // src/cli/commands/agent.ts
-import { existsSync as existsSync6, mkdirSync as mkdirSync6, readFileSync as readFileSync12, renameSync as renameSync2, writeFileSync as writeFileSync8 } from "node:fs";
+import { existsSync as existsSync6, mkdirSync as mkdirSync6, readFileSync as readFileSync12, renameSync as renameSync3, writeFileSync as writeFileSync9 } from "node:fs";
 
 // src/agents/codex-provision.ts
 import {
@@ -53428,7 +53502,7 @@ import {
   statSync,
   symlinkSync,
   unlinkSync as unlinkSync2,
-  writeFileSync as writeFileSync7,
+  writeFileSync as writeFileSync8,
   appendFileSync
 } from "node:fs";
 import { join as join13, resolve as resolve7 } from "node:path";
@@ -53663,11 +53737,11 @@ function provisionCodex(input) {
   mkdirSync5(codexHome, { recursive: true });
   const config = renderCodexConfig(HARMONY_MCP_CONNECTION, { pluginRoot: resolve7(input.pluginDir) });
   const configPath = join13(codexHome, config.fileName);
-  writeFileSync7(configPath, config.content, { mode: 420 });
+  writeFileSync8(configPath, config.content, { mode: 420 });
   const hooks = renderCodexHooks(resolve7(input.pluginDir));
   const hooksPath = join13(codexHome, hooks.fileName);
-  writeFileSync7(hooksPath, hooks.content, { mode: 420 });
-  writeFileSync7(agentsMdPath, agentsMd);
+  writeFileSync8(hooksPath, hooks.content, { mode: 420 });
+  writeFileSync8(agentsMdPath, agentsMd);
   const skillsLink = linkSkills(workspaceDir, input.pluginDir);
   excludeFromGit(workspaceDir, ["AGENTS.md", ".agents/"]);
   const authInstalledAt = installAuth(input.authFile, codexHome);
@@ -53820,9 +53894,9 @@ function registerAgentCommands(program3) {
       mkdirSync6(opts.dir, { recursive: true });
       const target = join14(opts.dir, CODEX_THREAD_FILE_NAME);
       const tmp = `${target}.tmp-${process.pid}`;
-      writeFileSync8(tmp, `${JSON.stringify(buildCodexThreadRecord(id, opts.model))}
+      writeFileSync9(tmp, `${JSON.stringify(buildCodexThreadRecord(id, opts.model))}
 `);
-      renameSync2(tmp, target);
+      renameSync3(tmp, target);
     } catch (err) {
       console.error(`harmony agent write-thread: WARNING \u2014 ${err instanceof Error ? err.message : String(err)}`);
       process.exit(1);
@@ -54296,7 +54370,7 @@ function registerLegOutputCommands(program3) {
 
 // src/cli/commands/gates.ts
 import { execFileSync as execFileSync4, spawnSync } from "node:child_process";
-import { mkdirSync as mkdirSync7, readFileSync as readFileSync15, renameSync as renameSync3, writeFileSync as writeFileSync9 } from "node:fs";
+import { mkdirSync as mkdirSync7, readFileSync as readFileSync15, renameSync as renameSync4, writeFileSync as writeFileSync10 } from "node:fs";
 import { dirname as dirname9 } from "node:path";
 
 // src/config/notify-sync.ts
@@ -54589,9 +54663,9 @@ function writeGateEvidenceMarker(projectRoot, marker) {
   const filePath = gateEvidenceMarkerPath(projectRoot, marker.extension_point);
   mkdirSync7(dirname9(filePath), { recursive: true });
   const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  writeFileSync9(tmpPath, `${JSON.stringify(marker, null, 2)}
+  writeFileSync10(tmpPath, `${JSON.stringify(marker, null, 2)}
 `, "utf8");
-  renameSync3(tmpPath, filePath);
+  renameSync4(tmpPath, filePath);
 }
 function productionNotifySyncIO() {
   return {
@@ -54618,8 +54692,8 @@ function productionNotifySyncIO() {
     writeCache: (path4, contents) => {
       mkdirSync7(dirname9(path4), { recursive: true });
       const tmpPath = `${path4}.tmp-${process.pid}-${Date.now()}`;
-      writeFileSync9(tmpPath, contents, "utf8");
-      renameSync3(tmpPath, path4);
+      writeFileSync10(tmpPath, contents, "utf8");
+      renameSync4(tmpPath, path4);
     }
   };
 }
