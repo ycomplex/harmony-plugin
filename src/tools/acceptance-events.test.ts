@@ -1,3 +1,5 @@
+// Original-contract fixtures keep optional name storage absent; knowledge-names tests exercise the boundary.
+vi.mock('./knowledge-names.js', async importOriginal => ({ ...await importOriginal<typeof import('./knowledge-names.js')>(), readKnowledgeNames: async () => ({available:false,matches:[],entries:[],identities:[]}), withRetiredWording: async (_c:unknown,_p:unknown,entries:unknown[])=>entries }));
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   probeAcceptanceEventSubstrate,
