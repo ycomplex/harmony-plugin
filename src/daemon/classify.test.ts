@@ -659,3 +659,17 @@ describe('B-1157: a live declared wait HOLDS instead of parking no-progress', ()
     expect(classifyWorkerExit(args({ ...idle, refusal: { kind: 'quota', resets_at: null } }))).toEqual({ action: 'park', reason: 'quota' });
   });
 });
+
+
+describe('B-1267 startup infrastructure exit', () => {
+  it('a never-scheduled worker parks distinctly, without entering dirty-exit retry or timeout', () => {
+    const a = args({ exitCode: 74, progressed: false });
+    const outcome = classifyWorkerExit(a);
+    expect(outcome).toEqual({ action: 'park', reason: 'startup-unavailable' });
+    expect(exitClass(outcome, a)).toBe('startup-unavailable');
+  });
+  it('preserves clean board outcomes and daemon timeout precedence', () => {
+    expect(classifyWorkerExit(args({ exitCode: 74, row: { awaiting_human_input: true } }))).toEqual({ action: 'wait' });
+    expect(classifyWorkerExit(args({ exitCode: 74, timedOut: true }))).toEqual({ action: 'park', reason: 'worker-timeout' });
+  });
+});

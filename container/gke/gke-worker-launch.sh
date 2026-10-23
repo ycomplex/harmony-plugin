@@ -25,7 +25,7 @@
 #       71 = a pod was evicted / preempted / shut down / disrupted (status.reason Evicted|Preempting|NodeShutdown|
 #            Shutdown|Terminated, a DisruptionTarget=True condition, or a deletionTimestamp).
 #     Precedence 73, 72, 71; anything else, or a pod list that cannot be read, stays 1. backoffLimit 0: the conductor's
-#     ladder retries, never Kubernetes. Events are never read.
+#     ladder retries, never Kubernetes. Startup blockers are diagnosed from namespaced events (B-1267).
 #
 # usage: gke-worker-launch.sh <conduction_id> <ticket> [run_config_json] [model]
 set -euo pipefail
@@ -77,6 +77,13 @@ _GKE_PROJECT="${CLOUDSDK_CORE_PROJECT:-harmony-conductor}"
 # HARMONY_GKE_STORAGE_CLASS: set (gke.storage_class) => used as is; unset => harmony-ticket-disk unless the cluster says it is NotFound, then standard-rwo (below).
 : "${HARMONY_GKE_DEADLINE_S:=5400}"          # the Cloud Run job's task timeout
 : "${HARMONY_GKE_POLL_S:=5}"
+: "${HARMONY_GKE_STARTUP_TIMEOUT_S:=120}"
+case "$HARMONY_GKE_STARTUP_TIMEOUT_S" in
+  *[!0-9]*|'') echo "gke-worker-launch: invalid startup timeout" >&2; exit 1 ;;
+esac
+if [ "$HARMONY_GKE_STARTUP_TIMEOUT_S" -lt 1 ]; then
+  echo "gke-worker-launch: startup timeout must be positive" >&2; exit 1
+fi
 : "${HARMONY_GKE_JOB_TTL_S:=3600}"
 : "${HARMONY_GKE_TRANSCRIPT_BUCKET:=$_GKE_PROJECT-transcripts}"   # gke.transcript_bucket
 : "${HARMONY_GKE_SERVICE_ACCOUNT:=harmony-leg}"
@@ -222,7 +229,7 @@ rm -f "$LEG_ENV_FILE"
 echo "gke-worker-launch: job $HARMONY_GKE_NAMESPACE/$JOB_NAME (pvc $PVC_NAME)" >&2
 
 # --- Wait for a terminal state. --------------------------------------------------------------------
-# Verdicts are parsed with node from the Job's JSON; Events are never read.
+# Verdicts are parsed with node from the Job's JSON; Startup blockers are diagnosed from namespaced events (B-1267).
 JOB_VERDICT_JS='
 let s = "";
 process.stdin.on("data", (d) => (s += d));
@@ -304,17 +311,35 @@ kill_exit() {
   return 0
 }
 
+# B-1267: bound API requests as well as elapsed startup time. A running worker disables this
+# deadline permanently; a merely scheduled pod (image pull/init still pending) does not.
+STARTUP_DEADLINE=$((SECONDS + HARMONY_GKE_STARTUP_TIMEOUT_S))
+WORKER_STARTED=0
+startup_read() { "${KUBECTL[@]}" "$@" --request-timeout=5s; }
+startup_failure() {
+  local pvc events detail
+  pvc="$(startup_read get pvc "$PVC_NAME" -o json 2>/dev/null || true)"
+  # One namespaced list, filtered by the exact object UIDs in the parser. This avoids selecting
+  # an event from a previous Job/pod with the same name.
+  events="$(startup_read get events -o json 2>/dev/null || true)"
+  detail="$(printf '%s\034%s\034%s' "$STARTUP_PODS" "$pvc" "$events" | node "$HERE/gke-startup-status.mjs" diagnose)"
+  if ! startup_read delete job "$JOB_NAME" --ignore-not-found --wait=false >/dev/null 2>&1; then
+    detail="$detail; Job deletion failed — conductor reap required"
+  fi
+  echo "gke-worker-launch: startup-unavailable: job $JOB_NAME: $detail" >&2
+  exit 74
+}
 POD_TRIES=0
 while :; do
   set +e
-  JOB_JSON="$("${KUBECTL[@]}" get job "$JOB_NAME" -o json 2>/dev/null)"
+  JOB_JSON="$("${KUBECTL[@]}" get job "$JOB_NAME" -o json --request-timeout=5s 2>/dev/null)"
   GET_EXIT=$?
   set -e
   VERDICT=""
   if [ "$GET_EXIT" -eq 0 ]; then
     VERDICT="$(printf '%s' "$JOB_JSON" | node -e "$JOB_VERDICT_JS" 2>/dev/null || true)"
   else
-    if [ -z "$("${KUBECTL[@]}" get job "$JOB_NAME" --ignore-not-found -o name 2>/dev/null || echo api-error)" ]; then
+    if [ -z "$("${KUBECTL[@]}" get job "$JOB_NAME" --ignore-not-found -o name --request-timeout=5s 2>/dev/null || echo api-error)" ]; then
       echo "gke-worker-launch: job $JOB_NAME is gone (reaped or deleted) — dirty exit" >&2
       exit 1
     fi
@@ -346,5 +371,13 @@ while :; do
         exit 1
       fi ;;
   esac
+  if [ "$WORKER_STARTED" -eq 0 ] && [ "$VERDICT" != "complete" ]; then
+    STARTUP_PODS="$(startup_read get pods -l "job-name=$JOB_NAME" -o json 2>/dev/null || true)"
+    if printf '%s' "$STARTUP_PODS" | node "$HERE/gke-startup-status.mjs" started; then
+      WORKER_STARTED=1
+    elif [ "$SECONDS" -ge "$STARTUP_DEADLINE" ]; then
+      startup_failure
+    fi
+  fi
   sleep "$HARMONY_GKE_POLL_S"
 done
