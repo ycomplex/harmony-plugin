@@ -1,6 +1,7 @@
 import { queryEntities } from '../../tools/knowledge.js';
 import { linkTicketEntities } from '../../tools/workflow.js';
 import { syncProse } from '../prose-ingestion.js';
+import { initProseSources, RELEASED_PROSE_CLI } from '../prose-init.js';
 import { readProse, setDefinedIn } from '../../tools/knowledge-prose.js';
 import { readKnowledgeNames, renameKnowledgeConcept, previewKnowledgeMerge, mergeKnowledgeConcepts } from '../../tools/knowledge-names.js';
 import { captureSurfaceRecord, readSurfaceRecords } from '../../tools/surface-records.js';
@@ -9,7 +10,8 @@ import { registerSourceCommands } from './knowledge-sources.js';
 import { readFile } from 'node:fs/promises';
 import { saveKnowledgeQuestion, previewKnowledgeQuestions, importKnowledgeQuestions } from '../../tools/knowledge-questions.js';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { previewMetadataRepair, applyMetadataRepair, tagReleasedKnowledge } from '../../tools/knowledge-repair.js';
+import { applyMetadataRepair, tagReleasedKnowledge } from '../../tools/knowledge-repair.js';
+import { previewMetadataRepairToFile } from '../metadata-preview.js';
 import { listKnowledgeTags, registerKnowledgeTag } from '../../tools/knowledge-metadata.js';
 import { publishDefinition } from '../../tools/knowledge-definitions.js';
 import { Command } from 'commander';
@@ -116,7 +118,22 @@ export function registerKnowledgeCommands(program: Command): void {
 
   knowledge.command('sync-prose').option('--root <directory>', 'Repository checkout', '.').option('--declaration <path>', 'Versioned source declaration', '.harmony/prose-sources.json').option('--commit <ref>', 'Immutable commit at configured ref', 'HEAD')
     .action(async opts => runCommand(program.opts(), ctx => syncProse(ctx.client,ctx.projectId,opts.root,opts.declaration,opts.commit), data=>JSON.stringify(data,null,2)));
-  knowledge.command('prose-sources').action(async()=>runCommand(program.opts(),ctx=>readProse(ctx.client,ctx.projectId),data=>JSON.stringify(data,null,2)));
+  const proseSources = knowledge.command('prose-sources').action(async()=>runCommand(program.opts(),ctx=>readProse(ctx.client,ctx.projectId),data=>JSON.stringify(data,null,2)));
+  proseSources.command('init').description('Write local prose declaration and released-CLI refresh workflow; no login required')
+    .option('--root <directory>', 'Repository directory', '.')
+    .requiredOption('--repository <owner/repo>', 'GitHub repository to index')
+    .requiredOption('--include <glob...>', 'Repository-relative Markdown patterns')
+    .requiredOption('--scope <scope>', 'product, deployment, or unresolved')
+    .option('--exclude <glob...>', 'Patterns excluded from indexing', [])
+    .option('--kind <kind>', 'document or skill', 'document')
+    .option('--key <key>', 'Stable project-wide source key', 'repository-prose')
+    .option('--domain <domain...>', 'Knowledge domains', [])
+    .option('--branch <branch>', 'Branch whose pushes refresh the index', 'main')
+    .option('--cli-commit <sha>', 'Full released plugin commit containing the prebuilt CLI', RELEASED_PROSE_CLI)
+    .action(opts => {
+      const result = initProseSources(opts.root, opts);
+      console.log(program.opts().json ? JSON.stringify(result, null, 2) : `Created ${result.files.join(' and ')}\n\n${result.instructions.join('\n')}`);
+    });
   knowledge.command('defined-in <entry>').requiredOption('--pointer <json-or-null>','Exact source_id/path/anchor/commit or null to unlink')
     .action(async(entry,opts)=>runCommand(program.opts(),ctx=>setDefinedIn(ctx.client,ctx.projectId,{entry_id:entry,pointer:JSON.parse(opts.pointer)}),data=>JSON.stringify(data,null,2)));
 
@@ -199,9 +216,19 @@ export function registerKnowledgeCommands(program: Command): void {
       );
     });
 
-  knowledge.command('preview-metadata-repair').argument('<file>').action(async file => {
-    await runCommand(program.opts(), async ctx => {const manifest=await previewMetadataRepair(ctx.client,ctx.projectId);writeFileSync(file,JSON.stringify(manifest,null,2));return manifest.counts;}, data=>JSON.stringify(data,null,2));
-  });
+  knowledge.command('preview-metadata-repair').argument('<file>')
+    .description('Write incremental unreviewed JSON snapshots; do not edit until complete. Refuses existing files.')
+    .option('--tag <tag>', 'Require this tag (AND with other selectors)')
+    .option('--type <type>', 'Require this authoring classification')
+    .option('--created-after <ISO>', 'Inclusive creation timestamp, with timezone')
+    .option('--created-before <ISO>', 'Inclusive creation timestamp, with timezone')
+    .option('--limit <n>', 'Maximum entries to inspect (positive integer)')
+    .action(async (file, opts) => {
+      await runCommand(program.opts(), ctx => previewMetadataRepairToFile(ctx.client, ctx.projectId, file, {
+        tag: opts.tag, type: opts.type, created_after: opts.createdAfter,
+        created_before: opts.createdBefore, limit: opts.limit === undefined ? undefined : Number(opts.limit),
+      }), data => JSON.stringify(data, null, 2));
+    });
   knowledge.command('apply-metadata-repair').argument('<reviewed-file>').action(async file => {
     await runCommand(program.opts(), ctx=>applyMetadataRepair(ctx.client,ctx.projectId,JSON.parse(readFileSync(file,'utf8'))),data=>JSON.stringify(data,null,2));
   });

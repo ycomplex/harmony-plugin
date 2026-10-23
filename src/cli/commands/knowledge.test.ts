@@ -221,3 +221,27 @@ describe('entity selection CLI', () => {
     expect(linkTicketEntities).toHaveBeenCalledWith('client','project',expect.objectContaining({task_id:'B-1255',decision_id:'decision-id',entity_id:'concept-id',kind:'concept'}));
   });
 });
+
+describe('knowledge prose-sources init command', () => {
+  it('scaffolds locally and emits JSON without invoking authenticated runCommand', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'prose-cli-'));
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const program = new Command().option('--json');
+      registerKnowledgeCommands(program);
+      await program.parseAsync(['--json', 'knowledge', 'prose-sources', 'init', '--root', root, '--repository', 'customer/guide', '--include', 'docs/**/*.md', '--scope', 'product'], { from: 'user' });
+      const result = JSON.parse(log.mock.calls[0][0]);
+      expect(result.files).toEqual(['.harmony/prose-sources.json', '.github/workflows/prose-index.yml']);
+      expect(result.instructions[0]).toBe('gh secret set HARMONY_PROSE_INDEX_TOKEN --repo customer/guide');
+    } finally { log.mockRestore(); rmSync(root, { recursive: true, force: true }); }
+  });
+  it('keeps the existing prose-sources read command', async () => {
+    const { readProse } = await import('../../tools/knowledge-prose.js');
+    const spy = vi.spyOn(await import('../../tools/knowledge-prose.js'), 'readProse').mockResolvedValue({ available: true, sources: [] } as Awaited<ReturnType<typeof readProse>>);
+    try {
+      const program = new Command(); registerKnowledgeCommands(program);
+      await program.parseAsync(['knowledge', 'prose-sources'], { from: 'user' });
+      expect(spy).toHaveBeenCalledWith('client', 'project');
+    } finally { spy.mockRestore(); }
+  });
+});

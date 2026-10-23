@@ -61,3 +61,23 @@ Source coverage, defined-in reads, claim-context questions and historical-wordin
 share search's original absolute six-second deadline. Missing or failed optional work
 marks the envelope incomplete. Authentication errors remain errors. List/get generated
 value pagination remains unchanged. No claim-context result changes a claim's authority.
+
+## Portable setup and released refresh runner
+
+Customer setup lives in harmony-web's `docs/product/searching-repository-prose.md`
+(the in-app document **Make repository documentation searchable**). Use a current
+installed CLI's `harmony knowledge prose-sources init --repository owner/repo
+--key unique-source-key --include 'docs/**/*.md' --scope product --domain product`
+to scaffold local files without authentication. Init refuses existing targets.
+It prints the exact `gh secret set HARMONY_PROSE_INDEX_TOKEN --repo owner/repo`
+command and first-push/manual-dispatch instructions. Set only a project-scoped API
+token, never a service-role key.
+
+The generated recipe checks out production plugin release 0.16.33 at immutable
+commit `c72d5d36b876e684ca07f4f36e90418167843653` and runs its prebuilt CLI; it does
+not install or build `main`. The complete release tree includes the manifest the
+CLI reads. `--cli-commit` explicitly selects a different full released SHA. The npm
+package 0.1.1 is older than this setup command and is not the recipe's runner.
+The first push to the configured branch triggers refresh; if it skipped before
+the secret existed, set the secret and use `workflow_dispatch`. Missing secrets
+warn and skip, so check publication and source freshness rather than job color alone.
