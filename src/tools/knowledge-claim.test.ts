@@ -48,4 +48,15 @@ describe('portable knowledge claims', () => {
     expect(proposeClaim(encodeClaim('Body', 'Teams save views.'))).toBeNull();
     expect(proposeClaim('')).toBeNull();
   });
+  it('preserves a complete long sentence without a fixed character cut', () => {
+    const sentence = 'Maintainers review ' + 'comprehensive '.repeat(35) + 'proposals.';
+    expect(sentence.length).toBeGreaterThan(400);
+    expect(proposeClaim(sentence + ' Another sentence follows.', true)).toBe(sentence);
+  });
+  it.each(['No terminating punctuation', '## A heading', 'word '.repeat(51) + '.', ''])('reports no usable complete sentence: %s', body => {
+    expect(proposeClaim(body, true)).toBeNull();
+  });
+  it.each(['Use it, e.g. for teams.', 'Versions 0.16.3 work.', 'Use `foo. bar!? baz` as an example.'])('preserves complete sentence punctuation: %s', sentence => {
+    expect(proposeClaim(sentence + ' Another follows.', true)).toBe(sentence);
+  });
 });
