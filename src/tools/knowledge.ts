@@ -14,6 +14,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { normalizeHtmlEntities } from './text-normalize.js';
 import { getConductionId, getLeg } from '../config/run-config.js';
 import { guardKnowledgeWriteProvenance } from './provenance.js';
+import { logKnowledgeRetrieval, RETRIEVAL_LOG_BUDGET_MS } from './knowledge-retrieval-log.js';
 
 // ---------------------------------------------------------------------------
 // Interfaces
@@ -184,6 +185,8 @@ export const queryKnowledgeTool = {
       },
       limit: { type: 'number', description: 'Max results to return. Default 50.' },
       offset: { type: 'number', description: 'Number of results to skip (for pagination). Default 0. (structured-filter path; not combinable with `search`)' },
+      task_id: { type: 'string', description: 'B-678: the ticket (UUID, number or visual ID) this read is made for, so the decisions returned are logged as knowledge reuse. Omit to use the current conduction\'s ticket; with neither, nothing is logged. Logging is best-effort and never changes the result.' },
+      gate: { type: 'string', description: 'B-678: the gate making the read (clarify, decompose, design, plan, build, release, verify), recorded with the retrieval log. Optional.' },
     },
   },
 };
@@ -406,12 +409,30 @@ export interface QueryKnowledgeArgs {
   context_tags?: string[];
   question_state?: 'open' | 'parked' | 'decided';
   question_scope?: 'product' | 'deployment';
+  task_id?: string;           // B-678: ticket the read is made for (retrieval log only; never filters)
+  gate?: string;              // B-678: gate making the read (retrieval log only)
 }
 
 export function queryKnowledge(client: SupabaseClient, projectId: string, args: QueryKnowledgeArgs & { search?: undefined }): Promise<Array<KnowledgeEntrySummary | Definition | ConceptNameResult>>;
 export function queryKnowledge(client: SupabaseClient, projectId: string, args: QueryKnowledgeArgs & { search: string }): Promise<KnowledgeSearchResult>;
 export function queryKnowledge(client: SupabaseClient, projectId: string, args: QueryKnowledgeArgs): Promise<Array<KnowledgeEntrySummary | Definition | ConceptNameResult> | KnowledgeSearchResult>;
 export async function queryKnowledge(
+  client: SupabaseClient,
+  projectId: string,
+  args: QueryKnowledgeArgs,
+): Promise<Array<KnowledgeEntrySummary | Definition | ConceptNameResult> | KnowledgeSearchResult> {
+  // B-678: the retrieval log runs after the result exists and swallows its own failures, so it
+  // can neither change nor fail the query. task_id/gate are log-only and never reach the filters.
+  const { task_id, gate, ...queryArgs } = args;
+  const result = await queryKnowledgeUnlogged(client, projectId, queryArgs);
+  await Promise.race([
+    logKnowledgeRetrieval(client, projectId, { task_id, gate, search: queryArgs.search }, result),
+    new Promise<void>(resolve => setTimeout(resolve, RETRIEVAL_LOG_BUDGET_MS).unref()),
+  ]);
+  return result;
+}
+
+async function queryKnowledgeUnlogged(
   client: SupabaseClient,
   projectId: string,
   args: QueryKnowledgeArgs,
