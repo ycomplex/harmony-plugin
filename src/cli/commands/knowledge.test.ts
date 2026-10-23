@@ -158,3 +158,12 @@ describe('knowledge surfaces CLI',()=>{
     } finally {rmSync(dir,{recursive:true,force:true});}
   });
 });
+
+it('prints search scores and coverage and passes composable CLI filters', async () => {
+  const envelope = { matches: [{id:'a', score:1/61}], unscored_matches:[], score_cutoff:0.0125, below_cutoff_count:2, incomplete:true, count_coverage:'partial-scored-union' };
+  vi.mocked(queryKnowledge).mockResolvedValue(envelope as any);
+  const program = new Command(); registerKnowledgeCommands(program);
+  await program.parseAsync(['knowledge','list','--search','quasar','--type','convention','--status','Asserted','--tag',' Rare ','--domain','engineering','--context-tag','surface','--limit','3'],{from:'user'});
+  expect(JSON.parse(output.text)).toEqual(envelope);
+  expect(queryKnowledge).toHaveBeenLastCalledWith('client','project',expect.objectContaining({ search:'quasar', type:'convention', status:'Asserted', tags:[' Rare '], domain:['engineering'], context_tags:['surface'], limit:3 }));
+});
