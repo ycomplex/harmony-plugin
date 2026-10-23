@@ -107,7 +107,7 @@ function batchIdsAck(result: unknown): unknown {
 
 /** Compact knowledge-row ack (create/record paths): `id` is load-bearing (it feeds
  *  `decision_ref` and `reference_knowledge`); status/created_at are server-computed. */
-const knowledgeCreatedAck = (row: unknown) => pick(row, ['id', 'status', 'created_at']);
+const knowledgeCreatedAck = (row: unknown) => pick(row, ['id', 'status', 'created_at', 'claim_context']);
 
 /** Supersede acks: both halves are rows the server transitioned — keep the linkage, not the body. */
 const supersededAck = (row: unknown) => pick(row, ['id', 'status', 'superseded_by']);
@@ -335,6 +335,7 @@ export const ackProjections: Record<string, AckProjection> = {
  * annotated pass-throughs (value = why), so the pin test can prove every write tool was decided.
  */
 export const ACK_PASS_THROUGH: Record<string, string> = {
+  set_claim_context: 'Server-verified question snapshots and concept names; no caller-authored text echo.',
   publish_source_inventory: 'Server-computed inventory revision, count and replay flag only; no value echo.',
   import_knowledge_questions: 'Server-computed per-source-key outcome and created question ids; no imported prose is echoed.',
   resolve_brief:

@@ -45330,6 +45330,42 @@ var importKnowledgeQuestionsTool = {
   inputSchema: { type: "object", properties: { manifest: { type: "object", additionalProperties: true }, provenance: { type: "string" } }, required: ["manifest"] }
 };
 
+// src/tools/claim-context.ts
+var missingClaimContext = (error2) => (error2.code === "PGRST202" || error2.code === "42883") && error2.message.includes("read_claim_context");
+async function readClaimContexts(client, ids2) {
+  const contexts = [];
+  for (let start = 0; start < Math.max(1, ids2.length); start += 500) {
+    const { data, error: error2 } = await client.rpc("read_claim_context", { p_claim_ids: ids2.slice(start, start + 500) });
+    if (error2) {
+      if (missingClaimContext(error2)) return { available: false, contexts: [] };
+      throw new Error(`Cannot read claim context: ${error2.message}`);
+    }
+    if (data?.available !== true || !Array.isArray(data.contexts)) throw new Error("Invalid claim context response");
+    contexts.push(...data.contexts);
+  }
+  return { available: true, contexts };
+}
+async function withClaimContexts(client, entries) {
+  if (!entries.length) return entries;
+  const read = await readClaimContexts(client, entries.map((e) => e.id));
+  const byId = new Map(read.contexts.map((c) => [c.claim_id, c]));
+  return entries.map((e) => ({ ...e, claim_context: read.available ? byId.get(e.id) : { claim_id: e.id, question_state: "capability-unavailable", questions: [], concepts: [] } }));
+}
+async function setClaimContext(client, projectId, args) {
+  const { data: claim, error: readError } = await client.from("knowledge_decisions").select("id").eq("id", args.claim_id).eq("project_id", projectId).single();
+  if (readError || !claim) throw new Error("Claim must belong to the current authorized project");
+  const capability = await readClaimContexts(client, []);
+  if (!capability.available) throw new Error("Claim context is not available in this environment yet.");
+  const { data, error: error2 } = await client.rpc("set_claim_context", { p_claim_id: args.claim_id, p_questions: args.questions, p_concept_ids: args.concept_ids, p_correction_reason: args.correction_reason ?? null });
+  if (error2) throw new Error(`Cannot set claim context: ${error2.message}`);
+  return data;
+}
+var setClaimContextTool = {
+  name: "set_claim_context",
+  description: "Explicitly attach an elicitation claim to source-verified questions and confirmed existing concept UUIDs. No concept guessing. Replacement requires correction_reason and retains prior context in audit history. Does not change claim trust or lifecycle.",
+  inputSchema: { type: "object", properties: { claim_id: { type: "string" }, questions: { type: "array", items: { type: "object", properties: { exchange_id: { type: "string" }, round: { type: "integer" }, question_id: { type: "string" } }, required: ["exchange_id", "round", "question_id"] } }, concept_ids: { type: "array", items: { type: "string" } }, correction_reason: { type: "string" } }, required: ["claim_id", "questions", "concept_ids"] }
+};
+
 // src/tools/knowledge-definitions.ts
 async function readDefinitions(client, workspaceId, projectId, args = {}) {
   const definitions = [];
@@ -45847,7 +45883,12 @@ async function queryKnowledge(client, projectId, args) {
   const sourceOffset = Math.max(0, (args.offset ?? 0) - (includeDefinitions ? definitions.total_count ?? definitions.definitions.length : 0));
   const generated = includeSources ? await readSourceValues(client, projectId, { search: args.search, limit: args.limit, offset: sourceOffset }) : { values: [], total_count: 0 };
   const prepend = async (entries) => {
-    if (!includeDefinitions) return [...generated.values, ...entries].slice(0, args.limit ?? 50);
+    const enrichClaims = async (rows2) => {
+      const enriched = await withClaimContexts(client, rows2.filter((e) => e.type !== "definition" && e.source_type !== "generated"));
+      const contexts = new Map(enriched.map((e) => [e.id, e]));
+      return rows2.map((e) => contexts.get(e.id) ?? e);
+    };
+    if (!includeDefinitions) return enrichClaims([...generated.values, ...entries].slice(0, args.limit ?? 50));
     const ids2 = args.search ? [...new Set(definitions.definitions.flatMap((d) => d.refinements.map((r) => r.id)))] : [];
     let refinements = [];
     if (ids2.length) {
@@ -45863,11 +45904,12 @@ async function queryKnowledge(client, projectId, args) {
       ));
     }
     const seen = /* @__PURE__ */ new Set();
-    return [...definitions.definitions, ...refinements, ...generated.values, ...entries].filter((entry) => {
+    const result = [...definitions.definitions, ...refinements, ...generated.values, ...entries].filter((entry) => {
       if (seen.has(entry.id)) return false;
       seen.add(entry.id);
       return true;
     }).slice(0, args.limit ?? 50);
+    return enrichClaims(result);
   };
   const prefixCount = (includeDefinitions ? definitions.total_count ?? definitions.definitions.length : 0) + generated.total_count;
   const pagePrefixCount = (includeDefinitions ? definitions.definitions.length : 0) + generated.values.length;
@@ -45991,7 +46033,7 @@ async function getKnowledgeEntry(client, projectId, args) {
   }
   const { data, error: error2 } = await query.single();
   if (error2) throw error2;
-  return (await withInvalidations(client, [{ ...data, ...claimFields(data), ...questionProjection(data), verified_against: data.verified_against ?? null, rollout_state: data.rollout_state ?? null, open_steps: data.open_steps ?? null }]))[0];
+  return (await withClaimContexts(client, await withInvalidations(client, [{ ...data, ...claimFields(data), ...questionProjection(data), verified_against: data.verified_against ?? null, rollout_state: data.rollout_state ?? null, open_steps: data.open_steps ?? null }])))[0];
 }
 async function createKnowledgeEntry(client, projectId, userId, args) {
   if (!args.title?.trim()) {
@@ -46182,7 +46224,7 @@ ${content}`);
     realization = "agreed";
   }
   guardKnowledgeWriteProvenance(args.provenance);
-  const { data, error: error2 } = await metadataRpc(client, "knowledge_record_decision", args.scope, {
+  const record2 = {
     p_project_id: projectId,
     p_title: title,
     p_type: args.type,
@@ -46204,14 +46246,18 @@ ${content}`);
     p_provenance: args.provenance ?? null,
     p_conduction_id: getConductionId() ?? null,
     p_leg: getLeg() ?? null
-  });
+  };
+  const explicitContext = args.claim_questions !== void 0 || args.concept_ids !== void 0;
+  if (explicitContext && !args.claim_provenance) throw new Error("Question/concept capture requires claim_provenance");
+  const capability = explicitContext ? await readClaimContexts(client, []) : null;
+  const { data, error: error2 } = capability?.available ? await client.rpc("record_claim_with_context", { p_record: { ...record2, p_scope: args.scope ?? null }, p_questions: args.claim_questions ?? [], p_concept_ids: args.concept_ids ?? [] }) : await metadataRpc(client, "knowledge_record_decision", args.scope, record2);
   if (error2) {
     if (error2.code === "23505") {
       throw new Error(`A decision titled "${args.title.trim()}" already exists in this project`);
     }
     throw new Error(error2.message);
   }
-  return { ...data, ...claimFields(data) };
+  return { ...data, ...explicitContext && !capability?.available ? { claim_context: { question_state: "capability-unavailable", questions: [], concepts: [] } } : {}, ...claimFields(data) };
 }
 async function supersedeDecision(client, projectId, userId, args) {
   if (!args.old_decision_id) throw new Error("old_decision_id is required");
@@ -46289,6 +46335,8 @@ var recordDecisionTool = {
       tags: { type: "array", items: { type: "string" }, description: "Optional tags" },
       source_task_id: { type: "string", description: "Task that triggered this decision" },
       review_by: { type: "string", description: "ISO timestamp; freshness/decay date. Researched knowledge sets this ~90 days out so Drift-Risk/review_by resurfacing fires." },
+      claim_questions: { type: "array", items: { type: "object", properties: { exchange_id: { type: "string" }, round: { type: "integer" }, question_id: { type: "string" } }, required: ["exchange_id", "round", "question_id"] }, description: "Explicit ordered source question references; exact text is copied by the server, never authored here." },
+      concept_ids: { type: "array", items: { type: "string" }, description: "Explicitly selected existing concept UUIDs only; never infer or create concepts from claim wording." },
       claim_provenance: { type: "string", enum: ["human-stated", "agent-inferred-human-validated", "force-quit"], description: "B-645: how an elicitation claim was grounded. 'force-quit' claims are quarantined \u2014 never promoted on their brief's accept, never grounds for inference until validated. Omit for a non-claim decision." },
       underwriting_brief_id: { type: "string", description: "B-645: the brief (UUID) this Asserted claim underwrites \u2014 resolve_brief disposes coupled claims on accept/defer; compose_brief prunes dropped claims on iterate. Omit for a non-claim decision." },
       provenance: { type: "string", description: `Optional caller-supplied provenance tag for the knowledge_events causation trail (e.g. "human-in-session", "agent-synthesized:<mode>", or "agent-on-behalf:human-in-session"/"agent-on-behalf:human-in-browser"/"agent-on-behalf:human-recorded" when an agent writes on a human's already-made decision). Omit for NULL \u2014 the reader's rule then falls back to conduction-only or untracked classification. B-1021 (widened B-1062): bare "human-in-browser" is REJECTED \u2014 that value is the web client's alone, and "agent-on-behalf:" accepts only the three closed suffixes above.` }
@@ -54770,7 +54818,7 @@ function batchIdsAck(result) {
     }
   };
 }
-var knowledgeCreatedAck = (row) => pick2(row, ["id", "status", "created_at"]);
+var knowledgeCreatedAck = (row) => pick2(row, ["id", "status", "created_at", "claim_context"]);
 var supersededAck = (row) => pick2(row, ["id", "status", "superseded_by"]);
 var ackProjections = {
   create_feature_account: (row) => pick2(row, ["account_id", "entry_id", "current_revision", "created_at"]),
@@ -55709,6 +55757,7 @@ function registerTools(disabledFeatures) {
     listActivityTool,
     listWorkflowTransitionsTool,
     listMembersTool,
+    setClaimContextTool,
     ...sourceTools,
     saveKnowledgeQuestionTool,
     previewKnowledgeQuestionsTool,
@@ -55881,6 +55930,9 @@ async function handleToolCall(name, args, client, projectId, userId) {
         break;
       case "register_knowledge_tag":
         result = await registerKnowledgeTag(client, projectId, args.name, args.description);
+        break;
+      case "set_claim_context":
+        result = await setClaimContext(client, projectId, args);
         break;
       case "publish_definition":
         result = await publishDefinition(client, projectId, args);

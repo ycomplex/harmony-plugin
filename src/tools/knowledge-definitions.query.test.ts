@@ -37,3 +37,9 @@ describe('query_knowledge definition integration',()=>{
  });
 
 });
+
+// Isolate the pre-existing contract; claim-context.integration.test.ts exercises composition.
+vi.mock('./claim-context.js', async original => ({
+ ...await original<typeof import('./claim-context.js')>(),
+ withClaimContexts: async (_client: unknown, rows: unknown[]) => rows,
+}));

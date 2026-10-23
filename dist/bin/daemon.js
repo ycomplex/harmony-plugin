@@ -22912,6 +22912,28 @@ function questionProjection(row) {
   };
 }
 
+// src/tools/claim-context.ts
+var missingClaimContext = (error) => (error.code === "PGRST202" || error.code === "42883") && error.message.includes("read_claim_context");
+async function readClaimContexts(client, ids) {
+  const contexts = [];
+  for (let start = 0; start < Math.max(1, ids.length); start += 500) {
+    const { data, error } = await client.rpc("read_claim_context", { p_claim_ids: ids.slice(start, start + 500) });
+    if (error) {
+      if (missingClaimContext(error)) return { available: false, contexts: [] };
+      throw new Error(`Cannot read claim context: ${error.message}`);
+    }
+    if (data?.available !== true || !Array.isArray(data.contexts)) throw new Error("Invalid claim context response");
+    contexts.push(...data.contexts);
+  }
+  return { available: true, contexts };
+}
+async function withClaimContexts(client, entries) {
+  if (!entries.length) return entries;
+  const read = await readClaimContexts(client, entries.map((e) => e.id));
+  const byId = new Map(read.contexts.map((c) => [c.claim_id, c]));
+  return entries.map((e) => ({ ...e, claim_context: read.available ? byId.get(e.id) : { claim_id: e.id, question_state: "capability-unavailable", questions: [], concepts: [] } }));
+}
+
 // src/tools/knowledge-definitions.ts
 async function readDefinitions(client, workspaceId, projectId, args = {}) {
   const definitions = [];
@@ -23196,7 +23218,12 @@ async function queryKnowledge(client, projectId, args) {
   const sourceOffset = Math.max(0, (args.offset ?? 0) - (includeDefinitions ? definitions.total_count ?? definitions.definitions.length : 0));
   const generated = includeSources ? await readSourceValues(client, projectId, { search: args.search, limit: args.limit, offset: sourceOffset }) : { values: [], total_count: 0 };
   const prepend = async (entries) => {
-    if (!includeDefinitions) return [...generated.values, ...entries].slice(0, args.limit ?? 50);
+    const enrichClaims = async (rows2) => {
+      const enriched = await withClaimContexts(client, rows2.filter((e) => e.type !== "definition" && e.source_type !== "generated"));
+      const contexts = new Map(enriched.map((e) => [e.id, e]));
+      return rows2.map((e) => contexts.get(e.id) ?? e);
+    };
+    if (!includeDefinitions) return enrichClaims([...generated.values, ...entries].slice(0, args.limit ?? 50));
     const ids = args.search ? [...new Set(definitions.definitions.flatMap((d) => d.refinements.map((r) => r.id)))] : [];
     let refinements = [];
     if (ids.length) {
@@ -23212,11 +23239,12 @@ async function queryKnowledge(client, projectId, args) {
       ));
     }
     const seen = /* @__PURE__ */ new Set();
-    return [...definitions.definitions, ...refinements, ...generated.values, ...entries].filter((entry) => {
+    const result = [...definitions.definitions, ...refinements, ...generated.values, ...entries].filter((entry) => {
       if (seen.has(entry.id)) return false;
       seen.add(entry.id);
       return true;
     }).slice(0, args.limit ?? 50);
+    return enrichClaims(result);
   };
   const prefixCount = (includeDefinitions ? definitions.total_count ?? definitions.definitions.length : 0) + generated.total_count;
   const pagePrefixCount = (includeDefinitions ? definitions.definitions.length : 0) + generated.values.length;
@@ -23346,7 +23374,7 @@ ${content}`);
     realization = "agreed";
   }
   guardKnowledgeWriteProvenance(args.provenance);
-  const { data, error } = await metadataRpc(client, "knowledge_record_decision", args.scope, {
+  const record = {
     p_project_id: projectId,
     p_title: title,
     p_type: args.type,
@@ -23368,14 +23396,18 @@ ${content}`);
     p_provenance: args.provenance ?? null,
     p_conduction_id: getConductionId() ?? null,
     p_leg: getLeg() ?? null
-  });
+  };
+  const explicitContext = args.claim_questions !== void 0 || args.concept_ids !== void 0;
+  if (explicitContext && !args.claim_provenance) throw new Error("Question/concept capture requires claim_provenance");
+  const capability = explicitContext ? await readClaimContexts(client, []) : null;
+  const { data, error } = capability?.available ? await client.rpc("record_claim_with_context", { p_record: { ...record, p_scope: args.scope ?? null }, p_questions: args.claim_questions ?? [], p_concept_ids: args.concept_ids ?? [] }) : await metadataRpc(client, "knowledge_record_decision", args.scope, record);
   if (error) {
     if (error.code === "23505") {
       throw new Error(`A decision titled "${args.title.trim()}" already exists in this project`);
     }
     throw new Error(error.message);
   }
-  return { ...data, ...claimFields(data) };
+  return { ...data, ...explicitContext && !capability?.available ? { claim_context: { question_state: "capability-unavailable", questions: [], concepts: [] } } : {}, ...claimFields(data) };
 }
 
 // src/tools/workflow.ts
