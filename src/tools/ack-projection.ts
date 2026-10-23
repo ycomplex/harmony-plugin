@@ -117,6 +117,7 @@ const supersededAck = (row: unknown) => pick(row, ['id', 'status', 'superseded_b
  * stringify; tools without an entry (all reads) pass through unchanged.
  */
 export const ackProjections: Record<string, AckProjection> = {
+  configure_prose_source: (result) => pick(result, ['id','revision','active_generation','refresh_state']),
   rename_concept: row => pick(row, ['id','entity_id','renamed_at','source_task_id','actor','operation_key']),
   merge_concepts: row => pick(row, ['source_entity_id','target_entity_id','renamed_at','source_task_id','actor','operation_key']),
   capture_surface_record: row => pick(row, ['record_id','captured_at','changed']),
@@ -338,6 +339,7 @@ export const ackProjections: Record<string, AckProjection> = {
  * annotated pass-throughs (value = why), so the pin test can prove every write tool was decided.
  */
 export const ACK_PASS_THROUGH: Record<string, string> = {
+  set_defined_in: 'Void server acknowledgement; source-pointer payload is not echoed.',
   set_claim_context: 'Server-verified question snapshots and concept names; no caller-authored text echo.',
   publish_source_inventory: 'Server-computed inventory revision, count and replay flag only; no value echo.',
   import_knowledge_questions: 'Server-computed per-source-key outcome and created question ids; no imported prose is echoed.',

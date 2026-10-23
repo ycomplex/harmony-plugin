@@ -1,3 +1,4 @@
+import { proseTools, readProse, configureProse, setDefinedIn } from './knowledge-prose.js';
 import { knowledgeNameTools, readKnowledgeNames, renameKnowledgeConcept, previewKnowledgeMerge, mergeKnowledgeConcepts } from './knowledge-names.js';
 import { surfaceRecordTools, captureSurfaceRecord, readSurfaceRecords } from './surface-records.js';
 import { featureAccountTools, createFeatureAccount, readFeatureAccounts, previewFeatureAmendment, proposeFeatureAmendment, applyFeatureAmendment } from './feature-accounts.js';
@@ -181,7 +182,7 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
     listActivityTool,
     listWorkflowTransitionsTool,
     listMembersTool,
-    setClaimContextTool, ...sourceTools, saveKnowledgeQuestionTool, previewKnowledgeQuestionsTool, importKnowledgeQuestionsTool,
+    ...proseTools, setClaimContextTool, ...sourceTools, saveKnowledgeQuestionTool, previewKnowledgeQuestionsTool, importKnowledgeQuestionsTool,
     listKnowledgeTagsTool, registerKnowledgeTagTool, publishDefinitionTool, ...knowledgeNameTools, queryKnowledgeTool, searchTicketIntentsTool, getKnowledgeEntryTool, createKnowledgeEntryTool, updateKnowledgeEntryTool, supersedeKnowledgeEntryTool,
     recordDecisionTool, supersedeDecisionTool, queryFactsTool, assertFactTool, invalidateFactTool, queryEntitiesTool,
     createEntityTool, updateEntityTool, reconcileEntityTool,
@@ -333,6 +334,9 @@ export async function handleToolCall(
       case 'register_knowledge_tag':
         result = await registerKnowledgeTag(client, projectId, args.name as string, args.description as string);
         break;
+      case 'read_prose_sources': result = await readProse(client, projectId, args.entry_ids as string[] | undefined); break;
+      case 'configure_prose_source': result = await configureProse(client, projectId, args as any); break;
+      case 'set_defined_in': result = await setDefinedIn(client, projectId, args as any); break;
       case 'set_claim_context':
         result = await setClaimContext(client, projectId, args as any);
         break;

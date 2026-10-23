@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "repository": "https://github.com/ycomplex/harmony-plugin",
+  "ref": "HEAD",
+  "sources": [
+    {"key":"plugin-prose","selectors":[
+      {"include":["skills/**/*.md"],"kind":"skill","scope":null,"domain":["process"]},
+      {"include":["docs/**/*.md"],"kind":"document","scope":null,"domain":["engineering"]}
+    ]}
+  ]
+}

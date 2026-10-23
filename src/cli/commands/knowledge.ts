@@ -1,3 +1,5 @@
+import { syncProse } from '../prose-ingestion.js';
+import { readProse, setDefinedIn } from '../../tools/knowledge-prose.js';
 import { readKnowledgeNames, renameKnowledgeConcept, previewKnowledgeMerge, mergeKnowledgeConcepts } from '../../tools/knowledge-names.js';
 import { captureSurfaceRecord, readSurfaceRecords } from '../../tools/surface-records.js';
 import { createFeatureAccount, readFeatureAccounts, previewFeatureAmendment, proposeFeatureAmendment, applyFeatureAmendment } from '../../tools/feature-accounts.js';
@@ -99,6 +101,12 @@ export function registerKnowledgeCommands(program: Command): void {
       }), data => JSON.stringify(data, null, 2));
     });
 
+
+  knowledge.command('sync-prose').option('--root <directory>', 'Repository checkout', '.').option('--declaration <path>', 'Versioned source declaration', '.harmony/prose-sources.json').option('--commit <ref>', 'Immutable commit at configured ref', 'HEAD')
+    .action(async opts => runCommand(program.opts(), ctx => syncProse(ctx.client,ctx.projectId,opts.root,opts.declaration,opts.commit), data=>JSON.stringify(data,null,2)));
+  knowledge.command('prose-sources').action(async()=>runCommand(program.opts(),ctx=>readProse(ctx.client,ctx.projectId),data=>JSON.stringify(data,null,2)));
+  knowledge.command('defined-in <entry>').requiredOption('--pointer <json-or-null>','Exact source_id/path/anchor/commit or null to unlink')
+    .action(async(entry,opts)=>runCommand(program.opts(),ctx=>setDefinedIn(ctx.client,ctx.projectId,{entry_id:entry,pointer:JSON.parse(opts.pointer)}),data=>JSON.stringify(data,null,2)));
 
   knowledge
     .command('list')
