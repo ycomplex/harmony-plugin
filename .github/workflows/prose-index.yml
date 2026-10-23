@@ -1,8 +1,9 @@
 name: Refresh configured prose index
 on:
   push:
-    branches: [main]
-  workflow_dispatch:
+    branches:
+      - main
+  workflow_dispatch: {}
 permissions:
   contents: read
 concurrency:
@@ -15,24 +16,24 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-      - uses: actions/checkout@v6
+      - name: Get released Harmony CLI (0.16.33 by default)
+        uses: actions/checkout@v6
         with:
           repository: ycomplex/harmony-plugin
-          ref: main
-          path: .prose-indexer
+          ref: c72d5d36b876e684ca07f4f36e90418167843653
+          path: .harmony-cli
+          persist-credentials: false
       - uses: actions/setup-node@v6
         with:
-          node-version: '22'
-      - run: npm ci && npm run build
-        working-directory: .prose-indexer
+          node-version: "22"
+      - name: Move released CLI outside the source checkout
+        run: mv "$GITHUB_WORKSPACE/.harmony-cli" "$RUNNER_TEMP/harmony-cli"
       - name: Publish immutable merged source snapshot
         env:
           HARMONY_API_TOKEN: ${{ secrets.HARMONY_PROSE_INDEX_TOKEN }}
         run: |
           if [ -z "$HARMONY_API_TOKEN" ]; then
-            # Until the operator provisions HARMONY_PROSE_INDEX_TOKEN this refresh is skipped loudly rather
-            # than failing every push to main; the search diagnostics still report stale or failed refresh.
             echo "::warning::HARMONY_PROSE_INDEX_TOKEN is not set; skipping the configured prose refresh for this push"
             exit 0
           fi
-          node .prose-indexer/dist/bin/harmony.js knowledge sync-prose --root "$GITHUB_WORKSPACE" --commit "$GITHUB_SHA"
+          node "$RUNNER_TEMP/harmony-cli/dist/bin/harmony.js" knowledge sync-prose --root "$GITHUB_WORKSPACE" --commit "$GITHUB_SHA"

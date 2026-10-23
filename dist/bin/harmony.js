@@ -3453,11 +3453,11 @@ function __metadata(metadataKey, metadataValue) {
 }
 function __awaiter(thisArg, _arguments, P, generator) {
   function adopt(value) {
-    return value instanceof P ? value : new P(function(resolve7) {
-      resolve7(value);
+    return value instanceof P ? value : new P(function(resolve8) {
+      resolve8(value);
     });
   }
-  return new (P || (P = Promise))(function(resolve7, reject) {
+  return new (P || (P = Promise))(function(resolve8, reject) {
     function fulfilled(value) {
       try {
         step(generator.next(value));
@@ -3473,7 +3473,7 @@ function __awaiter(thisArg, _arguments, P, generator) {
       }
     }
     function step(result) {
-      result.done ? resolve7(result.value) : adopt(result.value).then(fulfilled, rejected);
+      result.done ? resolve8(result.value) : adopt(result.value).then(fulfilled, rejected);
     }
     step((generator = generator.apply(thisArg, _arguments || [])).next());
   });
@@ -3664,14 +3664,14 @@ function __asyncValues(o) {
   }, i);
   function verb(n) {
     i[n] = o[n] && function(v2) {
-      return new Promise(function(resolve7, reject) {
-        v2 = o[n](v2), settle(resolve7, reject, v2.done, v2.value);
+      return new Promise(function(resolve8, reject) {
+        v2 = o[n](v2), settle(resolve8, reject, v2.done, v2.value);
       });
     };
   }
-  function settle(resolve7, reject, d, v2) {
+  function settle(resolve8, reject, d, v2) {
     Promise.resolve(v2).then(function(v3) {
-      resolve7({ value: v3, done: d });
+      resolve8({ value: v3, done: d });
     }, reject);
   }
 }
@@ -7161,15 +7161,15 @@ var require_RealtimeChannel = __commonJS({
             }
           }
         } else {
-          return new Promise((resolve7) => {
+          return new Promise((resolve8) => {
             var _a3, _b2, _c;
             const push = this.channelAdapter.push(args.type, args, opts.timeout || this.timeout);
             if (args.type === "broadcast" && !((_c = (_b2 = (_a3 = this.params) === null || _a3 === void 0 ? void 0 : _a3.config) === null || _b2 === void 0 ? void 0 : _b2.broadcast) === null || _c === void 0 ? void 0 : _c.ack)) {
-              resolve7("ok");
+              resolve8("ok");
             }
-            push.receive("ok", () => resolve7("ok"));
-            push.receive("error", () => resolve7("error"));
-            push.receive("timeout", () => resolve7("timed out"));
+            push.receive("ok", () => resolve8("ok"));
+            push.receive("error", () => resolve8("error"));
+            push.receive("timeout", () => resolve8("timed out"));
           });
         }
       }
@@ -7194,8 +7194,8 @@ var require_RealtimeChannel = __commonJS({
        * @category Realtime
        */
       async unsubscribe(timeout = this.timeout) {
-        return new Promise((resolve7) => {
-          this.channelAdapter.unsubscribe(timeout).receive("ok", () => resolve7("ok")).receive("timeout", () => resolve7("timed out")).receive("error", () => resolve7("error"));
+        return new Promise((resolve8) => {
+          this.channelAdapter.unsubscribe(timeout).receive("ok", () => resolve8("ok")).receive("timeout", () => resolve8("timed out")).receive("error", () => resolve8("error"));
         });
       }
       /**
@@ -7276,8 +7276,8 @@ var require_RealtimeChannel = __commonJS({
       }
       /** @internal */
       _notThisChannelEvent(event, ref) {
-        const { close, error, leave, join: join14 } = constants_1.CHANNEL_EVENTS;
-        const events2 = [close, error, leave, join14];
+        const { close, error, leave, join: join15 } = constants_1.CHANNEL_EVENTS;
+        const events2 = [close, error, leave, join15];
         return ref && events2.includes(event) && ref !== this.joinPush.ref;
       }
       /** @internal */
@@ -7389,11 +7389,11 @@ var require_socketAdapter = __commonJS({
         this.socket.connect();
       }
       disconnect(callback, code, reason, timeout = 1e4) {
-        return new Promise((resolve7) => {
-          setTimeout(() => resolve7("timeout"), timeout);
+        return new Promise((resolve8) => {
+          setTimeout(() => resolve8("timeout"), timeout);
           this.socket.disconnect(() => {
             callback();
-            resolve7("ok");
+            resolve8("ok");
           }, code, reason);
         });
       }
@@ -16629,7 +16629,7 @@ var require_stringify = __commonJS({
         props.push(doc.directives.tagString(tag));
       return props.join(" ");
     }
-    function stringify(item, ctx, onComment, onChompKeep) {
+    function stringify2(item, ctx, onComment, onChompKeep) {
       if (identity2.isPair(item))
         return item.toString(ctx, onComment, onChompKeep);
       if (identity2.isAlias(item)) {
@@ -16658,7 +16658,7 @@ var require_stringify = __commonJS({
 ${ctx.indent}${str2}`;
     }
     exports.createStringifyContext = createStringifyContext;
-    exports.stringify = stringify;
+    exports.stringify = stringify2;
   }
 });
 
@@ -16668,7 +16668,7 @@ var require_stringifyPair = __commonJS({
     "use strict";
     var identity2 = require_identity();
     var Scalar = require_Scalar();
-    var stringify = require_stringify();
+    var stringify2 = require_stringify();
     var stringifyComment = require_stringifyComment();
     function stringifyPair({ key, value }, ctx, onComment, onChompKeep) {
       const { allNullValues, doc, indent, indentStep, options: { commentString, indentSeq, simpleKeys } } = ctx;
@@ -16690,7 +16690,7 @@ var require_stringifyPair = __commonJS({
       });
       let keyCommentDone = false;
       let chompKeep = false;
-      let str2 = stringify.stringify(key, ctx, () => keyCommentDone = true, () => chompKeep = true);
+      let str2 = stringify2.stringify(key, ctx, () => keyCommentDone = true, () => chompKeep = true);
       if (!explicitKey && !ctx.inFlow && str2.length > 1024) {
         if (simpleKeys)
           throw new Error("With simple keys, single line scalar must not span more than 1024 characters");
@@ -16742,7 +16742,7 @@ ${indent}:`;
         ctx.indent = ctx.indent.substring(2);
       }
       let valueCommentDone = false;
-      const valueStr = stringify.stringify(value, ctx, () => valueCommentDone = true, () => chompKeep = true);
+      const valueStr = stringify2.stringify(value, ctx, () => valueCommentDone = true, () => chompKeep = true);
       let ws = " ";
       if (keyComment || vsb || vcb) {
         ws = vsb ? "\n" : "";
@@ -16883,7 +16883,7 @@ var require_addPairToJSMap = __commonJS({
     "use strict";
     var log = require_log();
     var merge = require_merge();
-    var stringify = require_stringify();
+    var stringify2 = require_stringify();
     var identity2 = require_identity();
     var toJS = require_toJS();
     function addPairToJSMap(ctx, map, { key, value }) {
@@ -16919,7 +16919,7 @@ var require_addPairToJSMap = __commonJS({
       if (typeof jsKey !== "object")
         return String(jsKey);
       if (identity2.isNode(key) && ctx?.doc) {
-        const strCtx = stringify.createStringifyContext(ctx.doc, {});
+        const strCtx = stringify2.createStringifyContext(ctx.doc, {});
         strCtx.anchors = /* @__PURE__ */ new Set();
         for (const node of ctx.anchors.keys())
           strCtx.anchors.add(node.anchor);
@@ -16986,12 +16986,12 @@ var require_stringifyCollection = __commonJS({
   "node_modules/yaml/dist/stringify/stringifyCollection.js"(exports) {
     "use strict";
     var identity2 = require_identity();
-    var stringify = require_stringify();
+    var stringify2 = require_stringify();
     var stringifyComment = require_stringifyComment();
     function stringifyCollection(collection, ctx, options) {
       const flow = ctx.inFlow ?? collection.flow;
-      const stringify2 = flow ? stringifyFlowCollection : stringifyBlockCollection;
-      return stringify2(collection, ctx, options);
+      const stringify3 = flow ? stringifyFlowCollection : stringifyBlockCollection;
+      return stringify3(collection, ctx, options);
     }
     function stringifyBlockCollection({ comment, items }, ctx, { blockItemPrefix, flowChars, itemIndent, onChompKeep, onComment }) {
       const { indent, options: { commentString } } = ctx;
@@ -17016,7 +17016,7 @@ var require_stringifyCollection = __commonJS({
           }
         }
         chompKeep = false;
-        let str3 = stringify.stringify(item, itemCtx, () => comment2 = null, () => chompKeep = true);
+        let str3 = stringify2.stringify(item, itemCtx, () => comment2 = null, () => chompKeep = true);
         if (comment2)
           str3 += stringifyComment.lineComment(str3, itemIndent, commentString(comment2));
         if (chompKeep && comment2)
@@ -17083,7 +17083,7 @@ ${indent}${line}` : "\n";
         }
         if (comment)
           reqNewline = true;
-        let str2 = stringify.stringify(item, itemCtx, () => comment = null);
+        let str2 = stringify2.stringify(item, itemCtx, () => comment = null);
         reqNewline || (reqNewline = lines.length > linesAtValue || str2.includes("\n"));
         if (i < items.length - 1) {
           str2 += ",";
@@ -18444,7 +18444,7 @@ var require_stringifyDocument = __commonJS({
   "node_modules/yaml/dist/stringify/stringifyDocument.js"(exports) {
     "use strict";
     var identity2 = require_identity();
-    var stringify = require_stringify();
+    var stringify2 = require_stringify();
     var stringifyComment = require_stringifyComment();
     function stringifyDocument(doc, options) {
       const lines = [];
@@ -18459,7 +18459,7 @@ var require_stringifyDocument = __commonJS({
       }
       if (hasDirectives)
         lines.push("---");
-      const ctx = stringify.createStringifyContext(doc, options);
+      const ctx = stringify2.createStringifyContext(doc, options);
       const { commentString } = ctx.options;
       if (doc.commentBefore) {
         if (lines.length !== 1)
@@ -18481,7 +18481,7 @@ var require_stringifyDocument = __commonJS({
           contentComment = doc.contents.comment;
         }
         const onChompKeep = contentComment ? void 0 : () => chompKeep = true;
-        let body = stringify.stringify(doc.contents, ctx, () => contentComment = null, onChompKeep);
+        let body = stringify2.stringify(doc.contents, ctx, () => contentComment = null, onChompKeep);
         if (contentComment)
           body += stringifyComment.lineComment(body, "", commentString(contentComment));
         if ((body[0] === "|" || body[0] === ">") && lines[lines.length - 1] === "---") {
@@ -18489,7 +18489,7 @@ var require_stringifyDocument = __commonJS({
         } else
           lines.push(body);
       } else {
-        lines.push(stringify.stringify(doc.contents, ctx));
+        lines.push(stringify2.stringify(doc.contents, ctx));
       }
       if (doc.directives?.docEnd) {
         if (doc.comment) {
@@ -20624,7 +20624,7 @@ var require_cst_scalar = __commonJS({
 var require_cst_stringify = __commonJS({
   "node_modules/yaml/dist/parse/cst-stringify.js"(exports) {
     "use strict";
-    var stringify = (cst) => "type" in cst ? stringifyToken(cst) : stringifyItem(cst);
+    var stringify2 = (cst) => "type" in cst ? stringifyToken(cst) : stringifyItem(cst);
     function stringifyToken(token) {
       switch (token.type) {
         case "block-scalar": {
@@ -20677,7 +20677,7 @@ var require_cst_stringify = __commonJS({
         res += stringifyToken(value);
       return res;
     }
-    exports.stringify = stringify;
+    exports.stringify = stringify2;
   }
 });
 
@@ -22407,7 +22407,7 @@ var require_public_api = __commonJS({
       }
       return doc.toJS(Object.assign({ reviver: _reviver }, options));
     }
-    function stringify(value, replacer, options) {
+    function stringify2(value, replacer, options) {
       let _replacer = null;
       if (typeof replacer === "function" || Array.isArray(replacer)) {
         _replacer = replacer;
@@ -22432,7 +22432,7 @@ var require_public_api = __commonJS({
     exports.parse = parse;
     exports.parseAllDocuments = parseAllDocuments;
     exports.parseDocument = parseDocument;
-    exports.stringify = stringify;
+    exports.stringify = stringify2;
   }
 });
 
@@ -28537,7 +28537,7 @@ var _getRequestParams = (method, options, parameters, body) => {
   return _objectSpread22(_objectSpread22({}, params), parameters);
 };
 async function _handleRequest(fetcher, method, url, options, parameters, body, namespace) {
-  return new Promise((resolve7, reject) => {
+  return new Promise((resolve8, reject) => {
     fetcher(url, _getRequestParams(method, options, parameters, body)).then((result) => {
       if (!result.ok) throw result;
       if (options === null || options === void 0 ? void 0 : options.noResolveJson) return result;
@@ -28547,7 +28547,7 @@ async function _handleRequest(fetcher, method, url, options, parameters, body, n
         if (!contentType || !contentType.includes("application/json")) return {};
       }
       return result.json();
-    }).then((data) => resolve7(data)).catch((error) => handleError(error, reject, options, namespace));
+    }).then((data) => resolve8(data)).catch((error) => handleError(error, reject, options, namespace));
   });
 }
 function createFetchApi(namespace = "storage") {
@@ -37344,10 +37344,10 @@ async function searchKnowledge(client, projectId, args, started = performance.no
       record("timeout", "deadline");
       return void 0;
     }
-    const timeout = new Promise((resolve7) => {
+    const timeout = new Promise((resolve8) => {
       timer = setTimeout(() => {
         routeController.abort();
-        resolve7(void 0);
+        resolve8(void 0);
       }, ms);
     });
     try {
@@ -37828,7 +37828,7 @@ async function queryKnowledge(client, projectId, args) {
   const result = await queryKnowledgeUnlogged(client, projectId, queryArgs);
   await Promise.race([
     logKnowledgeRetrieval(client, projectId, { task_id, gate, search: queryArgs.search }, result),
-    new Promise((resolve7) => setTimeout(resolve7, RETRIEVAL_LOG_BUDGET_MS).unref())
+    new Promise((resolve8) => setTimeout(resolve8, RETRIEVAL_LOG_BUDGET_MS).unref())
   ]);
   return result;
 }
@@ -39904,7 +39904,7 @@ function firstToken(command) {
 function looksLikeScriptPath(token) {
   return token.includes("/");
 }
-function validateSteps(file, extensionPoint, steps, projectRoot, existsSync6) {
+function validateSteps(file, extensionPoint, steps, projectRoot, existsSync7) {
   if (!steps) return void 0;
   for (const step of steps) {
     if (isAgentTaskStep(step)) {
@@ -39917,7 +39917,7 @@ function validateSteps(file, extensionPoint, steps, projectRoot, existsSync6) {
     const token = firstToken(step.run);
     if (looksLikeScriptPath(token)) {
       const resolved = nodeResolve(projectRoot, token);
-      if (!existsSync6(resolved)) {
+      if (!existsSync7(resolved)) {
         return {
           file,
           reason: "missing-script",
@@ -39929,10 +39929,10 @@ function validateSteps(file, extensionPoint, steps, projectRoot, existsSync6) {
   return void 0;
 }
 function loadProjectManifest(projectRoot, deps = {}) {
-  const existsSync6 = deps.existsSync ?? nodeExistsSync2;
+  const existsSync7 = deps.existsSync ?? nodeExistsSync2;
   const readFileSync17 = deps.readFileSync ?? ((p) => nodeReadFileSync2(p, "utf8"));
   const file = nodeJoin2(projectRoot, PROJECT_MANIFEST_RELATIVE_PATH);
-  if (!existsSync6(file)) return { kind: "absent" };
+  if (!existsSync7(file)) return { kind: "absent" };
   const raw = readFileSync17(file);
   let parsed;
   try {
@@ -40028,17 +40028,17 @@ function loadProjectManifest(projectRoot, deps = {}) {
     };
   }
   const stepErrors = {};
-  const buildErr = validateSteps(file, "build.before_pr", manifest.build?.before_pr, projectRoot, existsSync6);
+  const buildErr = validateSteps(file, "build.before_pr", manifest.build?.before_pr, projectRoot, existsSync7);
   if (buildErr) stepErrors["build.before_pr"] = buildErr;
   const releaseErr = validateSteps(
     file,
     "release.before_merge",
     manifest.release?.before_merge,
     projectRoot,
-    existsSync6
+    existsSync7
   );
   if (releaseErr) stepErrors["release.before_merge"] = releaseErr;
-  const verifyErr = validateSteps(file, "verify.before_ack", manifest.verify?.before_ack, projectRoot, existsSync6);
+  const verifyErr = validateSteps(file, "verify.before_ack", manifest.verify?.before_ack, projectRoot, existsSync7);
   if (verifyErr) stepErrors["verify.before_ack"] = verifyErr;
   return { kind: "ok", file, manifest, stepErrors };
 }
@@ -48257,6 +48257,98 @@ async function syncProse(client, projectId, root, declarationPath = ".harmony/pr
   return output;
 }
 
+// src/cli/prose-init.ts
+var import_yaml2 = __toESM(require_dist(), 1);
+import { existsSync as existsSync3, lstatSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname as dirname3, join as join5, resolve } from "node:path";
+var RELEASED_PROSE_CLI = "c72d5d36b876e684ca07f4f36e90418167843653";
+var optionsSchema = external_exports.object({
+  repository: external_exports.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/, "Use GitHub owner/repo"),
+  branch: external_exports.string().regex(/^[A-Za-z0-9][A-Za-z0-9_./-]*$/, "Use a literal branch name").refine((s) => !s.includes("..") && !s.includes("//") && !s.endsWith("/") && !s.endsWith(".lock")),
+  cliCommit: external_exports.string().regex(/^[a-f0-9]{40}$/, "Use a full released plugin commit SHA"),
+  key: external_exports.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/),
+  include: external_exports.array(external_exports.string()).min(1),
+  exclude: external_exports.array(external_exports.string()),
+  kind: external_exports.enum(["document", "skill"]),
+  scope: external_exports.enum(["product", "deployment", "unresolved"]),
+  domain: external_exports.array(external_exports.enum(["engineering", "operations", "data", "product", "customer", "process"]))
+});
+function proseRefreshWorkflow(branch = "main", cliCommit = RELEASED_PROSE_CLI) {
+  optionsSchema.pick({ branch: true, cliCommit: true }).parse({ branch, cliCommit });
+  return (0, import_yaml2.stringify)({
+    name: "Refresh configured prose index",
+    on: { push: { branches: [branch] }, workflow_dispatch: {} },
+    permissions: { contents: "read" },
+    concurrency: { group: "prose-index-${{ github.repository }}", "cancel-in-progress": false },
+    jobs: { refresh: { "runs-on": "ubuntu-latest", steps: [
+      { uses: "actions/checkout@v6", with: { "fetch-depth": 0 } },
+      { name: "Get released Harmony CLI (0.16.33 by default)", uses: "actions/checkout@v6", with: {
+        repository: "ycomplex/harmony-plugin",
+        ref: cliCommit,
+        path: ".harmony-cli",
+        "persist-credentials": false
+      } },
+      { uses: "actions/setup-node@v6", with: { "node-version": "22" } },
+      { name: "Move released CLI outside the source checkout", run: 'mv "$GITHUB_WORKSPACE/.harmony-cli" "$RUNNER_TEMP/harmony-cli"' },
+      { name: "Publish immutable merged source snapshot", env: { HARMONY_API_TOKEN: "${{ secrets.HARMONY_PROSE_INDEX_TOKEN }}" }, run: [
+        'if [ -z "$HARMONY_API_TOKEN" ]; then',
+        '  echo "::warning::HARMONY_PROSE_INDEX_TOKEN is not set; skipping the configured prose refresh for this push"',
+        "  exit 0",
+        "fi",
+        'node "$RUNNER_TEMP/harmony-cli/dist/bin/harmony.js" knowledge sync-prose --root "$GITHUB_WORKSPACE" --commit "$GITHUB_SHA"'
+      ].join("\n") + "\n" }
+    ] } }
+  }, { lineWidth: 0 });
+}
+function initProseSources(root, input) {
+  const opts = optionsSchema.parse(input);
+  const selector = selectorSchema.parse({ ...opts, scope: opts.scope === "unresolved" ? null : opts.scope });
+  const declaration = declarationSchema.parse({ version: 1, repository: `https://github.com/${opts.repository}`, ref: "HEAD", sources: [{ key: opts.key, selectors: [selector] }] });
+  const files = [
+    { path: ".harmony/prose-sources.json", content: JSON.stringify(declaration, null, 2) + "\n" },
+    { path: ".github/workflows/prose-index.yml", content: proseRefreshWorkflow(opts.branch, opts.cliCommit) }
+  ];
+  const base = resolve(root);
+  for (const file of files) {
+    const parts = file.path.split("/");
+    for (let i = 1; i <= parts.length; i++) {
+      const path4 = join5(base, ...parts.slice(0, i));
+      try {
+        const stat = lstatSync(path4);
+        if (stat.isSymbolicLink()) throw new Error(`Refusing symlink: ${path4}`);
+        if (i === parts.length) throw new Error(`Already exists: ${file.path}; review it manually (init never overwrites files)`);
+        if (!stat.isDirectory()) throw new Error(`Not a directory: ${path4}`);
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+    }
+  }
+  if (!existsSync3(base)) throw new Error(`Repository directory does not exist: ${base}`);
+  const written = [];
+  try {
+    for (const file of files) {
+      const target = join5(base, file.path);
+      mkdirSync(dirname3(target), { recursive: true });
+      writeFileSync(target, file.content, { flag: "wx" });
+      written.push(target);
+    }
+  } catch (error) {
+    for (const path4 of written) unlinkSync(path4);
+    throw error;
+  }
+  return {
+    files: files.map((file) => file.path),
+    cli_commit: opts.cliCommit,
+    instructions: [
+      `gh secret set HARMONY_PROSE_INDEX_TOKEN --repo ${opts.repository}`,
+      "Use a project-scoped Harmony API token for the project to index; never a service-role key. Enter it at the secret prompt.",
+      "Review the generated files, then commit and push them to " + opts.branch + " to run the first refresh.",
+      `gh workflow run prose-index.yml --repo ${opts.repository} --ref ${opts.branch}`,
+      "Use workflow_dispatch after setting the secret if the first push skipped refresh. Inspect the Actions run, then harmony knowledge prose-sources for indexed commit and diagnostics."
+    ]
+  };
+}
+
 // src/tools/surface-records.ts
 var text3 = external_exports.string().trim().min(1);
 var readSurfaceSchema = external_exports.object({ owner_surface: text3, component_ref: text3.optional() }).strict();
@@ -48573,13 +48665,13 @@ var featureAccountTools = [
 ];
 
 // src/cli/commands/knowledge-sources.ts
-import { readFileSync as readFileSync5, writeFileSync } from "node:fs";
-import { resolve as resolve2 } from "node:path";
+import { readFileSync as readFileSync5, writeFileSync as writeFileSync2 } from "node:fs";
+import { resolve as resolve3 } from "node:path";
 
 // src/cli/source-publishers.ts
 import { execFileSync as execFileSync2 } from "node:child_process";
 import { readFileSync as readFileSync4, realpathSync } from "node:fs";
-import { resolve, relative, isAbsolute } from "node:path";
+import { resolve as resolve2, relative, isAbsolute } from "node:path";
 var publisherDeclarationSchema = external_exports.object({ version: external_exports.literal(1), repository: external_exports.string().min(1), publishers: external_exports.array(external_exports.object({
   surface: external_exports.string().min(1),
   command: external_exports.array(external_exports.string().min(1)).min(1),
@@ -48588,7 +48680,7 @@ var publisherDeclarationSchema = external_exports.object({ version: external_exp
 })).min(1) });
 var git2 = (root, args) => execFileSync2("git", ["-C", root, ...args], { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 });
 function loadPublisherDeclaration(root, file = ".harmony/source-publishers.json") {
-  return publisherDeclarationSchema.parse(JSON.parse(readFileSync4(resolve(root, file), "utf8")));
+  return publisherDeclarationSchema.parse(JSON.parse(readFileSync4(resolve2(root, file), "utf8")));
 }
 function runSourcePublisher(root, declaration, surface, expectedRevision, runId, runUrl, previousSha) {
   root = realpathSync(root);
@@ -48612,7 +48704,7 @@ function runSourcePublisher(root, declaration, surface, expectedRevision, runId,
   }
   if (!paths.size) throw new Error("Publisher inputs match no tracked sources");
   for (const path4 of paths) {
-    const actual = readFileSync4(resolve(root, path4));
+    const actual = readFileSync4(resolve2(root, path4));
     const committed = execFileSync2("git", ["-C", root, "show", `${sha}:${path4}`], { maxBuffer: 10 * 1024 * 1024 });
     if (!actual.equals(committed)) throw new Error(`Uncommitted publisher input: ${path4}`);
   }
@@ -48628,14 +48720,14 @@ function runSourcePublisher(root, declaration, surface, expectedRevision, runId,
     values: values.map((v2) => ({ ...v2, source: { ...v2.source, repository: declaration.repository, sha, publisher: surface, publisher_version: publisher.publisher_version, run_url: runUrl } }))
   });
   for (const path4 of paths) {
-    if (!readFileSync4(resolve(root, path4)).equals(execFileSync2("git", ["-C", root, "show", `${sha}:${path4}`], { maxBuffer: 10 * 1024 * 1024 }))) throw new Error(`Publisher mutated input: ${path4}`);
+    if (!readFileSync4(resolve2(root, path4)).equals(execFileSync2("git", ["-C", root, "show", `${sha}:${path4}`], { maxBuffer: 10 * 1024 * 1024 }))) throw new Error(`Publisher mutated input: ${path4}`);
   }
   for (const value of inventory.values) {
     const path4 = value.source.path;
-    const local = relative(root, realpathSync(resolve(root, path4)));
+    const local = relative(root, realpathSync(resolve2(root, path4)));
     if (isAbsolute(local) || local.startsWith("..") || !paths.has(path4)) throw new Error(`Source is outside declared inputs: ${path4}`);
-    if (!readFileSync4(resolve(root, path4)).equals(execFileSync2("git", ["-C", root, "show", `${sha}:${path4}`], { maxBuffer: 10 * 1024 * 1024 }))) throw new Error(`Publisher mutated source: ${path4}`);
-    const lines = readFileSync4(resolve(root, path4), "utf8").split("\n").length;
+    if (!readFileSync4(resolve2(root, path4)).equals(execFileSync2("git", ["-C", root, "show", `${sha}:${path4}`], { maxBuffer: 10 * 1024 * 1024 }))) throw new Error(`Publisher mutated source: ${path4}`);
+    const lines = readFileSync4(resolve2(root, path4), "utf8").split("\n").length;
     if (value.source.line_start && value.source.line_start > lines || value.source.line_end && value.source.line_end > lines) throw new Error(`Source span outside file: ${path4}`);
   }
   return inventory;
@@ -48652,10 +48744,10 @@ function registerSourceCommands(knowledge, program3) {
   });
   knowledge.command("publish-values").description("Run a declared trusted publisher and publish its complete deployment inventory").requiredOption("--surface <surface>").requiredOption("--run-id <id>").requiredOption("--run-url <url>").option("--root <directory>", "Repository checkout", process.cwd()).option("--declaration <file>", "Publisher declaration", ".harmony/source-publishers.json").option("--output <file>", "Also save extracted inventory for auditing").action(async (opts) => {
     await runCommand(program3.opts(), async (ctx) => {
-      const root = resolve2(opts.root), declaration = loadPublisherDeclaration(root, opts.declaration);
+      const root = resolve3(opts.root), declaration = loadPublisherDeclaration(root, opts.declaration);
       const snapshot = await readSourceInventory(ctx.client, ctx.projectId, { repository: declaration.repository, surface: opts.surface });
       const inventory = runSourcePublisher(root, declaration, opts.surface, snapshot.revision, opts.runId, opts.runUrl, snapshot.source_sha);
-      if (opts.output) writeFileSync(opts.output, JSON.stringify(inventory, null, 2) + "\n");
+      if (opts.output) writeFileSync2(opts.output, JSON.stringify(inventory, null, 2) + "\n");
       return publishSourceInventory(ctx.client, ctx.projectId, inventory);
     }, render);
   });
@@ -48666,7 +48758,7 @@ function registerSourceCommands(knowledge, program3) {
 
 // src/cli/commands/knowledge.ts
 import { readFile } from "node:fs/promises";
-import { readFileSync as readFileSync6, writeFileSync as writeFileSync2 } from "node:fs";
+import { readFileSync as readFileSync6, writeFileSync as writeFileSync3 } from "node:fs";
 
 // src/tools/knowledge-repair.ts
 import { execFileSync as execFileSync3 } from "node:child_process";
@@ -48943,7 +49035,13 @@ function registerKnowledgeCommands(program3) {
     }), (data) => JSON.stringify(data, null, 2));
   });
   knowledge.command("sync-prose").option("--root <directory>", "Repository checkout", ".").option("--declaration <path>", "Versioned source declaration", ".harmony/prose-sources.json").option("--commit <ref>", "Immutable commit at configured ref", "HEAD").action(async (opts) => runCommand(program3.opts(), (ctx) => syncProse(ctx.client, ctx.projectId, opts.root, opts.declaration, opts.commit), (data) => JSON.stringify(data, null, 2)));
-  knowledge.command("prose-sources").action(async () => runCommand(program3.opts(), (ctx) => readProse(ctx.client, ctx.projectId), (data) => JSON.stringify(data, null, 2)));
+  const proseSources = knowledge.command("prose-sources").action(async () => runCommand(program3.opts(), (ctx) => readProse(ctx.client, ctx.projectId), (data) => JSON.stringify(data, null, 2)));
+  proseSources.command("init").description("Write local prose declaration and released-CLI refresh workflow; no login required").option("--root <directory>", "Repository directory", ".").requiredOption("--repository <owner/repo>", "GitHub repository to index").requiredOption("--include <glob...>", "Repository-relative Markdown patterns").requiredOption("--scope <scope>", "product, deployment, or unresolved").option("--exclude <glob...>", "Patterns excluded from indexing", []).option("--kind <kind>", "document or skill", "document").option("--key <key>", "Stable project-wide source key", "repository-prose").option("--domain <domain...>", "Knowledge domains", []).option("--branch <branch>", "Branch whose pushes refresh the index", "main").option("--cli-commit <sha>", "Full released plugin commit containing the prebuilt CLI", RELEASED_PROSE_CLI).action((opts) => {
+    const result = initProseSources(opts.root, opts);
+    console.log(program3.opts().json ? JSON.stringify(result, null, 2) : `Created ${result.files.join(" and ")}
+
+${result.instructions.join("\n")}`);
+  });
   knowledge.command("defined-in <entry>").requiredOption("--pointer <json-or-null>", "Exact source_id/path/anchor/commit or null to unlink").action(async (entry, opts) => runCommand(program3.opts(), (ctx) => setDefinedIn(ctx.client, ctx.projectId, { entry_id: entry, pointer: JSON.parse(opts.pointer) }), (data) => JSON.stringify(data, null, 2)));
   knowledge.command("list").description("List knowledge entries with optional filters").option("--scope <scope>", "Product or deployment scope; fails visibly when unavailable").option("--type <type>", "Filter by type (e.g. architecture, business, convention, specification)").option("--status <status>", "Filter by status").option(
     "--tag <tag>",
@@ -49007,7 +49105,7 @@ function registerKnowledgeCommands(program3) {
   knowledge.command("preview-metadata-repair").argument("<file>").action(async (file) => {
     await runCommand(program3.opts(), async (ctx) => {
       const manifest = await previewMetadataRepair(ctx.client, ctx.projectId);
-      writeFileSync2(file, JSON.stringify(manifest, null, 2));
+      writeFileSync3(file, JSON.stringify(manifest, null, 2));
       return manifest.counts;
     }, (data) => JSON.stringify(data, null, 2));
   });
@@ -50356,8 +50454,8 @@ function registerConfigCommands(program3) {
 
 // src/cli/commands/conductor-config.ts
 import { execFile } from "node:child_process";
-import { chmodSync as chmodSync3, existsSync as fsExistsSync3, mkdirSync as mkdirSync3, readFileSync as fsReadFileSync3, writeFileSync as writeFileSync5 } from "node:fs";
-import { dirname as dirname6, resolve as resolve5 } from "node:path";
+import { chmodSync as chmodSync3, existsSync as fsExistsSync3, mkdirSync as mkdirSync4, readFileSync as fsReadFileSync3, writeFileSync as writeFileSync6 } from "node:fs";
+import { dirname as dirname7, resolve as resolve6 } from "node:path";
 
 // src/config/conductor-migrate.ts
 var DEFAULT_SECRET_NAMES = {
@@ -50477,8 +50575,8 @@ function buildMigration(input) {
 
 // src/config/conductor-project-source.ts
 import { createHash as createHash3 } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync as readFileSync8, renameSync, rmSync, writeFileSync as writeFileSync3 } from "node:fs";
-import { dirname as dirname3 } from "node:path";
+import { chmodSync, mkdirSync as mkdirSync2, readFileSync as readFileSync8, renameSync, rmSync, writeFileSync as writeFileSync4 } from "node:fs";
+import { dirname as dirname4 } from "node:path";
 
 // src/config/github-app-token.ts
 import { createSign } from "node:crypto";
@@ -50596,10 +50694,10 @@ function readSnapshot(path4) {
   }
 }
 function writeSnapshot(path4, snap) {
-  mkdirSync(dirname3(path4), { recursive: true });
+  mkdirSync2(dirname4(path4), { recursive: true });
   const tmp = `${path4}.${process.pid}.${Date.now().toString(36)}.tmp`;
   try {
-    writeFileSync3(tmp, `${JSON.stringify(snap, null, 2)}
+    writeFileSync4(tmp, `${JSON.stringify(snap, null, 2)}
 `, { mode: 384 });
     chmodSync(tmp, 384);
     renameSync(tmp, path4);
@@ -50661,7 +50759,7 @@ ${new ConductorConfigError(v2.issues).message}`);
 }
 
 // src/cli/commands/conductor-lifecycle.ts
-import { dirname as dirname5, join as join10 } from "node:path";
+import { dirname as dirname6, join as join11 } from "node:path";
 
 // src/daemon/conductor-board.ts
 var holderPrefix = (host, pid) => `${host}:${pid}:`;
@@ -50703,7 +50801,7 @@ function classifyLeases(rows, host, runningPid, freshMs, nowMs) {
 }
 
 // src/daemon/conductor-process.ts
-import { basename as basename3, isAbsolute as isAbsolute2, join as join5, resolve as resolve3 } from "node:path";
+import { basename as basename3, isAbsolute as isAbsolute2, join as join6, resolve as resolve4 } from "node:path";
 function parsePsOutput(text4) {
   const out = [];
   for (const line of text4.split("\n")) {
@@ -50771,18 +50869,18 @@ function daemonCandidates(procs) {
   return out;
 }
 function matchConductors(procs, opts) {
-  const want = resolve3(join5(opts.pluginDir, "dist", "bin", "daemon.js"));
+  const want = resolve4(join6(opts.pluginDir, "dist", "bin", "daemon.js"));
   const out = [];
   for (const c of daemonCandidates(procs)) {
     let script;
-    if (isAbsolute2(c.script)) script = resolve3(c.script);
+    if (isAbsolute2(c.script)) script = resolve4(c.script);
     else {
       const cwd = opts.cwdByPid?.get(c.pid);
       if (!cwd) continue;
-      script = resolve3(cwd, c.script);
+      script = resolve4(cwd, c.script);
     }
     if (script !== want) continue;
-    if (opts.configPath && c.config !== void 0 && resolve3(c.config) !== resolve3(opts.configPath)) continue;
+    if (opts.configPath && c.config !== void 0 && resolve4(c.config) !== resolve4(opts.configPath)) continue;
     out.push({ ...c, script });
   }
   return out;
@@ -50792,7 +50890,7 @@ function needsCwd(procs) {
 }
 
 // src/daemon/supervisor-control.ts
-import { join as join6 } from "node:path";
+import { join as join7 } from "node:path";
 
 // src/daemon/supervisor.ts
 var LAUNCHD_SERVICE_NAME = "com.ycomplex.harmony-daemon";
@@ -50800,9 +50898,9 @@ var LAUNCHD_SERVICE_NAME = "com.ycomplex.harmony-daemon";
 // src/daemon/supervisor-control.ts
 var LAUNCHD_LABEL = LAUNCHD_SERVICE_NAME;
 var SYSTEMD_UNIT = "harmony-conductor.service";
-var agentPlistPath = (home) => join6(home, "Library", "LaunchAgents", `${LAUNCHD_LABEL}.plist`);
+var agentPlistPath = (home) => join7(home, "Library", "LaunchAgents", `${LAUNCHD_LABEL}.plist`);
 var daemonPlistPath = () => `/Library/LaunchDaemons/${LAUNCHD_LABEL}.plist`;
-var systemdUnitPath = (home) => join6(home, ".config", "systemd", "user", SYSTEMD_UNIT);
+var systemdUnitPath = (home) => join7(home, ".config", "systemd", "user", SYSTEMD_UNIT);
 var launchdTarget = (kind, uid) => kind === "launchd-agent" ? `gui/${uid}/${LAUNCHD_LABEL}` : `system/${LAUNCHD_LABEL}`;
 async function detectSupervisorState(deps) {
   if (deps.platform === "darwin") {
@@ -50854,7 +50952,7 @@ function fillTemplate(template, values) {
   });
 }
 var xmlEscape = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
-var launcherPath = (pluginDir) => join6(pluginDir, "container", "conductor-launch.sh");
+var launcherPath = (pluginDir) => join7(pluginDir, "container", "conductor-launch.sh");
 function renderLaunchdPlist(template, o) {
   const args = ["/bin/bash", launcherPath(o.pluginDir), ...o.launcherArgs];
   return fillTemplate(template, {
@@ -50909,10 +51007,10 @@ var Out = class {
 var EXIT = { ok: 0, failure: 1, usage: 2, inFlight: 3, notAdopted: 4 };
 
 // src/cli/commands/conductor-registry-cli.ts
-import { join as join9 } from "node:path";
+import { join as join10 } from "node:path";
 
 // src/cli/commands/conductor-preflight.ts
-import { basename as basename4, join as join8 } from "node:path";
+import { basename as basename4, join as join9 } from "node:path";
 
 // src/config/conductor-secrets.ts
 import { readFileSync as readFileSync9 } from "node:fs";
@@ -50994,7 +51092,7 @@ async function resolveConductorSecrets(deps) {
 
 // src/config/gcp-project.ts
 import { existsSync as fsExistsSync2, readFileSync as fsReadFileSync2 } from "node:fs";
-import { join as join7 } from "node:path";
+import { join as join8 } from "node:path";
 var GCP_PROJECT_UNSET = 'no GCP project is configured: set "gcp": { "project": "<gcp-project-id>" } in .harmony/conductor.json (or in ~/.harmony/conductor-host.json)';
 function resolveGcpProject(deps) {
   const exported = deps.env.CLOUDSDK_CORE_PROJECT;
@@ -51018,7 +51116,7 @@ function resolveGcpProject(deps) {
   }
   if (merged?.gcp?.project) return merged.gcp.project;
   try {
-    const local = join7(deps.cwd ?? process.cwd(), CONDUCTOR_PROJECT_PATH);
+    const local = join8(deps.cwd ?? process.cwd(), CONDUCTOR_PROJECT_PATH);
     if (exists(local)) {
       const v2 = validateProjectFileText(CONDUCTOR_PROJECT_PATH, read(local));
       if (v2.ok) return v2.value.gcp?.project;
@@ -51042,8 +51140,8 @@ async function sourceEnvFile(deps, file) {
 }
 async function loadSettings(deps, opts = {}) {
   const paths = resolveConductorPaths(deps.env);
-  const envPath = join8(paths.home, "conductor.env");
-  const legacyPath = join8(paths.home, "daemon.env");
+  const envPath = join9(paths.home, "conductor.env");
+  const legacyPath = join9(paths.home, "daemon.env");
   let envFile = null;
   const fileEnv = {};
   let envFileError;
@@ -51117,9 +51215,9 @@ async function authPluginFix(deps, env2) {
     if (r.code === 0) root = r.stdout.trim();
   } catch {
   }
-  if (!root || !deps.existsSync(join8(root, "bin", AUTH_PLUGIN))) return install;
+  if (!root || !deps.existsSync(join9(root, "bin", AUTH_PLUGIN))) return install;
   const ext2 = basename4(env2.SHELL ?? "") === "zsh" ? "zsh" : "bash";
-  return `${AUTH_PLUGIN} is installed at ${join8(root, "bin")} but is not on PATH (\`gcloud components install\` reports up to date and does not add it): run \`source ${join8(root, `path.${ext2}.inc`)}\` and add that line to your shell profile`;
+  return `${AUTH_PLUGIN} is installed at ${join9(root, "bin")} but is not on PATH (\`gcloud components install\` reports up to date and does not add it): run \`source ${join9(root, `path.${ext2}.inc`)}\` and add that line to your shell profile`;
 }
 function missingTokenReason(deps, s) {
   const hostFile = s.paths.hostFile;
@@ -51227,7 +51325,7 @@ var failedNames = (checks) => checks.filter((c) => !c.ok).map((c) => c.name);
 var REGISTRY_ABSENT = "registry not deployed on this project";
 function pluginVersion(deps, pluginDir) {
   try {
-    const v2 = JSON.parse(deps.readFileSync(join9(pluginDir, ".claude-plugin", "plugin.json"))).version;
+    const v2 = JSON.parse(deps.readFileSync(join10(pluginDir, ".claude-plugin", "plugin.json"))).version;
     return v2 || "unknown";
   } catch {
     return "unknown";
@@ -51476,9 +51574,9 @@ async function runStopRemote(deps, opts = {}, onLine) {
 
 // src/cli/commands/conductor-lifecycle-deps.ts
 import { spawn } from "node:child_process";
-import { chmodSync as chmodSync2, closeSync, existsSync as existsSync3, mkdirSync as mkdirSync2, openSync, readFileSync as readFileSync10, readlinkSync, rmSync as rmSync2, writeFileSync as writeFileSync4 } from "node:fs";
+import { chmodSync as chmodSync2, closeSync, existsSync as existsSync4, mkdirSync as mkdirSync3, openSync, readFileSync as readFileSync10, readlinkSync, rmSync as rmSync2, writeFileSync as writeFileSync5 } from "node:fs";
 import { homedir as homedir3, hostname, userInfo } from "node:os";
-import { dirname as dirname4, resolve as resolve4 } from "node:path";
+import { dirname as dirname5, resolve as resolve5 } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // src/cli/commands/conductions.ts
@@ -51694,7 +51792,7 @@ function createRegistryClient(deps) {
   const call3 = (name, args, cls, timeoutMs = defaultTimeout) => withWriteRetry(
     deps,
     { class: cls, endpoint: `rpc(${name})` },
-    () => new Promise((resolve7, reject) => {
+    () => new Promise((resolve8, reject) => {
       let done = false;
       const cancel = deps.startTimeout(timeoutMs, () => {
         if (done) return;
@@ -51716,7 +51814,7 @@ function createRegistryClient(deps) {
           done = true;
           cancel();
           if (error) reject(error);
-          else resolve7(data);
+          else resolve8(data);
         },
         (err) => {
           if (done) return;
@@ -51930,7 +52028,7 @@ function defaultLifecycleDeps() {
       }
     })(),
     home: homedir3(),
-    cliPluginDir: resolve4(dirname4(fileURLToPath2(import.meta.url)), "..", ".."),
+    cliPluginDir: resolve5(dirname5(fileURLToPath2(import.meta.url)), "..", ".."),
     hostname: () => hostname(),
     now: () => Date.now(),
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
@@ -51957,7 +52055,7 @@ function defaultLifecycleDeps() {
       }
     },
     spawnDetached: (file, args, o) => {
-      mkdirSync2(dirname4(o.logPath), { recursive: true });
+      mkdirSync3(dirname5(o.logPath), { recursive: true });
       const fd = openSync(o.logPath, "a");
       try {
         const child = spawn(file, args, {
@@ -51973,14 +52071,14 @@ function defaultLifecycleDeps() {
         closeSync(fd);
       }
     },
-    existsSync: existsSync3,
+    existsSync: existsSync4,
     readFileSync: (p) => readFileSync10(p, "utf8"),
     writeFileSync: (p, text4, mode) => {
-      writeFileSync4(p, text4, { mode });
+      writeFileSync5(p, text4, { mode });
       chmodSync2(p, mode);
     },
     mkdirSync: (p) => {
-      mkdirSync2(p, { recursive: true });
+      mkdirSync3(p, { recursive: true });
     },
     rmSync: (p) => rmSync2(p, { force: true }),
     readBoard: async (env2) => {
@@ -52026,7 +52124,7 @@ function timingFromEnv(env2) {
     freshMs: n("HARMONY_SWITCH_FRESH_S", 120) * 1e3
   };
 }
-var logPathOf = (s) => join10(s.paths.home, "conductor.out.log");
+var logPathOf = (s) => join11(s.paths.home, "conductor.out.log");
 async function findConductors(deps, s) {
   const procs = await deps.listProcesses();
   const cwdByPid = /* @__PURE__ */ new Map();
@@ -52272,29 +52370,29 @@ async function runStart(deps, opts = {}, onLine) {
   let unitPath;
   let cmds;
   try {
-    deps.mkdirSync(dirname5(logPath));
+    deps.mkdirSync(dirname6(logPath));
     if (deps.platform === "darwin") {
-      const template = deps.readFileSync(join10(s.pluginDir, LAUNCHD_TEMPLATE));
+      const template = deps.readFileSync(join11(s.pluginDir, LAUNCHD_TEMPLATE));
       if (mode === "at-boot") {
         kind = "launchd-daemon";
         unitPath = daemonPlistPath();
-        const staged = join10(s.paths.home, "conductor-launchd.plist.staged");
+        const staged = join11(s.paths.home, "conductor-launchd.plist.staged");
         deps.writeFileSync(staged, renderLaunchdPlist(template, { ...renderOpts, userName: deps.username }), 420);
         cmds = installCommands(kind, deps.uid, { agentPlist: unitPath, staged });
         out.line(`Installing a LaunchDaemon (${unitPath}) that starts at boot as ${deps.username}; sudo will ask for your password once.`);
       } else {
         kind = "launchd-agent";
         unitPath = agentPlistPath(deps.home);
-        deps.mkdirSync(dirname5(unitPath));
+        deps.mkdirSync(dirname6(unitPath));
         deps.writeFileSync(unitPath, renderLaunchdPlist(template, renderOpts), 420);
         cmds = installCommands(kind, deps.uid, { agentPlist: unitPath });
         out.line(`Installed the LaunchAgent ${unitPath}.`);
       }
     } else {
-      const template = deps.readFileSync(join10(s.pluginDir, SYSTEMD_TEMPLATE));
+      const template = deps.readFileSync(join11(s.pluginDir, SYSTEMD_TEMPLATE));
       kind = "systemd-user";
       unitPath = systemdUnitPath(deps.home);
-      deps.mkdirSync(dirname5(unitPath));
+      deps.mkdirSync(dirname6(unitPath));
       deps.writeFileSync(unitPath, renderSystemdUnit(template, renderOpts), 420);
       cmds = installCommands(kind, deps.uid, { agentPlist: unitPath });
       out.line(`Installed the systemd user unit ${unitPath}.`);
@@ -52306,7 +52404,7 @@ async function runStart(deps, opts = {}, onLine) {
   if (!await runSupervisorCommands(deps, cmds, out)) {
     return out.result(EXIT.failure, { error: out.errLines[0], started: false, supervisor: kind });
   }
-  if (mode === "at-boot") deps.rmSync(join10(s.paths.home, "conductor-launchd.plist.staged"));
+  if (mode === "at-boot") deps.rmSync(join11(s.paths.home, "conductor-launchd.plist.staged"));
   const deadline = deps.now() + 3e4;
   let started = [];
   while (deps.now() < deadline) {
@@ -52516,8 +52614,8 @@ async function restartLocal(deps, opts, onLine, ctx) {
       return out.result(EXIT.failure, { error: out.errLines[0], signalled: false, plugin_version_before: versionBefore });
     }
     versionAfter = pluginVersion(deps, s.pluginDir);
-    if (!deps.existsSync(join10(s.pluginDir, "dist", "bin", "daemon.js"))) {
-      out.err(`after the pull ${join10(s.pluginDir, "dist", "bin", "daemon.js")} does not exist \u2014 the channel branch carries no built bundle. The running conductor was left untouched.`);
+    if (!deps.existsSync(join11(s.pluginDir, "dist", "bin", "daemon.js"))) {
+      out.err(`after the pull ${join11(s.pluginDir, "dist", "bin", "daemon.js")} does not exist \u2014 the channel branch carries no built bundle. The running conductor was left untouched.`);
       return out.result(EXIT.failure, { error: out.errLines[0], signalled: false, plugin_version_before: versionBefore });
     }
     out.line(versionAfter === versionBefore ? `  plugin ${versionBefore} (already the channel's latest)` : `  plugin ${versionBefore} -> ${versionAfter}`);
@@ -52767,8 +52865,8 @@ async function runMigrate(deps, opts) {
     );
   }
   const paths = resolveConductorPaths(deps.env);
-  const outHost = opts.outHost ? resolve5(opts.outHost) : paths.hostFile;
-  const outProject = opts.outProject ? resolve5(opts.outProject) : void 0;
+  const outHost = opts.outHost ? resolve6(opts.outHost) : paths.hostFile;
+  const outProject = opts.outProject ? resolve6(opts.outProject) : void 0;
   const projectText = pretty(migration.projectFile);
   const hostText = pretty(migration.hostFile);
   const written = [];
@@ -52779,7 +52877,7 @@ async function runMigrate(deps, opts) {
     const targets = [outProject, outHost];
     if (outProject === outHost) return fail("--out-project and --out-host name the same file");
     for (const t of targets) {
-      if (t === resolve5(legacyPath)) {
+      if (t === resolve6(legacyPath)) {
         return fail(`refusing to write ${t}: it is the legacy deployment config, which migrate never modifies`);
       }
     }
@@ -52787,11 +52885,11 @@ async function runMigrate(deps, opts) {
     if (existing.length && !opts.force) {
       return fail(`refusing to overwrite ${existing.join(", ")} (pass --force to replace it; nothing was written)`);
     }
-    mkdirSync3(dirname6(outProject), { recursive: true });
-    writeFileSync5(outProject, projectText, { mode: 420 });
+    mkdirSync4(dirname7(outProject), { recursive: true });
+    writeFileSync6(outProject, projectText, { mode: 420 });
     written.push(outProject);
-    mkdirSync3(dirname6(outHost), { recursive: true });
-    writeFileSync5(outHost, hostText, { mode: 384 });
+    mkdirSync4(dirname7(outHost), { recursive: true });
+    writeFileSync6(outHost, hostText, { mode: 384 });
     chmodSync3(outHost, 384);
     written.push(outHost);
   }
@@ -53025,7 +53123,7 @@ import { execFile as execFile2 } from "node:child_process";
 
 // src/daemon/conductor-logger.ts
 import { homedir as homedir4 } from "node:os";
-import { dirname as dirname7, join as join11 } from "node:path";
+import { dirname as dirname8, join as join12 } from "node:path";
 
 // src/daemon/log-shipper.ts
 var PERMISSION_RETRY_MS = 5 * 6e4;
@@ -53035,7 +53133,7 @@ var TOKEN_TTL_MS = 50 * 6e4;
 var ROTATE_BYTES = 10 * 1024 * 1024;
 var ROTATE_KEEP = 5;
 function resolveConductorLogPath(env2) {
-  return env2.HARMONY_CONDUCTOR_LOG || join11(env2.HARMONY_HOME || join11(homedir4(), ".harmony"), "logs", "conductor.log");
+  return env2.HARMONY_CONDUCTOR_LOG || join12(env2.HARMONY_HOME || join12(homedir4(), ".harmony"), "logs", "conductor.log");
 }
 
 // src/cli/commands/conductor-logs.ts
@@ -53047,10 +53145,10 @@ function defaultLogsDeps() {
     now: Date.now,
     existsSync: fsExistsSync4,
     readFileSync: (p) => fsReadFileSync4(p, "utf8"),
-    runGcloud: (args) => new Promise((resolve7) => {
+    runGcloud: (args) => new Promise((resolve8) => {
       execFile2("gcloud", args, { maxBuffer: 64 * 1024 * 1024, timeout: 6e4 }, (err, stdout, stderr) => {
         const code = err ? typeof err.code === "number" ? err.code : 1 : 0;
-        resolve7({ code, stdout: String(stdout ?? ""), stderr: String(stderr ?? err?.message ?? "") });
+        resolve8({ code, stdout: String(stdout ?? ""), stderr: String(stderr ?? err?.message ?? "") });
       });
     }),
     configuredProject: () => {
@@ -53313,7 +53411,7 @@ function encodeNulArgv(argv) {
 }
 
 // src/cli/commands/agent.ts
-import { existsSync as existsSync5, mkdirSync as mkdirSync5, readFileSync as readFileSync12, renameSync as renameSync2, writeFileSync as writeFileSync7 } from "node:fs";
+import { existsSync as existsSync6, mkdirSync as mkdirSync6, readFileSync as readFileSync12, renameSync as renameSync2, writeFileSync as writeFileSync8 } from "node:fs";
 
 // src/agents/codex-provision.ts
 import {
@@ -53321,19 +53419,19 @@ import {
   constants as fsConstants,
   chmodSync as chmodSync4,
   copyFileSync,
-  existsSync as existsSync4,
-  lstatSync,
-  mkdirSync as mkdirSync4,
+  existsSync as existsSync5,
+  lstatSync as lstatSync2,
+  mkdirSync as mkdirSync5,
   readFileSync as readFileSync11,
   readdirSync,
   readlinkSync as readlinkSync2,
   statSync,
   symlinkSync,
-  unlinkSync,
-  writeFileSync as writeFileSync6,
+  unlinkSync as unlinkSync2,
+  writeFileSync as writeFileSync7,
   appendFileSync
 } from "node:fs";
-import { join as join12, resolve as resolve6 } from "node:path";
+import { join as join13, resolve as resolve7 } from "node:path";
 
 // src/agents/hooks.ts
 var HARMONY_HOOKS = {
@@ -53443,16 +53541,16 @@ function isFile(p) {
   }
 }
 function collectInstructionSources(input) {
-  const ws = resolve6(input.workspaceDir);
-  const plugin = resolve6(input.pluginDir);
+  const ws = resolve7(input.workspaceDir);
+  const plugin = resolve7(input.pluginDir);
   const candidates = [
-    { label: "workspace/CLAUDE.md", path: join12(ws, "CLAUDE.md") },
-    { label: "plugin/CLAUDE.md", path: join12(plugin, "CLAUDE.md") },
-    { label: "web/CLAUDE.md", path: join12(ws, "web", "CLAUDE.md") }
+    { label: "workspace/CLAUDE.md", path: join13(ws, "CLAUDE.md") },
+    { label: "plugin/CLAUDE.md", path: join13(plugin, "CLAUDE.md") },
+    { label: "web/CLAUDE.md", path: join13(ws, "web", "CLAUDE.md") }
   ];
   for (const p of input.extraRepoPaths ?? []) {
-    const abs = resolve6(p);
-    candidates.push({ label: `${abs.replace(/^\/+/, "")}/CLAUDE.md`, path: join12(abs, "CLAUDE.md") });
+    const abs = resolve7(p);
+    candidates.push({ label: `${abs.replace(/^\/+/, "")}/CLAUDE.md`, path: join13(abs, "CLAUDE.md") });
   }
   const seen = /* @__PURE__ */ new Set();
   const out = [];
@@ -53464,11 +53562,11 @@ function collectInstructionSources(input) {
   return out;
 }
 function collectSkillCapabilities(pluginDir) {
-  const root = join12(resolve6(pluginDir), "skills");
-  if (!existsSync4(root)) return [];
+  const root = join13(resolve7(pluginDir), "skills");
+  if (!existsSync5(root)) return [];
   const out = [];
   for (const name of readdirSync(root).sort()) {
-    const file = join12(root, name, "SKILL.md");
+    const file = join13(root, name, "SKILL.md");
     if (!isFile(file)) continue;
     const value = capabilitiesFromSkillMd(readFileSync11(file, "utf8"));
     if (value === void 0) continue;
@@ -53485,31 +53583,31 @@ function codexOverlayFor(pluginDir) {
 ${rules}` : CODEX_WORKER_OVERLAY;
 }
 function excludeFromGit(workspaceDir, entries) {
-  const gitDir = join12(workspaceDir, ".git");
-  if (!existsSync4(gitDir)) return;
-  const infoDir = join12(gitDir, "info");
-  mkdirSync4(infoDir, { recursive: true });
-  const excludePath = join12(infoDir, "exclude");
-  const current = existsSync4(excludePath) ? readFileSync11(excludePath, "utf8") : "";
+  const gitDir = join13(workspaceDir, ".git");
+  if (!existsSync5(gitDir)) return;
+  const infoDir = join13(gitDir, "info");
+  mkdirSync5(infoDir, { recursive: true });
+  const excludePath = join13(infoDir, "exclude");
+  const current = existsSync5(excludePath) ? readFileSync11(excludePath, "utf8") : "";
   const have = new Set(current.split("\n"));
   const missing3 = entries.filter((e) => !have.has(e));
   if (missing3.length) appendFileSync(excludePath, (current === "" || current.endsWith("\n") ? "" : "\n") + missing3.join("\n") + "\n");
 }
 function linkSkills(workspaceDir, pluginDir) {
-  const link = join12(workspaceDir, CODEX_SKILLS_LINK);
-  const target = join12(resolve6(pluginDir), "skills");
-  if (!existsSync4(target)) throw new Error(`skills directory not found at ${target}`);
-  mkdirSync4(join12(workspaceDir, ".agents"), { recursive: true });
+  const link = join13(workspaceDir, CODEX_SKILLS_LINK);
+  const target = join13(resolve7(pluginDir), "skills");
+  if (!existsSync5(target)) throw new Error(`skills directory not found at ${target}`);
+  mkdirSync5(join13(workspaceDir, ".agents"), { recursive: true });
   let st2;
   try {
-    st2 = lstatSync(link);
+    st2 = lstatSync2(link);
   } catch {
     st2 = null;
   }
   if (st2) {
     if (!st2.isSymbolicLink()) throw new Error(`${link} exists and is not a symlink \u2014 refusing to replace a real skills directory`);
     if (readlinkSync2(link) === target) return link;
-    unlinkSync(link);
+    unlinkSync2(link);
   }
   symlinkSync(target, link, "dir");
   return link;
@@ -53518,8 +53616,8 @@ function installAuth(authFile, codexHome) {
   if (!isFile(authFile)) {
     throw new Error(`the Codex login-cache file is missing at ${authFile} (HARMONY_CODEX_AUTH_FILE) \u2014 mount it, see container/README.md "Codex credential runbook"`);
   }
-  const dest = join12(codexHome, CODEX_AUTH_FILE_NAME);
-  if (resolve6(authFile) !== resolve6(dest)) {
+  const dest = join13(codexHome, CODEX_AUTH_FILE_NAME);
+  if (resolve7(authFile) !== resolve7(dest)) {
     copyFileSync(authFile, dest);
   }
   chmodSync4(dest, 384);
@@ -53550,26 +53648,26 @@ function preflightHookScripts(pluginRoot) {
   return paths;
 }
 function provisionCodex(input) {
-  const workspaceDir = resolve6(input.workspaceDir);
-  const codexHome = resolve6(input.codexHome);
+  const workspaceDir = resolve7(input.workspaceDir);
+  const codexHome = resolve7(input.codexHome);
   const sources = collectInstructionSources(input);
   if (sources.length === 0) throw new Error(`no CLAUDE.md found under ${workspaceDir} / ${input.pluginDir} \u2014 nothing to build AGENTS.md from`);
   const agentsMd = renderCodexAgentsMd(sources, codexOverlayFor(input.pluginDir));
   const problems = verifyCodexAgentsMd(agentsMd, sources);
   if (problems.length) throw new Error(`AGENTS.md preflight failed: ${problems.join("; ")}`);
-  const agentsMdPath = join12(workspaceDir, "AGENTS.md");
-  if (existsSync4(agentsMdPath) && !readFileSync11(agentsMdPath, "utf8").startsWith(GENERATED_AGENTS_HEADER)) {
+  const agentsMdPath = join13(workspaceDir, "AGENTS.md");
+  if (existsSync5(agentsMdPath) && !readFileSync11(agentsMdPath, "utf8").startsWith(GENERATED_AGENTS_HEADER)) {
     throw new Error(`${agentsMdPath} exists and is not a generated file \u2014 refusing to overwrite a repository's own AGENTS.md`);
   }
-  preflightHookScripts(resolve6(input.pluginDir));
-  mkdirSync4(codexHome, { recursive: true });
-  const config = renderCodexConfig(HARMONY_MCP_CONNECTION, { pluginRoot: resolve6(input.pluginDir) });
-  const configPath = join12(codexHome, config.fileName);
-  writeFileSync6(configPath, config.content, { mode: 420 });
-  const hooks = renderCodexHooks(resolve6(input.pluginDir));
-  const hooksPath = join12(codexHome, hooks.fileName);
-  writeFileSync6(hooksPath, hooks.content, { mode: 420 });
-  writeFileSync6(agentsMdPath, agentsMd);
+  preflightHookScripts(resolve7(input.pluginDir));
+  mkdirSync5(codexHome, { recursive: true });
+  const config = renderCodexConfig(HARMONY_MCP_CONNECTION, { pluginRoot: resolve7(input.pluginDir) });
+  const configPath = join13(codexHome, config.fileName);
+  writeFileSync7(configPath, config.content, { mode: 420 });
+  const hooks = renderCodexHooks(resolve7(input.pluginDir));
+  const hooksPath = join13(codexHome, hooks.fileName);
+  writeFileSync7(hooksPath, hooks.content, { mode: 420 });
+  writeFileSync7(agentsMdPath, agentsMd);
   const skillsLink = linkSkills(workspaceDir, input.pluginDir);
   excludeFromGit(workspaceDir, ["AGENTS.md", ".agents/"]);
   const authInstalledAt = installAuth(input.authFile, codexHome);
@@ -53586,7 +53684,7 @@ function provisionCodex(input) {
 
 // src/cli/commands/agent.ts
 import { homedir as homedir5 } from "node:os";
-import { join as join13 } from "node:path";
+import { join as join14 } from "node:path";
 function launchRunConfig() {
   try {
     return getRunConfig();
@@ -53668,7 +53766,7 @@ function registerAgentCommands(program3) {
       const r = provisionCodex({
         pluginDir: opts.pluginDir,
         workspaceDir: opts.workspace,
-        codexHome: opts.codexHome || process.env.CODEX_HOME || join13(homedir5(), ".codex"),
+        codexHome: opts.codexHome || process.env.CODEX_HOME || join14(homedir5(), ".codex"),
         authFile,
         extraRepoPaths: opts.extraRepo
       });
@@ -53719,10 +53817,10 @@ function registerAgentCommands(program3) {
     const id = parseCodexThreadId(text4);
     if (!id) process.exit(1);
     try {
-      mkdirSync5(opts.dir, { recursive: true });
-      const target = join13(opts.dir, CODEX_THREAD_FILE_NAME);
+      mkdirSync6(opts.dir, { recursive: true });
+      const target = join14(opts.dir, CODEX_THREAD_FILE_NAME);
       const tmp = `${target}.tmp-${process.pid}`;
-      writeFileSync7(tmp, `${JSON.stringify(buildCodexThreadRecord(id, opts.model))}
+      writeFileSync8(tmp, `${JSON.stringify(buildCodexThreadRecord(id, opts.model))}
 `);
       renameSync2(tmp, target);
     } catch (err) {
@@ -53735,7 +53833,7 @@ function registerAgentCommands(program3) {
   agent.command("read-thread").description(
     `Print the thread id from a ${CODEX_THREAD_FILE_NAME} file and exit 0 \u2014 ONLY when the file names agent "codex" and a well-formed id; otherwise print nothing and exit 1.`
   ).argument("<thread-file>").action((file) => {
-    if (!existsSync5(file)) process.exit(1);
+    if (!existsSync6(file)) process.exit(1);
     let text4 = "";
     try {
       text4 = readFileSync12(file, "utf8");
@@ -54198,8 +54296,8 @@ function registerLegOutputCommands(program3) {
 
 // src/cli/commands/gates.ts
 import { execFileSync as execFileSync4, spawnSync } from "node:child_process";
-import { mkdirSync as mkdirSync6, readFileSync as readFileSync15, renameSync as renameSync3, writeFileSync as writeFileSync8 } from "node:fs";
-import { dirname as dirname8 } from "node:path";
+import { mkdirSync as mkdirSync7, readFileSync as readFileSync15, renameSync as renameSync3, writeFileSync as writeFileSync9 } from "node:fs";
+import { dirname as dirname9 } from "node:path";
 
 // src/config/notify-sync.ts
 import { createHash as createHash4 } from "node:crypto";
@@ -54489,9 +54587,9 @@ function registerGatesCommands(program3) {
 }
 function writeGateEvidenceMarker(projectRoot, marker) {
   const filePath = gateEvidenceMarkerPath(projectRoot, marker.extension_point);
-  mkdirSync6(dirname8(filePath), { recursive: true });
+  mkdirSync7(dirname9(filePath), { recursive: true });
   const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  writeFileSync8(tmpPath, `${JSON.stringify(marker, null, 2)}
+  writeFileSync9(tmpPath, `${JSON.stringify(marker, null, 2)}
 `, "utf8");
   renameSync3(tmpPath, filePath);
 }
@@ -54518,9 +54616,9 @@ function productionNotifySyncIO() {
       }
     },
     writeCache: (path4, contents) => {
-      mkdirSync6(dirname8(path4), { recursive: true });
+      mkdirSync7(dirname9(path4), { recursive: true });
       const tmpPath = `${path4}.tmp-${process.pid}-${Date.now()}`;
-      writeFileSync8(tmpPath, contents, "utf8");
+      writeFileSync9(tmpPath, contents, "utf8");
       renameSync3(tmpPath, path4);
     }
   };
@@ -54933,10 +55031,10 @@ function evaluateEligibility(input) {
 var GITHUB_PR_URL = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?/i;
 async function runGhCommand(args) {
   const { execFile: execFile3 } = await import("node:child_process");
-  return await new Promise((resolve7, reject) => {
+  return await new Promise((resolve8, reject) => {
     execFile3("gh", args, { maxBuffer: 10 * 1024 * 1024 }, (err, stdout) => {
       if (err) reject(err);
-      else resolve7(stdout);
+      else resolve8(stdout);
     });
   });
 }
@@ -55028,10 +55126,10 @@ function buildAttestation(args, userId) {
 var GH_RELEASE_INFO_TIMEOUT_MS = 5e3;
 async function runGhForReleaseInfo(args) {
   const { execFile: execFile3 } = await import("node:child_process");
-  return await new Promise((resolve7, reject) => {
+  return await new Promise((resolve8, reject) => {
     execFile3("gh", args, { timeout: GH_RELEASE_INFO_TIMEOUT_MS, maxBuffer: 1024 * 1024 }, (err, stdout) => {
       if (err) reject(err);
-      else resolve7(String(stdout));
+      else resolve8(String(stdout));
     });
   });
 }
