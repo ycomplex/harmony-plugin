@@ -43594,6 +43594,37 @@ async function createAuthenticatedClient(auth2) {
   });
 }
 
+// src/tools/knowledge-prose.ts
+function proseLink(p) {
+  if (!p.repository || !/^https:\/\//.test(p.repository)) return void 0;
+  return `${p.repository.replace(/\.git$|\/$/g, "")}/blob/${encodeURIComponent(p.commit)}/${p.path.split("/").map(encodeURIComponent).join("/")}#${encodeURIComponent(p.anchor)}`;
+}
+async function proseOperation(client, name, args) {
+  const { data, error: error2 } = await client.rpc(name, args);
+  if (error2) throw new Error(["PGRST202", "42883"].includes(error2.code) ? "Prose indexing capability is unavailable; nothing was saved." : error2.message);
+  return data;
+}
+async function readProse(client, projectId, ids2 = []) {
+  const { data, error: error2 } = await client.rpc("read_knowledge_prose", { p_project_id: projectId, p_entry_ids: ids2 });
+  if (error2) {
+    if (["PGRST202", "42883"].includes(error2.code)) return { available: false, sources: [], pointers: [] };
+    throw new Error(error2.message);
+  }
+  if (data?.available !== true || !Array.isArray(data.sources) || !Array.isArray(data.pointers)) throw new Error("Invalid prose capability response");
+  return data;
+}
+async function setDefinedIn(client, projectId, args) {
+  return proseOperation(client, "set_knowledge_defined_in", { p_project_id: projectId, p_entry_id: args.entry_id, p_pointer: args.pointer });
+}
+async function configureProse(client, projectId, args) {
+  return proseOperation(client, "configure_knowledge_prose", { p_project_id: projectId, p_key: args.key, p_repository: args.repository, p_ref: args.ref, p_config: args.config, p_expected_revision: args.expected_revision, p_enabled: args.enabled !== false });
+}
+var proseTools = [
+  { name: "read_prose_sources", description: "Read configured source coverage and exact defined-in resolution. Missing indexing is explicit; no source is ratified by indexing.", inputSchema: { type: "object", properties: { entry_ids: { type: "array", items: { type: "string" } } } } },
+  { name: "configure_prose_source", description: "Register, update or disable one project source. Supply revision read before changing configuration. Selectors declare include/exclude, document/skill kind, explicit scope, domains, registered tags and bookkeeping. Configuration changes invalidate the old index until refresh.", inputSchema: { type: "object", properties: { key: { type: "string" }, repository: { type: "string" }, ref: { type: "string" }, config: { type: "object" }, expected_revision: { type: ["string", "null"] }, enabled: { type: "boolean" } }, required: ["key", "repository", "ref", "config", "expected_revision"] } },
+  { name: "set_defined_in", description: "Attach or explicitly remove an entry\u2019s source-heading pointer. Target must be current and in this project. Refresh never silently retargets renamed/deleted headings.", inputSchema: { type: "object", properties: { entry_id: { type: "string" }, pointer: { type: ["object", "null"], properties: { source_id: { type: "string" }, path: { type: "string" }, anchor: { type: "string" }, commit: { type: "string" } }, required: ["source_id", "path", "anchor", "commit"] } }, required: ["entry_id", "pointer"] } }
+];
+
 // src/tools/environment.ts
 import { readFileSync as readFileSync3 } from "node:fs";
 import { dirname as dirname2, join as join4 } from "node:path";
@@ -45174,6 +45205,7 @@ var normalizeTags = (tags = []) => [...new Set(tags.map((t) => t.trim().toLowerC
 var authError = (e) => ["401", "403", "42501", "PGRST301", "PGRST302", "PGRST303"].some((v) => [e?.code, e?.status, e?.context?.status].map(String).includes(v));
 var missing = (e) => ["PGRST202", "42883"].includes(e?.code);
 var summary = (d, query) => ({
+  ...sourceFields(d),
   id: d.id,
   title: d.title,
   type: d.type,
@@ -45190,6 +45222,10 @@ var summary = (d, query) => ({
   ...claimFields(d),
   snippet: matchedPassage(d.content ?? "", query)
 });
+function sourceFields(d) {
+  const row = d;
+  return row.source_kind === "document" || row.source_kind === "skill" ? { provenance: row.provenance, authority: "unratified", source_link: row.provenance ? proseLink(row.provenance) : void 0 } : row.source_kind === "source-value" ? { authority: "source-generated", source: row.source, repository: row.repository, surface: row.surface, inventory_key: row.inventory_key, inventory_revision: row.inventory_revision } : {};
+}
 function questionFields(d) {
   const q = d.madr?.question;
   if (d.source_activity !== "knowledge-question" || q?.version !== 1 || !["open", "parked", "decided"].includes(q.state ?? "") || !["product", "deployment"].includes(q.scope ?? "")) return {};
@@ -45288,11 +45324,24 @@ async function searchKnowledge(client, projectId, args, started = performance.no
       clearTimeout(timer);
     }
   };
+  const prose = bounded("prose-coverage", (signal2) => client.rpc("read_knowledge_prose", { p_project_id: projectId, p_entry_ids: [] }).abortSignal(signal2), 250);
   const scope = await bounded("scope", (signal2) => client.from("projects").select("workspace_id").eq("id", projectId).abortSignal(signal2).single());
   if (!scope) {
     incomplete = true;
     return finish();
   }
+  const coverage = await prose;
+  const proseAvailable = coverage?.available === true && Array.isArray(coverage.sources) && Array.isArray(coverage.pointers);
+  result.prose_coverage = proseAvailable ? coverage : { available: false };
+  if (!proseAvailable) {
+    incomplete = true;
+    if (coverage) routes.push({ route: "prose-coverage", outcome: "failed", reason: "invalid-capability-response" });
+  }
+  if (coverage?.sources?.some((s) => s.enabled && s.refresh_state !== "current")) {
+    incomplete = true;
+    routes.push({ route: "prose-coverage", outcome: "stale", reason: "refresh-incomplete" });
+  }
+  result.source_applicability = args.status || args.type ? "Explicit decision status/type filters exclude prose and generated sources." : "Accepted entries plus configured source-backed prose and current Asserted generated values.";
   const filters = result.normalized_filters;
   const definitions = includeDefinitions && limit > 0 ? (async () => {
     const data = await bounded("definitions", (signal2) => client.rpc("read_knowledge_definitions", {
@@ -45345,7 +45394,7 @@ async function searchKnowledge(client, projectId, args, started = performance.no
         _query_embedding: embedding,
         _signal: name,
         _type: filters.type,
-        _status: filters.status,
+        _status: args.status ?? (proseAvailable ? null : filters.status),
         _domain: filters.domain.length ? filters.domain : null,
         _tags: filters.tags.length ? filters.tags : null,
         _include_bookkeeping: filters.include_bookkeeping,
@@ -45442,6 +45491,34 @@ async function searchKnowledge(client, projectId, args, started = performance.no
   const displayed = [...result.refinements, ...result.matches, ...result.unscored_matches];
   const ids2 = displayed.filter((d) => !("source_kind" in d) || d.source_kind === "knowledge").map((d) => d.id);
   if (ids2.length) {
+    await Promise.all([
+      (async () => {
+        const read = await bounded("claim-context", (signal2) => client.rpc("read_claim_context", { p_claim_ids: ids2 }).abortSignal(signal2));
+        if (read && (read.available !== true || !Array.isArray(read.contexts))) {
+          incomplete = true;
+          routes.push({ route: "claim-context", outcome: "unsupported", reason: "capability-unavailable" });
+        }
+        for (const d of displayed) if (ids2.includes(d.id)) d.claim_context = read?.available === true && Array.isArray(read.contexts) ? read.contexts.find((c) => c.claim_id === d.id) : { claim_id: d.id, question_state: "capability-unavailable", questions: [], concepts: [] };
+      })(),
+      (async () => {
+        const read = await bounded("historical-wording", (signal2) => client.rpc("read_knowledge_names", { p_project_id: projectId, p_search: null, p_entry_ids: ids2, p_entity_ids: [] }).abortSignal(signal2));
+        if (read && (read.available !== true || !Array.isArray(read.entries))) {
+          incomplete = true;
+          routes.push({ route: "historical-wording", outcome: "unsupported", reason: "capability-unavailable" });
+        }
+        for (const d of displayed) if (ids2.includes(d.id)) {
+          const scan = read?.entries?.find((e) => e.entry_id === d.id);
+          Object.assign(d, { name_history_available: read?.available === true }, scan ? { uses_retired_term: scan.uses_retired_term, retired_term_matches: scan.matches } : {});
+        }
+      })(),
+      (async () => {
+        const read = await bounded("defined-in", (signal2) => client.rpc("read_knowledge_prose", { p_project_id: projectId, p_entry_ids: ids2 }).abortSignal(signal2));
+        for (const d of displayed) if (ids2.includes(d.id)) {
+          const pointer = read?.pointers?.find((p) => p.entry_id === d.id);
+          Object.assign(d, { defined_in_available: read?.available === true }, pointer ? { defined_in: { ...pointer, source_link: proseLink(pointer) } } : {});
+        }
+      })()
+    ]);
     const invalidations = await bounded("invalidations", (signal2) => client.rpc("read_knowledge_invalidations", { p_entry_ids: ids2 }).abortSignal(signal2));
     for (const d of displayed) {
       if ("source_kind" in d && d.source_kind !== "knowledge") continue;
@@ -45631,7 +45708,7 @@ var FACT_COLS = "id, workspace_id, project_id, subject_entity_id, predicate, obj
 var ENTITY_COLS = "id, workspace_id, project_id, kind, name, description, metadata, created_at";
 var queryKnowledgeTool = {
   name: "query_knowledge",
-  description: 'Find current term definitions first; structured lists also include current source-generated deployment facts with inspectable provenance. Generated facts remain Asserted. Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Results include nullable superseded_by and inverse supersedes UUIDs; structured lists place matching successors before replaced entries, while search preserves score order. Check this before making significant implementation choices. Defaults to "Accepted" entries only, with explicitly marked bookkeeping ranked last; include_bookkeeping:false excludes it before pagination. Free-text search combines type/status/all normalized tags/any domain and returns a six-second bounded envelope: scored matches, ordered unscored legacy matches, cutoff 0.0125, below_cutoff_count and coverage, normalized query/filters and routes tried. Scores use genuine global RRF ranks. Filter-only calls retain their list shape. as_of/include_superseded/offset are list-only. Optional context_tags supplies relevant surface/ticket tags for actual tag suggestions.',
+  description: "Find current term definitions first; structured lists also include current source-generated deployment facts with inspectable provenance. Generated facts remain Asserted. Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Results include nullable superseded_by and inverse supersedes UUIDs; structured lists place matching successors before replaced entries, while search preserves score order. Check this before making significant implementation choices. Default search includes Accepted entries, configured source-backed document/skill headings and current Asserted generated values in one scored pool. Prose exposes provenance and a source heading link, never Accepted authority. Explicit decision status/type filters exclude prose/generated sources. Coverage and defined-in resolution are explicit; optional claim-context and historical-wording enrichment share the deadline. Explicitly marked bookkeeping is ranked last; include_bookkeeping:false excludes it before pagination. Free-text search combines type/status/all normalized tags/any domain and returns a six-second bounded envelope: scored matches, ordered unscored legacy matches, cutoff 0.0125, below_cutoff_count and coverage, normalized query/filters and routes tried. Scores use genuine global RRF ranks. Filter-only calls retain their list shape. as_of/include_superseded/offset are list-only. Optional context_tags supplies relevant surface/ticket tags for actual tag suggestions.",
   inputSchema: {
     type: "object",
     properties: {
@@ -55259,6 +55336,7 @@ function batchIdsAck(result) {
 var knowledgeCreatedAck = (row) => pick2(row, ["id", "status", "created_at", "claim_context"]);
 var supersededAck = (row) => pick2(row, ["id", "status", "superseded_by"]);
 var ackProjections = {
+  configure_prose_source: (result) => pick2(result, ["id", "revision", "active_generation", "refresh_state"]),
   rename_concept: (row) => pick2(row, ["id", "entity_id", "renamed_at", "source_task_id", "actor", "operation_key"]),
   merge_concepts: (row) => pick2(row, ["source_entity_id", "target_entity_id", "renamed_at", "source_task_id", "actor", "operation_key"]),
   capture_surface_record: (row) => pick2(row, ["record_id", "captured_at", "changed"]),
@@ -56199,6 +56277,7 @@ function registerTools(disabledFeatures) {
     listActivityTool,
     listWorkflowTransitionsTool,
     listMembersTool,
+    ...proseTools,
     setClaimContextTool,
     ...sourceTools,
     saveKnowledgeQuestionTool,
@@ -56379,6 +56458,15 @@ async function handleToolCall(name, args, client, projectId, userId) {
         break;
       case "register_knowledge_tag":
         result = await registerKnowledgeTag(client, projectId, args.name, args.description);
+        break;
+      case "read_prose_sources":
+        result = await readProse(client, projectId, args.entry_ids);
+        break;
+      case "configure_prose_source":
+        result = await configureProse(client, projectId, args);
+        break;
+      case "set_defined_in":
+        result = await setDefinedIn(client, projectId, args);
         break;
       case "set_claim_context":
         result = await setClaimContext(client, projectId, args);

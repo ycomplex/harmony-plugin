@@ -23004,6 +23004,12 @@ async function readDefinitions(client, workspaceId, projectId, args = {}) {
   }
 }
 
+// src/tools/knowledge-prose.ts
+function proseLink(p) {
+  if (!p.repository || !/^https:\/\//.test(p.repository)) return void 0;
+  return `${p.repository.replace(/\.git$|\/$/g, "")}/blob/${encodeURIComponent(p.commit)}/${p.path.split("/").map(encodeURIComponent).join("/")}#${encodeURIComponent(p.anchor)}`;
+}
+
 // src/tools/knowledge-bookkeeping.ts
 var BOOKKEEPING_TAG = "harmony:bookkeeping";
 function bookkeepingTags(tags = []) {
@@ -23053,6 +23059,7 @@ var normalizeTags = (tags = []) => [...new Set(tags.map((t) => t.trim().toLowerC
 var authError = (e) => ["401", "403", "42501", "PGRST301", "PGRST302", "PGRST303"].some((v) => [e?.code, e?.status, e?.context?.status].map(String).includes(v));
 var missing2 = (e) => ["PGRST202", "42883"].includes(e?.code);
 var summary = (d, query) => ({
+  ...sourceFields(d),
   id: d.id,
   title: d.title,
   type: d.type,
@@ -23069,6 +23076,10 @@ var summary = (d, query) => ({
   ...claimFields(d),
   snippet: matchedPassage(d.content ?? "", query)
 });
+function sourceFields(d) {
+  const row = d;
+  return row.source_kind === "document" || row.source_kind === "skill" ? { provenance: row.provenance, authority: "unratified", source_link: row.provenance ? proseLink(row.provenance) : void 0 } : row.source_kind === "source-value" ? { authority: "source-generated", source: row.source, repository: row.repository, surface: row.surface, inventory_key: row.inventory_key, inventory_revision: row.inventory_revision } : {};
+}
 function questionFields(d) {
   const q = d.madr?.question;
   if (d.source_activity !== "knowledge-question" || q?.version !== 1 || !["open", "parked", "decided"].includes(q.state ?? "") || !["product", "deployment"].includes(q.scope ?? "")) return {};
@@ -23167,11 +23178,24 @@ async function searchKnowledge(client, projectId, args, started = performance.no
       clearTimeout(timer);
     }
   };
+  const prose = bounded("prose-coverage", (signal2) => client.rpc("read_knowledge_prose", { p_project_id: projectId, p_entry_ids: [] }).abortSignal(signal2), 250);
   const scope = await bounded("scope", (signal2) => client.from("projects").select("workspace_id").eq("id", projectId).abortSignal(signal2).single());
   if (!scope) {
     incomplete = true;
     return finish();
   }
+  const coverage = await prose;
+  const proseAvailable = coverage?.available === true && Array.isArray(coverage.sources) && Array.isArray(coverage.pointers);
+  result.prose_coverage = proseAvailable ? coverage : { available: false };
+  if (!proseAvailable) {
+    incomplete = true;
+    if (coverage) routes.push({ route: "prose-coverage", outcome: "failed", reason: "invalid-capability-response" });
+  }
+  if (coverage?.sources?.some((s) => s.enabled && s.refresh_state !== "current")) {
+    incomplete = true;
+    routes.push({ route: "prose-coverage", outcome: "stale", reason: "refresh-incomplete" });
+  }
+  result.source_applicability = args.status || args.type ? "Explicit decision status/type filters exclude prose and generated sources." : "Accepted entries plus configured source-backed prose and current Asserted generated values.";
   const filters = result.normalized_filters;
   const definitions = includeDefinitions && limit > 0 ? (async () => {
     const data = await bounded("definitions", (signal2) => client.rpc("read_knowledge_definitions", {
@@ -23224,7 +23248,7 @@ async function searchKnowledge(client, projectId, args, started = performance.no
         _query_embedding: embedding,
         _signal: name,
         _type: filters.type,
-        _status: filters.status,
+        _status: args.status ?? (proseAvailable ? null : filters.status),
         _domain: filters.domain.length ? filters.domain : null,
         _tags: filters.tags.length ? filters.tags : null,
         _include_bookkeeping: filters.include_bookkeeping,
@@ -23321,6 +23345,34 @@ async function searchKnowledge(client, projectId, args, started = performance.no
   const displayed = [...result.refinements, ...result.matches, ...result.unscored_matches];
   const ids = displayed.filter((d) => !("source_kind" in d) || d.source_kind === "knowledge").map((d) => d.id);
   if (ids.length) {
+    await Promise.all([
+      (async () => {
+        const read = await bounded("claim-context", (signal2) => client.rpc("read_claim_context", { p_claim_ids: ids }).abortSignal(signal2));
+        if (read && (read.available !== true || !Array.isArray(read.contexts))) {
+          incomplete = true;
+          routes.push({ route: "claim-context", outcome: "unsupported", reason: "capability-unavailable" });
+        }
+        for (const d of displayed) if (ids.includes(d.id)) d.claim_context = read?.available === true && Array.isArray(read.contexts) ? read.contexts.find((c) => c.claim_id === d.id) : { claim_id: d.id, question_state: "capability-unavailable", questions: [], concepts: [] };
+      })(),
+      (async () => {
+        const read = await bounded("historical-wording", (signal2) => client.rpc("read_knowledge_names", { p_project_id: projectId, p_search: null, p_entry_ids: ids, p_entity_ids: [] }).abortSignal(signal2));
+        if (read && (read.available !== true || !Array.isArray(read.entries))) {
+          incomplete = true;
+          routes.push({ route: "historical-wording", outcome: "unsupported", reason: "capability-unavailable" });
+        }
+        for (const d of displayed) if (ids.includes(d.id)) {
+          const scan = read?.entries?.find((e) => e.entry_id === d.id);
+          Object.assign(d, { name_history_available: read?.available === true }, scan ? { uses_retired_term: scan.uses_retired_term, retired_term_matches: scan.matches } : {});
+        }
+      })(),
+      (async () => {
+        const read = await bounded("defined-in", (signal2) => client.rpc("read_knowledge_prose", { p_project_id: projectId, p_entry_ids: ids }).abortSignal(signal2));
+        for (const d of displayed) if (ids.includes(d.id)) {
+          const pointer = read?.pointers?.find((p) => p.entry_id === d.id);
+          Object.assign(d, { defined_in_available: read?.available === true }, pointer ? { defined_in: { ...pointer, source_link: proseLink(pointer) } } : {});
+        }
+      })()
+    ]);
     const invalidations = await bounded("invalidations", (signal2) => client.rpc("read_knowledge_invalidations", { p_entry_ids: ids }).abortSignal(signal2));
     for (const d of displayed) {
       if ("source_kind" in d && d.source_kind !== "knowledge") continue;

@@ -6,7 +6,7 @@ import { normalizeTags } from './knowledge-search.js';
 const entry = (id: string, extra = {}) => ({ id, source_kind: 'knowledge', title: 'quasar design', content: 'quasar design rule', type: 'technical-design', status: 'Accepted', tags: [], domain: ['engineering'], project_id: 'p', updated_at: '2026-10-22T00:00:00Z', ...extra });
 const row = (id: string, rank = 1, extra = {}) => ({ candidate: entry(id, extra), signal_rank: rank, overflow: false });
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
-function fixture(options: { lexical?: unknown; semantic?: unknown; embed?: unknown; scope?: unknown; legacy?: unknown; tags?: string[]; hang?: string[]; throwRoute?: string; links?: unknown[]; definitions?: unknown; delayLexical?: boolean } = {}) {
+function fixture(options: { lexical?: unknown; semantic?: unknown; embed?: unknown; scope?: unknown; legacy?: unknown; tags?: string[]; hang?: string[]; throwRoute?: string; links?: unknown[]; definitions?: unknown; delayLexical?: boolean; prose?:unknown; context?:unknown; names?:unknown } = {}) {
   const calls: Array<{ path: string; body: any; url: URL; signal?: AbortSignal | null }> = [];
   const client = createClient('http://localhost:5555', 'local-test', { auth: { persistSession: false }, global: { fetch: async (input, init) => {
     const url = new URL(String(input));
@@ -16,7 +16,9 @@ function fixture(options: { lexical?: unknown; semantic?: unknown; embed?: unkno
     calls.push({ path, body, url, signal: init?.signal });
     if (options.hang?.includes(route)) return new Promise<Response>(() => {}); // deliberately ignores abort
     if (route === options.throwRoute) throw new Error('transport down');
-    if (path === 'read_knowledge_names') return json({available:true,matches:[],entries:[],identities:[]});
+    if (path === 'read_knowledge_names') return options.names instanceof Response?options.names:json(options.names??{available:true,matches:[],entries:[],identities:[]});
+    if(path==='read_knowledge_prose')return options.prose instanceof Response?options.prose:json(options.prose??{available:true,sources:[],pointers:[]});
+    if(path==='read_claim_context')return options.context instanceof Response?options.context:json(options.context??{available:true,contexts:[]});
     if (path === 'projects') return json(options.scope ?? { workspace_id: 'w' });
     if (path === 'embed-knowledge') return options.embed instanceof Response ? options.embed : json(options.embed ?? { embedding: [1, 0] });
     if (path === 'read_knowledge_definitions') return options.definitions instanceof Response ? options.definitions : json(options.definitions ?? {available:true,definitions:[]});
@@ -96,7 +98,7 @@ describe('bounded real handler and Supabase transport contract', () => {
     vi.useFakeTimers(); const {client}=fixture({hang:['projects']});
     const pending=queryKnowledge(client,'p',{search:'quasar'});
     await vi.advanceTimersByTimeAsync(6000);
-    expect(await pending).toMatchObject({matches:[],capability:'unavailable',incomplete:true,routes_tried:[{route:'scope',outcome:'timeout'}]});
+    expect(await pending).toMatchObject({matches:[],capability:'unavailable',incomplete:true,routes_tried:expect.arrayContaining([expect.objectContaining({route:'scope',outcome:'timeout'})])});
   });
   it('returns ordered unscored legacy results without fabricated ranks, scores or counts', async () => {
     const {client,calls}=fixture({lexical:json({code:'PGRST202',message:'missing'},404),legacy:[entry('z'),entry('a')]});
@@ -157,7 +159,7 @@ describe('one scored pool: questions, scope and definitions', () => {
   it('passes effective scope and separate question filters to both signals and never calls metadata RPC',async()=>{
     const {client,calls}=fixture();
     await queryKnowledge(client,'p',{search:'quasar',scope:'product',question_state:'parked',question_scope:'deployment'});
-    for(const c of calls.filter(c=>c.path==='knowledge_search_scored')) expect(c.body).toMatchObject({_scope:'product',_question_state:'parked',_question_scope:'deployment',_status:'Accepted'});
+    for(const c of calls.filter(c=>c.path==='knowledge_search_scored')) expect(c.body).toMatchObject({_scope:'product',_question_state:'parked',_question_scope:'deployment',_status:null});
     expect(calls.some(c=>c.path==='knowledge_search_rrf_metadata')).toBe(false);
   });
   it.each([{question_state:'open' as const},{question_scope:'deployment' as const}])('never drops unsupported legacy filters %j',async filters=>{
@@ -201,4 +203,36 @@ describe('one scored pool: questions, scope and definitions', () => {
     const pending=queryKnowledge(client,'p',{search:'quasar'});await vi.advanceTimersByTimeAsync(6000);
     const answer=await pending;expect(answer.matches[0].id).toBe('a');expect(answer.incomplete).toBe(true);
   });
+});
+
+describe('source envelope and bounded enrichment',()=>{
+ it('retains source provenance and real authority without inventing claim acceptance',async()=>{
+  const provenance={source_id:'s',repository:'https://example.invalid/acme/docs',path:'guide/rules.md',commit:'a'.repeat(40),anchor:'café',heading:'Café'};
+  const {client,calls}=fixture({lexical:[row('doc',1,{source_kind:'document',status:'Source-backed',provenance})],semantic:[]});
+  const answer=await queryKnowledge(client,'p',{search:'quasar'});
+  expect(answer.matches[0]).toMatchObject({source_kind:'document',status:'Source-backed',authority:'unratified',provenance,score:1/61});
+  expect((answer.matches[0] as any).source_link).toContain('#caf%C3%A9');
+  expect(calls.filter(c=>c.path==='knowledge_search_scored').every(c=>c.body._status===null)).toBe(true);
+ });
+ it('keeps useful entry results and declares indexing absent only on a positive missing capability',async()=>{
+  const {client,calls}=fixture({prose:json({code:'PGRST202',message:'missing read_knowledge_prose'},404)});
+  const answer=await queryKnowledge(client,'p',{search:'quasar'});
+  expect(answer.matches).toHaveLength(1);expect(answer.prose_coverage).toEqual({available:false});expect(answer.incomplete).toBe(true);
+  expect(calls.filter(c=>c.path==='knowledge_search_scored').every(c=>c.body._status==='Accepted')).toBe(true);
+ });
+ it('hydrates claim questions, historical wording and exact dangling pointers',async()=>{
+  const context={claim_id:'a',question_state:'available',questions:[{question_id:'q',text:'Which rule?'}],concepts:[]};
+  const {client}=fixture({context:{available:true,contexts:[context]},names:{available:true,matches:[],identities:[],entries:[{entry_id:'a',uses_retired_term:true,matches:[{retired_term:'old',concept_id:'c',current_name:'new'}]}]},prose:{available:true,sources:[],pointers:[{entry_id:'a',source_id:'s',repository:'https://example.invalid/repo',path:'rules.md',anchor:'old',commit:'a'.repeat(40),resolved:false}]}});
+  const answer=await queryKnowledge(client,'p',{search:'quasar'});
+  expect(answer.matches[0].claim_context).toEqual(context);expect(answer.matches[0]).toMatchObject({name_history_available:true,uses_retired_term:true,defined_in:{resolved:false,anchor:'old'}});
+ });
+ it('bounds hung source diagnostics and enrichment while preserving entry ranks',async()=>{
+  vi.useFakeTimers();const {client}=fixture({hang:['read_knowledge_prose','read_claim_context','read_knowledge_names']});
+  const pending=queryKnowledge(client,'p',{search:'quasar'});await vi.advanceTimersByTimeAsync(6000);const answer=await pending;
+  expect(answer.matches[0].score).toBe(2/61);expect(answer.incomplete).toBe(true);expect(answer.elapsed_ms).toBeLessThanOrEqual(6000);
+ });
+ it('does not downgrade source/enrichment authorization failures to empty coverage',async()=>{
+  const {client}=fixture({context:json({code:'42501',message:'denied'},403)});
+  await expect(queryKnowledge(client,'p',{search:'quasar'})).rejects.toMatchObject({code:'42501'});
+ });
 });

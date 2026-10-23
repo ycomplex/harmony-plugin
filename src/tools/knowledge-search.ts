@@ -1,3 +1,5 @@
+import type { ClaimContext } from './claim-context.js';
+import { proseLink, type ProseRead, type ProsePointer } from './knowledge-prose.js';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { KnowledgeEntrySummary, QueryKnowledgeArgs } from './knowledge.js';
 import { claimFields, matchedPassage } from './knowledge-claim.js';
@@ -11,9 +13,11 @@ export const SCORE_CUTOFF = 0.0125;
 export const RRF_K = 60;
 export const normalizeTags = (tags: readonly string[] = []): string[] =>
   [...new Set(tags.map(t => t.trim().toLowerCase()).filter(Boolean))];
-export interface SearchMatch extends KnowledgeEntrySummary { source_kind: string; score: number }
+export interface SearchMatch extends KnowledgeEntrySummary { source_kind: string; score: number; provenance?:ProsePointer; authority?:'unratified'|'source-generated'; source_link?:string; source?:unknown; repository?:string; surface?:string; inventory_key?:string; inventory_revision?:string }
 export interface SearchRoute { route: string; outcome: string; reason?: string }
 export interface KnowledgeSearchResult {
+  prose_coverage?: ProseRead | { available:false };
+  source_applicability?: string;
   concepts: Array<{id:string;kind:'concept';title:string;concept_id:string;state:'no-current-definition';matched_alias:string|null}>;
   definitions: Definition[];
   refinements: KnowledgeEntrySummary[];
@@ -39,10 +43,16 @@ interface SignalRow { candidate: Candidate | null; signal_rank: number; overflow
 const authError = (e: any): boolean => ['401', '403', '42501', 'PGRST301', 'PGRST302', 'PGRST303'].some(v => [e?.code, e?.status, e?.context?.status].map(String).includes(v));
 const missing = (e: any): boolean => ['PGRST202', '42883'].includes(e?.code);
 const summary = (d: Candidate, query: string): KnowledgeEntrySummary => ({
+  ...sourceFields(d),
   id: d.id, title: d.title, type: d.type, status: d.status, domain: d.domain ?? [], tags: d.tags ?? [],
   ...(d.scope !== undefined ? { scope: d.scope } : {}),
   project_id: d.project_id, updated_at: d.updated_at, verified_against: d.verified_against ?? null, rollout_state: d.rollout_state ?? null, open_steps: d.open_steps ?? null, ...questionFields(d), ...claimFields(d), snippet: matchedPassage(d.content ?? '', query),
 });
+
+function sourceFields(d: Candidate): Record<string,unknown> {
+ const row=d as Candidate & {provenance?:ProsePointer;authority?:string;source?:unknown;repository?:string;surface?:string;inventory_key?:string;inventory_revision?:string};
+ return row.source_kind==='document'||row.source_kind==='skill' ? {provenance:row.provenance,authority:'unratified',source_link:row.provenance?proseLink(row.provenance):undefined} : row.source_kind==='source-value'?{authority:'source-generated',source:row.source,repository:row.repository,surface:row.surface,inventory_key:row.inventory_key,inventory_revision:row.inventory_revision}:{};
+}
 
 // Validate metadata on both sides of the transport boundary. No title/type inference.
 function questionFields(d: Candidate): Partial<KnowledgeEntrySummary> {
@@ -116,8 +126,15 @@ export async function searchKnowledge(client: SupabaseClient, projectId: string,
       return undefined;
     } finally { clearTimeout(timer!); }
   };
+  const prose = bounded<ProseRead>('prose-coverage', signal => client.rpc('read_knowledge_prose',{p_project_id:projectId,p_entry_ids:[]}).abortSignal(signal),250);
   const scope = await bounded<{ workspace_id: string }>('scope', signal => client.from('projects').select('workspace_id').eq('id', projectId).abortSignal(signal).single());
   if (!scope) { incomplete = true; return finish(); }
+  const coverage=await prose;
+  const proseAvailable=coverage?.available===true&&Array.isArray(coverage.sources)&&Array.isArray(coverage.pointers);
+  result.prose_coverage=proseAvailable ? coverage : {available:false};
+  if(!proseAvailable){incomplete=true;if(coverage)routes.push({route:'prose-coverage',outcome:'failed',reason:'invalid-capability-response'});}
+  if(coverage?.sources?.some(s=>s.enabled&&s.refresh_state!=='current')){incomplete=true;routes.push({route:'prose-coverage',outcome:'stale',reason:'refresh-incomplete'});}
+  result.source_applicability=args.status||args.type?'Explicit decision status/type filters exclude prose and generated sources.':'Accepted entries plus configured source-backed prose and current Asserted generated values.';
   const filters = result.normalized_filters;
   // Definitions are a separate result class, never assigned fabricated RRF scores.
   const definitions = includeDefinitions && limit > 0 ? (async () => {
@@ -154,7 +171,7 @@ export async function searchKnowledge(client: SupabaseClient, projectId: string,
     const rows = await bounded<SignalRow[]>(name, async signal => {
       const response = await client.rpc('knowledge_search_scored', {
         _workspace_id: scope.workspace_id, _project_id: projectId, _query_text: result.normalized_query,
-        _query_embedding: embedding, _signal: name, _type: filters.type, _status: filters.status,
+        _query_embedding: embedding, _signal: name, _type: filters.type, _status: args.status ?? (proseAvailable ? null : filters.status),
         _domain: filters.domain.length ? filters.domain : null, _tags: filters.tags.length ? filters.tags : null,
         _include_bookkeeping: filters.include_bookkeeping,
         _scope: filters.scope, _question_state: filters.question_state, _question_scope: filters.question_scope,
@@ -239,6 +256,23 @@ export async function searchKnowledge(client: SupabaseClient, projectId: string,
   const displayed = [...result.refinements, ...result.matches, ...result.unscored_matches];
   const ids = displayed.filter(d => !('source_kind' in d) || d.source_kind === 'knowledge').map(d => d.id);
   if (ids.length) {
+    await Promise.all([
+      (async()=>{
+       const read=await bounded<{available:boolean;contexts:ClaimContext[]}>('claim-context',signal=>client.rpc('read_claim_context',{p_claim_ids:ids}).abortSignal(signal));
+       if(read && (read.available!==true||!Array.isArray(read.contexts))){incomplete=true;routes.push({route:'claim-context',outcome:'unsupported',reason:'capability-unavailable'});}
+       for(const d of displayed)if(ids.includes(d.id))d.claim_context=read?.available===true&&Array.isArray(read.contexts)?read.contexts.find(c=>c.claim_id===d.id):{claim_id:d.id,question_state:'capability-unavailable',questions:[],concepts:[]};
+      })(),
+      (async()=>{
+       const read=await bounded<NameRead>('historical-wording',signal=>client.rpc('read_knowledge_names',{p_project_id:projectId,p_search:null,p_entry_ids:ids,p_entity_ids:[]}).abortSignal(signal));
+       if(read&&(read.available!==true||!Array.isArray(read.entries))){incomplete=true;routes.push({route:'historical-wording',outcome:'unsupported',reason:'capability-unavailable'});}
+       for(const d of displayed)if(ids.includes(d.id)){const scan=read?.entries?.find(e=>e.entry_id===d.id);Object.assign(d,{name_history_available:read?.available===true},scan?{uses_retired_term:scan.uses_retired_term,retired_term_matches:scan.matches}:{});}
+      })(),
+      (async()=>{
+       const read=await bounded<ProseRead>('defined-in',signal=>client.rpc('read_knowledge_prose',{p_project_id:projectId,p_entry_ids:ids}).abortSignal(signal));
+       for(const d of displayed)if(ids.includes(d.id)){const pointer=read?.pointers?.find(p=>p.entry_id===d.id);Object.assign(d,{defined_in_available:read?.available===true},pointer?{defined_in:{...pointer,source_link:proseLink(pointer)}}:{});}
+      })(),
+    ]);
+
     const invalidations = await bounded<InvalidationRead>('invalidations', signal => client.rpc('read_knowledge_invalidations', {p_entry_ids:ids}).abortSignal(signal));
     for (const d of displayed) {
       if ('source_kind' in d && d.source_kind !== 'knowledge') continue;
