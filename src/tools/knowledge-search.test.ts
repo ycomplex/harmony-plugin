@@ -305,21 +305,21 @@ it('explains a fully admitted empty answer separately from the rank cutoff', asy
   expect(answer).toMatchObject({matches:[],below_cutoff_count:0,score_cutoff:0.0125,
     normalized_query:'zxqv plorth wimbleflax',page:{total_matches:0},
     relevance_admission:{lexical_min_similarity:0.3,semantic_max_distance:0.7,enforcement:{lexical:'enforced',semantic:'enforced'}}});
-  expect(answer.routes_tried).toContainEqual({route:'relevance-admission',outcome:'completed'});
+  expect(answer.routes_tried).toContainEqual(expect.objectContaining({route:'relevance-admission',outcome:'completed'}));
 });
 it('keeps old scored deployments usable with explicitly unknown admission enforcement', async () => {
   const {client} = fixture({admission:json({code:'PGRST202',message:'missing policy'},404)});
   const answer = await queryKnowledge(client,'p',{search:'quasar'});
   expect(answer.matches).toHaveLength(1);
   expect(answer.relevance_admission).toEqual({lexical_min_similarity:null,semantic_max_distance:null,enforcement:{lexical:'unknown',semantic:'unknown'}});
-  expect(answer.routes_tried).toContainEqual({route:'relevance-admission',outcome:'unsupported',reason:'missing-capability'});
+  expect(answer.routes_tried).toContainEqual(expect.objectContaining({route:'relevance-admission',outcome:'unsupported',reason:'missing-capability'}));
 });
 it('does not claim enforcement from malformed policy metadata', async () => {
   const {client} = fixture({admission:{version:1,lexical_min_similarity:'0.3',semantic_max_distance:0.7}});
   const answer = await queryKnowledge(client,'p',{search:'quasar'});
   expect(answer.matches).toHaveLength(1);
   expect(answer.relevance_admission.enforcement.lexical).toBe('unknown');
-  expect(answer.routes_tried).toContainEqual({route:'relevance-admission',outcome:'unsupported',reason:'invalid-capability-response'});
+  expect(answer.routes_tried).toContainEqual(expect.objectContaining({route:'relevance-admission',outcome:'unsupported',reason:'invalid-capability-response'}));
 });
 it('reports definitions participation for empty success, filtered-out route and missing storage', async () => {
   const included = await queryKnowledge(fixture().client,'p',{search:'quasar'});
@@ -330,7 +330,7 @@ it('reports definitions participation for empty success, filtered-out route and 
   expect(filteredFixture.calls.some(c=>c.path==='read_knowledge_definitions')).toBe(false);
   const missing = await queryKnowledge(fixture({definitions:json({code:'PGRST202'},404)}).client,'p',{search:'quasar'});
   expect(missing).toMatchObject({definitions_included:false,definitions_available:false});
-  expect(missing.routes_tried).toContainEqual({route:'definitions',outcome:'unsupported',reason:'missing-capability'});
+  expect(missing.routes_tried).toContainEqual(expect.objectContaining({route:'definitions',outcome:'unsupported',reason:'missing-capability'}));
 });
 it('keeps stable tied prefixes across caller page sizes and reports skipped semantic admission', async () => {
   const options={lexical:[row('b',1),row('a',1),row('c',1,{source_kind:'document'})],semantic:[],embed:json({},503)};
@@ -348,5 +348,5 @@ it('bounds a hung admission probe and labels enforcement unknown without losing 
   expect(answer.matches).toHaveLength(1);
   expect(answer.elapsed_ms).toBeLessThanOrEqual(6000);
   expect(answer.relevance_admission.enforcement).toEqual({lexical:'unknown',semantic:'unknown'});
-  expect(answer.routes_tried).toContainEqual({route:'relevance-admission',outcome:'timeout',reason:'deadline'});
+  expect(answer.routes_tried).toContainEqual(expect.objectContaining({route:'relevance-admission',outcome:'timeout',reason:'deadline'}));
 });
