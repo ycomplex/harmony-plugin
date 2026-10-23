@@ -120,6 +120,17 @@ describe('evaluateEligibility (B-1062)', () => {
     expect(report.items.find((i) => i.item === 'single_sentence_change')!.verdict).toBe('fail');
   });
 
+  // B-1258 — filenames and code punctuation must not block fast-track admission.
+  it.each([
+    "gitignore `.claude/` in harmony-web so Claude Code local state can't block promote-prod.sh",
+    'Fix e2e/tests/foo.spec.ts coverage.',
+    'Fix `e2e/tests/foo.spec.ts` coverage.',
+    'Accept `foo. bar!? baz` as a code example.',
+  ])('single-sentence: admits filename and code punctuation in %s (B-1258)', (summary) => {
+    const report = evaluateEligibility({ summary, evidence: [ev()], attestWalk: 'walked it' });
+    expect(report.eligible).toBe(true);
+  });
+
   // B-1105 — a dot inside a version number or a common abbreviation is not a sentence boundary.
   it.each([
     ['a model version', 'Workers default to Sonnet 5.5, the fallback list matches the catalog.'],

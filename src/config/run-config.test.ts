@@ -19,6 +19,7 @@ import {
   getAgentAdapter,
   DEFAULT_AGENT_ADAPTER,
   getAutoApproveGates,
+  getReleaseDelegate,
   getConductionId,
   getLeg,
   getModelContextBudgetBytes,
@@ -819,5 +820,21 @@ describe('getAgentAdapter (B-1077)', () => {
   });
   it('DEFAULT_AGENT_ADAPTER is the registry default', () => {
     expect(DEFAULT_AGENT_ADAPTER).toBe(DEFAULT_ADAPTER_ID);
+  });
+});
+
+describe('getReleaseDelegate (B-1257)', () => {
+  it('is undefined for an empty run_config', () => {
+    expect(getReleaseDelegate(EMPTY_RUN_CONFIG)).toBeUndefined();
+  });
+
+  it("returns 'orchestrator' when the run_config names the seat", () => {
+    expect(getReleaseDelegate({ release_delegate: 'orchestrator' })).toBe('orchestrator');
+  });
+
+  it('the schema rejects any other delegate and does not widen auto_approve_gates to release', () => {
+    expect(RunConfigSchema.safeParse({ release_delegate: 'anyone' }).success).toBe(false);
+    expect(RunConfigSchema.safeParse({ auto_approve_gates: ['release'] }).success).toBe(false);
+    expect(RunConfigSchema.safeParse({ release_delegate: 'orchestrator' }).success).toBe(true);
   });
 });

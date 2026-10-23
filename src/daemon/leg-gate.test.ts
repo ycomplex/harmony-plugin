@@ -80,6 +80,13 @@ describe('evaluateFastTrackAdmission (B-1073 post-review wiring)', () => {
     expect(admissible).toBe(true);
   });
 
+  it.each([
+    "gitignore `.claude/` in harmony-web so Claude Code local state can't block promote-prod.sh",
+    'Fix e2e/tests/foo.spec.ts coverage.',
+  ])('admits a single-sentence filename title: %s (B-1258)', (summary) => {
+    expect(evaluateFastTrackAdmission(summary, ['ycomplex/harmony-web']).admissible).toBe(true);
+  });
+
   it('inadmissible when the deployment declares more than one repo (the conservative pre-build floor)', () => {
     const { admissible, report } = evaluateFastTrackAdmission(CLEAN_SUMMARY, [
       'ycomplex/harmony-web',

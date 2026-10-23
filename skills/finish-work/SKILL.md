@@ -132,6 +132,28 @@ by the shape of the ticket row.
    drafting/composing another brief entirely and go straight to O2** to execute the merge + deploy.
    Requiring the entry to sit AFTER the latest advance into `Built` is what stops a re-opened ticket
    (`revising-building` → re-built) from resuming on its *previous* cycle's accept.
+
+   **Whose accept counts — the release delegate (B-1257).** `metadata.provenance` on that entry is one of
+   `human-in-browser`, `human-in-session` or `agent-synthesized:orchestrator` (the orchestrator seat,
+   `skills/harmony-shared/gate-routing.md` §Resolution provenance). The first two are the human's and always
+   count. `agent-synthesized:orchestrator` counts **only when this run NAMES the seat as its release
+   delegate**: read `environment.release_delegate` from `get_project` (a record in `run_config`, not the
+   free-text operator note) and treat the field as absent when the workspace's Agent-Trust dial is
+   `cautious` (the kill-switch, `harmony-conduct` contract 4). Field `=== 'orchestrator'` and dial not
+   cautious → that entry **is** the release decision: skip drafting and go straight to O2, and **never
+   re-file a release brief on provenance alone**. Any other provenance — `agent-synthesized:unattended`,
+   `:escalate`, `:pause-at`, `:override`, or an unattributed entry — is never a release decision (release is
+   the hard floor: the conduct loop never synthesizes it), delegate or not. Verify is not delegable by this
+   field at all (O3 is untouched).
+3a. **An orchestrator accept with NO named delegate → refuse, ask ONCE (B-1257).** The latest
+   `brief_resolved` accept carries `agent-synthesized:orchestrator` but `environment.release_delegate` is
+   absent (or the dial vetoed it): the gate cannot verify a grant it has no record of, so today's refusal
+   stands — but a refusal must not cost a leg per attempt. Do **not** re-file a release brief. First check
+   for the marker comment `RELEASE-DELEGATE-REFUSED conduction_id=<id-or-none>` (`list_comments`); if
+   found, a round is already open or answered for this run — end the leg. If not, file **one**
+   `worker-question` elicitation round (`start_elicitation({ task_id, trigger: 'worker-question' })` + `file_elicitation_round`) saying the orchestrator seat accepted the release but this
+   run records no release delegate, and asking the human to accept the release themselves or to set
+   `release_delegate` on the run; then `add_comment` the marker line. End the leg.
 4. **No such entry → FAIL CLOSED. Absence of the entry is NOT an accept — never merge on it.** Do not fall
    back to the row shape, and do not end the run quietly. B-745 retired the bespoke pause tool this branch
    used to call — a stranded pause with no web-side clearing mechanism strands the ticket worse than none —
@@ -536,6 +558,23 @@ not merge.)
 **A staged `pending_resolution` you can only partially apply** → apply what you structurally can, then file a `worker-question` round scoped to the blocked residue per `skills/harmony-shared/elicitation-engine.md` §Resuming onto a staged pending_resolution you can only partially apply (file the round before recomposing — crash-safety ordering, never wholesale-discard an actionable resolution).
 
 ### O2. Run the merge + deploy, THEN advance to Deployed
+
+**Under a named release delegate, a leg that cannot merge ENDS WITH A COMMENT — never a worker-question (B-1257).**
+When the release was accepted under `environment.release_delegate === 'orchestrator'` (O1 step 3; the dial
+not cautious), the seat that accepted it also lands the PRs: it approves bot PRs, merges in order and
+advances Built → Deployed itself. A leg that files a question here only costs a leg per question while the
+seat's landers are already merging (B-1253, B-1254, B-1255). So wherever this section would otherwise stop
+for a human — the **bot-PR approval** wait (step 1b's `flag_release_approval_pending`), the **prerequisite
+PR not confirmed MERGED** guard (B-783), or the PR-is-not-yet-mergeable waits — and the run names the
+delegate instead:
+
+1. `mcp__harmony__add_comment({ task_id, content: "Release delegated to the orchestrator seat — not merging from this leg: <what blocks: bot PR <pr_url> needs a GitHub approval | prerequisite PR <url> is <state>>. The seat approves/merges in order and advances Built → Deployed; the next launch files the verify brief." })`
+2. **Do NOT** call `flag_release_approval_pending`, **do NOT** `start_elicitation`/`file_elicitation_round`, and **do NOT** merge anything out of order.
+3. End the leg. The seat's Built → Deployed advance is the resume signal: the next launch finds the ticket
+   at `Deployed` and goes to O3 (the verify brief). Nothing here advances `workflow_state`.
+
+With no named delegate (or a cautious dial) everything below is unchanged. The hard floor is unchanged
+either way: verify stays the human's.
 
 **Release-prep lookup (B-991) — run FIRST, before the multi-PR shape guard below, before any merge.**
 The release-prep steps a repo needs before its PR merges (harmony-plugin's own: bump

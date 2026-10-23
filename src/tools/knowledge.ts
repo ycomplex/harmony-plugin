@@ -240,7 +240,7 @@ export const createKnowledgeEntryTool = {
 
 export const updateKnowledgeEntryTool = {
   name: 'update_knowledge_entry',
-  description: 'DEPRECATED: use record_decision (or supersede_decision to replace an entry). Update an existing knowledge entry in this project by ID or title. Use content_mode prepend_section/append_section to add only a new section while atomically preserving existing content. Shorter replacements that drop dated amendment markers are refused unless allow_shrink is explicitly true. Can also update title, type, status, tags, domain, madr, realization, review_by, verified_against, rollout_state or open_steps.',
+  description: 'DEPRECATED: use record_decision (or supersede_decision to replace an entry). Update an existing knowledge entry in this project by ID or title. Use content_mode prepend_section/append_section to add only a new section while atomically preserving existing content. Protected markers are Markdown headings with an ISO date (YYYY-MM-DD) and the whole word amended or revised (case-insensitive), or lines starting with ** or __ and containing revised and an ISO date. The word amendment alone is not protected; fenced examples are ignored. Shorter replacements that drop these markers are refused unless allow_shrink is explicitly true. Can also update title, type, status, tags, domain, madr, realization, review_by, verified_against, rollout_state or open_steps.',
   inputSchema: {
     type: 'object' as const,
     properties: {
