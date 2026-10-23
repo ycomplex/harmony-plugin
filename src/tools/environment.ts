@@ -6,6 +6,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { loadDeploymentConfig } from '../config/deployment-config.js';
 import {
   getAutoApproveGates,
+  getReleaseDelegate,
   getConductionId,
   getOperatorNote,
   getRunConfig,
@@ -44,6 +45,13 @@ export interface EnvironmentInfo {
    *  `conduction_id`/`operator_note` (the conduct loop now calls `get_project` per iteration, not
    *  once per run) and CAN change mid-run — see `skills/harmony-conduct/SKILL.md` §1b. */
   auto_approve_gates: string[] | null;
+  /** B-1257: this leg's `run_config.release_delegate` — who may accept the RELEASE gate for this run
+   *  (`'orchestrator'`, the seat whose accept carries provenance `agent-synthesized:orchestrator`), or
+   *  `null` when absent OR when the run_config payload can't be read/decoded/parsed. The RAW run_config
+   *  choice: the cautious Agent-Trust dial's veto is applied by the consumer (`harmony-conduct` §1b),
+   *  like `auto_approve_gates`. Same row-first (B-892), degrade-to-null-never-throw convention. Verify is
+   *  never delegated by this field. */
+  release_delegate: 'orchestrator' | null;
   /** B-1073: this leg's `run_config.fast_track` (the operator's per-run fast-track flag — see
    *  `src/config/run-config.ts`'s `isFastTrackEnabled`), `false` when absent/unset OR when the
    *  run_config payload can't be read/decoded/parsed. Same best-effort, degrade-to-false-never-throw
@@ -160,6 +168,7 @@ export async function resolveEnvironment(
   let operator_note: string | null = null;
   let auto_approve_gates: string[] | null = null;
   let fast_track = false;
+  let release_delegate: 'orchestrator' | null = null;
   if (runConfig) {
     try {
       operator_note = getOperatorNote(runConfig) ?? null;
@@ -171,6 +180,11 @@ export async function resolveEnvironment(
       auto_approve_gates = gates.length > 0 ? gates : null;
     } catch {
       auto_approve_gates = null;
+    }
+    try {
+      release_delegate = getReleaseDelegate(runConfig) ?? null;
+    } catch {
+      release_delegate = null;
     }
     try {
       fast_track = isFastTrackEnabled(runConfig);
@@ -187,6 +201,7 @@ export async function resolveEnvironment(
     conduction_id,
     operator_note,
     auto_approve_gates,
+    release_delegate,
     fast_track,
   };
 }
