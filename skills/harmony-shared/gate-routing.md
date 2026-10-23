@@ -32,7 +32,7 @@ dropped by B-904 — all three sub-tracks now derive a `knowledge_entry_content`
 defer via the event; see `harmony-design-decide/SKILL.md`'s own B-904 note), `resolve_brief`'s accept no
 longer applies the state advance immediately: it snapshots the brief's payload into a
 `pending_acceptance_events` row and DEFERS the advance. Every OTHER gate (release, verify, deny/park,
-promote, milestone moves, human AC ticks, comments, manual mode) is completely unchanged — direct/
+promote, milestone moves, human AC ticks, comments, Freeform mode) is completely unchanged — direct/
 synchronous writes, no event. Two consume paths close the loop:
 - **Same session** (the common case): the owning skill does its own materialization exactly as before
   (clarify files ACs, decompose mints children, design writes its AC refinements, start-work materializes

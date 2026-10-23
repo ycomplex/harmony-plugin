@@ -49,7 +49,7 @@ account text. Unchanged behaviour reuses an earlier sub-track's accepted intent.
 ### 1. Load + determine required sub-tracks (ticket-scoped completion read)
 
 First call `mcp__harmony__get_project`; if `mode !== 'opinionated'`, stop — the discovery gates are an
-opinionated-mode activity (manual-mode projects use the normal board, not the clarify→decompose→design
+Guided-mode activity (Freeform-mode projects use the normal board, not the clarify→decompose→design
 lifecycle). This guard matters most here: on a **non-last** sub-track the brief composes with
 `pending_activity: null`, so `resolve_brief` does not advance state and the P1 transition guard never
 fires — without this check there is no substrate backstop. Then
