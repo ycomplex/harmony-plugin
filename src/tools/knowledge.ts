@@ -14,6 +14,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { normalizeHtmlEntities } from './text-normalize.js';
 import { getConductionId, getLeg } from '../config/run-config.js';
 import { guardKnowledgeWriteProvenance } from './provenance.js';
+import { logKnowledgeRetrieval, RETRIEVAL_LOG_BUDGET_MS } from './knowledge-retrieval-log.js';
 
 // ---------------------------------------------------------------------------
 // Interfaces
@@ -184,6 +185,8 @@ export const queryKnowledgeTool = {
       },
       limit: { type: 'number', description: 'Max results to return. Default 50.' },
       offset: { type: 'number', description: 'Number of results to skip (for pagination). Default 0. With `search` it pages after ranking.' },
+      task_id: { type: 'string', description: 'B-678: the ticket (UUID, number or visual ID) this read is made for, so the decisions returned are logged as knowledge reuse. Omit to use the current conduction\'s ticket; with neither, nothing is logged. Logging is best-effort and never changes the result.' },
+      gate: { type: 'string', description: 'B-678: the gate making the read (clarify, decompose, design, plan, build, release, verify), recorded with the retrieval log. Optional.' },
     },
   },
 };
@@ -204,7 +207,7 @@ export const getKnowledgeEntryTool = {
 export const createKnowledgeEntryTool = {
   name: 'create_knowledge_entry',
   description:
-    'Create a new knowledge entry in this project. Entries are created as "draft" by default — humans review and accept them. Use for architecture decisions, business decisions, conventions, and specifications (spec documents describing work to be built).',
+    'DEPRECATED: use record_decision. Create a new knowledge entry in this project. Entries are created as "draft" by default — humans review and accept them. Use for architecture decisions, business decisions, conventions, and specifications (spec documents describing work to be built).',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -236,7 +239,7 @@ export const createKnowledgeEntryTool = {
 
 export const updateKnowledgeEntryTool = {
   name: 'update_knowledge_entry',
-  description: 'Update an existing knowledge entry in this project by ID or title. Use content_mode prepend_section/append_section to add only a new section while atomically preserving existing content. Shorter replacements that drop dated amendment markers are refused unless allow_shrink is explicitly true. Can also update title, type, status, tags, domain, madr, realization, review_by, verified_against, rollout_state or open_steps.',
+  description: 'DEPRECATED: use record_decision (or supersede_decision to replace an entry). Update an existing knowledge entry in this project by ID or title. Use content_mode prepend_section/append_section to add only a new section while atomically preserving existing content. Shorter replacements that drop dated amendment markers are refused unless allow_shrink is explicitly true. Can also update title, type, status, tags, domain, madr, realization, review_by, verified_against, rollout_state or open_steps.',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -282,7 +285,7 @@ export const updateKnowledgeEntryTool = {
 export const supersedeKnowledgeEntryTool = {
   name: 'supersede_knowledge_entry',
   description:
-    'Supersede an existing knowledge entry in this project with a new replacement. Marks the old entry as "superseded" and creates the replacement as "accepted", linking them via superseded_by.',
+    'DEPRECATED: use supersede_decision. Supersede an existing knowledge entry in this project with a new replacement. Marks the old entry as "superseded" and creates the replacement as "accepted", linking them via superseded_by.',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -334,11 +337,10 @@ async function embedText(client: SupabaseClient, text: string): Promise<string |
 /**
  * Re-embed a knowledge decision by id on the BASE table.
  *
- * Why this exists: createKnowledgeEntry / updateKnowledgeEntry write through the
- * `workspace_knowledge` compat VIEW, whose INSTEAD-OF triggers do NOT touch the
- * `embedding` column (B-375 / B-401). A view INSERT or content-changing UPDATE
- * therefore leaves the vector null/stale → the row is invisible to
- * knowledge_search_rrf (which filters `embedding IS NOT NULL`). The embed-knowledge
+ * Why this exists: createKnowledgeEntry inserts into the base table without an
+ * `embedding` (B-375 / B-401), and a content-changing update can leave the vector
+ * stale → the row is invisible to knowledge_search_rrf (which filters
+ * `embedding IS NOT NULL`). The embed-knowledge
  * edge fn has no DB access, so we compute the vector client-side and persist it
  * straight to knowledge_decisions, scoped by workspace+project+id.
  *
@@ -363,37 +365,6 @@ async function embedDecisionById(
     .eq('id', id);
 }
 
-const LEGACY_STATUS_MAP: Record<string, string> = {
-  draft: 'draft', accepted: 'accepted', superseded: 'superseded',
-  Asserted: 'draft', Accepted: 'accepted', Superseded: 'superseded',
-};
-
-/**
- * Normalize a caller-supplied status into the LEGACY lowercase vocab the
- * `workspace_knowledge` compat view's INSTEAD-OF triggers understand (B-415).
- *
- * Why: those triggers map status with a CASE that only recognizes
- * 'draft' | 'accepted' | 'superseded' (migration 20260602171200…sql). Any v1-
- * capitalized value ('Accepted', …) falls through ELSE → the UPDATE silently keeps
- * the old status (no-op) and the INSERT defaults to 'Asserted' — while the trigger's
- * RETURN NEW echoes the caller's input back as a false success. The rest of the
- * knowledge layer speaks v1-capitalized vocab, so callers naturally pass 'Accepted'.
- *
- * We translate v1 → legacy here (and pass legacy through). Anything unrecognized —
- * including v1 'Archived', which the legacy view cannot express — is REJECTED loudly
- * rather than silently dropped.
- */
-function toLegacyStatus(status: string): string {
-  const legacy = LEGACY_STATUS_MAP[status];
-  if (legacy === undefined) {
-    throw new Error(
-      `Unsupported status "${status}". Use Asserted/draft, Accepted/accepted, or Superseded/superseded — ` +
-      `Archived cannot be set through this tool, which writes the legacy compat view (no Archived state).`,
-    );
-  }
-  return legacy;
-}
-
 const BASE_STATUS_MAP: Record<string, string> = {
   draft: 'Asserted', accepted: 'Accepted', superseded: 'Superseded',
   Asserted: 'Asserted', Accepted: 'Accepted', Superseded: 'Superseded', Archived: 'Archived',
@@ -403,11 +374,10 @@ const BASE_STATUS_MAP: Record<string, string> = {
  * Normalize a caller-supplied status into the v1-capitalized vocab the
  * `knowledge_decisions` BASE table's CHECK constraint accepts (B-418).
  *
- * Inverse direction of toLegacyStatus: paths that write the base table directly
- * (updateKnowledgeEntry, supersedeKnowledgeEntry's mark-superseded step) must speak
- * 'Asserted'|'Accepted'|'Superseded'|'Archived', while legacy callers still pass the
- * lowercase view vocab. 'Archived' is legal here — only the compat view couldn't
- * express it. Anything unrecognized is REJECTED loudly rather than silently dropped.
+ * Every knowledge write path (createKnowledgeEntry, updateKnowledgeEntry,
+ * supersedeKnowledgeEntry's mark-superseded step) writes the base table directly and must
+ * speak 'Asserted'|'Accepted'|'Superseded'|'Archived', while legacy callers may still pass
+ * the old lowercase vocab (draft/accepted/superseded), which is mapped here. Anything unrecognized is REJECTED loudly rather than silently dropped.
  */
 function toBaseStatus(status: string): string {
   const base = BASE_STATUS_MAP[status];
@@ -439,12 +409,30 @@ export interface QueryKnowledgeArgs {
   context_tags?: string[];
   question_state?: 'open' | 'parked' | 'decided';
   question_scope?: 'product' | 'deployment';
+  task_id?: string;           // B-678: ticket the read is made for (retrieval log only; never filters)
+  gate?: string;              // B-678: gate making the read (retrieval log only)
 }
 
 export function queryKnowledge(client: SupabaseClient, projectId: string, args: QueryKnowledgeArgs & { search?: undefined }): Promise<Array<KnowledgeEntrySummary | Definition | ConceptNameResult>>;
 export function queryKnowledge(client: SupabaseClient, projectId: string, args: QueryKnowledgeArgs & { search: string }): Promise<KnowledgeSearchResult>;
 export function queryKnowledge(client: SupabaseClient, projectId: string, args: QueryKnowledgeArgs): Promise<Array<KnowledgeEntrySummary | Definition | ConceptNameResult> | KnowledgeSearchResult>;
 export async function queryKnowledge(
+  client: SupabaseClient,
+  projectId: string,
+  args: QueryKnowledgeArgs,
+): Promise<Array<KnowledgeEntrySummary | Definition | ConceptNameResult> | KnowledgeSearchResult> {
+  // B-678: the retrieval log runs after the result exists and swallows its own failures, so it
+  // can neither change nor fail the query. task_id/gate are log-only and never reach the filters.
+  const { task_id, gate, ...queryArgs } = args;
+  const result = await queryKnowledgeUnlogged(client, projectId, queryArgs);
+  await Promise.race([
+    logKnowledgeRetrieval(client, projectId, { task_id, gate, search: queryArgs.search }, result),
+    new Promise<void>(resolve => setTimeout(resolve, RETRIEVAL_LOG_BUDGET_MS).unref()),
+  ]);
+  return result;
+}
+
+async function queryKnowledgeUnlogged(
   client: SupabaseClient,
   projectId: string,
   args: QueryKnowledgeArgs,
@@ -704,6 +692,8 @@ export async function createKnowledgeEntry(
   const capable = await metadataCapable(client);
   if (args.scope && !capable) throw new Error('Knowledge scope unavailable until the schema is promoted; nothing was saved.');
   if (capable && !args.scope) throw new Error('New knowledge requires product or deployment scope.');
+  // Base-table insert (B-349). The retired compat view's INSERT trigger did COALESCE(content,'')
+  // and COALESCE(tags,'{}'); claimContent always yields a string and tags default to [] here.
   const record: Record<string, unknown> = {
     ...(capable ? {scope: args.scope} : {}),
     workspace_id: workspaceId,
@@ -711,15 +701,15 @@ export async function createKnowledgeEntry(
     title: normalizeHtmlEntities(args.title.trim()),
     content: claimedContent,
     type: args.type,
-    status: args.status !== undefined ? toLegacyStatus(args.status) : 'draft',
+    status: args.status !== undefined ? toBaseStatus(args.status) : 'Asserted',
     created_by: userId,
   };
 
-  if (args.tags !== undefined) record.tags = normalizeTags(args.tags);
+  record.tags = args.tags !== undefined ? normalizeTags(args.tags) : [];
   if (args.source_task_id !== undefined) record.source_task_id = args.source_task_id;
 
   const { data, error } = await client
-    .from('workspace_knowledge')
+    .from('knowledge_decisions')
     .insert(record)
     .select(
       'id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at',
@@ -736,9 +726,8 @@ export async function createKnowledgeEntry(
   }
   const created = data as KnowledgeEntryFull;
   await embedDecisionById(client, workspaceId, projectId, created.id, created.title, created.content);
-  // The view's INSTEAD-OF INSERT trigger RETURN NEWs the input, so `created` echoes what we
-  // sent (status vocab, timestamps). Re-read (getKnowledgeEntry: workspace lookup + base-table
-  // select) for the authoritative persisted row (B-415) — status in v1 vocab.
+  // Re-read (getKnowledgeEntry: workspace lookup + base-table select) for the authoritative
+  // persisted row (B-415) — status in v1 vocab.
   return getKnowledgeEntry(client, projectId, { entry_id: created.id });
 }
 
@@ -1855,8 +1844,8 @@ export interface SupersedeKnowledgeEntryArgs {
 
 // B-995: writes through knowledge_supersede_knowledge_entry (governed replacement-insert +
 // mark-superseded update, in ONE transaction, plus an explicit 'rpc-typed' knowledge_events row)
-// instead of today's three-step TS flow (getKnowledgeEntry fetch -> createKnowledgeEntry insert via
-// the workspace_knowledge compat view -> a plain base-table update). The RPC does its own existing-
+// instead of today's three-step TS flow (getKnowledgeEntry fetch -> createKnowledgeEntry base-table
+// insert -> a plain base-table update). The RPC does its own existing-
 // entry lookup and type/tags/source_task_id carry-over internally (COALESCE against the row it finds
 // by p_entry_id/p_title), so the pre-fetch is no longer needed. One thing the RPC does NOT do: embed
 // the replacement (no p_embedding param) — mirrors createKnowledgeEntry's post-insert self-embed
