@@ -15,7 +15,7 @@ export function registerEpicCommands(program: Command): void {
           { key: 'id', header: 'ID', width: 38 },
           { key: 'name', header: 'Name', width: 40 },
           { key: 'color', header: 'Color' },
-          { key: 'position', header: 'Pos' },
+          { key: 'retired_at', header: 'Retired at' },
         ]),
       );
     });

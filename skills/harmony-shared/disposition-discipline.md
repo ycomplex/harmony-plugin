@@ -45,3 +45,6 @@ This attacks bloat from both ends: don't reflexively mint, **and** actively fold
 
 ## Project-specific bindings
 This discipline is **portable**. WHERE a given workspace routes specific follow-up streams (e.g. a dedicated running-log lane for usage/dogfood findings) is a **project-specific binding** — see the workspace's `CLAUDE.md`, not this file.
+
+
+When choosing an epic, filter `list_epics` to `retired_at == null` (missing means active during schema compatibility). Retired epics are historical lookup only; never assign new work to them.
