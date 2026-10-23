@@ -21,6 +21,9 @@ export interface KnowledgeSearchResult {
   concepts: Array<{id:string;kind:'concept';title:string;concept_id:string;state:'no-current-definition';matched_alias:string|null}>;
   definitions: Definition[];
   refinements: KnowledgeEntrySummary[];
+  /** Successful participation of the definitions route, including a valid empty answer. */
+  definitions_included: boolean;
+  /** @deprecated Alias of definitions_included; false does not establish storage unavailability. */
   definitions_available: boolean;
   matches: SearchMatch[];
   unscored_matches: KnowledgeEntrySummary[];
@@ -32,6 +35,11 @@ export interface KnowledgeSearchResult {
   normalized_filters: { type: string | null; status: string; domain: string[]; tags: string[]; include_bookkeeping: boolean; scope: string | null; question_state: string | null; question_scope: string | null };
   routes_tried: SearchRoute[];
   score_cutoff: number;
+  relevance_admission: {
+    lexical_min_similarity: number | null;
+    semantic_max_distance: number | null;
+    enforcement: { lexical: 'enforced' | 'unknown' | 'not-run'; semantic: 'enforced' | 'unknown' | 'not-run' };
+  };
   below_cutoff_count: number | null;
   count_coverage: 'considered-scored-union' | 'partial-scored-union' | 'unavailable';
   candidate_limits: { per_class_per_signal: number; max_scored_union: number };
@@ -79,10 +87,11 @@ export async function searchKnowledge(client: SupabaseClient, projectId: string,
   let sealed = false;
   let incomplete = false;
   const result: KnowledgeSearchResult = {
-    concepts: [], definitions: [], refinements: [], definitions_available: false, matches: [], unscored_matches: [], incomplete: false, truncated: false, capability: 'unavailable',
+    concepts: [], definitions: [], refinements: [], definitions_included: false, definitions_available: false, matches: [], unscored_matches: [], incomplete: false, truncated: false, capability: 'unavailable',
     normalized_query: args.search!.trim().replace(/\s+/g, ' '),
     normalized_filters: { type: args.type ?? null, status: args.status ?? 'Accepted', domain: args.domain ?? [], tags: normalizeTags(args.tags), include_bookkeeping: args.include_bookkeeping !== false, scope: args.scope ?? null, question_state: args.question_state ?? null, question_scope: args.question_scope ?? null },
     routes_tried: routes, score_cutoff: SCORE_CUTOFF, below_cutoff_count: null, count_coverage: 'unavailable',
+    relevance_admission: { lexical_min_similarity: null, semantic_max_distance: null, enforcement: { lexical: 'not-run', semantic: 'not-run' } },
     candidate_limits: { per_class_per_signal: 200, max_scored_union: 800 }, tag_suggestions: [], elapsed_ms: 0,
   };
   const limit = args.limit ?? 50;
@@ -142,13 +151,17 @@ export async function searchKnowledge(client: SupabaseClient, projectId: string,
   if(coverage?.sources?.some(s=>s.enabled&&s.refresh_state!=='current')){incomplete=true;routes.push({route:'prose-coverage',outcome:'stale',reason:'refresh-incomplete'});}
   result.source_applicability=args.status||args.type?'Explicit decision status/type filters exclude prose and generated sources.':'Accepted entries plus configured source-backed prose and current Asserted generated values.';
   const filters = result.normalized_filters;
+  // Additive capability read: older databases remain usable without claiming the new floor.
+  const admission = !args.definitions_only ? bounded<{ version: number; lexical_min_similarity: number; semantic_max_distance: number }>(
+    'relevance-admission', signal => client.rpc('knowledge_search_admission').abortSignal(signal),
+  ) : Promise.resolve(undefined);
   // Definitions are a separate result class, never assigned fabricated RRF scores.
   const definitions = includeDefinitions && limit > 0 ? (async () => {
     const data = await bounded<{ available: boolean; definitions: Definition[] }>('definitions', signal => client.rpc('read_knowledge_definitions', {
       p_workspace_id: scope.workspace_id, p_project_id: projectId, p_search: result.normalized_query,
       p_domain: args.domain?.length ? args.domain : null, p_limit: Math.min(limit, 500), p_offset: 0,
     }).abortSignal(signal));
-    result.definitions_available = data?.available === true && Array.isArray(data.definitions);
+    result.definitions_included = result.definitions_available = data?.available === true && Array.isArray(data.definitions);
     result.definitions = result.definitions_available ? data!.definitions.slice(0, limit) : [];
     if (data && !result.definitions_available) { incomplete = true; routes.push({route:'definitions', outcome:'failed', reason:'invalid-capability-response'}); }
     const ids = [...new Set(result.definitions.flatMap(d => d.refinements.map(r => r.id)))].slice(0, Math.max(0, limit - result.definitions.length));
@@ -172,6 +185,7 @@ export async function searchKnowledge(client: SupabaseClient, projectId: string,
   if (args.definitions_only) { await definitions; return finish(); }
   let absent = false;
   let scoredCompleted = false;
+  const completedSignals = new Set<'lexical' | 'semantic'>();
   const candidates = new Map<string, { candidate: Candidate; score: number }>();
   const signal = async (name: 'lexical' | 'semantic', embedding: string | null) => {
     const rows = await bounded<SignalRow[]>(name, async signal => {
@@ -191,6 +205,7 @@ export async function searchKnowledge(client: SupabaseClient, projectId: string,
       return;
     }
     scoredCompleted = true;
+    completedSignals.add(name);
     for (const row of rows) {
       if (row.unavailable_sources?.length) {
         incomplete = true;
@@ -246,6 +261,25 @@ export async function searchKnowledge(client: SupabaseClient, projectId: string,
   }
   await semantic;
   await definitions;
+  const policy = await admission;
+  const validPolicy = policy?.version === 1 && typeof policy.lexical_min_similarity === 'number'
+    && Number.isFinite(policy.lexical_min_similarity) && policy.lexical_min_similarity >= 0 && policy.lexical_min_similarity <= 1
+    && typeof policy.semantic_max_distance === 'number' && Number.isFinite(policy.semantic_max_distance)
+    && policy.semantic_max_distance >= 0 && policy.semantic_max_distance <= 2;
+  if (policy && !validPolicy) {
+    incomplete = true;
+    routes.push({ route: 'relevance-admission', outcome: 'unsupported', reason: 'invalid-capability-response' });
+  }
+  if (validPolicy) {
+    result.relevance_admission.lexical_min_similarity = policy.lexical_min_similarity;
+    result.relevance_admission.semantic_max_distance = policy.semantic_max_distance;
+  }
+  for (const name of ['lexical', 'semantic'] as const) {
+    result.relevance_admission.enforcement[name] = completedSignals.has(name) ? validPolicy ? 'enforced' : 'unknown' : 'not-run';
+  }
+  if (absent && routes.some(r => r.route === 'legacy' && r.outcome === 'completed')) {
+    result.relevance_admission.enforcement.lexical = validPolicy ? 'enforced' : 'unknown';
+  }
   const tags = await suggestions;
   result.tag_suggestions = normalizeTags(tags ?? []).slice(0, 8);
   if (!absent && scoredCompleted) {

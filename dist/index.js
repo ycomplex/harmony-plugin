@@ -45251,6 +45251,7 @@ async function searchKnowledge(client, projectId, args, started = performance.no
     concepts: [],
     definitions: [],
     refinements: [],
+    definitions_included: false,
     definitions_available: false,
     matches: [],
     unscored_matches: [],
@@ -45263,6 +45264,7 @@ async function searchKnowledge(client, projectId, args, started = performance.no
     score_cutoff: SCORE_CUTOFF,
     below_cutoff_count: null,
     count_coverage: "unavailable",
+    relevance_admission: { lexical_min_similarity: null, semantic_max_distance: null, enforcement: { lexical: "not-run", semantic: "not-run" } },
     candidate_limits: { per_class_per_signal: 200, max_scored_union: 800 },
     tag_suggestions: [],
     elapsed_ms: 0
@@ -45346,6 +45348,10 @@ async function searchKnowledge(client, projectId, args, started = performance.no
   }
   result.source_applicability = args.status || args.type ? "Explicit decision status/type filters exclude prose and generated sources." : "Accepted entries plus configured source-backed prose and current Asserted generated values.";
   const filters = result.normalized_filters;
+  const admission = !args.definitions_only ? bounded(
+    "relevance-admission",
+    (signal2) => client.rpc("knowledge_search_admission").abortSignal(signal2)
+  ) : Promise.resolve(void 0);
   const definitions = includeDefinitions && limit > 0 ? (async () => {
     const data = await bounded("definitions", (signal2) => client.rpc("read_knowledge_definitions", {
       p_workspace_id: scope.workspace_id,
@@ -45355,7 +45361,7 @@ async function searchKnowledge(client, projectId, args, started = performance.no
       p_limit: Math.min(limit, 500),
       p_offset: 0
     }).abortSignal(signal2));
-    result.definitions_available = data?.available === true && Array.isArray(data.definitions);
+    result.definitions_included = result.definitions_available = data?.available === true && Array.isArray(data.definitions);
     result.definitions = result.definitions_available ? data.definitions.slice(0, limit) : [];
     if (data && !result.definitions_available) {
       incomplete = true;
@@ -45387,6 +45393,7 @@ async function searchKnowledge(client, projectId, args, started = performance.no
   }
   let absent = false;
   let scoredCompleted = false;
+  const completedSignals = /* @__PURE__ */ new Set();
   const candidates = /* @__PURE__ */ new Map();
   const signal = async (name, embedding) => {
     const rows = await bounded(name, async (signal2) => {
@@ -45414,6 +45421,7 @@ async function searchKnowledge(client, projectId, args, started = performance.no
       return;
     }
     scoredCompleted = true;
+    completedSignals.add(name);
     for (const row of rows) {
       if (row.unavailable_sources?.length) {
         incomplete = true;
@@ -45481,6 +45489,22 @@ async function searchKnowledge(client, projectId, args, started = performance.no
   }
   await semantic;
   await definitions;
+  const policy = await admission;
+  const validPolicy = policy?.version === 1 && typeof policy.lexical_min_similarity === "number" && Number.isFinite(policy.lexical_min_similarity) && policy.lexical_min_similarity >= 0 && policy.lexical_min_similarity <= 1 && typeof policy.semantic_max_distance === "number" && Number.isFinite(policy.semantic_max_distance) && policy.semantic_max_distance >= 0 && policy.semantic_max_distance <= 2;
+  if (policy && !validPolicy) {
+    incomplete = true;
+    routes.push({ route: "relevance-admission", outcome: "unsupported", reason: "invalid-capability-response" });
+  }
+  if (validPolicy) {
+    result.relevance_admission.lexical_min_similarity = policy.lexical_min_similarity;
+    result.relevance_admission.semantic_max_distance = policy.semantic_max_distance;
+  }
+  for (const name of ["lexical", "semantic"]) {
+    result.relevance_admission.enforcement[name] = completedSignals.has(name) ? validPolicy ? "enforced" : "unknown" : "not-run";
+  }
+  if (absent && routes.some((r) => r.route === "legacy" && r.outcome === "completed")) {
+    result.relevance_admission.enforcement.lexical = validPolicy ? "enforced" : "unknown";
+  }
   const tags = await suggestions;
   result.tag_suggestions = normalizeTags(tags ?? []).slice(0, 8);
   if (!absent && scoredCompleted) {
@@ -45774,7 +45798,7 @@ var FACT_COLS = "id, workspace_id, project_id, subject_entity_id, predicate, obj
 var ENTITY_COLS = "id, workspace_id, project_id, kind, name, description, metadata, created_at";
 var queryKnowledgeTool = {
   name: "query_knowledge",
-  description: "Find current term definitions first; structured lists also include current source-generated deployment facts with inspectable provenance. Generated facts remain Asserted. Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Results include nullable superseded_by and inverse supersedes UUIDs; structured lists place matching successors before replaced entries, while search preserves score order. Check this before making significant implementation choices. Default search includes Accepted entries, configured source-backed document/skill headings and current Asserted generated values in one scored pool. Prose exposes provenance and a source heading link, never Accepted authority. Explicit decision status/type filters exclude prose/generated sources. Coverage and defined-in resolution are explicit; optional claim-context and historical-wording enrichment share the deadline. Explicitly marked bookkeeping is ranked last; include_bookkeeping:false excludes it before pagination. Free-text search combines type/status/all normalized tags/any domain and returns a six-second bounded envelope: scored matches, ordered unscored legacy matches, cutoff 0.0125, below_cutoff_count and coverage, normalized query/filters and routes tried. Scores use genuine global RRF ranks. Filter-only calls retain their list shape. as_of, include_superseded and offset compose with search (as_of and include_superseded exclude prose and generated sources; offset pages after ranking; replaced entries carry replaced:true). Optional context_tags supplies relevant surface/ticket tags for actual tag suggestions.",
+  description: "Find current term definitions first; structured lists also include current source-generated deployment facts with inspectable provenance. Generated facts remain Asserted. Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Results include nullable superseded_by and inverse supersedes UUIDs; structured lists place matching successors before replaced entries, while search preserves score order. Check this before making significant implementation choices. Default search includes Accepted entries, configured source-backed document/skill headings and current Asserted generated values in one scored pool. Prose exposes provenance and a source heading link, never Accepted authority. Explicit decision status/type filters exclude prose/generated sources. Coverage and defined-in resolution are explicit; optional claim-context and historical-wording enrichment share the deadline. Explicitly marked bookkeeping is ranked last; include_bookkeeping:false excludes it before pagination. Free-text search combines type/status/all normalized tags/any domain and returns a six-second bounded envelope: scored matches, ordered unscored legacy matches, cutoff 0.0125, below_cutoff_count and coverage, normalized query/filters and routes tried. Scores use genuine global RRF ranks. relevance_admission separately reports route similarity floors and enforcement (unknown on older databases). definitions_included means successful definitions-route participation, including an empty result; definitions_available is its deprecated alias, not a storage capability flag. Filter-only calls retain their list shape. as_of, include_superseded and offset compose with search (as_of and include_superseded exclude prose and generated sources; offset pages after ranking; replaced entries carry replaced:true). Optional context_tags supplies relevant surface/ticket tags for actual tag suggestions.",
   inputSchema: {
     type: "object",
     properties: {

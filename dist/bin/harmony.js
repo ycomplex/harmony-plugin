@@ -37162,6 +37162,7 @@ async function searchKnowledge(client, projectId, args, started = performance.no
     concepts: [],
     definitions: [],
     refinements: [],
+    definitions_included: false,
     definitions_available: false,
     matches: [],
     unscored_matches: [],
@@ -37174,6 +37175,7 @@ async function searchKnowledge(client, projectId, args, started = performance.no
     score_cutoff: SCORE_CUTOFF,
     below_cutoff_count: null,
     count_coverage: "unavailable",
+    relevance_admission: { lexical_min_similarity: null, semantic_max_distance: null, enforcement: { lexical: "not-run", semantic: "not-run" } },
     candidate_limits: { per_class_per_signal: 200, max_scored_union: 800 },
     tag_suggestions: [],
     elapsed_ms: 0
@@ -37257,6 +37259,10 @@ async function searchKnowledge(client, projectId, args, started = performance.no
   }
   result.source_applicability = args.status || args.type ? "Explicit decision status/type filters exclude prose and generated sources." : "Accepted entries plus configured source-backed prose and current Asserted generated values.";
   const filters = result.normalized_filters;
+  const admission = !args.definitions_only ? bounded(
+    "relevance-admission",
+    (signal2) => client.rpc("knowledge_search_admission").abortSignal(signal2)
+  ) : Promise.resolve(void 0);
   const definitions = includeDefinitions && limit > 0 ? (async () => {
     const data = await bounded("definitions", (signal2) => client.rpc("read_knowledge_definitions", {
       p_workspace_id: scope.workspace_id,
@@ -37266,7 +37272,7 @@ async function searchKnowledge(client, projectId, args, started = performance.no
       p_limit: Math.min(limit, 500),
       p_offset: 0
     }).abortSignal(signal2));
-    result.definitions_available = data?.available === true && Array.isArray(data.definitions);
+    result.definitions_included = result.definitions_available = data?.available === true && Array.isArray(data.definitions);
     result.definitions = result.definitions_available ? data.definitions.slice(0, limit) : [];
     if (data && !result.definitions_available) {
       incomplete = true;
@@ -37298,6 +37304,7 @@ async function searchKnowledge(client, projectId, args, started = performance.no
   }
   let absent = false;
   let scoredCompleted = false;
+  const completedSignals = /* @__PURE__ */ new Set();
   const candidates = /* @__PURE__ */ new Map();
   const signal = async (name, embedding) => {
     const rows = await bounded(name, async (signal2) => {
@@ -37325,6 +37332,7 @@ async function searchKnowledge(client, projectId, args, started = performance.no
       return;
     }
     scoredCompleted = true;
+    completedSignals.add(name);
     for (const row of rows) {
       if (row.unavailable_sources?.length) {
         incomplete = true;
@@ -37392,6 +37400,22 @@ async function searchKnowledge(client, projectId, args, started = performance.no
   }
   await semantic;
   await definitions;
+  const policy = await admission;
+  const validPolicy = policy?.version === 1 && typeof policy.lexical_min_similarity === "number" && Number.isFinite(policy.lexical_min_similarity) && policy.lexical_min_similarity >= 0 && policy.lexical_min_similarity <= 1 && typeof policy.semantic_max_distance === "number" && Number.isFinite(policy.semantic_max_distance) && policy.semantic_max_distance >= 0 && policy.semantic_max_distance <= 2;
+  if (policy && !validPolicy) {
+    incomplete = true;
+    routes.push({ route: "relevance-admission", outcome: "unsupported", reason: "invalid-capability-response" });
+  }
+  if (validPolicy) {
+    result.relevance_admission.lexical_min_similarity = policy.lexical_min_similarity;
+    result.relevance_admission.semantic_max_distance = policy.semantic_max_distance;
+  }
+  for (const name of ["lexical", "semantic"]) {
+    result.relevance_admission.enforcement[name] = completedSignals.has(name) ? validPolicy ? "enforced" : "unknown" : "not-run";
+  }
+  if (absent && routes.some((r) => r.route === "legacy" && r.outcome === "completed")) {
+    result.relevance_admission.enforcement.lexical = validPolicy ? "enforced" : "unknown";
+  }
   const tags = await suggestions;
   result.tag_suggestions = normalizeTags(tags ?? []).slice(0, 8);
   if (!absent && scoredCompleted) {
@@ -48767,7 +48791,7 @@ function registerKnowledgeCommands(program3) {
     "Filter by tag (repeat for multiple)",
     (v2, prev) => [...prev, v2],
     []
-  ).option("--domain <domain>", "Filter any domain (repeat)", (v2, prev) => [...prev, v2], []).option("--context-tag <tag>", "Relevant context tag for suggestions (repeat)", (v2, prev) => [...prev, v2], []).option("--limit <n>", "Max results", Number).option("--search <text>", "Search term matched against title and content").option("--question-state <state>", "Filter open, parked or decided questions").option("--question-scope <scope>", "Question product or deployment scope").option("--definitions-only", "Return only current term definitions", false).option("--all", "Include superseded entries", false).option("--no-bookkeeping", "Exclude explicitly marked procedural gate records").action(async (opts) => {
+  ).option("--domain <domain>", "Filter any domain (repeat)", (v2, prev) => [...prev, v2], []).option("--context-tag <tag>", "Relevant context tag for suggestions (repeat)", (v2, prev) => [...prev, v2], []).option("--limit <n>", "Max results", Number).option("--search <text>", "Search term matched against title and content").option("--question-state <state>", "Filter open, parked or decided questions").option("--question-scope <scope>", "Question product or deployment scope").option("--definitions-only", "Return only current term definitions", false).option("--all", "Include superseded entries", false).option("--no-bookkeeping", "Exclude explicitly marked procedural gate records").addHelpText("after", "\nSearch diagnostics: relevance_admission reports per-route similarity floors and whether they were enforced; score_cutoff is the secondary RRF bound. definitions_included means the definitions route successfully participated (even with zero definitions). definitions_available is its deprecated alias, not a storage-capability flag.\n").action(async (opts) => {
     await runCommand(
       program3.opts(),
       async (ctx) => queryKnowledge(ctx.client, ctx.projectId, {

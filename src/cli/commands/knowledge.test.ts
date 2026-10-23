@@ -167,3 +167,15 @@ it('prints search scores and coverage and passes composable CLI filters', async 
   expect(JSON.parse(output.text)).toEqual(envelope);
   expect(queryKnowledge).toHaveBeenLastCalledWith('client','project',expect.objectContaining({ search:'quasar', type:'convention', status:'Asserted', tags:[' Rare '], domain:['engineering'], context_tags:['surface'], limit:3 }));
 });
+
+it('explains admission and definition participation in knowledge list help', () => {
+  const program = new Command();
+  registerKnowledgeCommands(program);
+  const list = program.commands.find(c=>c.name()==='knowledge')!.commands.find(c=>c.name()==='list')!;
+  let help='';
+  list.configureOutput({writeOut:text=>{help+=text;}});
+  list.outputHelp();
+  expect(help).toContain('relevance_admission');
+  expect(help).toContain('definitions_included');
+  expect(help).toContain('not a storage-capability flag');
+});

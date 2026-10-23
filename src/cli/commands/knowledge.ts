@@ -129,6 +129,7 @@ export function registerKnowledgeCommands(program: Command): void {
     .option('--definitions-only', 'Return only current term definitions', false)
     .option('--all', 'Include superseded entries', false)
     .option('--no-bookkeeping', 'Exclude explicitly marked procedural gate records')
+    .addHelpText('after', '\nSearch diagnostics: relevance_admission reports per-route similarity floors and whether they were enforced; score_cutoff is the secondary RRF bound. definitions_included means the definitions route successfully participated (even with zero definitions). definitions_available is its deprecated alias, not a storage-capability flag.\n')
     .action(async (opts) => {
       await runCommand(
         program.opts(),
