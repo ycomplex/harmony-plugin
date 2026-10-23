@@ -3,7 +3,7 @@ import { existsSync, readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { renderBrief, lintBrief, composeBrief, composeBriefTool, isMissingComposeBriefRevision, isMissingComposeBriefInitial, mergeBriefDoc, isMissingBriefHistorySubstrate, listBriefs, listBriefsTool, getBrief, getBriefTool, resolveBrief, resolveBriefTool, reshapeBrief, reshapeBriefTool, clearRevisionIterateFeedback, validateResolutionProvenance, PROVENANCE_AGENT_SYNTHESIZED, PROVENANCE_WEB_ONLY, fetchPendingResolution, fetchPendingRemark, consumeAcceptRemark, SENTENCE_WORD_LIMIT, DEFAULT_TAIL, STALE_PATCH_TAIL, PROPOSED_ACS_HEADING, PROMISED_WRITES_HEADING, DE_SCOPE_HEADING, ENTRY_PROVENANCE_PREFIX, frameUnits, readBuildPr, readBuildPrReferences, FRAME_KIND_FOR_REASON, type BriefDoc, type BriefItem, type GateFrame, type CriterionRow } from './briefs.js';
+import { renderBrief, lintBrief, composeBrief, composeBriefTool, isMissingComposeBriefRevision, isMissingComposeBriefInitial, mergeBriefDoc, resetDocOnReasonChange, isMissingBriefHistorySubstrate, listBriefs, listBriefsTool, getBrief, getBriefTool, resolveBrief, resolveBriefTool, reshapeBrief, reshapeBriefTool, clearRevisionIterateFeedback, validateResolutionProvenance, PROVENANCE_AGENT_SYNTHESIZED, PROVENANCE_WEB_ONLY, fetchPendingResolution, fetchPendingRemark, consumeAcceptRemark, SENTENCE_WORD_LIMIT, DEFAULT_TAIL, STALE_PATCH_TAIL, PROPOSED_ACS_HEADING, PROMISED_WRITES_HEADING, DE_SCOPE_HEADING, ENTRY_PROVENANCE_PREFIX, frameUnits, readBuildPr, readBuildPrReferences, FRAME_KIND_FOR_REASON, type BriefDoc, type BriefItem, type GateFrame, type CriterionRow } from './briefs.js';
 
 // Pass-through: the handlers delegate id resolution to resolveTaskId (like the sibling task tools); the
 // mock returns the input verbatim so the call-order assertions below stay valid for any id shape.
@@ -5504,4 +5504,110 @@ describe('claim rollout compose replay', () => {
       expect(client.insert).toHaveBeenCalled();
     });
   }
+});
+
+
+// ── B-1004: a brief re-composed under a NEW gate reason carries nothing of the old gate ─────────────
+describe('composeBrief — a reason change resets the prior gate\'s content (B-1004)', () => {
+  const revisionRow = { id: 'brief-1', task_id: 'task-1', reason: 'revise-scope-review', content: 'rendered', status: 'active', iteration: 2 };
+  const revisionOk = { compose_brief_revision: { data: revisionRow, error: null } };
+  const patchOf = (client: any): any =>
+    client.rpc.mock.calls.find((c: any[]) => c[0] === 'compose_brief_revision')?.[1]?._patch;
+
+  const PLAN_PRIOR: any = {
+    decide: 'Approve this plan?',
+    recommend: { text: 'Ship the plan as drafted.', confidence: 'high' },
+    items: [{ kind: 'decision', text: 'Plan shape', recommendation: 'As drafted' }],
+    frame: {
+      kind: 'plan',
+      scope: { repos: ['harmony-plugin'], surfaces: ['STALEPLANSURFACE'], has_migration: false },
+      steps: ['STALEPLANSTEP one'],
+      attestation: { base_verified: 'read it' },
+      carried_unproven: [],
+      ac_coverage: 'all',
+    },
+    payload: [{ write_kind: 'acceptance_criterion', ref: 'ac-stale', content: 'STALEPAYLOADCRITERION' }],
+    revision: { round: 2, changes: [{ change: 'STALEREVISIONCHANGE', responds_to: 'feedback' }] },
+  };
+  const priorRow = (reason: string) =>
+    ({ data: { id: 'brief-1', iteration: 1, reason, doc: PLAN_PRIOR, pending_activity: null } });
+  const NEW_DOC = { decide: 'Is the scope revision right?', items: [{ kind: 'decision', text: 'Scope', recommendation: 'Revise' }] };
+  const STALE = ['STALEPLANSURFACE', 'STALEPLANSTEP', 'STALEPAYLOADCRITERION', 'STALEREVISIONCHANGE', 'Ship the plan as drafted'];
+
+  it('AC1 — omitted frame/payload/revision/recommend from the old gate do not render under a new reason', async () => {
+    const client = makeClient([priorRow('plan-draft'), { data: null }], revisionOk);
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'revise-scope-review', doc: { ...NEW_DOC } as any,
+    });
+    const patch = patchOf(client);
+    for (const s of STALE) expect(patch.content).not.toContain(s);
+    expect(patch.content).not.toContain('Changed this round');
+    expect(patch.content).not.toContain('On accept, this brief files');
+    expect(patch.content).toContain('Is the scope revision right?');
+    // the DB's `prev || patch` must not be able to carry them either
+    expect(patch.doc.frame).toBeNull();
+    expect(patch.doc.revision).toBeNull();
+    expect(patch.doc.payload).toEqual([]);
+    expect(patch.doc.recommend).toBeNull();
+  });
+
+  it('AC2 — explicit frame:null / payload:[] / revision:null on a reason change remove that content', async () => {
+    const client = makeClient([priorRow('plan-draft'), { data: null }], revisionOk);
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'revise-scope-review',
+      doc: { ...NEW_DOC, frame: null, payload: [], revision: null } as any,
+    });
+    const patch = patchOf(client);
+    // the explicitly cleared sections (frame, payload, revision) must be gone; the omitted `recommend`
+    // is the new-reason reset's job and is asserted in AC1.
+    for (const s of STALE.filter((x) => x !== 'Ship the plan as drafted')) expect(patch.content).not.toContain(s);
+    expect(patch.content).not.toContain('Changed this round');
+    expect(patch.doc.frame).toBeNull();
+    expect(patch.doc.payload).toEqual([]);
+  });
+
+  it('AC3 — within the SAME reason, omitted sections still carry forward (B-901 unchanged)', async () => {
+    const client = makeClient([priorRow('revise-scope-review'), { data: null }], revisionOk);
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'revise-scope-review', doc: { decide: PLAN_PRIOR.decide, items: PLAN_PRIOR.items } as any,
+    });
+    const patch = patchOf(client);
+    expect(patch.content).toContain('STALEPLANSTEP');
+    expect(patch.content).toContain('Ship the plan as drafted');
+    expect(patch.doc.frame).toEqual(PLAN_PRIOR.frame);
+    expect(patch.doc.payload).toEqual(PLAN_PRIOR.payload);
+  });
+
+  it('AC3 — a prior row with no recorded reason is not treated as a reason change', async () => {
+    const client = makeClient([{ data: { id: 'brief-1', iteration: 1, doc: PLAN_PRIOR, pending_activity: null } }, { data: null }], revisionOk);
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'revise-scope-review', doc: { decide: PLAN_PRIOR.decide, items: PLAN_PRIOR.items } as any,
+    });
+    expect(patchOf(client).doc.frame).toEqual(PLAN_PRIOR.frame);
+  });
+
+  it('AC3 — a FIRST compose is unchanged', async () => {
+    const client = makeClient([{ data: null }, { data: revisionRow }, { data: null }], revisionOk);
+    const doc = { ...NEW_DOC } as any;
+    await composeBrief(client, PROJECT_ID, USER_ID, { task_id: 'task-1', reason: 'revise-scope-review', doc });
+    expect((client.insert.mock.calls[0][0] as { doc: unknown }).doc).toEqual(doc);
+  });
+
+  describe('resetDocOnReasonChange (pure)', () => {
+    it('nulls every omitted prior key, empties payload, keeps what the patch mentions, never touches decide', () => {
+      const out: any = resetDocOnReasonChange(PLAN_PRIOR, { decide: 'x', items: [], why: ['w'] } as any, 'plan-draft', 'revise-scope-review');
+      expect(out.decide).toBe('x');
+      expect(out.why).toEqual(['w']);
+      expect(out.frame).toBeNull();
+      expect(out.revision).toBeNull();
+      expect(out.recommend).toBeNull();
+      expect(out.payload).toEqual([]);
+    });
+    it('is the identity when reasons match, when there is no prior, or when the prior reason is unknown', () => {
+      const patch = { decide: 'x', items: [] } as any;
+      expect(resetDocOnReasonChange(PLAN_PRIOR, patch, 'plan-draft', 'plan-draft')).toBe(patch);
+      expect(resetDocOnReasonChange(null, patch, 'plan-draft', 'revise-scope-review')).toBe(patch);
+      expect(resetDocOnReasonChange(PLAN_PRIOR, patch, undefined, 'revise-scope-review')).toBe(patch);
+    });
+  });
 });
