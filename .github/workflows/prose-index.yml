@@ -1,0 +1,38 @@
+name: Refresh configured prose index
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: prose-index-${{ github.repository }}
+  cancel-in-progress: false
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/checkout@v6
+        with:
+          repository: ycomplex/harmony-plugin
+          ref: main
+          path: .prose-indexer
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - run: npm ci && npm run build
+        working-directory: .prose-indexer
+      - name: Publish immutable merged source snapshot
+        env:
+          HARMONY_API_TOKEN: ${{ secrets.HARMONY_PROSE_INDEX_TOKEN }}
+        run: |
+          if [ -z "$HARMONY_API_TOKEN" ]; then
+            # Until the operator provisions HARMONY_PROSE_INDEX_TOKEN this refresh is skipped loudly rather
+            # than failing every push to main; the search diagnostics still report stale or failed refresh.
+            echo "::warning::HARMONY_PROSE_INDEX_TOKEN is not set; skipping the configured prose refresh for this push"
+            exit 0
+          fi
+          node .prose-indexer/dist/bin/harmony.js knowledge sync-prose --root "$GITHUB_WORKSPACE" --commit "$GITHUB_SHA"
