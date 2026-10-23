@@ -15,8 +15,14 @@ Free-text responses are an envelope:
 - `below_cutoff_count`: candidates below cutoff in the **deduplicated scored union considered**.
   This is never a count of unseen corpus rows. `count_coverage` is `considered-scored-union`,
   `partial-scored-union` or `unavailable`.
-- `incomplete` / `truncated`: true for missing/failed/timed-out routes, missing source embeddings,
-  optional-work failures or candidate overflow. `routes_tried` records outcomes; failed requests
+- `incomplete`: a request failed, was unsupported, or missed its deadline. Candidate caps, stale
+  prose refresh and source-level missing embeddings do not set it; their existing diagnostics remain.
+- `truncated`: a candidate cap was reached or a route could not complete.
+- Every attempted request in `routes_tried` carries `elapsed_ms`, including failed or timed-out
+  requests. Diagnostic rows for that route reuse its elapsed time. Independent page enrichments run
+  concurrently; supersession reads its forward and inverse links concurrently within each batch.
+- Coverage diagnostics remain honest when `incomplete:false`: candidate caps, stale prose refresh
+  and sources without embeddings make `count_coverage` partial. `routes_tried` records outcomes; failed requests
   use bounded generic diagnostics rather than reflecting server text or credentials.
 - `normalized_query` / `normalized_filters`: effective query and filters. Query case is retained;
   surrounding/repeated whitespace is normalized.
