@@ -1,5 +1,10 @@
 import { renameKnowledgeConcept, previewKnowledgeMerge, mergeKnowledgeConcepts } from '../../tools/knowledge-names.js';
 vi.mock('../../tools/knowledge-names.js',()=>({readKnowledgeNames:vi.fn(),renameKnowledgeConcept:vi.fn().mockResolvedValue({entity_id:'c'}),previewKnowledgeMerge:vi.fn().mockResolvedValue({confirmation:'key'}),mergeKnowledgeConcepts:vi.fn().mockResolvedValue({target_entity_id:'now'})}));
+import { captureSurfaceRecord, readSurfaceRecords } from '../../tools/surface-records.js';
+import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+vi.mock('../../tools/surface-records.js', () => ({ captureSurfaceRecord: vi.fn().mockResolvedValue({changed:true}), readSurfaceRecords: vi.fn().mockResolvedValue({availability:'available',records:[]}) }));
 import { readFeatureAccounts, applyFeatureAmendment } from '../../tools/feature-accounts.js';
 import { publishDefinition } from '../../tools/knowledge-definitions.js';
 vi.mock('../../tools/knowledge-definitions.js', () => ({ publishDefinition: vi.fn().mockResolvedValue({ id: 'definition', current_revision: 'revision' }) }));
@@ -136,4 +141,20 @@ describe('explicit name mutation commands',()=>{
   expect(mergeKnowledgeConcepts).toHaveBeenLastCalledWith('client','project',{source_id:'old',target_id:'now',source_task_id:'B-1227',confirmation:'reviewed-key'});
   await expect(make().parseAsync([...args,'--preview','--confirm','key'],{from:'user'})).rejects.toThrow('exactly one');
  });
+});
+
+describe('knowledge surfaces CLI',()=>{
+  it('reads with the same owner and component identity',async()=>{
+    const program=new Command();registerKnowledgeCommands(program);
+    await program.parseAsync(['knowledge','surfaces','read','--surface','Views','--component','web/src/Views.tsx'],{from:'user'});
+    expect(readSurfaceRecords).toHaveBeenCalledWith('client','project',{owner_surface:'Views',component_ref:'web/src/Views.tsx'});
+  });
+  it('passes a JSON capture to the shared writer',async()=>{
+    const dir=mkdtempSync(join(tmpdir(),'surface-cli-'));const args={owner_surface:'Views',labels:['Name']};
+    try { const file=join(dir,'capture.json');writeFileSync(file,JSON.stringify(args));
+      const program=new Command();registerKnowledgeCommands(program);
+      await program.parseAsync(['knowledge','surfaces','capture','--file',file],{from:'user'});
+      expect(captureSurfaceRecord).toHaveBeenCalledWith('client','project',args);
+    } finally {rmSync(dir,{recursive:true,force:true});}
+  });
 });

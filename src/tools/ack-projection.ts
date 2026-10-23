@@ -119,6 +119,7 @@ const supersededAck = (row: unknown) => pick(row, ['id', 'status', 'superseded_b
 export const ackProjections: Record<string, AckProjection> = {
   rename_concept: row => pick(row, ['id','entity_id','renamed_at','source_task_id','actor','operation_key']),
   merge_concepts: row => pick(row, ['source_entity_id','target_entity_id','renamed_at','source_task_id','actor','operation_key']),
+  capture_surface_record: row => pick(row, ['record_id','captured_at','changed']),
   create_feature_account: row => pick(row, ['account_id','entry_id','current_revision','created_at']),
   propose_feature_amendment: row => pick(row, ['amendment_id','account_id','proposal_event_id','created_at','applied_revision','applied_at']),
   apply_feature_amendment: row => pick(row, ['amendment_id','account_id','applied_revision','applied_at','application_evidence']),
