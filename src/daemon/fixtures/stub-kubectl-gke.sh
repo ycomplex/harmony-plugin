@@ -4,6 +4,10 @@ node -e 'require("fs").appendFileSync(process.env.STUB_LOGS + "/kubectl.log", pr
 args=("$@")
 # drop the leading -n <ns> / --context <c>
 while [ "${args[0]:-}" = "-n" ] || [ "${args[0]:-}" = "--context" ]; do args=("${args[@]:2}"); done
+# Accept the real client's bounded request flag at any position.
+filtered=()
+for arg in "${args[@]}"; do case "$arg" in --request-timeout=*) ;; *) filtered+=("$arg") ;; esac; done
+args=("${filtered[@]}")
 all="${args[*]}"
 next() {  # $1 = seq json env var, $2 = counter name -> prints the response for this call
   node -e '
@@ -63,7 +67,10 @@ case "$all" in
       GARBAGE) echo "<html>"; exit 0 ;;
       *) printf '%s' "$r" ;;
     esac ;;
-  "get events"*) echo "launcher must never read events" >> "$STUB_LOGS/EVENTS-READ"; exit 0 ;;
+  "get pvc "*) printf '%s' "${STUB_PVC_JSON:-null}" ;;
+  "get events"*)
+    if [ -n "${STUB_EVENTS_FORBIDDEN:-}" ]; then echo Forbidden >&2; exit 1; fi
+    printf '%s' "${STUB_EVENTS_JSON:-null}" ;;
   "get jobs "*) printf '%s' "${STUB_JOBS_JSON:-{\"items\":[]\}}" ;;
   "patch secret "*) echo "launcher must not patch secrets (the remote conductor cannot read them)" >> "$STUB_LOGS/PATCH-SECRET"; exit 1 ;;
   "delete job "*) if [ -n "${STUB_DELETE_FAILS:-}" ]; then echo 'Error from server (Forbidden)' >&2; exit 1; fi ;;

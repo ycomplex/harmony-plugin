@@ -356,3 +356,26 @@ a different holder is live, so a refusal means the pod is still up: scale it dow
 - `conductor logs` and the lifecycle guard read `gcp.project` from the same config files as everything else; with no
   project configured they stop and say where to set it (`gcp.project` in `.harmony/conductor.json` or
   `~/.harmony/conductor-host.json`) instead of guessing.
+
+
+### Startup infrastructure failures (B-1267)
+
+New GKE Jobs get 120 seconds to start the `worker` container. Scheduling alone does
+not count: image pulls and init containers can still block it. Override with the
+positive integer `HARMONY_GKE_STARTUP_TIMEOUT_S` on the conductor host if a pool's
+normal scale-up takes longer. Once the worker has run, the existing worker deadline
+and completion/disruption checks apply.
+
+At startup expiry the launcher reads the PVC, pod status and the latest relevant
+namespaced events, requests Job deletion, and exits 74. The conductor parks with
+`startup-unavailable`, includes the reason in the leg log and ticket comment, and
+runs its existing reap-before-park safeguard. The ticket disk is retained. Resolve
+the reported quota, image or scheduling problem before resuming the conduction.
+A failed events read is reported explicitly; PVC and pod status remain available.
+
+Rollout requires **re-applying `container/conductor/k8s/rbac-legs.yaml`** for
+namespaced event reads and **Update/restart of the conductor pod** for the code.
+Merging alone does not update a running conductor. Without the Role update the
+new launcher still fails promptly, but event detail is unavailable. An old
+conductor treats exit 74 as dirty-exit, so roll out the launcher and classifier
+in the same conductor image. No PVC retention or quota setting changes here.

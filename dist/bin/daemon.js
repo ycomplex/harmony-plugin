@@ -40093,6 +40093,7 @@ function classifyWorkerExit(args) {
   if (args.refusal && (args.refusal.kind === "quota" || args.refusal.kind === "rate-limit")) {
     return { action: "park", reason: args.refusal.kind };
   }
+  if (exitCode === 74) return { action: "park", reason: "startup-unavailable" };
   if (exitCode !== 0) return { action: "park", reason: "dirty-exit" };
   if (exitCode === 0 && !progressed && args.waitingOn) return { action: "wait", reason: "waiting-on" };
   if (!progressed) {
@@ -40902,6 +40903,12 @@ async function settleTrackedLaunch(deps, state, keeper, runtime, row, tracked) {
   deps.log(
     `${label(row, after, deps.projectKey)}: worker exit code=${tracked.exitCode ?? "null"} \u2192 ` + settleLogLine(outcome, cls, after.workflow_state)
   );
+  if (cls === "startup-unavailable") {
+    const line = (tracked.launchOutputTail ?? "").split("\n").filter((line2) => line2.startsWith("gke-worker-launch: startup-unavailable: ")).at(-1);
+    const detail = line ? line.slice("gke-worker-launch: startup-unavailable: ".length).replace(/[\x00-\x1f\x7f]/g, " ").slice(0, 2800) : "launcher diagnostic unavailable";
+    deps.log(`${label(row, after, deps.projectKey)}: startup-unavailable \u2014 ${detail}`);
+    await commentOnTicket(deps, row, `Conduction parked (startup-unavailable): ${detail}. The ticket disk is retained; address the infrastructure cause before resuming.`);
+  }
   if (progressed && cls !== "quota" && cls !== "rate-limit" && quotaPausesOf(runtime, row.id) > 0) {
     await resetQuotaPauses(deps, runtime, row);
   }

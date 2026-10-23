@@ -218,6 +218,9 @@ export function classifyWorkerExit(args: ClassifyArgs): ExitOutcome {
     return { action: 'park', reason: args.refusal.kind };
   }
 
+  // B-1267: launcher could not start the worker. Infrastructure is not a retryable worker crash.
+  if (exitCode === 74) return { action: 'park', reason: 'startup-unavailable' };
+
   // 6. Dirty exit — non-zero or unknown code with nothing above explaining it.
   if (exitCode !== 0) return { action: 'park', reason: 'dirty-exit' };
 

@@ -409,12 +409,12 @@ describe.skipIf(!CAPABLE)('gke-worker-launch.sh — the wait loop is the exit-co
     expect(launch(w).status).toBe(0);
   });
 
-  it('Failed with reason DeadlineExceeded -> 73 (B-1187), naming the reason, without reading pods', () => {
+  it('Failed with reason DeadlineExceeded -> 73 (B-1187), naming the reason, without extra failure pod reads', () => {
     const w = makeWorld(seq([ACTIVE, FAILED]));
     const r = launch(w);
     expect(r.status).toBe(73);
     expect(r.stderr).toContain('DeadlineExceeded');
-    expect(podReads(w)).toBe(0);
+    expect(podReads(w)).toBe(1); // initial active poll checks startup; DeadlineExceeded does not re-read
   });
 
   it('Failed for another reason with clean pods -> 1', () => {
@@ -471,7 +471,7 @@ describe.skipIf(!CAPABLE)('gke-worker-launch.sh — the wait loop is the exit-co
     const w = makeWorld(seq([ACTIVE, ACTIVE, COMPLETE], [CLEAN_POD]));
     expect(launch(w).status).toBe(0);
     expect(read(w, 'jobctr')).toBe('3');
-    const polls = verbs(w).filter((c) => /get job \S+ -o json$/.test(c));
+    const polls = verbs(w).filter((c) => /get job \S+ -o json --request-timeout=5s$/.test(c));
     expect(polls).toHaveLength(3);
   });
 
@@ -484,8 +484,8 @@ describe.skipIf(!CAPABLE)('gke-worker-launch.sh — the wait loop is the exit-co
     const pending = pod({}, { phase: 'Pending', reason: 'ProvisioningFailed', conditions: [{ type: 'PodScheduled', status: 'False', message: 'no topology key FailedAttachVolume' }] });
     const w = makeWorld(seq([ACTIVE, ACTIVE, ACTIVE, COMPLETE], [pending, CLEAN_POD]));
     expect(launch(w).status).toBe(0);
-    // pods are only read once the Job is Complete
-    expect(podReads(w)).toBe(1);
+    // B-1267: startup checks read pods, but events are fetched only at expiry.
+    expect(podReads(w)).toBeGreaterThan(1);
     expect(existsSync(join(w.logs, 'EVENTS-READ'))).toBe(false);
     expect(verbs(w).some((c) => c.includes('events'))).toBe(false);
   });
@@ -594,5 +594,69 @@ describe.skipIf(!CAPABLE)('gke-worker-reap.sh', () => {
     const w = makeWorld({ STUB_JOBS_JSON: jobsJson([{ name: 'b', types: ['Failed'] }]) });
     expect(run(w, REAP, [CID, TICKET]).status).toBe(3);
     expect(verbs(w).some((c) => c.includes('delete'))).toBe(false);
+  });
+});
+
+
+describe.skipIf(!CAPABLE)('B-1267 bounded worker startup', () => {
+  const pending = pod({ uid: 'pod-current' }, { phase: 'Pending', conditions: [
+    { type: 'PodScheduled', status: 'False', reason: 'Unschedulable', message: 'pod has unbound immediate PersistentVolumeClaims' },
+  ] });
+  const pvc = { metadata: { uid: 'pvc-current' }, status: { phase: 'Pending' } };
+  const events = { items: [
+    { involvedObject: { uid: 'pvc-current' }, reason: 'ProvisioningFailed', message: 'old failure', lastTimestamp: '2026-10-23T10:00:00Z' },
+    { involvedObject: { uid: 'pvc-current' }, reason: 'ProvisioningFailed', message: 'SSD_TOTAL_GB quota exhausted', lastTimestamp: '2026-10-23T11:00:00Z' },
+    { involvedObject: { uid: 'pvc-old' }, reason: 'ProvisioningFailed', message: 'unrelated secret noise', lastTimestamp: '2026-10-23T12:00:00Z' },
+  ] };
+  it('stops a pending PVC, includes its latest event and scheduling reason, and deletes only the Job', () => {
+    const w = makeWorld({ ...seq([ACTIVE], [pending]), HARMONY_GKE_STARTUP_TIMEOUT_S: '1',
+      STUB_PVC_JSON: JSON.stringify(pvc, null, 2), STUB_EVENTS_JSON: JSON.stringify(events, null, 2) });
+    const result = launch(w);
+    expect(result.status).toBe(74);
+    expect(result.stderr).toContain('startup-unavailable:');
+    expect(result.stderr).toContain('PVC Pending');
+    expect(result.stderr).toContain('SSD_TOTAL_GB quota exhausted');
+    expect(result.stderr).toContain('unbound immediate PersistentVolumeClaims');
+    expect(result.stderr).not.toContain('old failure');
+    expect(result.stderr).not.toContain('unrelated secret noise');
+    expect(verbs(w).some(c => c.includes('delete job') && c.includes('--wait=false'))).toBe(true);
+    expect(verbs(w).some(c => c.includes('delete pvc'))).toBe(false);
+    for (const c of verbs(w).filter(c => /get (pods|pvc|events)/.test(c))) expect(c).toContain('--request-timeout=5s');
+  });
+  it.each(['ImagePullBackOff', 'ErrImagePull', 'Unschedulable'])(
+    'parks a never-started worker blocked by %s even with a Bound PVC', reason => {
+      const waiting = pod({ uid: 'pod-current' }, { phase: 'Pending', containerStatuses: [
+        { name: 'worker', state: { waiting: { reason, message: 'cannot start' } } },
+      ] });
+      const w = makeWorld({ ...seq([ACTIVE], [waiting]), HARMONY_GKE_STARTUP_TIMEOUT_S: '1',
+        STUB_PVC_JSON: JSON.stringify({ ...pvc, status: { phase: 'Bound' } }) });
+      const result = launch(w);
+      expect(result.status).toBe(74);
+      expect(result.stderr).toContain(reason);
+    });
+  it('reports unavailable API evidence and failed deletion explicitly', () => {
+    const w = makeWorld({ ...seq([ACTIVE], ['ERR']), HARMONY_GKE_STARTUP_TIMEOUT_S: '1', STUB_EVENTS_FORBIDDEN: '1', STUB_DELETE_FAILS: '1' });
+    const result = launch(w);
+    expect(result.status).toBe(74);
+    expect(result.stderr).toContain('pod status unavailable');
+    expect(result.stderr).toContain('events unavailable');
+    expect(result.stderr).toContain('conductor reap required');
+  });
+  it('a started worker disables the startup timer; existing completion checks still win', () => {
+    const running = pod({}, { phase: 'Running', containerStatuses: [{ name: 'worker', state: { running: { startedAt: '2026-10-23T10:00:00Z' } } }] });
+    const w = makeWorld({ ...seq([ACTIVE, ACTIVE, COMPLETE], [running, CLEAN_POD]), HARMONY_GKE_STARTUP_TIMEOUT_S: '1' });
+    expect(launch(w).status).toBe(0);
+    expect(verbs(w).some(c => c.includes('get events'))).toBe(false);
+    expect(podReads(w)).toBe(2); // startup once, Complete evidence once
+  });
+  it('a running init/sidecar does not count as the worker starting', () => {
+    const init = pod({}, { phase: 'Pending', initContainerStatuses: [{ name: 'ticket-dirs', state: { running: {} } }] });
+    const w = makeWorld({ ...seq([ACTIVE], [init]), HARMONY_GKE_STARTUP_TIMEOUT_S: '1' });
+    expect(launch(w).status).toBe(74);
+  });
+  it.each(['0', '-1', 'oops'])('refuses invalid timeout %s before minting', timeout => {
+    const w = makeWorld({ HARMONY_GKE_STARTUP_TIMEOUT_S: timeout });
+    expect(launch(w).status).toBe(1);
+    expect(minted(w)).toBe(false);
   });
 });
