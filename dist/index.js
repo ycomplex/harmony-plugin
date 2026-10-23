@@ -44724,8 +44724,8 @@ function editedClaimContent(current, updates) {
   }
   return claimContent(title, content);
 }
-function plainText(content) {
-  return stripClaim(content).replace(/<[^>]*>/g, " ").replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/[`*_#>|~]/g, "").replace(/\s+/g, " ").trim();
+function plainText(content, preserveCode = false) {
+  return stripClaim(content).replace(/<[^>]*>/g, " ").replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1").replace(preserveCode ? /[*_#>|~]/g : /[`*_#>|~]/g, "").replace(/\s+/g, " ").trim();
 }
 function matchedPassage(content, query) {
   const text3 = [decodeClaim(content).claim, plainText(content)].filter(Boolean).join(" ");
@@ -44735,20 +44735,15 @@ function matchedPassage(content, query) {
   const at = Math.min(...indexes), start = Math.max(0, at - 60), end = Math.min(text3.length, start + 240);
   return `${start ? "\u2026" : ""}${text3.slice(start, end)}${end < text3.length ? "\u2026" : ""}`;
 }
-function proposeClaim(content) {
+function proposeClaim(content, completeOnly = false) {
   if (decodeClaim(content).claim) return null;
   const lines = content.split("\n").filter((line) => !/^\s*(?:_?Derived from|#{1,6}\s|\*\*(?:Question put to the human|Track|Reach|On accept|Context|Ratified asks):)/i.test(line));
-  const text3 = plainText(lines.join("\n")).replace(/^Decision:\s*/i, "");
-  const candidates = text3.match(/.*?[.!?](?=\s|$)|.+$/g) ?? [];
-  let candidate = "";
-  for (const part of candidates) {
-    candidate += part;
-    if (/\b(?:e\.g\.|i\.e\.)$/i.test(candidate.trim())) continue;
-    const value = candidate.trim();
-    if (isSingleSentenceShaped(value)) return value;
-    return null;
-  }
-  return null;
+  const text3 = plainText(lines.join("\n"), true).replace(/^Decision:\s*/i, "");
+  const neutral = text3.replace(/(`+)[\s\S]*?\1/g, (value2) => " ".repeat(value2.length)).replace(/\be\.g\.|\bi\.e\./gi, (value2) => " ".repeat(value2.length));
+  const boundary = /[.!?]+(?=\s|$)/.exec(neutral);
+  if (!boundary && completeOnly) return null;
+  const value = (boundary ? text3.slice(0, boundary.index + boundary[0].length) : text3).trim();
+  return isSingleSentenceShaped(value) ? value : null;
 }
 
 // src/tools/knowledge-metadata.ts

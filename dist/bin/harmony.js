@@ -36682,8 +36682,8 @@ function editedClaimContent(current, updates) {
   }
   return claimContent(title, content);
 }
-function plainText(content) {
-  return stripClaim(content).replace(/<[^>]*>/g, " ").replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/[`*_#>|~]/g, "").replace(/\s+/g, " ").trim();
+function plainText(content, preserveCode = false) {
+  return stripClaim(content).replace(/<[^>]*>/g, " ").replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1").replace(preserveCode ? /[*_#>|~]/g : /[`*_#>|~]/g, "").replace(/\s+/g, " ").trim();
 }
 function matchedPassage(content, query) {
   const text4 = [decodeClaim(content).claim, plainText(content)].filter(Boolean).join(" ");
@@ -36693,20 +36693,15 @@ function matchedPassage(content, query) {
   const at2 = Math.min(...indexes), start = Math.max(0, at2 - 60), end = Math.min(text4.length, start + 240);
   return `${start ? "\u2026" : ""}${text4.slice(start, end)}${end < text4.length ? "\u2026" : ""}`;
 }
-function proposeClaim(content) {
+function proposeClaim(content, completeOnly = false) {
   if (decodeClaim(content).claim) return null;
   const lines = content.split("\n").filter((line) => !/^\s*(?:_?Derived from|#{1,6}\s|\*\*(?:Question put to the human|Track|Reach|On accept|Context|Ratified asks):)/i.test(line));
-  const text4 = plainText(lines.join("\n")).replace(/^Decision:\s*/i, "");
-  const candidates = text4.match(/.*?[.!?](?=\s|$)|.+$/g) ?? [];
-  let candidate = "";
-  for (const part of candidates) {
-    candidate += part;
-    if (/\b(?:e\.g\.|i\.e\.)$/i.test(candidate.trim())) continue;
-    const value = candidate.trim();
-    if (isSingleSentenceShaped(value)) return value;
-    return null;
-  }
-  return null;
+  const text4 = plainText(lines.join("\n"), true).replace(/^Decision:\s*/i, "");
+  const neutral = text4.replace(/(`+)[\s\S]*?\1/g, (value2) => " ".repeat(value2.length)).replace(/\be\.g\.|\bi\.e\./gi, (value2) => " ".repeat(value2.length));
+  const boundary = /[.!?]+(?=\s|$)/.exec(neutral);
+  if (!boundary && completeOnly) return null;
+  const value = (boundary ? text4.slice(0, boundary.index + boundary[0].length) : text4).trim();
+  return isSingleSentenceShaped(value) ? value : null;
 }
 
 // src/tools/knowledge-metadata.ts
@@ -38213,9 +38208,23 @@ async function supersedeKnowledgeEntry(client, projectId, userId, args) {
   );
   return result;
 }
-async function proposeLegacyClaims(client, projectId, apply = false) {
+async function proposeLegacyClaims(client, projectId, options = {}) {
+  const { apply = false, entries, limit = 100 } = typeof options === "boolean" ? { apply: options } : options;
+  if (!Number.isSafeInteger(limit) || limit < 1) throw new Error("limit must be a positive integer");
+  if (entries !== void 0 && (!Array.isArray(entries) || entries.some((entry) => typeof entry === "string" ? !entry.trim() : !entry || typeof entry.id !== "string" || !entry.id.trim() || entry.reviewed !== void 0 && typeof entry.reviewed !== "boolean"))) {
+    throw new Error("entries must be an array of entry IDs or proposal rows with an id");
+  }
+  if (apply && (!entries || entries.some((entry) => typeof entry === "string"))) {
+    throw new Error("apply requires an explicit reviewed proposal subset in entries");
+  }
+  const ids = entries?.map((entry) => typeof entry === "string" ? entry : entry.id);
+  if (ids && new Set(ids).size !== ids.length) throw new Error("entries must not contain duplicate IDs");
+  if (ids?.length === 0) return [];
+  const reviews = new Map(entries?.filter((entry) => typeof entry !== "string").map((entry) => [entry.id, entry]));
   const workspaceId = await getWorkspaceId(client, projectId);
-  const { data, error } = await client.from("knowledge_decisions").select("*").eq("workspace_id", workspaceId).eq("project_id", projectId).neq("type", "intent");
+  let query = client.from("knowledge_decisions").select("*").eq("workspace_id", workspaceId).eq("project_id", projectId).neq("type", "intent").order("id");
+  if (ids) query = query.in("id", ids);
+  const { data, error } = await query.limit(limit);
   if (error) throw error;
   const results = [];
   for (const row of data ?? []) {
@@ -38223,12 +38232,21 @@ async function proposeLegacyClaims(client, projectId, apply = false) {
       results.push({ id: row.id, status: "skipped-existing" });
       continue;
     }
-    const claim = proposeClaim(row.content ?? "");
+    const claim = proposeClaim(row.content ?? "", true);
     if (!claim) {
       results.push({ id: row.id, status: "no-usable-sentence" });
       continue;
     }
     if (apply) {
+      const review = reviews.get(row.id);
+      if (review?.reviewed !== true || review.status !== "proposed") {
+        results.push({ id: row.id, status: "skipped-unreviewed" });
+        continue;
+      }
+      if (review.claim !== claim) {
+        results.push({ id: row.id, status: "skipped-changed" });
+        continue;
+      }
       const { data: written, error: writeError } = await client.from("knowledge_decisions").update({ content: encodeClaim(row.content ?? "", claim, "derived") }).eq("id", row.id).eq("workspace_id", workspaceId).eq("project_id", projectId).eq("content", row.content ?? "").select("id");
       if (writeError) throw writeError;
       if (!written?.length) {
@@ -38236,7 +38254,7 @@ async function proposeLegacyClaims(client, projectId, apply = false) {
         continue;
       }
     }
-    results.push({ id: row.id, claim, claim_source: "derived", status: apply ? "applied" : "proposed" });
+    results.push({ id: row.id, claim, claim_source: "derived", status: apply ? "applied" : "proposed", reviewed: false });
   }
   return results;
 }
@@ -49216,8 +49234,12 @@ ${result.instructions.join("\n")}`);
       metadata: JSON.parse(opts.metadata)
     }), (data) => JSON.stringify(data, null, 2));
   });
-  knowledge.command("propose-claims").description("Propose missing legacy claims; dry run unless --apply").option("--apply", "Store missing proposals as derived", false).action(async (opts) => {
-    await runCommand(program3.opts(), (ctx) => proposeLegacyClaims(ctx.client, ctx.projectId, opts.apply), (data) => JSON.stringify(data, null, 2));
+  knowledge.command("propose-claims").description("Preview complete legacy claim sentences as JSON; mark approved rows reviewed:true before applying").option("--entries <file>", "JSON array of entry IDs for preview, or proposal rows for reviewed apply").option("--limit <number>", "Maximum entries to inspect (positive integer)", "100").option("--apply", "Apply only reviewed:true proposed rows from --entries, retaining derived status", false).action(async (opts) => {
+    const limit = Number(opts.limit);
+    if (!/^\d+$/.test(opts.limit) || !Number.isSafeInteger(limit) || limit < 1) throw new Error("--limit must be a positive integer");
+    if (opts.apply && !opts.entries) throw new Error("--apply requires --entries with explicitly reviewed proposal rows");
+    const entries = opts.entries ? JSON.parse(readFileSync6(opts.entries, "utf8")) : void 0;
+    await runCommand(program3.opts(), (ctx) => proposeLegacyClaims(ctx.client, ctx.projectId, { apply: opts.apply, entries, limit }), (data) => JSON.stringify(data, null, 2));
   });
   knowledge.command("get").description("Get full details of a knowledge entry").argument("<id-or-title>", "Entry UUID or title").action(async (idOrTitle) => {
     const isUuid = /^[0-9a-f-]{36}$/i.test(idOrTitle);
