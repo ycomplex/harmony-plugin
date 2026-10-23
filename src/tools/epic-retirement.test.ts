@@ -55,6 +55,9 @@ describe('epic retirement compatibility and write protection', () => {
     const clear=client([{data:{id:'task'},error:null}]);
     await updateTask(clear,'project',{task_id:'task',epic_id:null});
     expect(clear.chain.update).toHaveBeenCalledWith({epic_id:null});
+    const cliClear=client([{data:{id:'task'},error:null}]);
+    await updateTask(cliClear,'project',{task_id:'task',epic_id:'null'});
+    expect(cliClear.chain.update).toHaveBeenCalledWith({epic_id:null});
   });
   it('refuses bulk update into retired epic', async () => {
     const db=client([{data:[{epic_id:null}],error:null},{data:[retired],error:null}]);

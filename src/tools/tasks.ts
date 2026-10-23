@@ -553,7 +553,7 @@ export const updateTaskTool = {
       status: { type: 'string', description: 'New status' },
       priority: { type: 'string', enum: ['high', 'medium', 'low'], description: 'New priority' },
       assignee_id: { type: 'string', description: 'Assignee — UUID, display name, or email (null to unassign). Use list_members to find users.' },
-      epic_id: { type: 'string', description: 'New epic ID (null to unassign)' },
+      epic_id: { type: ['string', 'null'], description: 'New active epic ID (null to unassign)' },
       description: { type: 'string', description: 'New description' },
       due_date: { type: 'string', description: 'Due date in YYYY-MM-DD format (null to clear)' },
       archived: { type: 'boolean', description: 'Archive or unarchive' },
@@ -583,6 +583,7 @@ export async function updateTask(
   const resolvedId = await resolveTaskId(client, projectId, args.task_id);
   const { task_id: _discarded, field_values, label_ids, ...updates } = args;
 
+  if (updates.epic_id === 'null') updates.epic_id = null;
   if (updates.epic_id) {
     const { data: current, error } = await client.from('tasks').select('epic_id').eq('id', resolvedId).eq('project_id', projectId).single();
     if (error) throw error;
