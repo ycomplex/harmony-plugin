@@ -1894,17 +1894,50 @@ export async function supersedeKnowledgeEntry(
   return result;
 }
 
-/** Explicit maintenance action; never runs as a side effect of a read. */
-export async function proposeLegacyClaims(client: SupabaseClient, projectId: string, apply = false) {
+export interface LegacyClaimReview {
+  id: string;
+  claim?: string;
+  status?: string;
+  reviewed?: boolean;
+}
+export interface LegacyClaimOptions {
+  apply?: boolean;
+  entries?: Array<string | LegacyClaimReview>;
+  limit?: number;
+}
+
+/** Explicit maintenance action. Apply requires the exact proposals a maintainer reviewed. */
+export async function proposeLegacyClaims(client: SupabaseClient, projectId: string, options: LegacyClaimOptions | boolean = {}) {
+  const { apply = false, entries, limit = 100 } = typeof options === 'boolean' ? { apply: options } : options;
+  if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('limit must be a positive integer');
+  if (entries !== undefined && (!Array.isArray(entries) || entries.some(entry =>
+    typeof entry === 'string' ? !entry.trim() : !entry || typeof entry.id !== 'string' || !entry.id.trim()
+      || (entry.reviewed !== undefined && typeof entry.reviewed !== 'boolean')))) {
+    throw new Error('entries must be an array of entry IDs or proposal rows with an id');
+  }
+  if (apply && (!entries || entries.some(entry => typeof entry === 'string'))) {
+    throw new Error('apply requires an explicit reviewed proposal subset in entries');
+  }
+  const ids = entries?.map(entry => typeof entry === 'string' ? entry : entry.id);
+  if (ids && new Set(ids).size !== ids.length) throw new Error('entries must not contain duplicate IDs');
+  if (ids?.length === 0) return [];
+  const reviews = new Map(entries?.filter((entry): entry is LegacyClaimReview => typeof entry !== 'string').map(entry => [entry.id, entry]));
   const workspaceId = await getWorkspaceId(client, projectId);
-  const { data, error } = await client.from('knowledge_decisions').select('*').eq('workspace_id', workspaceId).eq('project_id', projectId).neq('type', 'intent');
+  let query = client.from('knowledge_decisions').select('*').eq('workspace_id', workspaceId).eq('project_id', projectId).neq('type', 'intent').order('id');
+  if (ids) query = query.in('id', ids);
+  const { data, error } = await query.limit(limit);
   if (error) throw error;
   const results = [];
   for (const row of data ?? []) {
     if (claimFields(row).claim) { results.push({ id: row.id, status: 'skipped-existing' }); continue; }
-    const claim = proposeClaim(row.content ?? '');
+    const claim = proposeClaim(row.content ?? '', true);
     if (!claim) { results.push({ id: row.id, status: 'no-usable-sentence' }); continue; }
     if (apply) {
+      const review = reviews.get(row.id);
+      if (review?.reviewed !== true || review.status !== 'proposed') {
+        results.push({ id: row.id, status: 'skipped-unreviewed' }); continue;
+      }
+      if (review.claim !== claim) { results.push({ id: row.id, status: 'skipped-changed' }); continue; }
       const { data: written, error: writeError } = await client.from('knowledge_decisions')
         .update({ content: encodeClaim(row.content ?? '', claim, 'derived') })
         .eq('id', row.id).eq('workspace_id', workspaceId).eq('project_id', projectId)
@@ -1912,7 +1945,7 @@ export async function proposeLegacyClaims(client: SupabaseClient, projectId: str
       if (writeError) throw writeError;
       if (!written?.length) { results.push({ id: row.id, status: 'skipped-changed' }); continue; }
     }
-    results.push({ id: row.id, claim, claim_source: 'derived', status: apply ? 'applied' : 'proposed' });
+    results.push({ id: row.id, claim, claim_source: 'derived', status: apply ? 'applied' : 'proposed', reviewed: false });
   }
   return results;
 }

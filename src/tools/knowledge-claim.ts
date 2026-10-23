@@ -50,8 +50,8 @@ export function editedClaimContent(current: { title: string; content: string; cl
   }
   return claimContent(title, content);
 }
-export function plainText(content: string): string {
-  return stripClaim(content).replace(/<[^>]*>/g, ' ').replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/[`*_#>|~]/g, '').replace(/\s+/g, ' ').trim();
+export function plainText(content: string, preserveCode = false): string {
+  return stripClaim(content).replace(/<[^>]*>/g, ' ').replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1').replace(preserveCode ? /[*_#>|~]/g : /[`*_#>|~]/g, '').replace(/\s+/g, ' ').trim();
 }
 export function matchedPassage(content: string, query: string): string | null {
   const text = [decodeClaim(content).claim, plainText(content)].filter(Boolean).join(' ');
@@ -61,19 +61,16 @@ export function matchedPassage(content: string, query: string): string | null {
   const at = Math.min(...indexes), start = Math.max(0, at - 60), end = Math.min(text.length, start + 240);
   return `${start ? '…' : ''}${text.slice(start, end)}${end < text.length ? '…' : ''}`;
 }
-export function proposeClaim(content: string): string | null {
+export function proposeClaim(content: string, completeOnly = false): string | null {
   if (decodeClaim(content).claim) return null;
   const lines = content.split('\n').filter(line => !/^\s*(?:_?Derived from|#{1,6}\s|\*\*(?:Question put to the human|Track|Reach|On accept|Context|Ratified asks):)/i.test(line));
-  const text = plainText(lines.join('\n')).replace(/^Decision:\s*/i, '');
-  // Sentence boundary ignores version dots and the two supported abbreviations.
-  const candidates = text.match(/.*?[.!?](?=\s|$)|.+$/g) ?? [];
-  let candidate = '';
-  for (const part of candidates) {
-    candidate += part;
-    if (/\b(?:e\.g\.|i\.e\.)$/i.test(candidate.trim())) continue;
-    const value = candidate.trim();
-    if (isSingleSentenceShaped(value)) return value;
-    return null;
-  }
-  return null;
+  const text = plainText(lines.join('\n'), true).replace(/^Decision:\s*/i, '');
+  // Mask punctuation without changing offsets: code spans and supported abbreviations
+  // cannot terminate the surrounding sentence. Token-internal dots do not match.
+  const neutral = text.replace(/(`+)[\s\S]*?\1/g, value => ' '.repeat(value.length))
+    .replace(/\be\.g\.|\bi\.e\./gi, value => ' '.repeat(value.length));
+  const boundary = /[.!?]+(?=\s|$)/.exec(neutral);
+  if (!boundary && completeOnly) return null;
+  const value = (boundary ? text.slice(0, boundary.index + boundary[0].length) : text).trim();
+  return isSingleSentenceShaped(value) ? value : null;
 }
