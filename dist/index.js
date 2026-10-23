@@ -47289,11 +47289,13 @@ var AUTO_APPROVE_GATE_VALUES = GATES.filter(
 var AutoApproveGateSchema = external_exports.enum(
   AUTO_APPROVE_GATE_VALUES
 );
+var ReleaseDelegateSchema = external_exports.enum(["orchestrator"]);
 var RunConfigSchema = external_exports.object({
   session_resume: SessionResumeSchema,
   note: NoteSchema,
   model: ModelSchema,
   auto_approve_gates: external_exports.array(AutoApproveGateSchema).optional(),
+  release_delegate: ReleaseDelegateSchema.optional(),
   /** B-1073: the fast-track flag — a human-invoked `harmony conduct <ticket> --fast-track` run's
    *  single axis key. Mirrors `session_resume`'s own shape (a bare optional boolean, not a nested
    *  `{ enabled }` object — there is no second sub-field this flag will ever need). See
@@ -47315,6 +47317,9 @@ function getOperatorNote(runConfig) {
 }
 function getAutoApproveGates(runConfig) {
   return new Set(runConfig.auto_approve_gates ?? []);
+}
+function getReleaseDelegate(runConfig) {
+  return runConfig.release_delegate;
 }
 var DEFAULT_AGENT_ADAPTER = "claude-code";
 function getAgentAdapter(runConfig) {
@@ -47567,6 +47572,7 @@ async function resolveEnvironment(env = process.env, moduleUrl = import.meta.url
   let operator_note = null;
   let auto_approve_gates = null;
   let fast_track = false;
+  let release_delegate = null;
   if (runConfig) {
     try {
       operator_note = getOperatorNote(runConfig) ?? null;
@@ -47578,6 +47584,11 @@ async function resolveEnvironment(env = process.env, moduleUrl = import.meta.url
       auto_approve_gates = gates.length > 0 ? gates : null;
     } catch {
       auto_approve_gates = null;
+    }
+    try {
+      release_delegate = getReleaseDelegate(runConfig) ?? null;
+    } catch {
+      release_delegate = null;
     }
     try {
       fast_track = isFastTrackEnabled(runConfig);
@@ -47593,6 +47604,7 @@ async function resolveEnvironment(env = process.env, moduleUrl = import.meta.url
     conduction_id,
     operator_note,
     auto_approve_gates,
+    release_delegate,
     fast_track
   };
 }

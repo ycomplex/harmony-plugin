@@ -104,6 +104,16 @@ const AutoApproveGateSchema = z.enum(
   AUTO_APPROVE_GATE_VALUES as [AutoApproveGate, ...AutoApproveGate[]],
 );
 
+/** B-1257: who may accept the RELEASE gate for this run, when the founder has delegated it. The only
+ *  value is `'orchestrator'` — the orchestrator seat, whose accept carries provenance
+ *  `agent-synthesized:orchestrator`. Deliberately its own key and NOT a `release` value in
+ *  `auto_approve_gates`: that list means the conduct loop synthesizes the accept, and
+ *  `AutoApproveGateSchema` structurally excludes release/verify. Here the seat accepts and the leg only
+ *  RECOGNISES it. Verify is never delegable by this field. Consumed by `skills/finish-work/SKILL.md` O1
+ *  and `skills/harmony-conduct/SKILL.md` §1b (where the cautious Agent-Trust dial vetoes it). */
+const ReleaseDelegateSchema = z.enum(['orchestrator']);
+export type ReleaseDelegate = z.infer<typeof ReleaseDelegateSchema>;
+
 /** No other axis keys yet — each dependent ticket adds ONE top-level key here.
  *  `.passthrough()` so an accessor build that predates a newer key never throws on it — forward
  *  compatible by construction, same as this ticket's own additive-only design intent. */
@@ -113,6 +123,7 @@ export const RunConfigSchema = z
     note: NoteSchema,
     model: ModelSchema,
     auto_approve_gates: z.array(AutoApproveGateSchema).optional(),
+    release_delegate: ReleaseDelegateSchema.optional(),
     /** B-1073: the fast-track flag — a human-invoked `harmony conduct <ticket> --fast-track` run's
      *  single axis key. Mirrors `session_resume`'s own shape (a bare optional boolean, not a nested
      *  `{ enabled }` object — there is no second sub-field this flag will ever need). See
@@ -168,6 +179,16 @@ export function getOperatorNote(runConfig: RunConfig): string | undefined {
  *  `skills/harmony-conduct/SKILL.md`'s delegation-test step 2a), never order or duplicates. */
 export function getAutoApproveGates(runConfig: RunConfig): Set<AutoApproveGate> {
   return new Set(runConfig.auto_approve_gates ?? []);
+}
+
+/** B-1257: who this run_config payload delegates the release gate's accept to, or `undefined` when
+ *  none — an absent key reads as "no delegate" (the same absence-is-the-off-state convention as
+ *  getAutoApproveGates). Never throws — a malformed value would already have been rejected by
+ *  RunConfigSchema.parse at read time (see getRunConfig). This reports the RAW run_config choice; the
+ *  cautious Agent-Trust dial's veto is applied by the consumer (`harmony-conduct` §1b), exactly as it is
+ *  for `auto_approve_gates`. */
+export function getReleaseDelegate(runConfig: RunConfig): ReleaseDelegate | undefined {
+  return runConfig.release_delegate;
 }
 
 /** B-1077: the adapter a run launches through when run_config names none. Equal to
