@@ -37,9 +37,18 @@ No source-local score, cutoff or cap exists. Missing embeddings are reported.
 Refresh uses a complete immutable snapshot and a fenced publication token. A later
 refresh invalidates an older publisher. Readers see one active generation; successful
 replacement removes old text and links. Failed refresh preserves the previous
-snapshot and reports stale coverage. Files above 1 MiB, sections above 24000
-characters, binary files, symlinks and ambiguous selectors produce explicit coverage
-diagnostics. There is a 10000-chunk publication bound; narrow sources if exceeded.
+snapshot and reports stale coverage. Files above 1 MiB, binary files, symlinks and
+ambiguous selectors produce explicit coverage diagnostics. Sections above 24000
+characters are split at Markdown block and paragraph boundaries, with a Unicode-safe
+fallback for long indivisible blocks. All parts retain the real heading, ancestry
+and source anchor; a separate zero-based `part_index` distinguishes them. Unchanged
+input gives the same ordered parts and content hashes, including repeated text.
+Small sections keep the legacy payload shape and default to part zero in storage.
+There is a 10000-chunk publication bound; narrow sources if exceeded.
+
+Multi-part refresh requires the database's `chunk_parts` capability. An older database
+is rejected before beginning that generation; the previous snapshot stays active.
+Deploy the part-index migration before refreshing oversized sections.
 Preamble is a root section; Markdown headings use GitHub-compatible Unicode anchors
 and duplicate occurrence suffixes. Fenced examples do not become headings.
 

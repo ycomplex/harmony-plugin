@@ -10,16 +10,58 @@ import { configureProse, readProse, proseOperation } from '../tools/knowledge-pr
 const pattern=z.string().min(1).refine(s=>!s.startsWith('/')&&!s.split('/').includes('..')&&!s.includes('\\'),'Repository-relative patterns required');
 export const selectorSchema=z.object({include:z.array(pattern).min(1),exclude:z.array(pattern).default([]),kind:z.enum(['document','skill']),scope:z.enum(['product','deployment']).nullable().default(null),domain:z.array(z.string()).default([]),tags:z.array(z.string()).default([]),bookkeeping:z.boolean().default(false)});
 export const declarationSchema=z.object({version:z.literal(1),repository:z.string().url().refine(s=>s.startsWith('https://')),ref:z.string().min(1),sources:z.array(z.object({key:z.string().min(1),enabled:z.boolean().default(true),selectors:z.array(selectorSchema).min(1)})).min(1)});
-export interface ProseChunk {path:string;anchor:string;heading:string;ancestry:string[];content:string;content_hash:string;kind:'document'|'skill';scope:'product'|'deployment'|null;domain:string[];tags:string[];bookkeeping:boolean}
+export interface ProseChunk {part_index?:number;path:string;anchor:string;heading:string;ancestry:string[];content:string;content_hash:string;kind:'document'|'skill';scope:'product'|'deployment'|null;domain:string[];tags:string[];bookkeeping:boolean}
 const canonical=(value:unknown):string=>JSON.stringify(value,(_key,v)=>v&&typeof v==='object'&&!Array.isArray(v)?Object.fromEntries(Object.entries(v).sort(([a],[b])=>a.localeCompare(b))):v);
 const git=(root:string,args:string[])=>execFileSync('git',['-C',root,...args],{maxBuffer:32*1024*1024});
 const text=(tokens:unknown):string=>Array.isArray(tokens)?tokens.map((t:{type?:string;text?:string;tokens?:unknown;raw?:string})=>t.type==='html'?'':t.tokens?text(t.tokens):t.type==='codespan'?t.text??'':decodeHTML(t.text??t.raw??'')).join(''):'';
+export const MAX_PROSE_CHUNK_CHARACTERS = 24_000;
+
+/** Split source slices, never rendered text: concatenating the parts recovers the section. */
+function splitSection(content: string, level = 0): string[] {
+ if (content.length <= MAX_PROSE_CHUNK_CHARACTERS) return [content];
+ const boundaries: number[] = [];
+ if (level < 2) {
+  let offset = 0;
+  for (const token of Lexer.lex(content)) {
+   if (offset > 0 && (level === 1 || token.type === 'heading')) boundaries.push(offset);
+   offset += token.raw.length;
+  }
+ } else if (level === 2) {
+  for (const match of content.matchAll(/\n[ \t]*\n/g)) boundaries.push(match.index + match[0].length);
+ } else {
+  const parts: string[] = [];
+  for (let start = 0; start < content.length;) {
+   let end = Math.min(start + MAX_PROSE_CHUNK_CHARACTERS, content.length);
+   // A UTF-16 bound must not bisect an astral character.
+   if (end < content.length && /[\uD800-\uDBFF]/.test(content[end - 1]) && /[\uDC00-\uDFFF]/.test(content[end])) end--;
+   parts.push(content.slice(start, end)); start = end;
+  }
+  return parts;
+ }
+ const parts: string[] = [];
+ let start = 0, pending = '';
+ for (const end of [...boundaries, content.length]) {
+  const segment = content.slice(start, end); start = end;
+  if (pending.length + segment.length > MAX_PROSE_CHUNK_CHARACTERS) {
+   if (pending) { parts.push(pending); pending = ''; }
+   if (segment.length > MAX_PROSE_CHUNK_CHARACTERS) { parts.push(...splitSection(segment, level + 1)); continue; }
+  }
+  pending += segment;
+ }
+ if (pending) parts.push(pending);
+ return parts;
+}
+
 export function chunkMarkdown(path:string,body:string,selector:z.infer<typeof selectorSchema>):{chunks:ProseChunk[];diagnostics:string[]} {
  if(Buffer.byteLength(body)>1024*1024) return {chunks:[],diagnostics:[`${path}: file exceeds 1 MiB; skipped`]};
  const slugger=new GithubSlugger(), ancestry:Array<{depth:number;text:string}>=[];
  const chunks:ProseChunk[]=[],diagnostics:string[]=[];
  let heading=path,anchor='',section='',parents:string[]=[];
- const flush=()=>{if(!section.trim())return; if(section.length>24000){diagnostics.push(`${path}#${anchor}: section exceeds 24000 characters; skipped`);return;} chunks.push({path,anchor,heading,ancestry:parents,content:section,content_hash:createHash('sha256').update(section).digest('hex'),...selector});};
+ const flush=()=>{
+  if(!section.trim())return;
+  const parts=splitSection(section);
+  parts.forEach((content,part_index)=>chunks.push({path,anchor,heading,ancestry:parents,content,content_hash:createHash('sha256').update(content).digest('hex'),...selector,...(parts.length>1?{part_index}:{})}));
+ };
  for(const token of Lexer.lex(body)) {
   if(token.type==='heading') {
    flush();heading=text(token.tokens);anchor=slugger.slug(heading);section=token.raw;
@@ -65,8 +107,10 @@ export async function syncProse(client:SupabaseClient,projectId:string,root:stri
   if(source!.refresh_state==='current'&&source!.indexed_commit===commit){output.push({source_id:source!.id,unchanged:true});continue;}
   const priorCommit=source!.requested_commit??source!.indexed_commit;
   if(priorCommit)git(root,['merge-base','--is-ancestor',priorCommit,commit]);
+  const parsed=extractProse(root,commit,spec.selectors);
+  if(parsed.chunks.some(c=>c.part_index!==undefined)&&read.chunk_parts!==true)throw new Error('Oversized prose chunking capability is unavailable; deploy the prose part-index migration before refreshing. Previous snapshot retained.');
   const started=await proseOperation(client,'begin_knowledge_prose_refresh',{p_source_id:source!.id,p_revision:source!.revision,p_ref:declaration.ref,p_commit:commit,p_expected_generation:source!.active_generation,p_expected_token:source!.refresh_token??null});
-  try {const parsed=extractProse(root,commit,spec.selectors);output.push(await proseOperation(client,'publish_knowledge_prose',{p_source_id:source!.id,p_token:started.token,p_chunks:parsed.chunks,p_diagnostics:parsed.diagnostics,p_error:false}));}
+  try {output.push(await proseOperation(client,'publish_knowledge_prose',{p_source_id:source!.id,p_token:started.token,p_chunks:parsed.chunks,p_diagnostics:parsed.diagnostics,p_error:false}));}
   catch(error){await proseOperation(client,'publish_knowledge_prose',{p_source_id:source!.id,p_token:started.token,p_chunks:[],p_diagnostics:['Refresh failed; previous snapshot retained'],p_error:true});throw error;}
  }
  // Removing a declaration is an explicit disable, not an eternally searchable old source.
