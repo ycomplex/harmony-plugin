@@ -3,6 +3,7 @@ import { featureAccountTools, createFeatureAccount, readFeatureAccounts, preview
 import { sourceTools, publishSourceInventory, readSourceInventory, comparePublishedCoverage } from './knowledge-sources.js';
 import { saveKnowledgeQuestionTool, saveKnowledgeQuestion, previewKnowledgeQuestionsTool, previewKnowledgeQuestions, importKnowledgeQuestionsTool, importKnowledgeQuestions } from './knowledge-questions.js';
 import { listKnowledgeTagsTool, registerKnowledgeTagTool, listKnowledgeTags, registerKnowledgeTag } from './knowledge-metadata.js';
+import { setClaimContext, setClaimContextTool } from './claim-context.js';
 import { publishDefinition, publishDefinitionTool, type PublishDefinitionArgs } from './knowledge-definitions.js';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { getProjectTool, getProject } from './project.js';
@@ -179,7 +180,7 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
     listActivityTool,
     listWorkflowTransitionsTool,
     listMembersTool,
-    ...sourceTools, saveKnowledgeQuestionTool, previewKnowledgeQuestionsTool, importKnowledgeQuestionsTool,
+    setClaimContextTool, ...sourceTools, saveKnowledgeQuestionTool, previewKnowledgeQuestionsTool, importKnowledgeQuestionsTool,
     listKnowledgeTagsTool, registerKnowledgeTagTool, publishDefinitionTool, queryKnowledgeTool, searchTicketIntentsTool, getKnowledgeEntryTool, createKnowledgeEntryTool, updateKnowledgeEntryTool, supersedeKnowledgeEntryTool,
     recordDecisionTool, supersedeDecisionTool, queryFactsTool, assertFactTool, invalidateFactTool, queryEntitiesTool,
     createEntityTool, updateEntityTool, reconcileEntityTool,
@@ -330,6 +331,9 @@ export async function handleToolCall(
         break;
       case 'register_knowledge_tag':
         result = await registerKnowledgeTag(client, projectId, args.name as string, args.description as string);
+        break;
+      case 'set_claim_context':
+        result = await setClaimContext(client, projectId, args as any);
         break;
       case 'publish_definition':
         result = await publishDefinition(client, projectId, args as unknown as PublishDefinitionArgs);

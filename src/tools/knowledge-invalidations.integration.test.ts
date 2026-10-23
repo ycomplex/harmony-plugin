@@ -14,3 +14,9 @@ it('shared list and by-id reads both attach pending invalidators', async () => {
   expect(await getKnowledgeEntry(client, 'project', { entry_id: 'entry' })).toMatchObject({ invalidations: [link], invalidation_rollout_available: false });
   expect(await queryKnowledge(client, 'project', { limit: 1, include_bookkeeping: false })).toMatchObject([{ invalidations: [link], superseded_by: 'next', claim: 'The old guarantee remains live.' }]);
 });
+
+// Isolate the pre-existing contract; claim-context.integration.test.ts exercises composition.
+vi.mock('./claim-context.js', async original => ({
+ ...await original<typeof import('./claim-context.js')>(),
+ withClaimContexts: async (_client: unknown, rows: unknown[]) => rows,
+}));
