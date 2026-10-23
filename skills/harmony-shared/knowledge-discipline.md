@@ -23,6 +23,13 @@ what you're deciding about:
 
 The six domains: `engineering`, `operations`, `data`, `product`, `customer`, `process`.
 
+**Pass the ticket on the read (B-678).** In a ticket-driving session, add `task_id: "<ticket>"` and
+`gate: "<clarify|decompose|design|plan|build|release|verify>"` to the query. They filter nothing; they let
+the decisions the query returns be logged as `knowledge-retrieved` events, which is how the exhaust miner
+tells a later ticket reusing a decision from the author re-reading it. A conducted leg that omits
+`task_id` is still attributed through its conduction; an ad-hoc read with neither logs nothing.
+Logging is best-effort and never changes or fails the result.
+
 ## Retrieval practice — fetch full bodies, sweep before concluding absence (B-741)
 
 The 2026-07-22 KB evaluation's single highest-yield finding: the biggest gap between what the
