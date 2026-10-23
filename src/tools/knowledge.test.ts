@@ -108,7 +108,7 @@ const sampleFullEntry = {
 /**
  * Builds a mock where:
  *   - first .from('projects')... .single() → workspace row
- *   - second .from('workspace_knowledge')... → resolved by secondChain
+ *   - second .from('knowledge_decisions')... → resolved by secondChain
  */
 function buildWorkspaceAndQueryClient(secondResponse: { data: any; error?: any }) {
   let fromCallCount = 0;
@@ -202,11 +202,17 @@ function buildEmbedAwareClient(opts: {
     opts.rpcResult ? { data: opts.rpcResult.data, error: opts.rpcResult.error ?? null } : { data: null, error: null },
   );
 
+  let insertServed = false;
   const client: any = {
     from: vi.fn().mockImplementation((table: string) => {
       if (table === 'projects') return wsChain;
-      if (table === 'knowledge_decisions') return baseChain;
-      return viewChain; // workspace_knowledge
+      // createKnowledgeEntry: the FIRST knowledge_decisions call is the insert (viewChain);
+      // the later embed update and authoritative re-read use baseChain.
+      if (table === 'knowledge_decisions') {
+        if (opts.viewResult && !insertServed) { insertServed = true; return viewChain; }
+        return baseChain;
+      }
+      return viewChain;
     }),
     rpc,
     functions: {
@@ -566,7 +572,7 @@ describe('createKnowledgeEntry', () => {
       type: 'convention',
     });
 
-    expect(client.from).toHaveBeenNthCalledWith(2, 'workspace_knowledge');
+    expect(client.from).toHaveBeenNthCalledWith(2, 'knowledge_decisions');
     expect(secondChain.insert).toHaveBeenCalledWith(
       expect.objectContaining({
         workspace_id: WORKSPACE_ID,
@@ -574,7 +580,8 @@ describe('createKnowledgeEntry', () => {
         title: 'New Convention',
         content: encodeClaim('Always use const for variables.', 'The team follows this recorded decision.'),
         type: 'convention',
-        status: 'draft',
+        status: 'Asserted',
+        tags: [],
         created_by: USER_ID,
       }),
     );
@@ -613,7 +620,7 @@ describe('createKnowledgeEntry', () => {
     expect(secondChain.insert).toHaveBeenCalledWith(
       expect.objectContaining({
         project_id: PROJECT_ID,
-        status: 'accepted',
+        status: 'Accepted',
         tags: ['tag1'],
         source_task_id: 'task-1',
       }),
@@ -699,18 +706,24 @@ describe('createKnowledgeEntry', () => {
     expect(baseChain.update).not.toHaveBeenCalled(); // null embedding → no base write
   });
 
-  it('normalizes v1-capitalized status to legacy vocab on insert (B-415 sibling)', async () => {
+  it('keeps v1-capitalized status on insert', async () => {
     const created = { ...sampleFullEntry, id: 'ke-new', status: 'accepted' };
     const { client, viewChain } = buildEmbedAwareClient({ viewResult: { data: created } });
     await createKnowledgeEntry(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',  title: 'x', content: 'y', type: 'convention', status: 'Accepted' });
-    expect(viewChain.insert).toHaveBeenCalledWith(expect.objectContaining({ status: 'accepted' }));
+    expect(viewChain.insert).toHaveBeenCalledWith(expect.objectContaining({ status: 'Accepted' }));
   });
 
-  it('maps v1 Asserted to legacy draft on insert', async () => {
+  it('keeps v1 Asserted on insert; maps legacy lowercase to v1', async () => {
     const created = { ...sampleFullEntry, id: 'ke-new', status: 'draft' };
     const { client, viewChain } = buildEmbedAwareClient({ viewResult: { data: created } });
     await createKnowledgeEntry(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',  title: 'x', content: 'y', type: 'convention', status: 'Asserted' });
-    expect(viewChain.insert).toHaveBeenCalledWith(expect.objectContaining({ status: 'draft' }));
+    expect(viewChain.insert).toHaveBeenCalledWith(expect.objectContaining({ status: 'Asserted' }));
+  });
+
+  it('maps legacy lowercase status to v1 on insert', async () => {
+    const { client, viewChain } = buildEmbedAwareClient({ viewResult: { data: { ...sampleFullEntry, id: 'ke-new' } } });
+    await createKnowledgeEntry(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',  title: 'x', content: 'y', type: 'convention', status: 'superseded' });
+    expect(viewChain.insert).toHaveBeenCalledWith(expect.objectContaining({ status: 'Superseded' }));
   });
 
   it('rejects an unrecognized status on create', async () => {
@@ -721,20 +734,20 @@ describe('createKnowledgeEntry', () => {
     expect(viewChain.insert).not.toHaveBeenCalled();
   });
 
-  it('defaults to draft when no status is given (unchanged)', async () => {
+  it('defaults to Asserted when no status is given', async () => {
     const created = { ...sampleFullEntry, id: 'ke-new' };
     const { client, viewChain } = buildEmbedAwareClient({ viewResult: { data: created } });
     await createKnowledgeEntry(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',  title: 'x', content: 'y', type: 'convention' });
-    expect(viewChain.insert).toHaveBeenCalledWith(expect.objectContaining({ status: 'draft' }));
+    expect(viewChain.insert).toHaveBeenCalledWith(expect.objectContaining({ status: 'Asserted' }));
   });
 
   it('create returns the authoritative persisted row (re-read from the base table)', async () => {
-    const echoed    = { ...sampleFullEntry, id: 'ke-new', status: 'accepted' };                           // view insert echo
+    const echoed    = { ...sampleFullEntry, id: 'ke-new', status: 'accepted' };                           // insert echo
     const persisted = { ...sampleFullEntry, id: 'ke-new', status: 'Accepted', title: 'persisted title' }; // base re-read
     const { client } = buildEmbedAwareClient({ viewResult: { data: echoed }, baseResult: { data: persisted } });
     const result = await createKnowledgeEntry(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',  title: 'x', content: 'y', type: 'convention' });
     expect(result.title).toBe('persisted title');
-    expect(result.status).toBe('Accepted');   // base-table (v1) vocab, not the view echo
+    expect(result.status).toBe('Accepted');   // base-table (v1) vocab, not the insert echo
   });
 });
 
