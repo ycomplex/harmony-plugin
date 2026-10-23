@@ -140,14 +140,14 @@ function evaluateRiskClassItem(summary: string, evidence: EligibilityEvidenceLin
 // read as a single-sentence change statement.
 //
 // THE HEURISTIC (documented here, deliberately simple and mechanical — a length/shape check, never a
-// semantic judgment): the summary must (1) contain at most ONE sentence-terminator run (a `.`/`!`/`?`
-// sequence not at the very end counts as a second sentence; a single trailing terminator is fine and
+// semantic judgment): the summary must (1) contain no internal sentence-terminator run (a `.`/`!`/`?`
+// sequence followed by whitespace counts as a second sentence; a single trailing run is fine and
 // ignored), and (2) be at most SENTENCE_WORD_LIMIT words. Both are the same shape/threshold this repo
 // already uses for "is this legible as one BLUF sentence" (see briefs.ts's `SENTENCE_WORD_LIMIT` /
 // `analyzeLegibility`) — reused as a CONSTANT VALUE, not as an import, to keep this module free of a
-// coupling to briefs.ts's much larger surface for one shared number. Decimals and "e.g." / "i.e."
-// are neutralized first (B-1105); briefs.ts splits on punctuation-then-whitespace and never had the
-// digit-dot false-fail, so it is unchanged.
+// coupling to briefs.ts's much larger surface for one shared number. The shared knowledge-claim
+// validator ignores code-span punctuation and token-internal dots (B-1258), retaining the decimal
+// and "e.g." / "i.e." exceptions (B-1105). Code spans still count toward the word limit.
 // ---------------------------------------------------------------------------
 
 const SENTENCE_WORD_LIMIT = 50;

@@ -44679,8 +44679,8 @@ var ENVELOPE = /^\*\*Claim:\*\* ([^\n]+)\n\n\*\*Claim source:\*\* (authored|deri
 function isSingleSentenceShaped(value) {
   const text3 = value.trim();
   if (!text3 || text3.split(/\s+/).length > 50) return false;
-  const neutral = text3.replace(/(\d)\.(?=\d)/g, "$1").replace(/\be\.g\.|\bi\.e\./gi, (m) => m.replace(/\./g, ""));
-  return !/[.!?]/.test(neutral.replace(/[.!?]+\s*$/, ""));
+  const neutral = text3.replace(/(`+)[\s\S]*?\1/g, "code").replace(/(\d)\.(?=\d)/g, "$1").replace(/\be\.g\.|\bi\.e\./gi, (m) => m.replace(/\./g, ""));
+  return !/[.!?]+(?=\s|$)/.test(neutral.replace(/[.!?]+\s*$/, ""));
 }
 function validateClaimEntry(title, claim) {
   for (const [field, value] of [["title", title], ["claim", claim]]) {
