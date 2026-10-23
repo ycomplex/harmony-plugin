@@ -1,3 +1,4 @@
+import { assertActiveEpic } from './epics.js';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 export interface BulkUpdateArgs {
@@ -6,6 +7,7 @@ export interface BulkUpdateArgs {
   priority?: string;
   assignee_id?: string | null;
   archived?: boolean;
+  epic_id?: string | null;
 }
 
 export const bulkUpdateTasksTool = {
@@ -30,6 +32,7 @@ export const bulkUpdateTasksTool = {
         type: ['string', 'null'],
         description: 'New assignee user ID (null to unassign)',
       },
+      epic_id: { type: ['string', 'null'], description: 'New active epic ID (null to unassign)' },
       archived: { type: 'boolean', description: 'Archive or unarchive' },
     },
     required: ['task_ids'],
@@ -50,6 +53,14 @@ export async function bulkUpdateTasks(
   if (args.status !== undefined) payload.status = args.status;
   if (args.priority !== undefined) payload.priority = args.priority;
   if (args.assignee_id !== undefined) payload.assignee_id = args.assignee_id;
+  if (args.epic_id !== undefined) {
+    if (args.epic_id) {
+      const { data: current, error } = await client.from('tasks').select('epic_id').eq('project_id', projectId).in('id', args.task_ids);
+      if (error) throw error;
+      if ((current ?? []).some(task => task.epic_id !== args.epic_id)) await assertActiveEpic(client, projectId, args.epic_id);
+    }
+    payload.epic_id = args.epic_id;
+  }
   if (args.archived !== undefined) payload.archived = args.archived;
 
   if (Object.keys(payload).length === 0) {

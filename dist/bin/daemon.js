@@ -32772,6 +32772,35 @@ async function createAuthenticatedClient(auth) {
   });
 }
 
+// src/tools/epic-order.ts
+function sortEpics(epics) {
+  const lexical = (a, b) => a < b ? -1 : a > b ? 1 : 0;
+  return [...epics].sort((a, b) => Number(!!a.retired_at) - Number(!!b.retired_at) || lexical(a.name.toLowerCase(), b.name.toLowerCase()) || lexical(a.id, b.id));
+}
+
+// src/tools/epics.ts
+function isMissingEpicRetirement(error) {
+  if (!error || !["42703", "PGRST204"].includes(error.code ?? "")) return false;
+  const diagnostic = `${error.message ?? ""} ${error.details ?? ""}`;
+  return /\bepics\b/.test(diagnostic) && /\bretired_at\b/.test(diagnostic) && /does not exist|could not find|not found|missing/i.test(diagnostic);
+}
+async function listEpics(client, projectId) {
+  const result = await client.from("epics").select("id, name, color, position, retired_at").eq("project_id", projectId);
+  if (isMissingEpicRetirement(result.error)) {
+    const legacy = await client.from("epics").select("id, name, color, position").eq("project_id", projectId);
+    if (legacy.error) throw legacy.error;
+    return sortEpics((legacy.data ?? []).map((epic) => ({ ...epic, retired_at: null })));
+  }
+  if (result.error) throw result.error;
+  return sortEpics((result.data ?? []).map((epic) => ({ ...epic, retired_at: epic.retired_at ?? null })));
+}
+async function assertActiveEpic(client, projectId, epicId) {
+  if (!epicId) return;
+  const epic = (await listEpics(client, projectId)).find((e) => e.id === epicId);
+  if (!epic) throw new Error("Epic is not available in this project");
+  if (epic.retired_at) throw new Error(`Epic "${epic.name}" is retired; choose an active epic`);
+}
+
 // src/tools/members.ts
 async function listMembers(client, projectId) {
   const { data: project, error: projError } = await client.from("projects").select("workspace_id").eq("id", projectId).single();
@@ -35680,6 +35709,12 @@ async function getTask(client, projectId, args) {
 async function updateTask(client, projectId, args) {
   const resolvedId = await resolveTaskId(client, projectId, args.task_id);
   const { task_id: _discarded, field_values, label_ids, ...updates } = args;
+  if (updates.epic_id === "null") updates.epic_id = null;
+  if (updates.epic_id) {
+    const { data: current, error } = await client.from("tasks").select("epic_id").eq("id", resolvedId).eq("project_id", projectId).single();
+    if (error) throw error;
+    if (current?.epic_id !== updates.epic_id) await assertActiveEpic(client, projectId, updates.epic_id);
+  }
   if (updates.assignee_id && updates.assignee_id !== "null") {
     updates.assignee_id = await resolveAssignee(client, projectId, updates.assignee_id);
   } else if (updates.assignee_id === "null") {

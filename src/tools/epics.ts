@@ -1,3 +1,4 @@
+import { sortEpics } from './epic-order.js';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 export const listEpicsTool = {
@@ -6,14 +7,30 @@ export const listEpicsTool = {
   inputSchema: { type: 'object' as const, properties: {} },
 };
 
+/** Only an explicitly missing epics.retired_at may use the pre-migration projection. */
+export function isMissingEpicRetirement(error: { code?: string; message?: string; details?: string } | null): boolean {
+  if (!error || !['42703', 'PGRST204'].includes(error.code ?? '')) return false;
+  const diagnostic = `${error.message ?? ''} ${error.details ?? ''}`;
+  return /\bepics\b/.test(diagnostic) && /\bretired_at\b/.test(diagnostic)
+    && /does not exist|could not find|not found|missing/i.test(diagnostic);
+}
+
 export async function listEpics(client: SupabaseClient, projectId: string) {
-  const { data, error } = await client
-    .from('epics')
-    .select('id, name, color, position')
-    .eq('project_id', projectId)
-    .order('position');
-  if (error) throw error;
-  return data;
+  const result = await client.from('epics').select('id, name, color, position, retired_at').eq('project_id', projectId);
+  if (isMissingEpicRetirement(result.error)) {
+    const legacy = await client.from('epics').select('id, name, color, position').eq('project_id', projectId);
+    if (legacy.error) throw legacy.error;
+    return sortEpics((legacy.data ?? []).map(epic => ({ ...epic, retired_at: null })));
+  }
+  if (result.error) throw result.error;
+  return sortEpics((result.data ?? []).map(epic => ({ ...epic, retired_at: epic.retired_at ?? null })));
+}
+
+export async function assertActiveEpic(client: SupabaseClient, projectId: string, epicId: string | null | undefined) {
+  if (!epicId) return;
+  const epic = (await listEpics(client, projectId)).find(e => e.id === epicId);
+  if (!epic) throw new Error('Epic is not available in this project');
+  if (epic.retired_at) throw new Error(`Epic "${epic.name}" is retired; choose an active epic`);
 }
 
 export const createEpicTool = {

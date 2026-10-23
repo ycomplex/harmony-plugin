@@ -1,3 +1,4 @@
+vi.mock('./epics.js', () => ({ assertActiveEpic: vi.fn().mockResolvedValue(undefined) }));
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { updateTask, createTask, getTask, bulkCreateTasks, listTasks } from './tasks.js';
 

@@ -39049,6 +39049,56 @@ function registerAuthCommands(program3) {
   });
 }
 
+// src/tools/epic-order.ts
+function sortEpics(epics) {
+  const lexical = (a3, b) => a3 < b ? -1 : a3 > b ? 1 : 0;
+  return [...epics].sort((a3, b) => Number(!!a3.retired_at) - Number(!!b.retired_at) || lexical(a3.name.toLowerCase(), b.name.toLowerCase()) || lexical(a3.id, b.id));
+}
+
+// src/tools/epics.ts
+function isMissingEpicRetirement(error) {
+  if (!error || !["42703", "PGRST204"].includes(error.code ?? "")) return false;
+  const diagnostic = `${error.message ?? ""} ${error.details ?? ""}`;
+  return /\bepics\b/.test(diagnostic) && /\bretired_at\b/.test(diagnostic) && /does not exist|could not find|not found|missing/i.test(diagnostic);
+}
+async function listEpics(client, projectId) {
+  const result = await client.from("epics").select("id, name, color, position, retired_at").eq("project_id", projectId);
+  if (isMissingEpicRetirement(result.error)) {
+    const legacy = await client.from("epics").select("id, name, color, position").eq("project_id", projectId);
+    if (legacy.error) throw legacy.error;
+    return sortEpics((legacy.data ?? []).map((epic) => ({ ...epic, retired_at: null })));
+  }
+  if (result.error) throw result.error;
+  return sortEpics((result.data ?? []).map((epic) => ({ ...epic, retired_at: epic.retired_at ?? null })));
+}
+async function assertActiveEpic(client, projectId, epicId) {
+  if (!epicId) return;
+  const epic = (await listEpics(client, projectId)).find((e) => e.id === epicId);
+  if (!epic) throw new Error("Epic is not available in this project");
+  if (epic.retired_at) throw new Error(`Epic "${epic.name}" is retired; choose an active epic`);
+}
+async function updateEpic(client, projectId, args) {
+  const updates = {};
+  if (args.name !== void 0) updates.name = args.name;
+  if (args.color !== void 0) updates.color = args.color;
+  const { data, error } = await client.from("epics").update(updates).eq("id", args.epic_id).eq("project_id", projectId).select().single();
+  if (error) throw error;
+  return data;
+}
+async function createEpic(client, projectId, userId, args) {
+  const { data: existing } = await client.from("epics").select("position").eq("project_id", projectId).order("position", { ascending: false }).limit(1);
+  const nextPosition = (existing?.[0]?.position ?? -1) + 1;
+  const { data, error } = await client.from("epics").insert({
+    project_id: projectId,
+    name: args.name,
+    color: args.color ?? "#6366f1",
+    position: nextPosition,
+    created_by: userId
+  }).select().single();
+  if (error) throw error;
+  return data;
+}
+
 // src/tools/members.ts
 async function listMembers(client, projectId) {
   const { data: project, error: projError } = await client.from("projects").select("workspace_id").eq("id", projectId).single();
@@ -42070,6 +42120,7 @@ async function createTask(client, projectId, userId, args) {
       epicId = parent.epic_id ?? null;
     }
   }
+  await assertActiveEpic(client, projectId, epicId);
   const status = args.status ?? "Backlog";
   const { data: existing } = await client.from("tasks").select("position").eq("project_id", projectId).eq("status", status).order("position", { ascending: false }).limit(1);
   const nextPosition = (existing?.[0]?.position ?? -1) + 1;
@@ -42102,6 +42153,12 @@ async function createTask(client, projectId, userId, args) {
 async function updateTask(client, projectId, args) {
   const resolvedId = await resolveTaskId(client, projectId, args.task_id);
   const { task_id: _discarded, field_values, label_ids, ...updates } = args;
+  if (updates.epic_id === "null") updates.epic_id = null;
+  if (updates.epic_id) {
+    const { data: current, error } = await client.from("tasks").select("epic_id").eq("id", resolvedId).eq("project_id", projectId).single();
+    if (error) throw error;
+    if (current?.epic_id !== updates.epic_id) await assertActiveEpic(client, projectId, updates.epic_id);
+  }
   if (updates.assignee_id && updates.assignee_id !== "null") {
     updates.assignee_id = await resolveAssignee(client, projectId, updates.assignee_id);
   } else if (updates.assignee_id === "null") {
@@ -42212,6 +42269,7 @@ async function bulkCreateTasks(client, projectId, userId, args) {
       parent_task_id: parentTaskId
     };
   });
+  for (const epicId of new Set(rows.map((row) => row.epic_id))) await assertActiveEpic(client, projectId, epicId);
   const { data, error } = await client.from("tasks").insert(rows).select();
   if (error) throw error;
   await client.from("activity_events").insert(
@@ -43323,34 +43381,6 @@ function registerWorkflowTransitionsCommand(program3) {
   });
 }
 
-// src/tools/epics.ts
-async function listEpics(client, projectId) {
-  const { data, error } = await client.from("epics").select("id, name, color, position").eq("project_id", projectId).order("position");
-  if (error) throw error;
-  return data;
-}
-async function updateEpic(client, projectId, args) {
-  const updates = {};
-  if (args.name !== void 0) updates.name = args.name;
-  if (args.color !== void 0) updates.color = args.color;
-  const { data, error } = await client.from("epics").update(updates).eq("id", args.epic_id).eq("project_id", projectId).select().single();
-  if (error) throw error;
-  return data;
-}
-async function createEpic(client, projectId, userId, args) {
-  const { data: existing } = await client.from("epics").select("position").eq("project_id", projectId).order("position", { ascending: false }).limit(1);
-  const nextPosition = (existing?.[0]?.position ?? -1) + 1;
-  const { data, error } = await client.from("epics").insert({
-    project_id: projectId,
-    name: args.name,
-    color: args.color ?? "#6366f1",
-    position: nextPosition,
-    created_by: userId
-  }).select().single();
-  if (error) throw error;
-  return data;
-}
-
 // src/cli/commands/epics.ts
 function registerEpicCommands(program3) {
   const epics = program3.command("epics").description("Manage epics");
@@ -43362,7 +43392,7 @@ function registerEpicCommands(program3) {
         { key: "id", header: "ID", width: 38 },
         { key: "name", header: "Name", width: 40 },
         { key: "color", header: "Color" },
-        { key: "position", header: "Pos" }
+        { key: "retired_at", header: "Retired at" }
       ])
     );
   });
@@ -44164,6 +44194,14 @@ async function bulkUpdateTasks(client, projectId, args) {
   if (args.status !== void 0) payload2.status = args.status;
   if (args.priority !== void 0) payload2.priority = args.priority;
   if (args.assignee_id !== void 0) payload2.assignee_id = args.assignee_id;
+  if (args.epic_id !== void 0) {
+    if (args.epic_id) {
+      const { data: current, error: error2 } = await client.from("tasks").select("epic_id").eq("project_id", projectId).in("id", args.task_ids);
+      if (error2) throw error2;
+      if ((current ?? []).some((task) => task.epic_id !== args.epic_id)) await assertActiveEpic(client, projectId, args.epic_id);
+    }
+    payload2.epic_id = args.epic_id;
+  }
   if (args.archived !== void 0) payload2.archived = args.archived;
   if (Object.keys(payload2).length === 0) {
     throw new Error("At least one update field must be provided");

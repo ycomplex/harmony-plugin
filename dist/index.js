@@ -47996,16 +47996,38 @@ var featureAccountTools = [
   }
 ];
 
+// src/tools/epic-order.ts
+function sortEpics(epics) {
+  const lexical = (a, b) => a < b ? -1 : a > b ? 1 : 0;
+  return [...epics].sort((a, b) => Number(!!a.retired_at) - Number(!!b.retired_at) || lexical(a.name.toLowerCase(), b.name.toLowerCase()) || lexical(a.id, b.id));
+}
+
 // src/tools/epics.ts
 var listEpicsTool = {
   name: "list_epics",
   description: "List all epics in the project",
   inputSchema: { type: "object", properties: {} }
 };
+function isMissingEpicRetirement(error2) {
+  if (!error2 || !["42703", "PGRST204"].includes(error2.code ?? "")) return false;
+  const diagnostic = `${error2.message ?? ""} ${error2.details ?? ""}`;
+  return /\bepics\b/.test(diagnostic) && /\bretired_at\b/.test(diagnostic) && /does not exist|could not find|not found|missing/i.test(diagnostic);
+}
 async function listEpics(client, projectId) {
-  const { data, error: error2 } = await client.from("epics").select("id, name, color, position").eq("project_id", projectId).order("position");
-  if (error2) throw error2;
-  return data;
+  const result = await client.from("epics").select("id, name, color, position, retired_at").eq("project_id", projectId);
+  if (isMissingEpicRetirement(result.error)) {
+    const legacy = await client.from("epics").select("id, name, color, position").eq("project_id", projectId);
+    if (legacy.error) throw legacy.error;
+    return sortEpics((legacy.data ?? []).map((epic) => ({ ...epic, retired_at: null })));
+  }
+  if (result.error) throw result.error;
+  return sortEpics((result.data ?? []).map((epic) => ({ ...epic, retired_at: epic.retired_at ?? null })));
+}
+async function assertActiveEpic(client, projectId, epicId) {
+  if (!epicId) return;
+  const epic = (await listEpics(client, projectId)).find((e) => e.id === epicId);
+  if (!epic) throw new Error("Epic is not available in this project");
+  if (epic.retired_at) throw new Error(`Epic "${epic.name}" is retired; choose an active epic`);
 }
 var createEpicTool = {
   name: "create_epic",
@@ -51709,6 +51731,7 @@ async function createTask(client, projectId, userId, args) {
       epicId = parent.epic_id ?? null;
     }
   }
+  await assertActiveEpic(client, projectId, epicId);
   const status = args.status ?? "Backlog";
   const { data: existing } = await client.from("tasks").select("position").eq("project_id", projectId).eq("status", status).order("position", { ascending: false }).limit(1);
   const nextPosition = (existing?.[0]?.position ?? -1) + 1;
@@ -51749,7 +51772,7 @@ var updateTaskTool = {
       status: { type: "string", description: "New status" },
       priority: { type: "string", enum: ["high", "medium", "low"], description: "New priority" },
       assignee_id: { type: "string", description: "Assignee \u2014 UUID, display name, or email (null to unassign). Use list_members to find users." },
-      epic_id: { type: "string", description: "New epic ID (null to unassign)" },
+      epic_id: { type: ["string", "null"], description: "New active epic ID (null to unassign)" },
       description: { type: "string", description: "New description" },
       due_date: { type: "string", description: "Due date in YYYY-MM-DD format (null to clear)" },
       archived: { type: "boolean", description: "Archive or unarchive" },
@@ -51773,6 +51796,12 @@ var updateTaskTool = {
 async function updateTask(client, projectId, args) {
   const resolvedId = await resolveTaskId2(client, projectId, args.task_id);
   const { task_id: _discarded, field_values, label_ids, ...updates } = args;
+  if (updates.epic_id === "null") updates.epic_id = null;
+  if (updates.epic_id) {
+    const { data: current, error: error2 } = await client.from("tasks").select("epic_id").eq("id", resolvedId).eq("project_id", projectId).single();
+    if (error2) throw error2;
+    if (current?.epic_id !== updates.epic_id) await assertActiveEpic(client, projectId, updates.epic_id);
+  }
   if (updates.assignee_id && updates.assignee_id !== "null") {
     updates.assignee_id = await resolveAssignee(client, projectId, updates.assignee_id);
   } else if (updates.assignee_id === "null") {
@@ -51911,6 +51940,7 @@ async function bulkCreateTasks(client, projectId, userId, args) {
       parent_task_id: parentTaskId
     };
   });
+  for (const epicId of new Set(rows.map((row) => row.epic_id))) await assertActiveEpic(client, projectId, epicId);
   const { data, error: error2 } = await client.from("tasks").insert(rows).select();
   if (error2) throw error2;
   await client.from("activity_events").insert(
@@ -52549,6 +52579,7 @@ var bulkUpdateTasksTool = {
         type: ["string", "null"],
         description: "New assignee user ID (null to unassign)"
       },
+      epic_id: { type: ["string", "null"], description: "New active epic ID (null to unassign)" },
       archived: { type: "boolean", description: "Archive or unarchive" }
     },
     required: ["task_ids"]
@@ -52562,6 +52593,14 @@ async function bulkUpdateTasks(client, projectId, args) {
   if (args.status !== void 0) payload.status = args.status;
   if (args.priority !== void 0) payload.priority = args.priority;
   if (args.assignee_id !== void 0) payload.assignee_id = args.assignee_id;
+  if (args.epic_id !== void 0) {
+    if (args.epic_id) {
+      const { data: current, error: error3 } = await client.from("tasks").select("epic_id").eq("project_id", projectId).in("id", args.task_ids);
+      if (error3) throw error3;
+      if ((current ?? []).some((task) => task.epic_id !== args.epic_id)) await assertActiveEpic(client, projectId, args.epic_id);
+    }
+    payload.epic_id = args.epic_id;
+  }
   if (args.archived !== void 0) payload.archived = args.archived;
   if (Object.keys(payload).length === 0) {
     throw new Error("At least one update field must be provided");
