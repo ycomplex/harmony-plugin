@@ -23,6 +23,7 @@ import { handleToolCall } from './index.js';
 /** Read-only tools: results pass through unchanged BY DESIGN (no ack decision needed). A new READ
  *  tool must be added here; a new WRITE tool must get a projection or an ACK_PASS_THROUGH entry. */
 const READ_TOOLS = [
+  'read_concept_names', 'preview_concept_merge',
   'read_surface_records',
   'read_feature_accounts',
   'preview_feature_amendment',
