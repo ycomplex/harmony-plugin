@@ -51,7 +51,7 @@ it.skipIf(!url)('round-trips recorded names and explicit identities through the 
     expect((await applyAcceptanceEventPayload(client, event)).applied).toBe(0);
   } finally {
     const { error } = await client.from('workspaces').delete().eq('id', workspace.id);
-    if (error) throw error;
+    expect(error).toBeNull();
     await client.auth.signOut();
   }
 }, 60000);
