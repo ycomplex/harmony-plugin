@@ -45247,6 +45247,8 @@ async function searchKnowledge(client, projectId, args, started = performance.no
   let auth2;
   let sealed = false;
   let incomplete = false;
+  let truncated = false;
+  let coveragePartial = false;
   const result = {
     concepts: [],
     definitions: [],
@@ -45279,21 +45281,25 @@ async function searchKnowledge(client, projectId, args, started = performance.no
   if (args.as_of !== void 0 && !(typeof args.as_of === "string" && /^\d{4}-\d{2}-\d{2}([T ][\d:.]+(Z|[+-]\d{2}:?\d{2})?)?$/.test(args.as_of) && !Number.isNaN(Date.parse(args.as_of)))) throw new Error("as_of must be an ISO 8601 timestamp, for example 2026-01-15T00:00:00Z");
   const historical = Boolean(args.as_of || args.include_superseded);
   const finish = () => {
+    for (const route of routes) route.elapsed_ms ??= routes.find((r) => r.route === route.route && r.elapsed_ms !== void 0)?.elapsed_ms ?? 0;
     sealed = true;
     controller.abort();
     if (auth2) throw auth2;
-    result.incomplete = result.truncated = incomplete;
+    result.incomplete = incomplete;
+    result.truncated = truncated || incomplete;
     result.elapsed_ms = Math.round(performance.now() - started);
     return result;
   };
   const bounded = async (route, operation2, budget = end - performance.now()) => {
+    const routeStarted = performance.now();
+    const record2 = (outcome, reason) => routes.push({ route, outcome, ...reason ? { reason } : {}, elapsed_ms: Math.round(performance.now() - routeStarted) });
     const routeController = new AbortController();
     const requestSignal = AbortSignal.any([controller.signal, routeController.signal]);
     let timer;
     const ms = Math.max(0, Math.min(budget, end - performance.now()));
     if (ms <= 0) {
       incomplete = true;
-      routes.push({ route, outcome: "timeout", reason: "deadline" });
+      record2("timeout", "deadline");
       return void 0;
     }
     const timeout = new Promise((resolve2) => {
@@ -45307,29 +45313,29 @@ async function searchKnowledge(client, projectId, args, started = performance.no
       if (sealed) return void 0;
       if (!response) {
         incomplete = true;
-        routes.push({ route, outcome: "timeout", reason: "deadline" });
+        record2("timeout", "deadline");
         return void 0;
       }
       if (response.error) {
         if (authError(response.error) || authError({ status: response.status })) auth2 = response.error;
         incomplete = true;
-        routes.push({ route, outcome: missing(response.error) ? "unsupported" : "failed", reason: missing(response.error) ? "missing-capability" : "request-failed" });
+        record2(missing(response.error) ? "unsupported" : "failed", missing(response.error) ? "missing-capability" : "request-failed");
         return void 0;
       }
-      routes.push({ route, outcome: "completed" });
+      record2("completed");
       return response.data ?? void 0;
     } catch (e) {
       if (!sealed) {
         if (authError(e)) auth2 = e;
         incomplete = true;
-        routes.push({ route, outcome: "failed", reason: "request-failed" });
+        record2("failed", "request-failed");
       }
       return void 0;
     } finally {
       clearTimeout(timer);
     }
   };
-  const prose = bounded("prose-coverage", (signal2) => client.rpc("read_knowledge_prose", { p_project_id: projectId, p_entry_ids: [] }).abortSignal(signal2), 250);
+  const prose = bounded("prose-coverage", (signal2) => client.rpc("read_knowledge_prose", { p_project_id: projectId, p_entry_ids: [] }).abortSignal(signal2), 1e3);
   const scope = await bounded("scope", (signal2) => client.from("projects").select("workspace_id").eq("id", projectId).abortSignal(signal2).single());
   if (!scope) {
     incomplete = true;
@@ -45343,7 +45349,7 @@ async function searchKnowledge(client, projectId, args, started = performance.no
     if (coverage) routes.push({ route: "prose-coverage", outcome: "failed", reason: "invalid-capability-response" });
   }
   if (coverage?.sources?.some((s) => s.enabled && s.refresh_state !== "current")) {
-    incomplete = true;
+    coveragePartial = true;
     routes.push({ route: "prose-coverage", outcome: "stale", reason: "refresh-incomplete" });
   }
   result.source_applicability = args.status || args.type ? "Explicit decision status/type filters exclude prose and generated sources." : "Accepted entries plus configured source-backed prose and current Asserted generated values.";
@@ -45424,12 +45430,12 @@ async function searchKnowledge(client, projectId, args, started = performance.no
     completedSignals.add(name);
     for (const row of rows) {
       if (row.unavailable_sources?.length) {
-        incomplete = true;
+        coveragePartial = true;
         routes.push({ route: name, outcome: "unavailable", reason: `sources-without-embedding:${row.unavailable_sources.join(",")}` });
         continue;
       }
       if (row.overflow) {
-        incomplete = true;
+        truncated = coveragePartial = true;
         routes.push({ route: name, outcome: "capped", reason: "candidate-ceiling" });
         continue;
       }
@@ -45514,7 +45520,7 @@ async function searchKnowledge(client, projectId, args, started = performance.no
     const ranked = all.filter((c) => c.score >= SCORE_CUTOFF).sort((a, b) => Number(a.candidate.bookkeeping ?? isBookkeeping(a.candidate)) - Number(b.candidate.bookkeeping ?? isBookkeeping(b.candidate)) || Number(priority(b.candidate)) - Number(priority(a.candidate)) || b.score - a.score || a.candidate.source_kind.localeCompare(b.candidate.source_kind) || a.candidate.id.localeCompare(b.candidate.id));
     result.matches = ranked.slice(offset, offset + limit).map((c) => ({ ...summary(c.candidate, result.normalized_query), source_kind: c.candidate.source_kind, score: c.score, ...c.candidate.status === "Superseded" ? { replaced: true } : {} }));
     result.page = { offset, returned: Math.min(limit, Math.max(0, ranked.length - offset)), total_matches: ranked.length };
-    result.count_coverage = incomplete ? "partial-scored-union" : "considered-scored-union";
+    result.count_coverage = incomplete || coveragePartial ? "partial-scored-union" : "considered-scored-union";
   }
   await names;
   result.concepts = result.concepts.slice(0, Math.max(0, limit - result.definitions.length));
@@ -45551,33 +45557,37 @@ async function searchKnowledge(client, projectId, args, started = performance.no
           const pointer = read?.pointers?.find((p) => p.entry_id === d.id);
           Object.assign(d, { defined_in_available: read?.available === true }, pointer ? { defined_in: { ...pointer, source_link: proseLink(pointer) } } : {});
         }
+      })(),
+      (async () => {
+        const invalidations = await bounded("invalidations", (signal2) => client.rpc("read_knowledge_invalidations", { p_entry_ids: ids2 }).abortSignal(signal2));
+        for (const d of displayed) {
+          if ("source_kind" in d && d.source_kind !== "knowledge") continue;
+          d.invalidations_available = invalidations?.available === true;
+          d.invalidation_rollout_available = invalidations?.rollout_available === true;
+          d.invalidations = invalidations?.links?.filter((link) => link.affected_id === d.id) ?? [];
+        }
+      })(),
+      (async () => {
+        const links = await bounded("supersession", async (signal2) => {
+          const data = [];
+          for (let start = 0; start < ids2.length; start += 500) {
+            const parts = await Promise.all(["id", "superseded_by"].map((column) => client.from("knowledge_decisions").select("id,superseded_by").eq("workspace_id", scope.workspace_id).eq("project_id", projectId).neq("type", "intent").in(column, ids2.slice(start, start + 500)).limit(500).abortSignal(signal2)));
+            for (const part of parts) {
+              if (part.error) return { data: null, error: part.error };
+              data.push(...part.data ?? []);
+            }
+          }
+          return { data };
+        });
+        if (links) for (const d of displayed) {
+          if ("source_kind" in d && d.source_kind !== "knowledge") continue;
+          d.superseded_by = links.find((e) => e.id === d.id)?.superseded_by ?? null;
+          d.supersedes = [...new Set(links.filter((e) => e.superseded_by === d.id).map((e) => e.id))];
+        }
       })()
     ]);
-    const invalidations = await bounded("invalidations", (signal2) => client.rpc("read_knowledge_invalidations", { p_entry_ids: ids2 }).abortSignal(signal2));
-    for (const d of displayed) {
-      if ("source_kind" in d && d.source_kind !== "knowledge") continue;
-      d.invalidations_available = invalidations?.available === true;
-      d.invalidation_rollout_available = invalidations?.rollout_available === true;
-      d.invalidations = invalidations?.links?.filter((link) => link.affected_id === d.id) ?? [];
-    }
-    const links = await bounded("supersession", async (signal2) => {
-      const data = [];
-      for (let start = 0; start < ids2.length; start += 500) {
-        for (const column of ["id", "superseded_by"]) {
-          const part = await client.from("knowledge_decisions").select("id,superseded_by").eq("workspace_id", scope.workspace_id).eq("project_id", projectId).neq("type", "intent").in(column, ids2.slice(start, start + 500)).limit(500).abortSignal(signal2);
-          if (part.error) return { data: null, error: part.error };
-          data.push(...part.data ?? []);
-        }
-      }
-      return { data };
-    });
-    if (links) for (const d of displayed) {
-      if ("source_kind" in d && d.source_kind !== "knowledge") continue;
-      d.superseded_by = links.find((e) => e.id === d.id)?.superseded_by ?? null;
-      d.supersedes = [...new Set(links.filter((e) => e.superseded_by === d.id).map((e) => e.id))];
-    }
   }
-  if (result.capability === "scored" && incomplete) result.count_coverage = "partial-scored-union";
+  if (result.capability === "scored" && (incomplete || coveragePartial)) result.count_coverage = "partial-scored-union";
   return finish();
 }
 
