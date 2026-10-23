@@ -23,6 +23,26 @@ describe('portable knowledge claims', () => {
     expect(matchedPassage('x '.repeat(400) + 'filters', 'filters')!.length).toBeLessThanOrEqual(242);
     expect(matchedPassage('Only ranking found this entry.', 'board')).toBeNull();
   });
+  it.each([
+    'Fix e2e/tests/foo.spec.ts coverage.',
+    'Ignore `.claude/` and package.json changes.',
+    'Use `foo. bar!? baz` as an example.',
+    'Use ``foo. `bar`? baz`` as an example.',
+    'Fix the poller!?',
+    'word '.repeat(50),
+  ])('accepts token-internal punctuation and code spans: %s', (value) => {
+    expect(isSingleSentenceShaped(value)).toBe(true);
+  });
+  it.each([
+    'Fix foo.spec.ts. Add coverage.',
+    'Fix `foo.spec.ts`. Add coverage.',
+    'Fix the poller! Add coverage',
+    'Fix the poller?\nAdd coverage',
+    'Fix the poller!? Add coverage.',
+    '`' + 'word '.repeat(51) + '`',
+  ])('retains sentence boundaries and the word limit: %s', (value) => {
+    expect(isSingleSentenceShaped(value)).toBe(false);
+  });
   it('proposes substantive first sentences and skips existing claims and empty boilerplate', () => {
     expect(proposeClaim('_Derived from the ratified brief._\n\n**Decision:** Teams can save their view.\n\nWhy: Useful.')).toBe('Teams can save their view.');
     expect(proposeClaim(encodeClaim('Body', 'Teams save views.'))).toBeNull();
