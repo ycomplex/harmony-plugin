@@ -109,6 +109,9 @@ Asserted `record_decision` with:
 
 - `claim_provenance`: `human-stated` (they said it) | `agent-inferred-human-validated` (your
   inference, confirmed) | `force-quit` (assumed under force-quit);
+- `claim_questions`: ordered explicit `{ exchange_id, round, question_id }` references to the questions that grounded this claim. The server copies the original question and validation statement; never reconstruct question text. Human-grounded claims require submitted non-skipped answers; force-quit claims may cite asked questions and stay quarantined.
+- `concept_ids`: existing concept UUIDs explicitly confirmed for this claim. Omit or use `[]` when unknown/ambiguous; never select or create a concept by wording similarity. Links target stable concepts, not definition revisions.
+- Capture probes the separate context capability. A missing capability preserves legacy claim recording and returns `claim_context.question_state = capability-unavailable`; never claim provenance was saved. Permission, source-validation and other errors remain errors; atomic contextual capture leaves no partial claim on rejection.
 - `underwriting_brief_id`: the brief the claim underwrites — this coupling makes disposal
   mechanical: **accept promotes** human-grounded claims to Accepted (force-quit stays quarantined),
   **defer archives** all coupled Asserted claims (DB-side), **iterate prunes** (below).
