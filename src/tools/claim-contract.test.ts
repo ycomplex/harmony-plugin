@@ -82,10 +82,11 @@ describe('claim contracts across surfaces', () => {
   const first = mock([legacy]);
   expect((await proposeLegacyClaims(first.client, 'proj'))[0]).toMatchObject({ status: 'proposed', claim_source: 'derived' });
   expect(first.client.rpc).not.toHaveBeenCalled();
-  await proposeLegacyClaims(first.client, 'proj', true);
+  const entries = [{ id: 'entry', claim: legacy.content, status: 'proposed', reviewed: true }];
+  await proposeLegacyClaims(first.client, 'proj', { apply: true, entries });
   expect(first.chain.update).toHaveBeenCalledTimes(1);
   const second = mock([{ ...legacy, content: encodeClaim(legacy.content, legacy.content, 'derived') }]);
-  expect((await proposeLegacyClaims(second.client, 'proj', true))[0].status).toBe('skipped-existing');
+  expect((await proposeLegacyClaims(second.client, 'proj', { apply: true, entries }))[0].status).toBe('skipped-existing');
   expect(second.client.rpc).not.toHaveBeenCalled();
  });
 });

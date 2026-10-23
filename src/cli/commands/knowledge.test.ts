@@ -14,7 +14,7 @@ vi.mock('../../tools/knowledge-definitions.js', () => ({ publishDefinition: vi.f
 import { Command } from 'commander';
 import { describe, it, expect, vi } from 'vitest';
 import { registerKnowledgeCommands } from './knowledge.js';
-import { updateKnowledgeEntry, queryKnowledge } from '../../tools/knowledge.js';
+import { updateKnowledgeEntry, queryKnowledge, proposeLegacyClaims } from '../../tools/knowledge.js';
 import { saveKnowledgeQuestion, previewKnowledgeQuestions } from '../../tools/knowledge-questions.js';
 
 vi.mock('../../tools/knowledge-questions.js', () => ({
@@ -27,6 +27,7 @@ vi.mock('../../tools/knowledge.js', () => ({
   queryEntities: vi.fn().mockResolvedValue([]), queryKnowledge: vi.fn(), getKnowledgeEntry: vi.fn(), createKnowledgeEntry: vi.fn(),
   updateKnowledgeEntry: vi.fn().mockResolvedValue({ id: 'entry', title: 'Specimen' }),
   supersedeKnowledgeEntry: vi.fn(),
+  proposeLegacyClaims: vi.fn().mockResolvedValue([]),
 }));
 vi.mock('../../tools/feature-accounts.js', () => ({
   createFeatureAccount: vi.fn(), readFeatureAccounts: vi.fn().mockResolvedValue({availability:'available',accounts:[]}), previewFeatureAmendment: vi.fn(), proposeFeatureAmendment: vi.fn(), applyFeatureAmendment: vi.fn().mockResolvedValue({applied_revision:1}),
@@ -68,6 +69,34 @@ describe('knowledge update command', () => {
     expect(updateKnowledgeEntry).toHaveBeenLastCalledWith('client', 'project', expect.objectContaining({ verified_against: null, rollout_state: 'live', open_steps: [] }));
   });
 
+});
+
+describe('knowledge propose-claims CLI', () => {
+  it('passes a bounded preview selection from an ID file', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'claim-preview-'));
+    try {
+      const file = join(dir, 'entries.json'); writeFileSync(file, JSON.stringify(['entry-a', 'entry-b']));
+      const program = new Command(); registerKnowledgeCommands(program);
+      await program.parseAsync(['knowledge', 'propose-claims', '--entries', file, '--limit', '1'], { from: 'user' });
+      expect(proposeLegacyClaims).toHaveBeenLastCalledWith('client', 'project', { entries: ['entry-a', 'entry-b'], limit: 1, apply: false });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+  it('passes the review output unchanged for subset-only apply', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'claim-review-'));
+    try {
+      const entries = [{ id: 'entry', claim: 'Teams review claims.', status: 'proposed', reviewed: true }];
+      const file = join(dir, 'review.json'); writeFileSync(file, JSON.stringify(entries));
+      const program = new Command(); registerKnowledgeCommands(program);
+      await program.parseAsync(['knowledge', 'propose-claims', '--entries', file, '--apply'], { from: 'user' });
+      expect(proposeLegacyClaims).toHaveBeenLastCalledWith('client', 'project', { entries, limit: 100, apply: true });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+  it.each([['--apply'], ['--limit', '0'], ['--limit', '1.5'], ['--limit', 'invalid']])('refuses unsafe arguments before invoking the handler: %s', async (...args) => {
+    vi.mocked(proposeLegacyClaims).mockClear();
+    const program = new Command(); registerKnowledgeCommands(program);
+    await expect(program.parseAsync(['knowledge', 'propose-claims', ...args], { from: 'user' })).rejects.toThrow();
+    expect(proposeLegacyClaims).not.toHaveBeenCalled();
+  });
 });
 
 describe('knowledge list human output', () => {

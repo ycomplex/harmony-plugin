@@ -230,9 +230,18 @@ export function registerKnowledgeCommands(program: Command): void {
       }), data => JSON.stringify(data, null, 2));
     });
 
-  knowledge.command('propose-claims').description('Propose missing legacy claims; dry run unless --apply').option('--apply', 'Store missing proposals as derived', false).action(async opts => {
-    await runCommand(program.opts(), ctx => proposeLegacyClaims(ctx.client, ctx.projectId, opts.apply), data => JSON.stringify(data, null, 2));
-  });
+  knowledge.command('propose-claims')
+    .description('Preview complete legacy claim sentences as JSON; mark approved rows reviewed:true before applying')
+    .option('--entries <file>', 'JSON array of entry IDs for preview, or proposal rows for reviewed apply')
+    .option('--limit <number>', 'Maximum entries to inspect (positive integer)', '100')
+    .option('--apply', 'Apply only reviewed:true proposed rows from --entries, retaining derived status', false)
+    .action(async opts => {
+      const limit = Number(opts.limit);
+      if (!/^\d+$/.test(opts.limit) || !Number.isSafeInteger(limit) || limit < 1) throw new Error('--limit must be a positive integer');
+      if (opts.apply && !opts.entries) throw new Error('--apply requires --entries with explicitly reviewed proposal rows');
+      const entries = opts.entries ? JSON.parse(readFileSync(opts.entries, 'utf8')) : undefined;
+      await runCommand(program.opts(), ctx => proposeLegacyClaims(ctx.client, ctx.projectId, { apply: opts.apply, entries, limit }), data => JSON.stringify(data, null, 2));
+    });
 
   knowledge
     .command('get')
