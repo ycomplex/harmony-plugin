@@ -1,6 +1,6 @@
 ---
 name: harmony-conduct
-description: The opinionated-mode entry point: drive one ticket through the gate sequence end to end. Default = pause at every gate for the human's decision (controlled). Optional per-run delegation — `--pause-at <gate>` (auto-advance up to a gate), `--unattended` (auto-advance to the hard floor), or `--escalate` (auto-advance, but surface any gate genuinely worth a human opinion). A non-discretionary risk-class FLOOR (auth / data-migration / irreversible-destructive / shared-core) PAUSES a delegated gate for a human in `--escalate`; in `--unattended` and the auto-advanced prefix of `--pause-at` it does NOT pause mid-run — it is recorded and SURFACED on the release brief (the hard floor at release+verify already covers irreversibility). Triggers on "conduct B-123", "harmony conduct", "run B-123 through the flow", "drive this ticket to verified". The conduct loop orchestrates the plumbing BETWEEN gates; at a controlled gate it hands the decision to the human, and an auto-advanced gate still records the SAME Accepted decision a controlled run would. `--one-shot` (the conductor's worker flag, orthogonal to the mode selector) advances one leg and exits at the next human pause WITHOUT arming the watch — the conductor owns watching.
+description: The Guided-mode entry point: drive one ticket through the gate sequence end to end. Default = pause at every gate for the human's decision (controlled). Optional per-run delegation — `--pause-at <gate>` (auto-advance up to a gate), `--unattended` (auto-advance to the hard floor), or `--escalate` (auto-advance, but surface any gate genuinely worth a human opinion). A non-discretionary risk-class FLOOR (auth / data-migration / irreversible-destructive / shared-core) PAUSES a delegated gate for a human in `--escalate`; in `--unattended` and the auto-advanced prefix of `--pause-at` it does NOT pause mid-run — it is recorded and SURFACED on the release brief (the hard floor at release+verify already covers irreversibility). Triggers on "conduct B-123", "harmony conduct", "run B-123 through the flow", "drive this ticket to verified". The conduct loop orchestrates the plumbing BETWEEN gates; at a controlled gate it hands the decision to the human, and an auto-advanced gate still records the SAME Accepted decision a controlled run would. `--one-shot` (the conductor's worker flag, orthogonal to the mode selector) advances one leg and exits at the next human pause WITHOUT arming the watch — the conductor owns watching.
 capabilities: harmony-mcp read shell:node
 allowed-tools: mcp__harmony__* Read Grep Glob Bash(node *)
 ---
@@ -186,7 +186,7 @@ again on every iteration of the loop below, never once per run** (B-892: the `en
 returns is resolved live from the run's `conductions.run_config` row, so an operator who edits this run's
 options mid-conduction reaches the leg at its next gate boundary; the mode/dial half is stable, so the
 effective-mode ANNOUNCEMENT below still happens once, at the run start). If `mode !== 'opinionated'`,
-stop — the conduct loop drives the opinionated-mode lifecycle (manual-mode projects use the normal board, not
+stop — the conduct loop drives the Guided-mode lifecycle (Freeform-mode projects use the normal board, not
 clarify→decompose→design→…). `get_project` now also returns `agent_trust` (the owning workspace's dial,
 resolved): `agent_trust.level` ∈ `{cautious, balanced, autonomous}` (empty `{}` dial ⇒ `balanced`). **B-743:**
 `get_project` also returns an `environment` block carrying `conduction_id` and `operator_note` — this run's
@@ -965,7 +965,7 @@ skill reports Designed; the per-sub-track serialization is unchanged, only the p
 ticket is still Decomposed after a design sub-track was accepted, that is the normal "more sub-tracks to
 go" case — keep looping.
 
-**Designed → Planned → Built both delegate to `start-work`.** In opinionated mode `start-work` drives
+**Designed → Planned → Built both delegate to `start-work`.** In Guided mode `start-work` drives
 *planning* (Designed→Planned, files a `plan-draft` brief) and *building* (Planned→Built, builds in a
 worktree then files `release-decision-pending`). Invoke it for both states; it branches internally on
 `workflow_state` (its step O1). After the plan is accepted (ticket → Planned), the next loop iteration

@@ -42,7 +42,7 @@ back through MCP. It never edits code (discovery role).
 ### 1. Load the ticket + check it's ready (+ resume an open exchange)
 
 First call `mcp__harmony__get_project`; if `mode !== 'opinionated'`, stop — the discovery gates are an
-opinionated-mode activity (manual-mode projects use the normal board, not the clarify→decompose→design
+Guided-mode activity (Freeform-mode projects use the normal board, not the clarify→decompose→design
 lifecycle). Then `mcp__harmony__get_task({ task_id })`. Confirm `workflow_state === 'Proposed'` — this
 gate REQUIRES it. A ticket still at `Captured` hard-fails later: the transition table only allows
 `('Captured','proposing','Proposed')` then `('Proposed','clarifying','Clarified')`, so step 4's `compose_brief` with `pending_activity: 'clarifying'`

@@ -32,7 +32,7 @@ describe('finish-work skill contract (evolved)', () => {
   it('branches on mode and drives deploying + verifying', () => {
     expect(skill.body).toContain('get_project');
     expect(skill.body).toContain('opinionated');
-    expect(skill.body.toLowerCase()).toContain('manual mode');
+    expect(skill.body.toLowerCase()).toContain('freeform mode');
     const tools = referencedHarmonyTools(skill.body);
     expect(tools).toContain('resolve_brief');       // release accept (clears gate) + verify accept
     expect(tools).toContain('compose_brief');       // verification-ack-pending
@@ -220,7 +220,7 @@ describe('finish-work skill contract (evolved)', () => {
     // stays scoped to Manual mode's pre-flight checks only, which O2 falls back to by reference.
     expect(o2.toLowerCase()).not.toMatch(/must be inside/);
     // The manual-mode fallback is referenced, not duplicated, for the no-build_pr-but-local-PR case.
-    expect(o2.toLowerCase()).toMatch(/manual-mode merge sequence/);
+    expect(o2.toLowerCase()).toMatch(/freeform-mode merge sequence/);
     // The true no-diff case (B-265) advances without a merge step.
     expect(o2).toContain('B-265');
   });
@@ -337,7 +337,7 @@ describe('finish-work skill contract (evolved)', () => {
   // SAME pre-merge mergeability check, right before its own squash-merge sub-step.
   it('manual-mode merge sequence: also carries the pre-merge mergeability check before its squash-merge step', () => {
     const body = skill.body;
-    const manualIdx = body.indexOf('## Manual mode');
+    const manualIdx = body.indexOf('## Freeform mode');
     expect(manualIdx).toBeGreaterThan(-1);
     const manual = body.slice(manualIdx);
     const checkIdx = manual.indexOf('mergeable,mergeStateStatus');
@@ -405,7 +405,7 @@ describe('finish-work skill contract (evolved)', () => {
     expect(o2.toLowerCase()).toMatch(/not-yet-registered, never proceed-worthy/);
     // Manual-mode mirror carries the identical fix, kept in sync.
     const body = skill.body;
-    const manualIdx = body.indexOf('## Manual mode');
+    const manualIdx = body.indexOf('## Freeform mode');
     const manual = body.slice(manualIdx);
     expect(manual).toContain('gh pr checks <PR-number> --watch; ci_status=$?');
     expect(manual.toLowerCase()).toMatch(/never pipe this through `tail`/);

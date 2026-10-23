@@ -6,8 +6,8 @@ v1 enforces capability boundaries through Claude Code skill frontmatter (`allowe
 | Profile | Skills | Pre-approved (`allowed-tools`) | Revoked (`disallowed-tools`) |
 |---|---|---|---|
 | **harmony-discovery** | clarify, decompose, design-decide, research, queue, next | `mcp__harmony__*`, `Read`, `Grep`, `Glob`, `WebSearch`, `WebFetch` | `Write`, `Edit`, `NotebookEdit`, `Bash(git commit *)`, `Bash(git push *)`, `Bash(git merge *)` |
-| **harmony-build** | build (`start-work`, opinionated path) | `mcp__harmony__*`, `Read`, `Grep`, `Glob`, `Write`, `Edit`, `Bash` | `mcp__harmony__record_decision`, `mcp__harmony__supersede_decision`, `mcp__harmony__update_knowledge_entry` |
-| **harmony-release** | release (`finish-work`, opinionated path) | `mcp__harmony__*`, `Read`, `Grep`, `Glob`, `Bash`, `Bash(gh *)` | `mcp__harmony__record_decision`, `mcp__harmony__supersede_decision`, `mcp__harmony__update_knowledge_entry` |
+| **harmony-build** | build (`start-work`, Guided path) | `mcp__harmony__*`, `Read`, `Grep`, `Glob`, `Write`, `Edit`, `Bash` | `mcp__harmony__record_decision`, `mcp__harmony__supersede_decision`, `mcp__harmony__update_knowledge_entry` |
+| **harmony-release** | release (`finish-work`, Guided path) | `mcp__harmony__*`, `Read`, `Grep`, `Glob`, `Bash`, `Bash(gh *)` | `mcp__harmony__record_decision`, `mcp__harmony__supersede_decision`, `mcp__harmony__update_knowledge_entry` |
 | **harmony-verify** | (folded into release for v1) | production observability read-only | filesystem writes, commit |
 
 Why: a `designing` skill must not be able to commit code ("helpfully starting to implement" before the

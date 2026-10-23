@@ -1,6 +1,6 @@
 ---
 name: harmony-queue
-description: Show what's awaiting ME — the opinionated-mode pull queue. Triggers on "my queue", "what's awaiting me", "what should I look at", "harmony queue", "what needs my input". Read-only conductor view that lists every ticket where the ball is in the human's court, with its one-line decision and brief reason.
+description: Show what's awaiting ME — the Guided-mode pull queue. Triggers on "my queue", "what's awaiting me", "what should I look at", "harmony queue", "what needs my input". Read-only conductor view that lists every ticket where the ball is in the human's court, with its one-line decision and brief reason.
 capabilities: harmony-mcp read
 allowed-tools: mcp__harmony__* Read Grep Glob
 ---
@@ -19,10 +19,10 @@ This is read-only — it never advances state. To act on an item, run `/harmony-
 
 ## Flow
 
-### 1. Confirm the project is in opinionated mode
+### 1. Confirm the project is in Guided mode
 
 Call `mcp__harmony__get_project`. If `mode !== 'opinionated'`, tell the user the queue is an
-opinionated-mode feature and stop — manual-mode projects use the normal board.
+Guided-mode feature and stop — Freeform-mode projects use the normal board.
 
 ### 2. Pull both queue signals (two reads — they are set independently)
 

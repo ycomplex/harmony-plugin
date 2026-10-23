@@ -1,6 +1,6 @@
 ---
 name: finish-work
-description: Use when the user wants to finish, complete, wrap up, land, or merge their current work. Triggers on phrases like "finish", "done", "wrap up", "land this", "merge", "ship it", or "we're done". In manual-mode projects this is the exit point for development work — it handles the full merge-and-cleanup sequence, exactly as before. In opinionated-mode projects, /harmony-conduct is the entry point that drives the whole lifecycle; this skill implements the release (merge + deploy) and verify gates the conduct loop delegates to, and your explicit invocation ("finish work" / "land it" / "merge it") is how the release gate is crossed.
+description: Use when the user wants to finish, complete, wrap up, land, or merge their current work. Triggers on phrases like "finish", "done", "wrap up", "land this", "merge", "ship it", or "we're done". In Freeform-mode projects this is the exit point for development work — it handles the full merge-and-cleanup sequence, exactly as before. In Guided-mode projects, /harmony-conduct is the entry point that drives the whole lifecycle; this skill implements the release (merge + deploy) and verify gates the conduct loop delegates to, and your explicit invocation ("finish work" / "land it" / "merge it") is how the release gate is crossed.
 capabilities: harmony-mcp read shell shell:gh forbid:harmony-mcp:supersede_decision
 allowed-tools: mcp__harmony__* Read Grep Glob Bash Bash(gh *)
 disallowed-tools: mcp__harmony__supersede_decision
@@ -15,15 +15,15 @@ Safely land completed work: verify readiness, rebase, squash merge, update main,
 
 ## 0. Check project mode
 
-Call `mcp__harmony__get_project`. If `mode !== 'opinionated'`, follow **Manual mode** (the original
-merge-and-cleanup flow below — unchanged). If `mode === 'opinionated'`, follow **Opinionated mode**
+Call `mcp__harmony__get_project`. If `mode !== 'opinionated'`, follow **Freeform mode** (the original
+merge-and-cleanup flow below — unchanged). If `mode === 'opinionated'`, follow **Guided mode**
 (it wraps the same merge sequence with the release/verify gates).
 
 ---
 
-## Opinionated mode (deploying + verifying)
+## Guided mode (deploying + verifying)
 
-In opinionated mode the usual entry point is `/harmony-plugin:harmony-conduct`, which drives the whole gate sequence and delegates the release/verify gates to this section; invoking finish-work directly (the explicit "finish work" / "land it" / "merge it" verb) runs just these gates.
+In Guided mode the usual entry point is `/harmony-plugin:harmony-conduct`, which drives the whole gate sequence and delegates the release/verify gates to this section; invoking finish-work directly (the explicit "finish work" / "land it" / "merge it" verb) runs just these gates.
 
 The ticket should be at **Built** with `awaiting_human_reason = 'release-decision-pending'` (set by
 `/harmony-plugin:start-work`). This path drives `deploying` (Built → Deployed) and `verifying`
@@ -819,7 +819,7 @@ paths:
           normal brief-drafting flow later, requiring a fresh human approval against the new head; no extra
           round-trip mechanism is needed.
   2. **Squash-merge** — `gh api -X PUT "repos/{owner}/{repo}/pulls/<pr_number>/merge" -f merge_method=squash`
-     (the same REST form as the manual-mode flow below — `gh pr merge`'s GraphQL path still does not honor
+     (the same REST form as the Freeform-mode flow below — `gh pr merge`'s GraphQL path still does not honor
      `bypass_pull_request_allowances` under the required-review merge floor, B-695). `gh` resolves
      `{owner}/{repo}` from the git remote of whatever directory the command runs in, not from a specific
      checked-out branch — running it from the project root, or any clone of the repo, is sufficient.
@@ -833,11 +833,11 @@ paths:
      mcp__harmony__add_comment({ task_id, content: "merged via PR #<number> — CI check confirmation unavailable (<error>), proceeding on mergeStateStatus: CLEAN (inferred, not confirmed green)." })
      ```
   3. **Delete the remote branch** — `gh api -X DELETE "repos/{owner}/{repo}/git/refs/heads/<branch>"` (this
-     mirrors the manual flow's local branch-delete step, just done remotely instead of locally since there is
+     mirrors the Freeform flow's local branch-delete step, just done remotely instead of locally since there is
      no local worktree/branch here to delete).
 - **`build_pr` absent, but a local worktree with its own open PR for the current branch still exists** (a
   pre-B-722 interactive ticket that hasn't been through the now-mandatory artefact step): fall back to the
-  **manual-mode merge sequence below**, unchanged (pre-flight checks → rebase → force-push → wait for CI →
+  **Freeform-mode merge sequence below**, unchanged (pre-flight checks → rebase → force-push → wait for CI →
   squash merge → local cleanup).
 - **`build_pr` absent, and no PR anywhere** (the true no-diff/already-live case, B-265 — the fix was already
   live, nothing left to merge): there is no merge step to run; proceed straight to the advance below.
@@ -1341,7 +1341,7 @@ above) — but that guard is a backstop, not a substitute for following this seq
 
 ---
 
-## Manual mode
+## Freeform mode
 
 *(everything below is the original finish-work flow — unchanged)*
 
@@ -1391,23 +1391,23 @@ gh pr checks <PR-number> --watch; ci_status=$?
 ```
 
 Capture the exit status explicitly (`$?`) — never pipe this through `tail` or anything else that discards
-it (B-765; keep this in sync with opinionated mode's O2 step 1 above). Treat output literally
+it (B-765; keep this in sync with Guided mode's O2 step 1 above). Treat output literally
 `no checks reported on the '<branch>' branch` as NOT-YET-REGISTERED — wait a short interval and retry,
 never proceed on it. If CI fails (checks ran; one or more concluded failure), stop and investigate — do not
 merge a failing build, and do not infer past an observed failure.
 
 If `gh` cannot even read the checks (a capability denial — e.g. `403 Resource not accessible by
 integration`), fall through to the mergeability check in step 3.5 below and resolve it there via
-`mergeStateStatus` — per the capability-denial doctrine (`## Opinionated mode` → O2 → the capability-denial
+`mergeStateStatus` — per the capability-denial doctrine (`## Guided mode` → O2 → the capability-denial
 doctrine above): `CLEAN` → proceed (documenting the inference, same as O2, if a Harmony ticket exists for
 this work); anything else → do NOT infer — stop and report the CI-read failure plus the current
-`mergeStateStatus` value to the user (or file a `worker-question` round if running under opinionated mode's
+`mergeStateStatus` value to the user (or file a `worker-question` round if running under Guided mode's
 O2 fallback).
 
 ### 3.5 Pre-merge mergeability check (B-762, extended for B-765)
 
 Run this immediately before the squash-merge step below, every time — the same check as opinionated
-mode's O2 (`## Opinionated mode` → O2 → step 1c above), applied here because this sequence is ALSO the
+mode's O2 (`## Guided mode` → O2 → step 1c above), applied here because this sequence is ALSO the
 fallback path O2 itself uses when `field_values.build_pr` is absent but a local worktree with its own open
 PR still exists. `mergeable` is three-valued (`MERGEABLE` / `CONFLICTING` / `UNKNOWN`) and GitHub computes
 it **asynchronously** — it reads `UNKNOWN` for a window right after the force-push above, which is exactly
@@ -1419,12 +1419,12 @@ gh pr view <PR-number> --json mergeable,mergeStateStatus,statusCheckRollup,state
 ```
 
 **B-1052: `state === 'MERGED'` is checked FIRST, before anything else in this step** — the same
-MERGED-first branch as opinionated mode's O2 step 1c above, adapted to this sequence's own shape (there is
-no separate Built→Deployed advance in manual mode — the ticket moves straight to Done at step 8 below):
+MERGED-first branch as Guided mode's O2 step 1c above, adapted to this sequence's own shape (there is
+no separate Built→Deployed advance in Freeform mode — the ticket moves straight to Done at step 8 below):
 1. Skip step 4's merge call entirely — this PR is already merged.
 2. Record the merge commit that actually landed — `gh pr view <PR-number> --json mergeCommit` (the
    `mergeCommit.oid` field), never re-derived from `headRefOid`.
-3. Verify the deploy through this same gate's existing post-merge deploy confirmation (opinionated mode's
+3. Verify the deploy through this same gate's existing post-merge deploy confirmation (Guided mode's
    **"Confirm the post-merge deploy"** procedure above) before continuing — do not invent a second
    deploy-verification mechanism.
 4. Continue directly to step 5 below (switch to main, cleanup) exactly as if step 4's merge had just
@@ -1436,17 +1436,17 @@ Only when `state` is **not** `MERGED` does the rest of this step apply.
 `CLEAN` → proceed to the mergeable branches below as usual (and note the inference on the trail, matching
 O2's trail-comment phrasing, if this run has a ticket to comment on); anything else → do NOT infer — stop
 and report the CI-read failure plus the current `mergeStateStatus` value (or file a `worker-question` round
-under opinionated mode's O2 fallback). Otherwise (step 3 read CI cleanly), continue directly into the
+under Guided mode's O2 fallback). Otherwise (step 3 read CI cleanly), continue directly into the
 `mergeable` branches below, UNCHANGED:
 
 - **`UNKNOWN`** → re-poll at a few-second interval, **bounded at ~60s total**, until it resolves. **On
   every re-poll, re-check `state` too (B-1052)** — a PR can transition straight to `MERGED` mid-poll; the
   moment it does, stop polling `mergeable` and take the MERGED-first branch above instead.
   - Resolves within the bound → fall through to the branches below.
-  - **Still `UNKNOWN` at the ~60s bound** → never guess. If running under opinionated mode's O2 fallback,
+  - **Still `UNKNOWN` at the ~60s bound** → never guess. If running under Guided mode's O2 fallback,
     file a `worker-question` round (`mcp__harmony__start_elicitation({ task_id, trigger: 'worker-question' })`
     + `mcp__harmony__file_elicitation_round(...)` naming the PR, the `mergeable`/`mergeStateStatus` values,
-    and how long it polled) and end the leg. In true manual mode (no Harmony gate), stop and report the same
+    and how long it polled) and end the leg. In true Freeform mode (no Harmony gate), stop and report the same
     facts to the user instead.
 - **`MERGEABLE`** (clean, or `BEHIND`) → proceed to the squash-merge below exactly as today. (The
   non-conflicting `BEHIND` case — recovering via `update-branch` — is out of scope for this ticket; a
@@ -1454,12 +1454,12 @@ under opinionated mode's O2 fallback). Otherwise (step 3 read CI cleanly), conti
 - **`CONFLICTING`** (a genuine merge conflict) → this is a **code change**, so it never gets resolved here
   — regardless of `git`/`Bash` reachability (B-746: disallowed-tools bounds tools, not effects). Do **NOT**
   attempt to resolve the conflict, edit the conflicted file, or force-push a resolution from this step.
-  - **Opinionated-mode caller (this sequence reached as O2's fallback):** call the shared
+  - **Guided-mode caller (this sequence reached as O2's fallback):** call the shared
     `reopenToGate(task_id, 'build')` procedure (`skills/harmony-shared/gate-routing.md` §Reopen to a target
     gate) — reopens `Built --revising-building--> Planned` — comment the PR/head SHA + reason on the ticket
     (`mcp__harmony__add_comment`), and **STOP this leg**. The rebuilt ticket naturally re-enters release's
     normal brief-drafting flow later, requiring a fresh human approval against the new head.
-  - **True manual-mode caller (no Harmony gate to reopen):** stop and tell the user the PR has a genuine
+  - **True Freeform-mode caller (no Harmony gate to reopen):** stop and tell the user the PR has a genuine
     merge conflict with main — they resolve it (or re-run `start-work`/rebuild) and re-invoke finish-work.
 
 ### 4. Squash merge the PR
