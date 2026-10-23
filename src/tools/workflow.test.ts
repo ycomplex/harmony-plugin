@@ -1,3 +1,5 @@
+// Identity selection has dedicated selector/integration coverage; retain legacy writer fixture queues.
+vi.mock('./entity-selector.js', () => ({ selectEntity: vi.fn(async () => null) }));
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { deriveToState, advanceWorkflow, referenceKnowledge, listTicketKnowledge, listTicketKnowledgeTool, linkTicketEntities } from './workflow.js';
 
@@ -491,10 +493,10 @@ describe('linkTicketEntities', () => {
     const { client } = mockLinkClient();
     await expect(
       linkTicketEntities(client, 'proj', { task_id: 'B-1', decision_id: 'dec-1', entity_names: [] }),
-    ).rejects.toThrow(/entity_names must contain at least one/);
+    ).rejects.toThrow(/entity_names or entities must identify at least one/);
     await expect(
       linkTicketEntities(client, 'proj', { task_id: 'B-1', decision_id: 'dec-1', entity_names: ['   '] }),
-    ).rejects.toThrow(/entity_names must contain at least one/);
+    ).rejects.toThrow(/entity_names or entities must identify at least one/);
   });
 
   // A genuine RLS/permission denial is a real defect — let it throw, never degrade

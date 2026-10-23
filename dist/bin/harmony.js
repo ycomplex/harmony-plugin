@@ -36398,83 +36398,6 @@ function resolveGatePhase(workflow_state, workflow_activity) {
   return GATE_BY_WORKFLOW_STATE[workflow_state] ?? null;
 }
 
-// src/tools/knowledge-claim.ts
-var ENVELOPE = /^\*\*Claim:\*\* ([^\n]+)\n\n\*\*Claim source:\*\* (authored|derived)\n\n/;
-function isSingleSentenceShaped(value) {
-  const text4 = value.trim();
-  if (!text4 || text4.split(/\s+/).length > 50) return false;
-  const neutral = text4.replace(/(\d)\.(?=\d)/g, "$1").replace(/\be\.g\.|\bi\.e\./gi, (m) => m.replace(/\./g, ""));
-  return !/[.!?]/.test(neutral.replace(/[.!?]+\s*$/, ""));
-}
-function validateClaimEntry(title, claim) {
-  for (const [field, value] of [["title", title], ["claim", claim]]) {
-    if (!isSingleSentenceShaped(value)) throw new Error(`${field} must be one sentence of at most 50 words`);
-  }
-}
-function decodeClaim(content = "") {
-  const match2 = ENVELOPE.exec(content);
-  return { claim: match2?.[1] ?? null, claim_source: match2?.[2] ?? null };
-}
-function claimFields(row) {
-  const decoded = decodeClaim(row.content ?? "");
-  return row.claim && (row.claim_source === "authored" || row.claim_source === "derived") ? { claim: row.claim, claim_source: row.claim_source } : decoded;
-}
-function stripClaim(content = "") {
-  return content.replace(ENVELOPE, "");
-}
-function encodeClaim(content, claim, source = "authored") {
-  return `**Claim:** ${claim.trim().replace(/\s+/g, " ")}
-
-**Claim source:** ${source}
-
-${stripClaim(content)}`;
-}
-function claimContent(title, content, claim) {
-  if (claim !== void 0) {
-    validateClaimEntry(title, claim);
-    return encodeClaim(content, claim);
-  }
-  const proposed = proposeClaim(stripClaim(content)) ?? proposeClaim(title);
-  console.warn("Knowledge claim omitted; using a derived proposal when available. Supply claim to author it.");
-  return proposed ? encodeClaim(content, proposed, "derived") : stripClaim(content);
-}
-function editedClaimContent(current, updates) {
-  const prior = claimFields(current);
-  const title = updates.title ?? current.title;
-  const content = updates.content ?? current.content;
-  if (updates.claim !== void 0) return claimContent(title, content, updates.claim);
-  if (prior.claim_source === "authored" && prior.claim) {
-    return encodeClaim(content, prior.claim);
-  }
-  return claimContent(title, content);
-}
-function plainText(content) {
-  return stripClaim(content).replace(/<[^>]*>/g, " ").replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/[`*_#>|~]/g, "").replace(/\s+/g, " ").trim();
-}
-function matchedPassage(content, query) {
-  const text4 = [decodeClaim(content).claim, plainText(content)].filter(Boolean).join(" ");
-  const terms = query.toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
-  const indexes = terms.map((term) => text4.toLocaleLowerCase().indexOf(term)).filter((i) => i >= 0);
-  if (!indexes.length) return null;
-  const at2 = Math.min(...indexes), start = Math.max(0, at2 - 60), end = Math.min(text4.length, start + 240);
-  return `${start ? "\u2026" : ""}${text4.slice(start, end)}${end < text4.length ? "\u2026" : ""}`;
-}
-function proposeClaim(content) {
-  if (decodeClaim(content).claim) return null;
-  const lines = content.split("\n").filter((line) => !/^\s*(?:_?Derived from|#{1,6}\s|\*\*(?:Question put to the human|Track|Reach|On accept|Context|Ratified asks):)/i.test(line));
-  const text4 = plainText(lines.join("\n")).replace(/^Decision:\s*/i, "");
-  const candidates = text4.match(/.*?[.!?](?=\s|$)|.+$/g) ?? [];
-  let candidate = "";
-  for (const part of candidates) {
-    candidate += part;
-    if (/\b(?:e\.g\.|i\.e\.)$/i.test(candidate.trim())) continue;
-    const value = candidate.trim();
-    if (isSingleSentenceShaped(value)) return value;
-    return null;
-  }
-  return null;
-}
-
 // src/tools/resolve-task-id.ts
 var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 var BARE_NUMBER_RE = /^\d+$/;
@@ -36616,6 +36539,174 @@ async function withRetiredWording(client, projectId, entries) {
     }
   }
   return result;
+}
+
+// src/tools/text-normalize.ts
+var ENTITY_MAP = {
+  "&amp;": "&",
+  "&lt;": "<",
+  "&gt;": ">",
+  "&quot;": '"',
+  "&#39;": "'"
+};
+var ENTITY_PATTERN = /&amp;|&lt;|&gt;|&quot;|&#39;/g;
+var HAS_ENTITY_PATTERN = /&amp;|&lt;|&gt;|&quot;|&#39;/;
+function splitCodeSpans(text4) {
+  const segments = [];
+  let i = 0;
+  let plainStart = 0;
+  while (i < text4.length) {
+    if (text4.startsWith("```", i)) {
+      const close = text4.indexOf("```", i + 3);
+      const codeEnd = close === -1 ? text4.length : close + 3;
+      if (plainStart < i) segments.push({ code: false, text: text4.slice(plainStart, i) });
+      segments.push({ code: true, text: text4.slice(i, codeEnd) });
+      i = codeEnd;
+      plainStart = i;
+      continue;
+    }
+    if (text4[i] === "`") {
+      const close = text4.indexOf("`", i + 1);
+      if (close === -1) {
+        i += 1;
+        continue;
+      }
+      if (plainStart < i) segments.push({ code: false, text: text4.slice(plainStart, i) });
+      segments.push({ code: true, text: text4.slice(i, close + 1) });
+      i = close + 1;
+      plainStart = i;
+      continue;
+    }
+    i += 1;
+  }
+  if (plainStart < text4.length) segments.push({ code: false, text: text4.slice(plainStart) });
+  return segments;
+}
+function normalizeHtmlEntities(text4) {
+  if (!text4 || !HAS_ENTITY_PATTERN.test(text4)) return text4;
+  return splitCodeSpans(text4).map(
+    (seg) => seg.code ? seg.text : seg.text.replace(ENTITY_PATTERN, (m) => ENTITY_MAP[m] ?? m)
+  ).join("");
+}
+var TAG_LIKE_PATTERN = /<\/?[a-zA-Z][\w-]*(?:\s[^<>]*)?>/;
+var LINE_BREAK_PATTERN = /[\n\r]/;
+function validateTitle(title, cap = 200) {
+  if (title.length > cap) {
+    throw new Error(`Title exceeds 200 characters (received ${title.length}).`);
+  }
+  const markupMatch = title.match(TAG_LIKE_PATTERN);
+  if (markupMatch) {
+    throw new Error(`Title contains disallowed markup: \`${markupMatch[0]}\``);
+  }
+  if (LINE_BREAK_PATTERN.test(title)) {
+    throw new Error("Title cannot contain a line break.");
+  }
+}
+
+// src/tools/entity-selector.ts
+async function selectEntity(client, workspaceId, projectId, selector) {
+  const name = selector.name === void 0 ? void 0 : normalizeHtmlEntities(selector.name).trim();
+  if (name === "" || selector.entity_id === "") throw new Error("Entity identity/name must not be blank");
+  const names = await readKnowledgeNames(client, projectId, selector.entity_id ? { entity_ids: [selector.entity_id], search: name } : { search: name });
+  let candidates;
+  if (names.available) {
+    candidates = names.matches.map((match2) => ({ id: match2.concept_id, name: match2.current_name, kind: match2.kind ?? "", project_id: projectId }));
+    if (selector.entity_id) candidates = candidates.filter((entity) => entity.id === selector.entity_id);
+    if (selector.entity_id && name !== void 0) {
+      const byName = await readKnowledgeNames(client, projectId, { search: name });
+      candidates = candidates.filter((entity) => byName.matches.some((match2) => match2.concept_id === entity.id));
+    }
+  } else {
+    let query = client.from("knowledge_entities").select("id, name, kind, project_id").eq("workspace_id", workspaceId).or(`project_id.is.null,project_id.eq.${projectId}`);
+    if (selector.entity_id) query = query.eq("id", selector.entity_id);
+    if (selector.kind) query = query.eq("kind", selector.kind);
+    const { data, error } = await query;
+    if (error) throw new Error(error.message);
+    candidates = data ?? [];
+    if (name !== void 0) candidates = candidates.filter((entity) => entity.name.trim().toLowerCase() === name.toLowerCase());
+  }
+  if (selector.kind) candidates = candidates.filter((entity) => entity.kind === selector.kind);
+  candidates = [...new Map(candidates.map((entity) => [entity.id, entity])).values()];
+  if (candidates.length > 1) throw new Error(`Ambiguous entity name; select entity_id or kind. Candidates: ${JSON.stringify(candidates)}`);
+  if (selector.entity_id && !candidates.length) throw new Error("Entity identity is unavailable in this project, retired, or conflicts with the supplied name/kind");
+  return candidates[0] ?? null;
+}
+
+// src/tools/knowledge-claim.ts
+var ENVELOPE = /^\*\*Claim:\*\* ([^\n]+)\n\n\*\*Claim source:\*\* (authored|derived)\n\n/;
+function isSingleSentenceShaped(value) {
+  const text4 = value.trim();
+  if (!text4 || text4.split(/\s+/).length > 50) return false;
+  const neutral = text4.replace(/(\d)\.(?=\d)/g, "$1").replace(/\be\.g\.|\bi\.e\./gi, (m) => m.replace(/\./g, ""));
+  return !/[.!?]/.test(neutral.replace(/[.!?]+\s*$/, ""));
+}
+function validateClaimEntry(title, claim) {
+  for (const [field, value] of [["title", title], ["claim", claim]]) {
+    if (!isSingleSentenceShaped(value)) throw new Error(`${field} must be one sentence of at most 50 words`);
+  }
+}
+function decodeClaim(content = "") {
+  const match2 = ENVELOPE.exec(content);
+  return { claim: match2?.[1] ?? null, claim_source: match2?.[2] ?? null };
+}
+function claimFields(row) {
+  const decoded = decodeClaim(row.content ?? "");
+  return row.claim && (row.claim_source === "authored" || row.claim_source === "derived") ? { claim: row.claim, claim_source: row.claim_source } : decoded;
+}
+function stripClaim(content = "") {
+  return content.replace(ENVELOPE, "");
+}
+function encodeClaim(content, claim, source = "authored") {
+  return `**Claim:** ${claim.trim().replace(/\s+/g, " ")}
+
+**Claim source:** ${source}
+
+${stripClaim(content)}`;
+}
+function claimContent(title, content, claim) {
+  if (claim !== void 0) {
+    validateClaimEntry(title, claim);
+    return encodeClaim(content, claim);
+  }
+  const proposed = proposeClaim(stripClaim(content)) ?? proposeClaim(title);
+  console.warn("Knowledge claim omitted; using a derived proposal when available. Supply claim to author it.");
+  return proposed ? encodeClaim(content, proposed, "derived") : stripClaim(content);
+}
+function editedClaimContent(current, updates) {
+  const prior = claimFields(current);
+  const title = updates.title ?? current.title;
+  const content = updates.content ?? current.content;
+  if (updates.claim !== void 0) return claimContent(title, content, updates.claim);
+  if (prior.claim_source === "authored" && prior.claim) {
+    return encodeClaim(content, prior.claim);
+  }
+  return claimContent(title, content);
+}
+function plainText(content) {
+  return stripClaim(content).replace(/<[^>]*>/g, " ").replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/[`*_#>|~]/g, "").replace(/\s+/g, " ").trim();
+}
+function matchedPassage(content, query) {
+  const text4 = [decodeClaim(content).claim, plainText(content)].filter(Boolean).join(" ");
+  const terms = query.toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+  const indexes = terms.map((term) => text4.toLocaleLowerCase().indexOf(term)).filter((i) => i >= 0);
+  if (!indexes.length) return null;
+  const at2 = Math.min(...indexes), start = Math.max(0, at2 - 60), end = Math.min(text4.length, start + 240);
+  return `${start ? "\u2026" : ""}${text4.slice(start, end)}${end < text4.length ? "\u2026" : ""}`;
+}
+function proposeClaim(content) {
+  if (decodeClaim(content).claim) return null;
+  const lines = content.split("\n").filter((line) => !/^\s*(?:_?Derived from|#{1,6}\s|\*\*(?:Question put to the human|Track|Reach|On accept|Context|Ratified asks):)/i.test(line));
+  const text4 = plainText(lines.join("\n")).replace(/^Decision:\s*/i, "");
+  const candidates = text4.match(/.*?[.!?](?=\s|$)|.+$/g) ?? [];
+  let candidate = "";
+  for (const part of candidates) {
+    candidate += part;
+    if (/\b(?:e\.g\.|i\.e\.)$/i.test(candidate.trim())) continue;
+    const value = candidate.trim();
+    if (isSingleSentenceShaped(value)) return value;
+    return null;
+  }
+  return null;
 }
 
 // src/tools/knowledge-metadata.ts
@@ -37596,68 +37687,6 @@ function truthStatePatch(args) {
   return Object.fromEntries(FIELDS.filter((k) => args[k] !== void 0).map((k) => [k, args[k]]));
 }
 
-// src/tools/text-normalize.ts
-var ENTITY_MAP = {
-  "&amp;": "&",
-  "&lt;": "<",
-  "&gt;": ">",
-  "&quot;": '"',
-  "&#39;": "'"
-};
-var ENTITY_PATTERN = /&amp;|&lt;|&gt;|&quot;|&#39;/g;
-var HAS_ENTITY_PATTERN = /&amp;|&lt;|&gt;|&quot;|&#39;/;
-function splitCodeSpans(text4) {
-  const segments = [];
-  let i = 0;
-  let plainStart = 0;
-  while (i < text4.length) {
-    if (text4.startsWith("```", i)) {
-      const close = text4.indexOf("```", i + 3);
-      const codeEnd = close === -1 ? text4.length : close + 3;
-      if (plainStart < i) segments.push({ code: false, text: text4.slice(plainStart, i) });
-      segments.push({ code: true, text: text4.slice(i, codeEnd) });
-      i = codeEnd;
-      plainStart = i;
-      continue;
-    }
-    if (text4[i] === "`") {
-      const close = text4.indexOf("`", i + 1);
-      if (close === -1) {
-        i += 1;
-        continue;
-      }
-      if (plainStart < i) segments.push({ code: false, text: text4.slice(plainStart, i) });
-      segments.push({ code: true, text: text4.slice(i, close + 1) });
-      i = close + 1;
-      plainStart = i;
-      continue;
-    }
-    i += 1;
-  }
-  if (plainStart < text4.length) segments.push({ code: false, text: text4.slice(plainStart) });
-  return segments;
-}
-function normalizeHtmlEntities(text4) {
-  if (!text4 || !HAS_ENTITY_PATTERN.test(text4)) return text4;
-  return splitCodeSpans(text4).map(
-    (seg) => seg.code ? seg.text : seg.text.replace(ENTITY_PATTERN, (m) => ENTITY_MAP[m] ?? m)
-  ).join("");
-}
-var TAG_LIKE_PATTERN = /<\/?[a-zA-Z][\w-]*(?:\s[^<>]*)?>/;
-var LINE_BREAK_PATTERN = /[\n\r]/;
-function validateTitle(title, cap = 200) {
-  if (title.length > cap) {
-    throw new Error(`Title exceeds 200 characters (received ${title.length}).`);
-  }
-  const markupMatch = title.match(TAG_LIKE_PATTERN);
-  if (markupMatch) {
-    throw new Error(`Title contains disallowed markup: \`${markupMatch[0]}\``);
-  }
-  if (LINE_BREAK_PATTERN.test(title)) {
-    throw new Error("Title cannot contain a line break.");
-  }
-}
-
 // src/tools/knowledge-retrieval-log.ts
 var RETRIEVAL_EVENT_TYPE = "knowledge-retrieved";
 var RETRIEVAL_LOG_CAP = 10;
@@ -37715,6 +37744,7 @@ async function logKnowledgeRetrieval(client, projectId, args, result) {
 }
 
 // src/tools/knowledge.ts
+var ENTITY_COLS = "id, workspace_id, project_id, kind, name, description, metadata, created_at";
 async function getWorkspaceId(client, projectId) {
   const { data, error } = await client.from("projects").select("workspace_id").eq("id", projectId).single();
   if (error) throw new Error(`Could not resolve workspace: ${error.message}`);
@@ -38012,20 +38042,22 @@ function collisionWarning(name, requestedKind, existing) {
     message: `An entity named "${name}" already exists under kind "${existing.kind}" (id ${existing.id}). This write created/resolved a SEPARATE node under kind "${requestedKind}" instead of merging. If this was unintended, use reconcile_entity to merge them.`
   };
 }
-async function resolveOrCreateEntity(client, workspaceId, projectId, name, kind = "concept") {
+async function resolveOrCreateEntity(client, workspaceId, projectId, name, kind) {
   const rawName = name;
   const normalizedName = normalizeHtmlEntities(rawName);
-  const names = await readKnowledgeNames(client, projectId, { search: normalizedName });
-  if (names.matches.length > 1) throw new Error("Ambiguous concept name; use an explicit identity");
-  if (names.matches.length === 1) return names.matches[0].concept_id;
-  const { data: existing, error: lookupErr } = await client.from("knowledge_entities").select("id").eq("workspace_id", workspaceId).eq("kind", kind).eq("name", normalizedName).maybeSingle();
+  const selected = await selectEntity(client, workspaceId, projectId, { name: normalizedName, kind });
+  if (selected) return selected.id;
+  kind ??= "concept";
+  const nameHistory = await readKnowledgeNames(client, projectId);
+  const entityTable = nameHistory.available ? "knowledge_current_entities" : "knowledge_entities";
+  const { data: existing, error: lookupErr } = await client.from(entityTable).select("id").eq("workspace_id", workspaceId).or(`project_id.is.null,project_id.eq.${projectId}`).eq("kind", kind).eq("name", normalizedName).maybeSingle();
   if (lookupErr) throw new Error(lookupErr.message);
   if (existing) return existing.id;
   if (normalizedName !== rawName) {
-    const { data: legacy, error: legacyErr } = await client.from("knowledge_entities").select("id").eq("workspace_id", workspaceId).eq("kind", kind).eq("name", rawName).maybeSingle();
+    const { data: legacy, error: legacyErr } = await client.from(entityTable).select("id").eq("workspace_id", workspaceId).or(`project_id.is.null,project_id.eq.${projectId}`).eq("kind", kind).eq("name", rawName).maybeSingle();
     if (legacyErr) throw new Error(legacyErr.message);
     if (legacy) {
-      const { data: renamed, error: renameErr } = await client.from("knowledge_entities").update({ name: normalizedName }).eq("workspace_id", workspaceId).eq("id", legacy.id).select("id").single();
+      const { data: renamed, error: renameErr } = await client.from("knowledge_entities").update({ name: normalizedName }).eq("workspace_id", workspaceId).or(`project_id.is.null,project_id.eq.${projectId}`).eq("id", legacy.id).select("id").single();
       if (renameErr) throw new Error(renameErr.message);
       return renamed.id;
     }
@@ -38097,6 +38129,18 @@ ${content}`);
     throw new Error(error.message);
   }
   return { ...data, ...explicitContext && !capability?.available ? { claim_context: { question_state: "capability-unavailable", questions: [], concepts: [] } } : {}, ...claimFields(data) };
+}
+async function queryEntities(client, projectId, args) {
+  const workspaceId = await getWorkspaceId(client, projectId);
+  const selected = args.entity_id || args.name ? await selectEntity(client, workspaceId, projectId, args) : null;
+  const names = await readKnowledgeNames(client, projectId);
+  let query = client.from(names.available ? "knowledge_current_entities" : "knowledge_entities").select(ENTITY_COLS).eq("workspace_id", workspaceId).or(`project_id.is.null,project_id.eq.${projectId}`);
+  if (selected) query = query.eq("id", selected.id);
+  if (args.kind) query = query.eq("kind", args.kind);
+  if (args.name && !selected) query = query.ilike("name", `%${args.name}%`);
+  const { data, error } = await query.order("name", { ascending: true });
+  if (error) throw new Error(error.message);
+  return data ?? [];
 }
 async function supersedeKnowledgeEntry(client, projectId, userId, args) {
   if (!args.entry_id && !args.title) {
@@ -38205,7 +38249,7 @@ async function referenceKnowledge(client, projectId, args) {
   if (error) throw error;
   return { task_id: id, decision_id: args.decision_id, linked: true };
 }
-var KNOWLEDGE_PROJECTION = "decision_id, knowledge_decisions(id, type, status, title, domain, source_activity, content)";
+var KNOWLEDGE_PROJECTION = "decision_id, knowledge_decisions(id, type, status, title, domain, source_activity, content, affected_entity_ids)";
 var KNOWLEDGE_PAGE_SIZE = 500;
 async function listTicketKnowledge(client, projectId, args) {
   const single = args.task_id !== void 0;
@@ -38235,7 +38279,7 @@ async function listTicketKnowledge(client, projectId, args) {
       offset += data.length;
     }
   }
-  const affected = await fetchAffectedEntities(client, rows.map((row) => row.decision_id), batch);
+  const affected = await fetchAffectedEntities(client, rows.map((row) => row.decision_id), batch, rows);
   const projectEntry = (row) => ({
     decision_id: row.decision_id,
     ...row.knowledge_decisions ?? {},
@@ -38247,7 +38291,7 @@ async function listTicketKnowledge(client, projectId, args) {
   for (const row of rows) groups.get(row.task_id)?.push(projectEntry(row));
   return { tickets: ids.map((task_id) => ({ task_id, entries: groups.get(task_id) })) };
 }
-async function fetchAffectedEntities(client, decisionIds, paged = false) {
+async function fetchAffectedEntities(client, decisionIds, paged = false, references = []) {
   if (decisionIds.length === 0) return {};
   const rows = [];
   if (!paged) {
@@ -38273,7 +38317,45 @@ async function fetchAffectedEntities(client, decisionIds, paged = false) {
     const list = map[row.decision_id] ?? (map[row.decision_id] = []);
     list.push({ entity_id: row.entity_id, name: entity.name, kind: entity.kind ?? "" });
   }
+  const storedIds = [...new Set(references.flatMap((row) => {
+    const ids = row.knowledge_decisions?.affected_entity_ids;
+    return Array.isArray(ids) ? ids.filter((id) => typeof id === "string") : [];
+  }))];
+  const visible = /* @__PURE__ */ new Map();
+  for (let start = 0; start < storedIds.length; start += 100) {
+    const { data, error } = await client.from("knowledge_entities").select("id, name, kind").in("id", storedIds.slice(start, start + 100));
+    if (error) throw error;
+    for (const entity of data ?? []) visible.set(entity.id, { entity_id: entity.id, name: entity.name, kind: entity.kind });
+  }
+  for (const row of references) {
+    const list = map[row.decision_id] ?? (map[row.decision_id] = []);
+    const ids = row.knowledge_decisions?.affected_entity_ids;
+    for (const id of Array.isArray(ids) ? ids : []) {
+      const entity = visible.get(id);
+      if (entity && !list.some((existing) => existing.entity_id === id)) list.push(entity);
+    }
+  }
   return map;
+}
+async function linkTicketEntities(client, projectId, args) {
+  if (!args.decision_id) throw new Error("decision_id is required");
+  const names = (args.entity_names ?? []).map((n) => n.trim()).filter(Boolean);
+  const refs = [...names.map((name) => ({ name, kind: args.kind ?? args.entity_kind })), ...args.entities ?? [], ...args.entity_id ? [{ entity_id: args.entity_id, kind: args.kind ?? args.entity_kind }] : []];
+  if (!refs.length || refs.some((ref) => !ref.entity_id && !ref.name?.trim())) throw new Error("entity_names or entities must identify at least one entity");
+  const id = await resolveTaskId(client, projectId, args.task_id);
+  const workspaceId = await getWorkspaceId(client, projectId);
+  const entityIds = [];
+  for (const ref of refs) {
+    const selected = await selectEntity(client, workspaceId, projectId, ref);
+    entityIds.push(selected?.id ?? await resolveOrCreateEntity(client, workspaceId, projectId, ref.name, ref.kind ?? "feature"));
+  }
+  for (const entityId of new Set(entityIds)) {
+    const { error: implementsErr } = await client.from("ticket_implements_entity").upsert({ task_id: id, entity_id: entityId }, { onConflict: "task_id,entity_id", ignoreDuplicates: true });
+    if (implementsErr) throw implementsErr;
+    const { error: affectsErr } = await client.from("decision_affects_entity").upsert({ decision_id: args.decision_id, entity_id: entityId }, { onConflict: "decision_id,entity_id", ignoreDuplicates: true });
+    if (affectsErr) throw affectsErr;
+  }
+  return { task_id: id, decision_id: args.decision_id, entity_ids: entityIds, linked: true };
 }
 
 // src/tools/comments.ts
@@ -40438,7 +40520,9 @@ function promisedWriteLine(item) {
       return `- the confirmed feature-entity name(s) \u2014 ${names.length ? names.join(", ") : "(none)"} \u2014 landed on the ticket`;
     }
     case "entity_link": {
-      const name = text4(item.entity_name);
+      const identity2 = text4(item.entity_name) ?? text4(item.entity_id);
+      const kind = text4(item.kind) ?? text4(item.entity_kind);
+      const name = identity2 ? `${identity2}${item.entity_name && item.entity_id ? ` (${item.entity_id})` : ""}${kind ? ` [${kind}]` : ""}` : null;
       return name ? `- links this ticket${item.decision_id ? " and this decision" : ""} to the entity "${name}"` : null;
     }
     default:
@@ -41539,7 +41623,12 @@ var composeBriefTool = {
             items: {
               type: "object",
               properties: {
-                write_kind: { type: "string", description: "'acceptance_criterion' | 'child_ticket' | 'checklist_item' | 'ac_transfer' | 'label_add' | 'knowledge_entry_content'" },
+                write_kind: { type: "string", description: "'acceptance_criterion' | 'child_ticket' | 'checklist_item' | 'ac_transfer' | 'label_add' | 'knowledge_entry_content' | 'entity_link'" },
+                entity_id: { type: "string", description: "entity_link: explicit current identity UUID; accepts ID without a name" },
+                entity_name: { type: "string", description: "entity_link: exact current/retired name; ambiguity lists candidate identities" },
+                kind: { type: "string", description: "entity_link: optional kind selector, applied before ambiguity detection" },
+                entity_kind: { type: "string", description: "entity_link: backward-compatible spelling of kind" },
+                decision_id: { type: "string", description: "entity_link: optional affected decision UUID" },
                 ref: { type: "string", description: "Stable, content-derived, within-payload-unique ref \u2014 from slugRef/dedupeRefs (payload-refs.ts)" },
                 content: { type: "string", description: "Required for acceptance_criterion, ac_transfer and knowledge_entry_content \u2014 the full text, verbatim" },
                 title: { type: "string", description: "Required for child_ticket and checklist_item" },
@@ -42666,13 +42755,15 @@ async function applyAcceptanceEventPayload(client, event) {
         result = data;
       } else if (item.write_kind === "entity_link") {
         const name = item.entity_name?.trim();
-        if (!name) throw new Error(`entity_link item '${item.ref}' names no entity_name \u2014 the entity being linked must be identified`);
+        if (!name && !item.entity_id) throw new Error(`entity_link item '${item.ref}' needs entity_id or entity_name`);
         const { data: taskRow, error: taskErr } = await client.from("tasks").select("project_id").eq("id", event.task_id).maybeSingle();
         if (taskErr) throw new Error(taskErr.message);
         const projectId = taskRow?.project_id;
         if (!projectId) throw new Error(`entity_link item '${item.ref}' \u2014 task ${event.task_id} has no project_id, cannot resolve the entity`);
         const workspaceId = await getWorkspaceId(client, projectId);
-        const entityId = await resolveOrCreateEntity(client, workspaceId, projectId, name, item.entity_kind ?? "feature");
+        const kind = item.kind ?? item.entity_kind;
+        const selected = await selectEntity(client, workspaceId, projectId, { entity_id: item.entity_id, name, kind });
+        const entityId = selected?.id ?? await resolveOrCreateEntity(client, workspaceId, projectId, name, kind ?? "feature");
         const { data, error } = await client.rpc("consume_entity_link_write", {
           _event_id: event.id,
           _external_ref: item.ref,
@@ -48726,6 +48817,12 @@ async function tagReleasedKnowledge(client, projectId, taskId, repo, pr) {
 // src/cli/commands/knowledge.ts
 function registerKnowledgeCommands(program3) {
   const knowledge = program3.command("knowledge").description("Manage workspace knowledge base");
+  knowledge.command("entities").description("Discover entities or select an exact identity/name/kind").option("--entity-id <uuid>").option("--name <name>").option("--kind <kind>").action(async (opts) => {
+    await runCommand(program3.opts(), (ctx) => queryEntities(ctx.client, ctx.projectId, { entity_id: opts.entityId, name: opts.name, kind: opts.kind }), (data) => JSON.stringify(data, null, 2));
+  });
+  knowledge.command("link-entities").description("Link a ticket and decision to explicit entity references").requiredOption("--task <id>").requiredOption("--decision <uuid>").option("--entity-id <uuid>").option("--name <names...>").option("--kind <kind>").action(async (opts) => {
+    await runCommand(program3.opts(), (ctx) => linkTicketEntities(ctx.client, ctx.projectId, { task_id: opts.task, decision_id: opts.decision, entity_id: opts.entityId, entity_names: opts.name, kind: opts.kind }), (data) => JSON.stringify(data, null, 2));
+  });
   const surfaces = knowledge.command("surfaces").description(
     "Observed component wording, separate from account text and decisions"
   );

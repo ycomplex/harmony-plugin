@@ -1,3 +1,6 @@
+import { queryEntities } from '../../tools/knowledge.js';
+import { linkTicketEntities } from '../../tools/workflow.js';
+vi.mock('../../tools/workflow.js', () => ({ linkTicketEntities: vi.fn().mockResolvedValue({ linked: true }) }));
 import { renameKnowledgeConcept, previewKnowledgeMerge, mergeKnowledgeConcepts } from '../../tools/knowledge-names.js';
 vi.mock('../../tools/knowledge-names.js',()=>({readKnowledgeNames:vi.fn(),renameKnowledgeConcept:vi.fn().mockResolvedValue({entity_id:'c'}),previewKnowledgeMerge:vi.fn().mockResolvedValue({confirmation:'key'}),mergeKnowledgeConcepts:vi.fn().mockResolvedValue({target_entity_id:'now'})}));
 import { captureSurfaceRecord, readSurfaceRecords } from '../../tools/surface-records.js';
@@ -21,7 +24,7 @@ vi.mock('../../tools/knowledge-questions.js', () => ({
 }));
 
 vi.mock('../../tools/knowledge.js', () => ({
-  queryKnowledge: vi.fn(), getKnowledgeEntry: vi.fn(), createKnowledgeEntry: vi.fn(),
+  queryEntities: vi.fn().mockResolvedValue([]), queryKnowledge: vi.fn(), getKnowledgeEntry: vi.fn(), createKnowledgeEntry: vi.fn(),
   updateKnowledgeEntry: vi.fn().mockResolvedValue({ id: 'entry', title: 'Specimen' }),
   supersedeKnowledgeEntry: vi.fn(),
 }));
@@ -178,4 +181,14 @@ it('explains admission and definition participation in knowledge list help', () 
   expect(help).toContain('relevance_admission');
   expect(help).toContain('definitions_included');
   expect(help).toContain('not a storage-capability flag');
+});
+
+describe('entity selection CLI', () => {
+  it('forwards identity and kind instead of reducing them to names', async () => {
+    const program = new Command(); registerKnowledgeCommands(program);
+    await program.parseAsync(['knowledge','entities','--entity-id','feature-id','--name','Knowledge','--kind','feature'], {from:'user'});
+    expect(queryEntities).toHaveBeenCalledWith('client','project',{entity_id:'feature-id',name:'Knowledge',kind:'feature'});
+    await program.parseAsync(['knowledge','link-entities','--task','B-1255','--decision','decision-id','--entity-id','concept-id','--kind','concept'], {from:'user'});
+    expect(linkTicketEntities).toHaveBeenCalledWith('client','project',expect.objectContaining({task_id:'B-1255',decision_id:'decision-id',entity_id:'concept-id',kind:'concept'}));
+  });
 });

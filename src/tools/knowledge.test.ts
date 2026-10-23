@@ -1,3 +1,5 @@
+// Identity selection has dedicated selector/integration coverage; retain legacy writer fixture queues.
+vi.mock('./entity-selector.js', () => ({ selectEntity: vi.fn(async () => null) }));
 vi.mock('./knowledge-names.js', async importOriginal => ({ ...await importOriginal<typeof import('./knowledge-names.js')>(), readKnowledgeNames: async () => ({available:false,matches:[],entries:[],identities:[]}), withRetiredWording: async (_c:unknown,_p:unknown,entries:unknown[])=>entries }));
 vi.mock('./knowledge-sources.js', async importOriginal => ({ ...await importOriginal<typeof import('./knowledge-sources.js')>(), readSourceValues: async () => ({ values: [], total_count: 0 }) }));
 // Legacy-contract tests intentionally run with the new capability absent; metadata tests cover both schemas.
@@ -188,7 +190,7 @@ function buildEmbedAwareClient(opts: {
     chain.select = vi.fn().mockReturnValue(chain);
     chain.insert = vi.fn().mockReturnValue(chain);
     chain.update = vi.fn().mockReturnValue(chain);
-    chain.eq = vi.fn().mockReturnValue(chain);
+    chain.or = vi.fn().mockReturnValue(chain); chain.eq = vi.fn().mockReturnValue(chain);
     chain.single = vi.fn().mockImplementation(() => {
       const next = queue.length > 1 ? queue.shift()! : queue[0];
       return Promise.resolve({ data: next.data, error: next.error ?? null });
@@ -1204,7 +1206,7 @@ describe('resolveOrCreateEntity', () => {
   it('returns an existing entity id without inserting', async () => {
     const chain: any = {};
     chain.select = vi.fn().mockReturnValue(chain);
-    chain.eq = vi.fn().mockReturnValue(chain);
+    chain.or = vi.fn().mockReturnValue(chain); chain.eq = vi.fn().mockReturnValue(chain);
     chain.maybeSingle = vi.fn().mockResolvedValue({ data: { id: 'ent-1' }, error: null });
     chain.insert = vi.fn().mockReturnValue(chain);
     const client: any = { from: vi.fn().mockReturnValue(chain) };
@@ -1217,12 +1219,12 @@ describe('resolveOrCreateEntity', () => {
   it('inserts and returns a new entity id when none exists', async () => {
     let call = 0;
     const lookup: any = { select: vi.fn(), eq: vi.fn(), maybeSingle: vi.fn() };
-    lookup.select.mockReturnValue(lookup); lookup.eq.mockReturnValue(lookup);
+    lookup.select.mockReturnValue(lookup); lookup.or = vi.fn().mockReturnValue(lookup); lookup.eq.mockReturnValue(lookup);
     lookup.maybeSingle.mockResolvedValue({ data: null, error: null });
     // B-977: resolveOrCreateEntity now ALSO runs findCrossKindCollision (select/eq/eq/neq/limit/
     // maybeSingle) between the same-kind lookup miss and the insert — no collision here.
     const collision: any = { select: vi.fn(), eq: vi.fn(), neq: vi.fn(), limit: vi.fn(), maybeSingle: vi.fn() };
-    collision.select.mockReturnValue(collision); collision.eq.mockReturnValue(collision);
+    collision.select.mockReturnValue(collision); collision.or = vi.fn().mockReturnValue(collision); collision.eq.mockReturnValue(collision);
     collision.neq.mockReturnValue(collision); collision.limit.mockReturnValue(collision);
     collision.maybeSingle.mockResolvedValue({ data: null, error: null });
     const ins: any = { insert: vi.fn(), select: vi.fn(), single: vi.fn() };
@@ -1241,10 +1243,10 @@ describe('resolveOrCreateEntity', () => {
   it('B-977: logs a warning (never throws, never blocks the insert) on a same-name-different-kind collision', async () => {
     let call = 0;
     const lookup: any = { select: vi.fn(), eq: vi.fn(), maybeSingle: vi.fn() };
-    lookup.select.mockReturnValue(lookup); lookup.eq.mockReturnValue(lookup);
+    lookup.select.mockReturnValue(lookup); lookup.or = vi.fn().mockReturnValue(lookup); lookup.eq.mockReturnValue(lookup);
     lookup.maybeSingle.mockResolvedValue({ data: null, error: null });
     const collision: any = { select: vi.fn(), eq: vi.fn(), neq: vi.fn(), limit: vi.fn(), maybeSingle: vi.fn() };
-    collision.select.mockReturnValue(collision); collision.eq.mockReturnValue(collision);
+    collision.select.mockReturnValue(collision); collision.or = vi.fn().mockReturnValue(collision); collision.eq.mockReturnValue(collision);
     collision.neq.mockReturnValue(collision); collision.limit.mockReturnValue(collision);
     collision.maybeSingle.mockResolvedValue({ data: { id: 'ent-existing', kind: 'concept' }, error: null });
     const ins: any = { insert: vi.fn(), select: vi.fn(), single: vi.fn() };
@@ -2315,10 +2317,10 @@ describe('assertFact', () => {
   // client.rpc('knowledge_assert_fact', ...) call.
   function buildAssertFactClient(entityData: any, rpcData: any) {
     const entityHit: any = { select: vi.fn(), eq: vi.fn(), maybeSingle: vi.fn() };
-    entityHit.select.mockReturnValue(entityHit); entityHit.eq.mockReturnValue(entityHit);
+    entityHit.select.mockReturnValue(entityHit); entityHit.or = vi.fn().mockReturnValue(entityHit); entityHit.eq.mockReturnValue(entityHit);
     entityHit.maybeSingle.mockResolvedValue({ data: entityData, error: null });
     const ws: any = { select: vi.fn(), eq: vi.fn(), single: vi.fn() };
-    ws.select.mockReturnValue(ws); ws.eq.mockReturnValue(ws);
+    ws.select.mockReturnValue(ws); ws.or = vi.fn().mockReturnValue(ws); ws.eq.mockReturnValue(ws);
     ws.single.mockResolvedValue({ data: { workspace_id: WORKSPACE_ID }, error: null });
     let i = 0;
     const client: any = {
@@ -2515,7 +2517,7 @@ describe('queryFacts', () => {
 
   it('resolves an entity name spanning multiple kinds via .in() (no silent empty, no swallowed error)', async () => {
     const ws: any = { select: vi.fn(), eq: vi.fn(), single: vi.fn() };
-    ws.select.mockReturnValue(ws); ws.eq.mockReturnValue(ws);
+    ws.select.mockReturnValue(ws); ws.or = vi.fn().mockReturnValue(ws); ws.eq.mockReturnValue(ws);
     ws.single.mockResolvedValue({ data: { workspace_id: WORKSPACE_ID }, error: null });
     const facts: any = {};
     facts.select = vi.fn().mockReturnValue(facts);
@@ -2524,7 +2526,7 @@ describe('queryFacts', () => {
     facts.in = vi.fn().mockReturnValue(facts);
     facts.order = vi.fn().mockResolvedValue({ data: [{ id: 'fact-1' }], error: null });
     const ents: any = { select: vi.fn(), eq: vi.fn(), ilike: vi.fn() };
-    ents.select.mockReturnValue(ents); ents.eq.mockReturnValue(ents);
+    ents.select.mockReturnValue(ents); ents.or = vi.fn().mockReturnValue(ents); ents.eq.mockReturnValue(ents);
     ents.ilike.mockResolvedValue({ data: [{ id: 'ent-a' }, { id: 'ent-b' }], error: null });
     let i = 0;
     const client: any = { from: vi.fn().mockImplementation(() => [ws, facts, ents][i++]) };

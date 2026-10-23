@@ -1,3 +1,5 @@
+import { queryEntities } from '../../tools/knowledge.js';
+import { linkTicketEntities } from '../../tools/workflow.js';
 import { syncProse } from '../prose-ingestion.js';
 import { readProse, setDefinedIn } from '../../tools/knowledge-prose.js';
 import { readKnowledgeNames, renameKnowledgeConcept, previewKnowledgeMerge, mergeKnowledgeConcepts } from '../../tools/knowledge-names.js';
@@ -24,6 +26,16 @@ import { formatTable, formatDetail, formatDate } from '../formatter.js';
 
 export function registerKnowledgeCommands(program: Command): void {
   const knowledge = program.command('knowledge').description('Manage workspace knowledge base');
+
+  knowledge.command('entities')
+    .description('Discover entities or select an exact identity/name/kind')
+    .option('--entity-id <uuid>').option('--name <name>').option('--kind <kind>')
+    .action(async opts => { await runCommand(program.opts(), ctx => queryEntities(ctx.client, ctx.projectId, { entity_id: opts.entityId, name: opts.name, kind: opts.kind }), data => JSON.stringify(data, null, 2)); });
+  knowledge.command('link-entities')
+    .description('Link a ticket and decision to explicit entity references')
+    .requiredOption('--task <id>').requiredOption('--decision <uuid>')
+    .option('--entity-id <uuid>').option('--name <names...>').option('--kind <kind>')
+    .action(async opts => { await runCommand(program.opts(), ctx => linkTicketEntities(ctx.client, ctx.projectId, { task_id: opts.task, decision_id: opts.decision, entity_id: opts.entityId, entity_names: opts.name, kind: opts.kind }), data => JSON.stringify(data, null, 2)); });
 
   const surfaces = knowledge
     .command("surfaces")
