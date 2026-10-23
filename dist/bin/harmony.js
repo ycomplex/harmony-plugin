@@ -37180,10 +37180,13 @@ async function searchKnowledge(client, projectId, args, started = performance.no
   };
   const limit = args.limit ?? 50;
   if (args.scope && !["product", "deployment"].includes(args.scope) || args.question_scope && !["product", "deployment"].includes(args.question_scope) || args.question_state && !["open", "parked", "decided"].includes(args.question_state)) throw new Error("Invalid scope or question state");
-  const includeDefinitions = !args.type && !args.status && !args.tags?.length && !args.as_of && !args.include_superseded && args.scope !== "deployment" && !args.question_scope && !args.question_state;
+  const offset = args.offset ?? 0;
+  const includeDefinitions = !args.type && !args.status && !args.tags?.length && !args.as_of && !args.include_superseded && offset === 0 && args.scope !== "deployment" && !args.question_scope && !args.question_state;
   if (args.definitions_only && !includeDefinitions) throw new Error("definitions_only supports search, domain and limit; decision filters are not definition filters");
   if (!Number.isInteger(limit) || limit < 0) throw new Error("Knowledge limit must be a non-negative integer");
-  if (args.as_of || args.offset || args.include_superseded) throw new Error("Search cannot combine as_of, offset or include_superseded; use an explicit status or a filter-only list");
+  if (!Number.isInteger(offset) || offset < 0) throw new Error("Knowledge offset must be a non-negative integer");
+  if (args.as_of !== void 0 && !(typeof args.as_of === "string" && /^\d{4}-\d{2}-\d{2}([T ][\d:.]+(Z|[+-]\d{2}:?\d{2})?)?$/.test(args.as_of) && !Number.isNaN(Date.parse(args.as_of)))) throw new Error("as_of must be an ISO 8601 timestamp, for example 2026-01-15T00:00:00Z");
+  const historical = Boolean(args.as_of || args.include_superseded);
   const finish = () => {
     sealed = true;
     controller.abort();
@@ -37305,7 +37308,9 @@ async function searchKnowledge(client, projectId, args, started = performance.no
         _query_embedding: embedding,
         _signal: name,
         _type: filters.type,
-        _status: args.status ?? (proseAvailable ? null : filters.status),
+        _status: args.status ?? (proseAvailable && !historical ? null : historical ? null : filters.status),
+        ...args.as_of ? { _as_of: new Date(args.as_of).toISOString() } : {},
+        ...historical ? { _include_superseded: true } : {},
         _domain: filters.domain.length ? filters.domain : null,
         _tags: filters.tags.length ? filters.tags : null,
         _include_bookkeeping: filters.include_bookkeeping,
@@ -37362,7 +37367,10 @@ async function searchKnowledge(client, projectId, args, started = performance.no
     result.capability = "scores-unavailable";
     result.reason = "scored search is not deployed in this environment yet";
     incomplete = true;
-    if (filters.status !== "Accepted" || filters.tags.length || filters.question_state || filters.question_scope) {
+    if (historical) {
+      routes.push({ route: "legacy", outcome: "unsupported", reason: "as-of-or-superseded-unavailable" });
+      result.reason = "as_of and include_superseded need the scored search deployed in this environment";
+    } else if (filters.status !== "Accepted" || filters.tags.length || filters.question_state || filters.question_scope) {
       routes.push({ route: "legacy", outcome: "unsupported", reason: filters.question_state || filters.question_scope ? "legacy-scope-or-question-filters-unavailable" : filters.status !== "Accepted" ? "legacy-status-accepted-only" : "normalized-tags-unavailable" });
     } else {
       const legacy = await bounded("legacy", (signal2) => {
@@ -37390,7 +37398,9 @@ async function searchKnowledge(client, projectId, args, started = performance.no
     result.capability = "scored";
     const all = [...candidates.values()];
     result.below_cutoff_count = all.filter((c) => c.score < SCORE_CUTOFF).length;
-    result.matches = all.filter((c) => c.score >= SCORE_CUTOFF).sort((a3, b) => Number(a3.candidate.bookkeeping ?? isBookkeeping(a3.candidate)) - Number(b.candidate.bookkeeping ?? isBookkeeping(b.candidate)) || Number(priority(b.candidate)) - Number(priority(a3.candidate)) || b.score - a3.score || a3.candidate.source_kind.localeCompare(b.candidate.source_kind) || a3.candidate.id.localeCompare(b.candidate.id)).slice(0, limit).map((c) => ({ ...summary(c.candidate, result.normalized_query), source_kind: c.candidate.source_kind, score: c.score }));
+    const ranked = all.filter((c) => c.score >= SCORE_CUTOFF).sort((a3, b) => Number(a3.candidate.bookkeeping ?? isBookkeeping(a3.candidate)) - Number(b.candidate.bookkeeping ?? isBookkeeping(b.candidate)) || Number(priority(b.candidate)) - Number(priority(a3.candidate)) || b.score - a3.score || a3.candidate.source_kind.localeCompare(b.candidate.source_kind) || a3.candidate.id.localeCompare(b.candidate.id));
+    result.matches = ranked.slice(offset, offset + limit).map((c) => ({ ...summary(c.candidate, result.normalized_query), source_kind: c.candidate.source_kind, score: c.score, ...c.candidate.status === "Superseded" ? { replaced: true } : {} }));
+    result.page = { offset, returned: Math.min(limit, Math.max(0, ranked.length - offset)), total_matches: ranked.length };
     result.count_coverage = incomplete ? "partial-scored-union" : "considered-scored-union";
   }
   await names;

@@ -45269,10 +45269,13 @@ async function searchKnowledge(client, projectId, args, started = performance.no
   };
   const limit = args.limit ?? 50;
   if (args.scope && !["product", "deployment"].includes(args.scope) || args.question_scope && !["product", "deployment"].includes(args.question_scope) || args.question_state && !["open", "parked", "decided"].includes(args.question_state)) throw new Error("Invalid scope or question state");
-  const includeDefinitions = !args.type && !args.status && !args.tags?.length && !args.as_of && !args.include_superseded && args.scope !== "deployment" && !args.question_scope && !args.question_state;
+  const offset = args.offset ?? 0;
+  const includeDefinitions = !args.type && !args.status && !args.tags?.length && !args.as_of && !args.include_superseded && offset === 0 && args.scope !== "deployment" && !args.question_scope && !args.question_state;
   if (args.definitions_only && !includeDefinitions) throw new Error("definitions_only supports search, domain and limit; decision filters are not definition filters");
   if (!Number.isInteger(limit) || limit < 0) throw new Error("Knowledge limit must be a non-negative integer");
-  if (args.as_of || args.offset || args.include_superseded) throw new Error("Search cannot combine as_of, offset or include_superseded; use an explicit status or a filter-only list");
+  if (!Number.isInteger(offset) || offset < 0) throw new Error("Knowledge offset must be a non-negative integer");
+  if (args.as_of !== void 0 && !(typeof args.as_of === "string" && /^\d{4}-\d{2}-\d{2}([T ][\d:.]+(Z|[+-]\d{2}:?\d{2})?)?$/.test(args.as_of) && !Number.isNaN(Date.parse(args.as_of)))) throw new Error("as_of must be an ISO 8601 timestamp, for example 2026-01-15T00:00:00Z");
+  const historical = Boolean(args.as_of || args.include_superseded);
   const finish = () => {
     sealed = true;
     controller.abort();
@@ -45394,7 +45397,9 @@ async function searchKnowledge(client, projectId, args, started = performance.no
         _query_embedding: embedding,
         _signal: name,
         _type: filters.type,
-        _status: args.status ?? (proseAvailable ? null : filters.status),
+        _status: args.status ?? (proseAvailable && !historical ? null : historical ? null : filters.status),
+        ...args.as_of ? { _as_of: new Date(args.as_of).toISOString() } : {},
+        ...historical ? { _include_superseded: true } : {},
         _domain: filters.domain.length ? filters.domain : null,
         _tags: filters.tags.length ? filters.tags : null,
         _include_bookkeeping: filters.include_bookkeeping,
@@ -45451,7 +45456,10 @@ async function searchKnowledge(client, projectId, args, started = performance.no
     result.capability = "scores-unavailable";
     result.reason = "scored search is not deployed in this environment yet";
     incomplete = true;
-    if (filters.status !== "Accepted" || filters.tags.length || filters.question_state || filters.question_scope) {
+    if (historical) {
+      routes.push({ route: "legacy", outcome: "unsupported", reason: "as-of-or-superseded-unavailable" });
+      result.reason = "as_of and include_superseded need the scored search deployed in this environment";
+    } else if (filters.status !== "Accepted" || filters.tags.length || filters.question_state || filters.question_scope) {
       routes.push({ route: "legacy", outcome: "unsupported", reason: filters.question_state || filters.question_scope ? "legacy-scope-or-question-filters-unavailable" : filters.status !== "Accepted" ? "legacy-status-accepted-only" : "normalized-tags-unavailable" });
     } else {
       const legacy = await bounded("legacy", (signal2) => {
@@ -45479,7 +45487,9 @@ async function searchKnowledge(client, projectId, args, started = performance.no
     result.capability = "scored";
     const all = [...candidates.values()];
     result.below_cutoff_count = all.filter((c) => c.score < SCORE_CUTOFF).length;
-    result.matches = all.filter((c) => c.score >= SCORE_CUTOFF).sort((a, b) => Number(a.candidate.bookkeeping ?? isBookkeeping(a.candidate)) - Number(b.candidate.bookkeeping ?? isBookkeeping(b.candidate)) || Number(priority(b.candidate)) - Number(priority(a.candidate)) || b.score - a.score || a.candidate.source_kind.localeCompare(b.candidate.source_kind) || a.candidate.id.localeCompare(b.candidate.id)).slice(0, limit).map((c) => ({ ...summary(c.candidate, result.normalized_query), source_kind: c.candidate.source_kind, score: c.score }));
+    const ranked = all.filter((c) => c.score >= SCORE_CUTOFF).sort((a, b) => Number(a.candidate.bookkeeping ?? isBookkeeping(a.candidate)) - Number(b.candidate.bookkeeping ?? isBookkeeping(b.candidate)) || Number(priority(b.candidate)) - Number(priority(a.candidate)) || b.score - a.score || a.candidate.source_kind.localeCompare(b.candidate.source_kind) || a.candidate.id.localeCompare(b.candidate.id));
+    result.matches = ranked.slice(offset, offset + limit).map((c) => ({ ...summary(c.candidate, result.normalized_query), source_kind: c.candidate.source_kind, score: c.score, ...c.candidate.status === "Superseded" ? { replaced: true } : {} }));
+    result.page = { offset, returned: Math.min(limit, Math.max(0, ranked.length - offset)), total_matches: ranked.length };
     result.count_coverage = incomplete ? "partial-scored-union" : "considered-scored-union";
   }
   await names;
@@ -45764,7 +45774,7 @@ var FACT_COLS = "id, workspace_id, project_id, subject_entity_id, predicate, obj
 var ENTITY_COLS = "id, workspace_id, project_id, kind, name, description, metadata, created_at";
 var queryKnowledgeTool = {
   name: "query_knowledge",
-  description: "Find current term definitions first; structured lists also include current source-generated deployment facts with inspectable provenance. Generated facts remain Asserted. Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Results include nullable superseded_by and inverse supersedes UUIDs; structured lists place matching successors before replaced entries, while search preserves score order. Check this before making significant implementation choices. Default search includes Accepted entries, configured source-backed document/skill headings and current Asserted generated values in one scored pool. Prose exposes provenance and a source heading link, never Accepted authority. Explicit decision status/type filters exclude prose/generated sources. Coverage and defined-in resolution are explicit; optional claim-context and historical-wording enrichment share the deadline. Explicitly marked bookkeeping is ranked last; include_bookkeeping:false excludes it before pagination. Free-text search combines type/status/all normalized tags/any domain and returns a six-second bounded envelope: scored matches, ordered unscored legacy matches, cutoff 0.0125, below_cutoff_count and coverage, normalized query/filters and routes tried. Scores use genuine global RRF ranks. Filter-only calls retain their list shape. as_of/include_superseded/offset are list-only. Optional context_tags supplies relevant surface/ticket tags for actual tag suggestions.",
+  description: "Find current term definitions first; structured lists also include current source-generated deployment facts with inspectable provenance. Generated facts remain Asserted. Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Results include nullable superseded_by and inverse supersedes UUIDs; structured lists place matching successors before replaced entries, while search preserves score order. Check this before making significant implementation choices. Default search includes Accepted entries, configured source-backed document/skill headings and current Asserted generated values in one scored pool. Prose exposes provenance and a source heading link, never Accepted authority. Explicit decision status/type filters exclude prose/generated sources. Coverage and defined-in resolution are explicit; optional claim-context and historical-wording enrichment share the deadline. Explicitly marked bookkeeping is ranked last; include_bookkeeping:false excludes it before pagination. Free-text search combines type/status/all normalized tags/any domain and returns a six-second bounded envelope: scored matches, ordered unscored legacy matches, cutoff 0.0125, below_cutoff_count and coverage, normalized query/filters and routes tried. Scores use genuine global RRF ranks. Filter-only calls retain their list shape. as_of, include_superseded and offset compose with search (as_of and include_superseded exclude prose and generated sources; offset pages after ranking; replaced entries carry replaced:true). Optional context_tags supplies relevant surface/ticket tags for actual tag suggestions.",
   inputSchema: {
     type: "object",
     properties: {
@@ -45784,7 +45794,7 @@ var queryKnowledgeTool = {
       },
       as_of: {
         type: "string",
-        description: "ISO timestamp \u2014 return entries valid at or before this instant (temporal query; list-only)."
+        description: "ISO timestamp \u2014 return entries valid at or before this instant (temporal query; composes with search, which then covers decisions only)."
       },
       scope: { type: "string", enum: ["product", "deployment"], description: "Product behaviour or deployment operations. Explicit filters exclude unresolved legacy scope and fail visibly before schema promotion." },
       tags: {
@@ -45802,10 +45812,10 @@ var queryKnowledgeTool = {
       include_bookkeeping: { type: "boolean", description: "Include explicitly marked procedural gate records after substantive knowledge (default true). False excludes them before pagination." },
       include_superseded: {
         type: "boolean",
-        description: "When true and no explicit status given, return all statuses including superseded. Default false. (structured-filter path; not combinable with `search`)"
+        description: "When true and no explicit status given, return all statuses including superseded. Default false. (composes with `search`; replaced entries carry replaced:true)"
       },
       limit: { type: "number", description: "Max results to return. Default 50." },
-      offset: { type: "number", description: "Number of results to skip (for pagination). Default 0. (structured-filter path; not combinable with `search`)" },
+      offset: { type: "number", description: "Number of results to skip (for pagination). Default 0. With `search` it pages after ranking." },
       task_id: { type: "string", description: "B-678: the ticket (UUID, number or visual ID) this read is made for, so the decisions returned are logged as knowledge reuse. Omit to use the current conduction's ticket; with neither, nothing is logged. Logging is best-effort and never changes the result." },
       gate: { type: "string", description: "B-678: the gate making the read (clarify, decompose, design, plan, build, release, verify), recorded with the retrieval log. Optional." }
     }
