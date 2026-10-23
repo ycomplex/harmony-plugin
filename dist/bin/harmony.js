@@ -37614,6 +37614,62 @@ function validateTitle(title, cap = 200) {
   }
 }
 
+// src/tools/knowledge-retrieval-log.ts
+var RETRIEVAL_EVENT_TYPE = "knowledge-retrieved";
+var RETRIEVAL_LOG_CAP = 10;
+var RETRIEVAL_LOG_BUDGET_MS = 1500;
+var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function decisionRows(result) {
+  const rows = Array.isArray(result) ? result : [...result?.matches ?? [], ...result?.unscored_matches ?? []];
+  return rows.filter((r) => typeof r?.id === "string" && UUID.test(r.id) && r.kind !== "concept" && r.type !== "definition" && r.source_type !== "generated" && (r.source_kind === void 0 || r.source_kind === "knowledge"));
+}
+async function resolveTaskId2(client, explicit) {
+  if (explicit) {
+    if (UUID.test(explicit)) return explicit;
+    const n = /^[A-Za-z]*-?(\d+)$/.exec(explicit.trim());
+    if (!n) return null;
+    const { data: data2 } = await client.from("tasks").select("id").eq("task_number", Number(n[1])).maybeSingle();
+    return data2?.id ?? null;
+  }
+  const conductionId = getConductionId();
+  if (!conductionId) return null;
+  const { data } = await client.from("conductions").select("task_id").eq("id", conductionId).maybeSingle();
+  return data?.task_id ?? null;
+}
+async function logKnowledgeRetrieval(client, projectId, args, result) {
+  try {
+    const rows = decisionRows(result).slice(0, RETRIEVAL_LOG_CAP);
+    if (!rows.length) return;
+    const taskId = await resolveTaskId2(client, args.task_id);
+    if (!taskId) return;
+    const { data: project } = await client.from("projects").select("workspace_id").eq("id", projectId).single();
+    const workspaceId = project?.workspace_id;
+    if (!workspaceId) return;
+    const conductionId = getConductionId() ?? null;
+    const leg = getLeg() ?? null;
+    const query = args.search?.trim() ? args.search.trim().slice(0, 200) : null;
+    await client.from("knowledge_events").insert(rows.map((r, i) => ({
+      workspace_id: workspaceId,
+      event_type: RETRIEVAL_EVENT_TYPE,
+      decision_id: r.id,
+      metadata: {
+        task_id: taskId,
+        gate: args.gate ?? null,
+        query,
+        rank: i + 1,
+        score: typeof r.score === "number" ? r.score : null
+      },
+      source: "rpc-typed",
+      causation_conduction_id: conductionId,
+      causation_leg: leg,
+      aggregate_type: "knowledge_decision",
+      aggregate_id: r.id,
+      contract_version: 1
+    })));
+  } catch {
+  }
+}
+
 // src/tools/knowledge.ts
 async function getWorkspaceId(client, projectId) {
   const { data, error } = await client.from("projects").select("workspace_id").eq("id", projectId).single();
@@ -37671,6 +37727,15 @@ function toBaseStatus(status) {
   return base;
 }
 async function queryKnowledge(client, projectId, args) {
+  const { task_id, gate, ...queryArgs } = args;
+  const result = await queryKnowledgeUnlogged(client, projectId, queryArgs);
+  await Promise.race([
+    logKnowledgeRetrieval(client, projectId, { task_id, gate, search: queryArgs.search }, result),
+    new Promise((resolve7) => setTimeout(resolve7, RETRIEVAL_LOG_BUDGET_MS).unref())
+  ]);
+  return result;
+}
+async function queryKnowledgeUnlogged(client, projectId, args) {
   const started = performance.now();
   if (args.search?.trim()) return searchKnowledge(client, projectId, { ...args, status: args.status ? toBaseStatus(args.status) : void 0 }, started);
   args = { ...args, tags: args.tags ? normalizeTags(args.tags) : void 0 };

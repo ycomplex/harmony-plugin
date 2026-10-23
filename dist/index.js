@@ -45703,6 +45703,62 @@ function validateTitle(title, cap = 200) {
   }
 }
 
+// src/tools/knowledge-retrieval-log.ts
+var RETRIEVAL_EVENT_TYPE = "knowledge-retrieved";
+var RETRIEVAL_LOG_CAP = 10;
+var RETRIEVAL_LOG_BUDGET_MS = 1500;
+var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function decisionRows(result) {
+  const rows = Array.isArray(result) ? result : [...result?.matches ?? [], ...result?.unscored_matches ?? []];
+  return rows.filter((r) => typeof r?.id === "string" && UUID.test(r.id) && r.kind !== "concept" && r.type !== "definition" && r.source_type !== "generated" && (r.source_kind === void 0 || r.source_kind === "knowledge"));
+}
+async function resolveTaskId(client, explicit) {
+  if (explicit) {
+    if (UUID.test(explicit)) return explicit;
+    const n = /^[A-Za-z]*-?(\d+)$/.exec(explicit.trim());
+    if (!n) return null;
+    const { data: data2 } = await client.from("tasks").select("id").eq("task_number", Number(n[1])).maybeSingle();
+    return data2?.id ?? null;
+  }
+  const conductionId = getConductionId();
+  if (!conductionId) return null;
+  const { data } = await client.from("conductions").select("task_id").eq("id", conductionId).maybeSingle();
+  return data?.task_id ?? null;
+}
+async function logKnowledgeRetrieval(client, projectId, args, result) {
+  try {
+    const rows = decisionRows(result).slice(0, RETRIEVAL_LOG_CAP);
+    if (!rows.length) return;
+    const taskId = await resolveTaskId(client, args.task_id);
+    if (!taskId) return;
+    const { data: project } = await client.from("projects").select("workspace_id").eq("id", projectId).single();
+    const workspaceId = project?.workspace_id;
+    if (!workspaceId) return;
+    const conductionId = getConductionId() ?? null;
+    const leg = getLeg() ?? null;
+    const query = args.search?.trim() ? args.search.trim().slice(0, 200) : null;
+    await client.from("knowledge_events").insert(rows.map((r, i) => ({
+      workspace_id: workspaceId,
+      event_type: RETRIEVAL_EVENT_TYPE,
+      decision_id: r.id,
+      metadata: {
+        task_id: taskId,
+        gate: args.gate ?? null,
+        query,
+        rank: i + 1,
+        score: typeof r.score === "number" ? r.score : null
+      },
+      source: "rpc-typed",
+      causation_conduction_id: conductionId,
+      causation_leg: leg,
+      aggregate_type: "knowledge_decision",
+      aggregate_id: r.id,
+      contract_version: 1
+    })));
+  } catch {
+  }
+}
+
 // src/tools/knowledge.ts
 var FACT_COLS = "id, workspace_id, project_id, subject_entity_id, predicate, object, confidence, status, domain, source_type, source_id, valid_from, valid_to, recorded_at, created_by";
 var ENTITY_COLS = "id, workspace_id, project_id, kind, name, description, metadata, created_at";
@@ -45749,7 +45805,9 @@ var queryKnowledgeTool = {
         description: "When true and no explicit status given, return all statuses including superseded. Default false. (structured-filter path; not combinable with `search`)"
       },
       limit: { type: "number", description: "Max results to return. Default 50." },
-      offset: { type: "number", description: "Number of results to skip (for pagination). Default 0. (structured-filter path; not combinable with `search`)" }
+      offset: { type: "number", description: "Number of results to skip (for pagination). Default 0. (structured-filter path; not combinable with `search`)" },
+      task_id: { type: "string", description: "B-678: the ticket (UUID, number or visual ID) this read is made for, so the decisions returned are logged as knowledge reuse. Omit to use the current conduction's ticket; with neither, nothing is logged. Logging is best-effort and never changes the result." },
+      gate: { type: "string", description: "B-678: the gate making the read (clarify, decompose, design, plan, build, release, verify), recorded with the retrieval log. Optional." }
     }
   }
 };
@@ -45919,6 +45977,15 @@ function toBaseStatus(status) {
   return base;
 }
 async function queryKnowledge(client, projectId, args) {
+  const { task_id, gate, ...queryArgs } = args;
+  const result = await queryKnowledgeUnlogged(client, projectId, queryArgs);
+  await Promise.race([
+    logKnowledgeRetrieval(client, projectId, { task_id, gate, search: queryArgs.search }, result),
+    new Promise((resolve2) => setTimeout(resolve2, RETRIEVAL_LOG_BUDGET_MS).unref())
+  ]);
+  return result;
+}
+async function queryKnowledgeUnlogged(client, projectId, args) {
   const started = performance.now();
   if (args.search?.trim()) return searchKnowledge(client, projectId, { ...args, status: args.status ? toBaseStatus(args.status) : void 0 }, started);
   args = { ...args, tags: args.tags ? normalizeTags(args.tags) : void 0 };
@@ -46734,7 +46801,7 @@ var advanceWorkflowTool = {
   }
 };
 async function advanceWorkflow(client, projectId, args) {
-  const id = await resolveTaskId(client, projectId, args.task_id);
+  const id = await resolveTaskId2(client, projectId, args.task_id);
   const { data: task, error: e1 } = await client.from("tasks").select("workflow_state, stale, parked_from").eq("id", id).eq("project_id", projectId).single();
   if (e1) throw e1;
   const taskRow = task;
@@ -46772,7 +46839,7 @@ var referenceKnowledgeTool = {
   }
 };
 async function referenceKnowledge(client, projectId, args) {
-  const id = await resolveTaskId(client, projectId, args.task_id);
+  const id = await resolveTaskId2(client, projectId, args.task_id);
   const { error: error2 } = await client.from("ticket_references_knowledge").upsert({ task_id: id, decision_id: args.decision_id }, { onConflict: "task_id,decision_id", ignoreDuplicates: true });
   if (error2) throw error2;
   return { task_id: id, decision_id: args.decision_id, linked: true };
@@ -46799,7 +46866,7 @@ async function listTicketKnowledge(client, projectId, args) {
   if (!Array.isArray(inputs) || inputs.length < 1 || inputs.length > 20 || inputs.some((input) => typeof input !== "string" || !input.trim())) {
     throw new Error("Provide a non-blank task_id or task_ids containing 1\u201320 non-blank ticket identifiers.");
   }
-  const resolved = single ? [await resolveTaskId(client, projectId, inputs[0])] : await resolveTaskIds(client, projectId, inputs);
+  const resolved = single ? [await resolveTaskId2(client, projectId, inputs[0])] : await resolveTaskIds(client, projectId, inputs);
   const ids2 = [...new Set(resolved.map((id) => id.toLowerCase()))];
   const { data: tasks, error: taskError } = await client.from("tasks").select("id").eq("project_id", projectId).in("id", ids2);
   if (taskError) throw taskError;
@@ -46877,7 +46944,7 @@ async function linkTicketEntities(client, projectId, args) {
   if (!args.decision_id) throw new Error("decision_id is required");
   const names = (args.entity_names ?? []).map((n) => n.trim()).filter(Boolean);
   if (names.length === 0) throw new Error("entity_names must contain at least one non-empty name");
-  const id = await resolveTaskId(client, projectId, args.task_id);
+  const id = await resolveTaskId2(client, projectId, args.task_id);
   const workspaceId = await getWorkspaceId(client, projectId);
   const kind = args.entity_kind ?? "feature";
   const entityIds = [];
@@ -46909,7 +46976,7 @@ var listCommentsTool = {
   }
 };
 async function listComments(client, projectId, args) {
-  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const taskId = await resolveTaskId2(client, projectId, args.task_id);
   const { data, error: error2 } = await client.from("task_comments").select("id, content, user_id, created_at, updated_at").eq("task_id", taskId).order("created_at", { ascending: true });
   if (error2) throw error2;
   return data;
@@ -46933,7 +47000,7 @@ var addCommentTool = {
   }
 };
 async function addComment(client, projectId, userId, args) {
-  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const taskId = await resolveTaskId2(client, projectId, args.task_id);
   const { data, error: error2 } = await client.from("task_comments").insert({
     task_id: taskId,
     user_id: userId,
@@ -47483,7 +47550,7 @@ var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 var BARE_NUMBER_RE = /^\d+$/;
 var VISUAL_ID_RE = /^([A-Za-z][A-Za-z0-9]*)-(\d+)$/;
 var PG_INT_MAX = 2147483647;
-async function resolveTaskId(client, projectId, input) {
+async function resolveTaskId2(client, projectId, input) {
   if (UUID_RE.test(input)) {
     return input;
   }
@@ -47591,14 +47658,14 @@ async function readKnowledgeNames(client, projectId, args = {}) {
   return data;
 }
 async function renameKnowledgeConcept(client, projectId, args) {
-  return invoke(client, "rename_knowledge_concept", { p_project_id: projectId, p_entity_id: args.concept_id, p_expected_name: args.expected_name, p_new_name: args.new_name, p_source_task_id: await resolveTaskId(client, projectId, args.source_task_id), p_operation_key: args.operation_key });
+  return invoke(client, "rename_knowledge_concept", { p_project_id: projectId, p_entity_id: args.concept_id, p_expected_name: args.expected_name, p_new_name: args.new_name, p_source_task_id: await resolveTaskId2(client, projectId, args.source_task_id), p_operation_key: args.operation_key });
 }
 async function previewKnowledgeMerge(client, projectId, args) {
-  return invoke(client, "preview_knowledge_merge", { p_project_id: projectId, p_source: args.source_id, p_target: args.target_id, p_source_task_id: await resolveTaskId(client, projectId, args.source_task_id) });
+  return invoke(client, "preview_knowledge_merge", { p_project_id: projectId, p_source: args.source_id, p_target: args.target_id, p_source_task_id: await resolveTaskId2(client, projectId, args.source_task_id) });
 }
 async function mergeKnowledgeConcepts(client, projectId, args) {
   if (!args.confirmation?.trim()) throw new Error("An explicit preview confirmation is required");
-  return invoke(client, "merge_knowledge_concepts", { p_project_id: projectId, p_source: args.source_id, p_target: args.target_id, p_source_task_id: await resolveTaskId(client, projectId, args.source_task_id), p_confirmation: args.confirmation });
+  return invoke(client, "merge_knowledge_concepts", { p_project_id: projectId, p_source: args.source_id, p_target: args.target_id, p_source_task_id: await resolveTaskId2(client, projectId, args.source_task_id), p_confirmation: args.confirmation });
 }
 var property = (description) => ({ type: "string", description });
 var mergeProperties = { source_id: property("Source identity UUID to retire in place"), target_id: property("Surviving current identity UUID"), source_task_id: property("Authorizing ticket UUID or visual ID in this project") };
@@ -50150,7 +50217,7 @@ async function composeBrief(client, projectId, userId, args) {
   if (args.revision_cause !== void 0 && !isRevisionCause(args.revision_cause)) {
     throw new Error(`compose_brief: revision_cause must be { source: <one of ${REVISION_CAUSE_SOURCES.join(" | ")}>, lines: string[] }`);
   }
-  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const taskId = await resolveTaskId2(client, projectId, args.task_id);
   let buildPr;
   let buildPrRefs;
   if (args.reason === "release-decision-pending") {
@@ -50624,7 +50691,7 @@ var consumeAcceptRemarkTool = {
 };
 async function getBrief(client, projectId, args) {
   if (!args.task_id) throw new Error("task_id is required");
-  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const taskId = await resolveTaskId2(client, projectId, args.task_id);
   const { data, error: error2 } = await client.from("briefs").select(BRIEF_COLS).eq("task_id", taskId).eq("status", "active").maybeSingle();
   if (error2) throw new Error(error2.message);
   if (!data) return null;
@@ -50645,7 +50712,7 @@ var isMissingBriefHistorySubstrate = (err) => {
 var namesRevisionCauseColumn = (err) => /revision_cause/.test(err?.message ?? "");
 async function listBriefs(client, projectId, args) {
   if (!args.task_id) throw new Error("task_id is required");
-  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const taskId = await resolveTaskId2(client, projectId, args.task_id);
   let revision_columns = "present";
   let revision_cause = "present";
   let rows = [];
@@ -50786,7 +50853,7 @@ async function resolveBrief(client, projectId, args) {
       "a remark cannot accompany 'defer': the remark channel rides on accept, and a deferred ticket parks, so the remark would never be consumed. Drop the remark, or accept instead \u2014 for a defer reason use `detail`."
     );
   }
-  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const taskId = await resolveTaskId2(client, projectId, args.task_id);
   const { data: active, error: lookupErr } = await client.from("briefs").select("id, doc").eq("task_id", taskId).eq("status", "active").maybeSingle();
   if (lookupErr) throw new Error(lookupErr.message);
   if (!active) {
@@ -50848,7 +50915,7 @@ async function reshapeBrief(client, projectId, args) {
       "feedback is required to reshape a brief \u2014 a reshape sends the brief back for rework, and blank feedback tells the agent nothing about what to change. Nothing was written."
     );
   }
-  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const taskId = await resolveTaskId2(client, projectId, args.task_id);
   const { data: active, error: lookupErr } = await client.from("briefs").select("id, reason").eq("task_id", taskId).eq("status", "active").maybeSingle();
   if (lookupErr) throw new Error(lookupErr.message);
   if (!active) {
@@ -51115,7 +51182,7 @@ async function resolveExchange(client, projectId, args) {
     return data;
   }
   if (!args.task_id) throw new Error("either exchange_id or task_id is required");
-  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const taskId = await resolveTaskId2(client, projectId, args.task_id);
   const active = await findActiveExchange(client, taskId);
   if (!active) throw new Error(`no active elicitation exchange for task ${args.task_id}`);
   return active;
@@ -51125,7 +51192,7 @@ async function startElicitation(client, projectId, userId, args) {
   if (!args.trigger || !VALID_TRIGGERS.includes(args.trigger)) {
     throw new Error(`trigger must be one of: ${VALID_TRIGGERS.join(", ")}`);
   }
-  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const taskId = await resolveTaskId2(client, projectId, args.task_id);
   const existing = await findActiveExchange(client, taskId);
   if (existing) return existing;
   const { data, error: error2 } = await client.from("elicitation_exchanges").insert({
@@ -51239,7 +51306,7 @@ var fileElicitationRoundTool = {
 };
 async function getElicitation(client, projectId, args) {
   if (!args.task_id) throw new Error("task_id is required");
-  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const taskId = await resolveTaskId2(client, projectId, args.task_id);
   const active = await findActiveExchange(client, taskId);
   if (active) return active;
   const { data, error: error2 } = await client.from("elicitation_exchanges").select(EXCHANGE_COLS).eq("task_id", taskId).order("created_at", { ascending: false }).limit(1).maybeSingle();
@@ -51310,7 +51377,7 @@ async function findLatestExchange(client, taskId) {
 }
 async function submitElicitationAnswers(client, projectId, args) {
   if (!args.task_id) throw new Error("task_id is required");
-  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const taskId = await resolveTaskId2(client, projectId, args.task_id);
   const exchange = await findActiveExchange(client, taskId);
   if (!exchange) {
     const latest = await findLatestExchange(client, taskId);
@@ -51513,7 +51580,7 @@ var getTaskTool = {
 };
 async function getTask(client, projectId, args) {
   const meta = args.view === "meta";
-  const resolvedId = await resolveTaskId(client, projectId, args.task_id);
+  const resolvedId = await resolveTaskId2(client, projectId, args.task_id);
   const { data, error: error2 } = await client.from("tasks").select("*, task_labels(labels(id, name, color)), checklist_items(id, title, completed, position)").eq("id", resolvedId).eq("project_id", projectId).single();
   if (error2) throw error2;
   const labels = (data.task_labels ?? []).map((tl) => tl.labels).filter(Boolean);
@@ -51640,7 +51707,7 @@ var createTaskTool = {
 };
 async function createTask(client, projectId, userId, args) {
   const assigneeId = args.assignee_id ? await resolveAssignee(client, projectId, args.assignee_id) : null;
-  const parentTaskId = args.parent_task_id ? await resolveTaskId(client, projectId, args.parent_task_id) : null;
+  const parentTaskId = args.parent_task_id ? await resolveTaskId2(client, projectId, args.parent_task_id) : null;
   let epicId = args.epic_id ?? null;
   if (args.epic_id === void 0 && parentTaskId) {
     const { data: parent, error: parentErr } = await client.from("tasks").select("project_id, epic_id").eq("id", parentTaskId).single();
@@ -51711,7 +51778,7 @@ var updateTaskTool = {
   }
 };
 async function updateTask(client, projectId, args) {
-  const resolvedId = await resolveTaskId(client, projectId, args.task_id);
+  const resolvedId = await resolveTaskId2(client, projectId, args.task_id);
   const { task_id: _discarded, field_values, label_ids, ...updates } = args;
   if (updates.assignee_id && updates.assignee_id !== "null") {
     updates.assignee_id = await resolveAssignee(client, projectId, updates.assignee_id);
@@ -51719,10 +51786,10 @@ async function updateTask(client, projectId, args) {
     updates.assignee_id = null;
   }
   if (updates.parent_task_id !== void 0) {
-    updates.parent_task_id = updates.parent_task_id === null ? null : await resolveTaskId(client, projectId, updates.parent_task_id);
+    updates.parent_task_id = updates.parent_task_id === null ? null : await resolveTaskId2(client, projectId, updates.parent_task_id);
   }
   if (updates.subsumed_by_task_id !== void 0) {
-    updates.subsumed_by_task_id = updates.subsumed_by_task_id === null ? null : await resolveTaskId(client, projectId, updates.subsumed_by_task_id);
+    updates.subsumed_by_task_id = updates.subsumed_by_task_id === null ? null : await resolveTaskId2(client, projectId, updates.subsumed_by_task_id);
   }
   if (typeof updates.title === "string") {
     validateTitle(updates.title);
@@ -51924,7 +51991,7 @@ var listChecklistItemsTool = {
   }
 };
 async function listChecklistItems(client, projectId, args) {
-  const resolvedId = await resolveTaskId(client, projectId, args.task_id);
+  const resolvedId = await resolveTaskId2(client, projectId, args.task_id);
   const { data, error: error2 } = await client.from("checklist_items").select("id, title, completed, position, created_by, created_at").eq("task_id", resolvedId).order("position", { ascending: true });
   if (error2) throw error2;
   return data;
@@ -51973,7 +52040,7 @@ var manageChecklistItemsTool = {
   }
 };
 async function manageChecklistItems(client, projectId, userId, args) {
-  const resolvedTaskId = await resolveTaskId(client, projectId, args.task_id);
+  const resolvedTaskId = await resolveTaskId2(client, projectId, args.task_id);
   const results = {
     added: [],
     updated: [],
@@ -52158,7 +52225,7 @@ var BOUNDED_QUERY_CHARS = 400;
 async function findRelatedTickets(client, projectId, args) {
   if (!args.task_id?.trim()) throw new Error("task_id is required");
   const limit = args.limit ?? DEFAULT_LIMIT;
-  const subjectId = await resolveTaskId2(client, projectId, args.task_id);
+  const subjectId = await resolveTaskId3(client, projectId, args.task_id);
   const { data: subject, error: subjectErr } = await client.from("tasks").select("id, title, description").eq("project_id", projectId).eq("id", subjectId).single();
   if (subjectErr || !subject) {
     throw new Error(`Could not resolve subject ticket: ${subjectErr?.message ?? "not found"}`);
@@ -52307,7 +52374,7 @@ async function resolveIntentEmbedding(client, workspaceId, projectId, taskId) {
 var UUID_RE2 = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 var BARE_NUMBER_RE2 = /^\d+$/;
 var VISUAL_ID_RE2 = /^([A-Za-z][A-Za-z0-9]*)-(\d+)$/;
-async function resolveTaskId2(client, projectId, input) {
+async function resolveTaskId3(client, projectId, input) {
   if (UUID_RE2.test(input)) return input;
   let taskNumber;
   const visualMatch = input.match(VISUAL_ID_RE2);
@@ -52344,8 +52411,8 @@ var findRelatedTicketsTool = {
 async function subsumeTask(client, projectId, args) {
   if (!args.task_id?.trim()) throw new Error("task_id is required");
   if (!args.subsumed_by_task_id?.trim()) throw new Error("subsumed_by_task_id is required");
-  const absorbedId = await resolveTaskId3(client, projectId, args.task_id);
-  const umbrellaId = await resolveTaskId3(client, projectId, args.subsumed_by_task_id);
+  const absorbedId = await resolveTaskId4(client, projectId, args.task_id);
+  const umbrellaId = await resolveTaskId4(client, projectId, args.subsumed_by_task_id);
   if (absorbedId === umbrellaId) {
     throw new Error("A ticket cannot be subsumed by itself");
   }
@@ -52379,7 +52446,7 @@ async function subsumeTask(client, projectId, args) {
 var UUID_RE3 = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 var BARE_NUMBER_RE3 = /^\d+$/;
 var VISUAL_ID_RE3 = /^([A-Za-z][A-Za-z0-9]*)-(\d+)$/;
-async function resolveTaskId3(client, projectId, input) {
+async function resolveTaskId4(client, projectId, input) {
   if (UUID_RE3.test(input)) return input;
   let taskNumber;
   const visualMatch = input.match(VISUAL_ID_RE3);
@@ -52445,7 +52512,7 @@ var manageTaskLabelsTool = {
   }
 };
 async function manageTaskLabels(client, projectId, args) {
-  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const taskId = await resolveTaskId2(client, projectId, args.task_id);
   const results = {
     added: [],
     removed: []
@@ -52524,7 +52591,7 @@ var listActivityTool = {
   }
 };
 async function listActivity(client, projectId, args) {
-  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const taskId = await resolveTaskId2(client, projectId, args.task_id);
   const [eventsResult, commentsResult] = await Promise.all([
     client.from("activity_events").select("*, author:profiles!activity_events_user_id_fkey(display_name, email)").eq("task_id", taskId).order("created_at", { ascending: true }),
     client.from("task_comments").select("id, content, created_at, updated_at, author:profiles!task_comments_user_id_fkey(display_name, email)").eq("task_id", taskId).order("created_at", { ascending: true })
@@ -52879,7 +52946,7 @@ var listAcceptanceCriteriaTool = {
   }
 };
 async function listAcceptanceCriteria(client, projectId, args) {
-  const resolvedId = await resolveTaskId(client, projectId, args.task_id);
+  const resolvedId = await resolveTaskId2(client, projectId, args.task_id);
   const { data, error: error2 } = await client.from("acceptance_criteria").select("id, content, checked, position, created_by, created_at").eq("task_id", resolvedId).order("position", { ascending: true });
   if (error2) throw error2;
   return data;
@@ -52929,7 +52996,7 @@ var manageAcceptanceCriteriaTool = {
   }
 };
 async function manageAcceptanceCriteria(client, projectId, userId, args) {
-  const resolvedTaskId = await resolveTaskId(client, projectId, args.task_id);
+  const resolvedTaskId = await resolveTaskId2(client, projectId, args.task_id);
   const results = {
     added: [],
     updated: [],
@@ -52989,7 +53056,7 @@ var listTestCasesTool = {
   }
 };
 async function listTestCases(client, projectId, args) {
-  const resolvedId = await resolveTaskId(client, projectId, args.task_id);
+  const resolvedId = await resolveTaskId2(client, projectId, args.task_id);
   const { data, error: error2 } = await client.from("test_cases").select("id, name, type, position, created_by, created_at").eq("task_id", resolvedId).order("position", { ascending: true });
   if (error2) throw error2;
   return data;
@@ -53057,7 +53124,7 @@ async function manageTestCases(client, projectId, userId, args) {
   if (args.add) {
     for (const item of args.add) assertValidType(item.type);
   }
-  const resolvedTaskId = await resolveTaskId(client, projectId, args.task_id);
+  const resolvedTaskId = await resolveTaskId2(client, projectId, args.task_id);
   const results = {
     added: [],
     updated: [],
@@ -53119,7 +53186,7 @@ var listDependenciesTool = {
   }
 };
 async function listDependencies(client, projectId, args) {
-  const resolvedId = await resolveTaskId(client, projectId, args.task_id);
+  const resolvedId = await resolveTaskId2(client, projectId, args.task_id);
   const [dependsOnRes, blocksRes] = await Promise.all([
     client.from("task_dependencies").select("id, task_id, blocked_by_task_id, created_at, created_by, dependency:blocked_by_task_id(id, task_number, title, status, workflow_state, awaiting_human_input, awaiting_human_reason, stale)").eq("task_id", resolvedId).order("created_at", { ascending: true }),
     client.from("task_dependencies").select("id, task_id, blocked_by_task_id, created_at, created_by, dependent:task_id(id, task_number, title, status, workflow_state, awaiting_human_input, awaiting_human_reason, stale)").eq("blocked_by_task_id", resolvedId).order("created_at", { ascending: true })
@@ -53156,7 +53223,7 @@ var manageDependenciesTool = {
   }
 };
 async function manageDependencies(client, projectId, userId, args) {
-  const resolvedTaskId = await resolveTaskId(client, projectId, args.task_id);
+  const resolvedTaskId = await resolveTaskId2(client, projectId, args.task_id);
   const result = { added: [], removed: [] };
   if (args.add && args.add.length > 0) {
     const dependencyIds = await resolveTaskIds(client, projectId, args.add);
@@ -53320,7 +53387,7 @@ async function writeGateSlotToolHandler(client, projectId, args) {
   if (!isGateSlotName(gate)) {
     throw new Error(`gate must be one of: ${GATE_SLOT_NAMES.join(", ")} \u2014 got '${gate}'`);
   }
-  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const taskId = await resolveTaskId2(client, projectId, args.task_id);
   const reason = REASON_FOR_GATE_SLOT[gate];
   const { data: briefRows, error: briefErr } = await client.from("briefs").select("id, doc, reason, created_at").eq("task_id", taskId).eq("reason", reason).order("created_at", { ascending: false }).limit(1);
   if (briefErr) throw new Error(briefErr.message);
@@ -53394,7 +53461,7 @@ async function probeAcceptanceEventSubstrate(client) {
   throw new Error(`acceptance-event substrate probe failed (not a schema-absence error \u2014 do not degrade): ${error2.message}`);
 }
 async function getPendingAcceptanceEvent(client, projectId, taskId) {
-  const resolvedId = await resolveTaskId(client, projectId, taskId);
+  const resolvedId = await resolveTaskId2(client, projectId, taskId);
   const { data: task, error: taskErr } = await client.from("tasks").select("pending_acceptance_event_id").eq("id", resolvedId).maybeSingle();
   if (taskErr) {
     if (isMissingRelationOrFunction(taskErr)) return null;
@@ -53758,7 +53825,7 @@ var listSubtasksTool = {
   }
 };
 async function listSubtasks(client, projectId, args) {
-  const rootId = await resolveTaskId(client, projectId, args.task_id);
+  const rootId = await resolveTaskId2(client, projectId, args.task_id);
   const depth = args.depth ?? 1;
   const all = [];
   let frontier = [rootId];
@@ -53786,7 +53853,7 @@ var listParentTool = {
   }
 };
 async function listParent(client, projectId, args) {
-  const resolvedId = await resolveTaskId(client, projectId, args.task_id);
+  const resolvedId = await resolveTaskId2(client, projectId, args.task_id);
   const { data: task, error: taskErr } = await client.from("tasks").select("parent_task_id").eq("id", resolvedId).single();
   if (taskErr) throw taskErr;
   if (!task?.parent_task_id) return null;
@@ -53836,7 +53903,7 @@ var manageSubtasksTool = {
   }
 };
 async function manageSubtasks(client, projectId, userId, args) {
-  const parentId = await resolveTaskId(client, projectId, args.task_id);
+  const parentId = await resolveTaskId2(client, projectId, args.task_id);
   const result = {
     attached: [],
     created: [],
@@ -53845,7 +53912,7 @@ async function manageSubtasks(client, projectId, userId, args) {
   const { data: parent, error: parentErr } = await client.from("tasks").select("project_id, epic_id, milestone_id").eq("id", parentId).single();
   if (parentErr) throw parentErr;
   if (args.add && args.add.length > 0) {
-    const childIds = await Promise.all(args.add.map((id) => resolveTaskId(client, projectId, id)));
+    const childIds = await Promise.all(args.add.map((id) => resolveTaskId2(client, projectId, id)));
     for (const cid of childIds) {
       if (cid === parentId) throw new Error("A task cannot be its own subtask.");
     }
@@ -53880,7 +53947,7 @@ async function manageSubtasks(client, projectId, userId, args) {
     result.created = data ?? [];
   }
   if (args.remove && args.remove.length > 0) {
-    const childIds = await Promise.all(args.remove.map((id) => resolveTaskId(client, projectId, id)));
+    const childIds = await Promise.all(args.remove.map((id) => resolveTaskId2(client, projectId, id)));
     const { error: error2 } = await client.from("tasks").update({ parent_task_id: null }).in("id", childIds);
     if (error2) throw error2;
     result.detached = childIds;
@@ -53892,7 +53959,7 @@ async function manageSubtasks(client, projectId, userId, args) {
 var RELEASE_APPROVAL_REASON = "release-approval-pending";
 async function flagReleaseApprovalPending(client, projectId, args) {
   if (!args.pr_url) throw new Error("pr_url is required \u2014 the pause must name the PR to approve");
-  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const taskId = await resolveTaskId2(client, projectId, args.task_id);
   const { data: activeBrief, error: briefErr } = await client.from("briefs").select("id, reason, iteration").eq("task_id", taskId).eq("status", "active").maybeSingle();
   if (briefErr) throw new Error(briefErr.message);
   if (activeBrief) {
@@ -53990,7 +54057,7 @@ var toSummary = (row) => ({
 });
 async function listConductions2(client, projectId, args) {
   if (!args.task_id) throw new Error("task_id is required");
-  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const taskId = await resolveTaskId2(client, projectId, args.task_id);
   const rows = await listConductions(client, { task_id: taskId, order: "desc" });
   return { conductions: rows.map(toSummary) };
 }
@@ -54127,7 +54194,7 @@ async function attachFile(client, projectId, args) {
   const bytes = await fs.readFile(absPath);
   const filename = args.filename ?? path.basename(absPath);
   const contentType = contentTypeForFilename(filename);
-  const resolvedId = await resolveTaskId(client, projectId, args.task_id);
+  const resolvedId = await resolveTaskId2(client, projectId, args.task_id);
   const created = await invokeFn(client, "attachments-create-upload", {
     task_id: resolvedId,
     filename,
@@ -54196,7 +54263,7 @@ var getBuildEvidenceStatusTool = {
   }
 };
 async function getBuildEvidenceStatus(client, projectId, args) {
-  const resolvedId = await resolveTaskId(client, projectId, args.task_id);
+  const resolvedId = await resolveTaskId2(client, projectId, args.task_id);
   const [childrenRes, taskRowRes, testCasesRes, acsRes, commentsRes, labelsRes] = await Promise.all([
     client.from("tasks").select("id, archived").eq("parent_task_id", resolvedId),
     client.from("tasks").select("field_values").eq("id", resolvedId),
@@ -55214,7 +55281,7 @@ async function createConduction2(client, projectId, userId, args) {
   const defaults = await getProjectConductionDefaults(client, projectId);
   const filledRunConfig = fillRunConfigDefaults(runConfig, defaults);
   await assertRunConfigRuntime(client, filledRunConfig);
-  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const taskId = await resolveTaskId2(client, projectId, args.task_id);
   try {
     await reviveParkedTicketIfNeeded(client, projectId, userId, taskId, {
       unpark: args.unpark,
@@ -55900,7 +55967,7 @@ async function runRecordedWalk(client, projectId, userId, args) {
       attestation_recorded: false
     };
   }
-  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const taskId = await resolveTaskId2(client, projectId, args.task_id);
   const gates = [];
   let attestationRecorded = false;
   let summaryCriterionFiled = false;
