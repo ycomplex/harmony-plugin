@@ -832,3 +832,6 @@ Follow `skills/harmony-shared/knowledge-discipline.md` §Scope, vocabulary and s
 knowledge writes: new entries declare product/deployment scope, authored tags use the explicit project
 vocabulary, type is advisory, and composed entries carry `doc.knowledge_scope`. Keep legacy operations
 usable before schema promotion; never drop an explicitly requested scope or filter on error.
+
+
+When choosing an epic, filter `list_epics` to `retired_at == null` (missing means active during schema compatibility). Retired epics are historical lookup only; never assign new work to them.

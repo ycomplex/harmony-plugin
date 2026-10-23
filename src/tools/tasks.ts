@@ -1,3 +1,4 @@
+import { assertActiveEpic } from './epics.js';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveTaskId, resolveTaskIds } from './resolve-task-id.js';
 import { normalizeHtmlEntities, validateTitle } from './text-normalize.js';
@@ -495,6 +496,8 @@ export async function createTask(
     }
   }
 
+  await assertActiveEpic(client, projectId, epicId);
+
   // Get next position for the target status
   const status = args.status ?? 'Backlog';
   const { data: existing } = await client
@@ -579,6 +582,12 @@ export async function updateTask(
 ) {
   const resolvedId = await resolveTaskId(client, projectId, args.task_id);
   const { task_id: _discarded, field_values, label_ids, ...updates } = args;
+
+  if (updates.epic_id) {
+    const { data: current, error } = await client.from('tasks').select('epic_id').eq('id', resolvedId).eq('project_id', projectId).single();
+    if (error) throw error;
+    if (current?.epic_id !== updates.epic_id) await assertActiveEpic(client, projectId, updates.epic_id);
+  }
 
   // Resolve assignee if provided (accepts name, email, or UUID)
   if (updates.assignee_id && updates.assignee_id !== 'null') {
@@ -800,6 +809,8 @@ export async function bulkCreateTasks(
       parent_task_id: parentTaskId,
     };
   });
+
+  for (const epicId of new Set(rows.map(row => row.epic_id))) await assertActiveEpic(client, projectId, epicId);
 
   const { data, error } = await client
     .from('tasks')

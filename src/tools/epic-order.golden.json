@@ -1,0 +1,8 @@
+[
+  { "id": "8", "name": "Alpha", "retired_at": "2026-10-21T00:00:00Z" },
+  { "id": "3", "name": "Beta" },
+  { "id": "2", "name": "alpha", "retired_at": null },
+  { "id": "1", "name": "Alpha" },
+  { "id": "4", "name": "Álpha" },
+  { "id": "9", "name": "zebra", "retired_at": "2026-10-21T00:00:00Z" }
+]

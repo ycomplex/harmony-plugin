@@ -730,11 +730,10 @@ describe('handleToolCall boundary (B-683)', () => {
     const chain: any = {};
     chain.from = vi.fn().mockReturnValue(chain);
     chain.select = vi.fn().mockReturnValue(chain);
-    chain.eq = vi.fn().mockReturnValue(chain);
-    chain.order = vi.fn().mockResolvedValue({ data: epics, error: null });
+    chain.eq = vi.fn().mockResolvedValue({ data: epics, error: null });
     const res = await handleToolCall('list_epics', {}, chain as any, 'proj-1', 'user-1');
     const text = (res as { content: Array<{ text: string }> }).content[0].text;
     expect(text).not.toContain('\n');
-    expect(JSON.parse(text)).toEqual(epics);
+    expect(JSON.parse(text)).toEqual(epics.map(epic => ({ ...epic, retired_at: null })));
   });
 });
