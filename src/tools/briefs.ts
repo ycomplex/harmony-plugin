@@ -2632,6 +2632,37 @@ export function mergeBriefDoc(prior: BriefDoc | null | undefined, patch: BriefDo
 }
 
 /**
+ * B-1004 — a brief re-composed under a DIFFERENT gate reason must not inherit the previous gate's content.
+ *
+ * The B-901 carry-forward (`mergeBriefDoc`, and the database's own `prior || patch`) is right WITHIN a
+ * gate: a partial revision of the same gate keeps what it does not mention. Across a reason change it is
+ * wrong: a plan-draft brief's frame, accept-checklist and "Changed this round" block would render under a
+ * revise-scope-review brief that never authored them. The database cannot be changed from here, so the
+ * reset is expressed in the patch: every prior doc key the new call OMITTED is sent as an explicit `null`
+ * (`payload`, which is an array-typed section, as `[]`; `items`, which is required, likewise `[]`), so
+ * neither mergeBriefDoc nor the DB's `||` can carry it. `decide` is required on the call and is never reset.
+ *
+ * Pure. Returns `patch` by identity when there is nothing to reset: no prior doc, an unknown prior reason
+ * (a legacy row), or the same reason.
+ */
+export function resetDocOnReasonChange(
+  prior: BriefDoc | null | undefined,
+  patch: BriefDoc,
+  priorReason: string | null | undefined,
+  newReason: string,
+): BriefDoc {
+  if (!prior || typeof prior !== 'object') return patch;
+  if (!priorReason || priorReason === newReason) return patch;
+  const out: Record<string, unknown> = { ...(patch as unknown as Record<string, unknown>) };
+  for (const key of Object.keys(prior as unknown as Record<string, unknown>)) {
+    if (key === 'decide') continue;
+    if (out[key] !== undefined) continue; // the new call spoke to it (including an explicit null)
+    out[key] = key === 'payload' || key === 'items' ? [] : null;
+  }
+  return out as unknown as BriefDoc;
+}
+
+/**
  * B-843 / B-383 — "the compose_brief_revision RPC does not exist on this DB (yet)".
  *
  * The plugin's `main` reaches the PROD board the moment it merges, but harmony-web's migration only
@@ -2758,13 +2789,14 @@ export async function composeBrief(
   // `pending_activity` from below it, which is why the read moves ahead of it. The cost is one SELECT
   // earlier in the call — a read, on a path that already performed it.
   const { data: existing, error: lookupErr } = await client
-    .from('briefs').select('id, iteration, decision_ref, doc, pending_activity')
+    .from('briefs').select('id, iteration, reason, decision_ref, doc, pending_activity')
     .eq('task_id', taskId).eq('status', 'active').maybeSingle();
   if (lookupErr) throw new Error(lookupErr.message);
 
   const existingRow = existing as {
     id: string;
     iteration?: number;
+    reason?: string | null;
     decision_ref?: DecisionRef | null;
     doc?: BriefDoc | null;
     pending_activity?: string | null;
@@ -2794,14 +2826,17 @@ export async function composeBrief(
   // `decide` is still refused LOUDLY rather than merged in silence. That is deliberate — B-901 is about
   // never losing prose silently, and a loud refusal loses nothing.
   const priorDoc: BriefDoc | null = existingRow?.doc ?? null;
-  const mergedDoc = mergeBriefDoc(priorDoc, args.doc);
+  // B-1004 — across a gate-reason change nothing of the prior gate carries: omitted prior keys are sent
+  // as explicit nulls so neither this merge nor the DB's `prior || patch` can resurrect them.
+  const patchDoc = resetDocOnReasonChange(priorDoc, args.doc, existingRow?.reason, args.reason);
+  const mergedDoc = mergeBriefDoc(priorDoc, patchDoc);
   if (derivesEntryContent(args.reason) && mergedDecisionRef?.id) {
     // Only an explicitly supplied claim is a refusal boundary. Old gate callers must still compose.
     const explicit = args.doc.claim;
     if (explicit !== undefined && !isSingleSentenceShaped(explicit)) {
       throw new Error('doc.claim must be one sentence of at most 50 words');
     }
-    const inherited = !args.doc.recommend && priorDoc?.claim_source !== 'derived' ? priorDoc?.claim : undefined;
+    const inherited = patchDoc === args.doc && !args.doc.recommend && priorDoc?.claim_source !== 'derived' ? priorDoc?.claim : undefined;
     const claim = explicit ?? inherited ?? proposeClaim(mergedDoc.recommend?.text ?? '');
     mergedDoc.claim = claim?.trim().replace(/\s+/g, ' ');
     mergedDoc.claim_source = explicit !== undefined || inherited ? 'authored' : 'derived';
