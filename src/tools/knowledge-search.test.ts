@@ -6,7 +6,7 @@ import { normalizeTags } from './knowledge-search.js';
 const entry = (id: string, extra = {}) => ({ id, source_kind: 'knowledge', title: 'quasar design', content: 'quasar design rule', type: 'technical-design', status: 'Accepted', tags: [], domain: ['engineering'], project_id: 'p', updated_at: '2026-10-22T00:00:00Z', ...extra });
 const row = (id: string, rank = 1, extra = {}) => ({ candidate: entry(id, extra), signal_rank: rank, overflow: false });
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
-function fixture(options: { lexical?: unknown; semantic?: unknown; embed?: unknown; scope?: unknown; legacy?: unknown; tags?: string[]; hang?: string[]; throwRoute?: string; links?: unknown[]; definitions?: unknown; admission?: unknown; delayLexical?: boolean; prose?:unknown; context?:unknown; names?:unknown } = {}) {
+function fixture(options: { lexical?: unknown; semantic?: unknown; embed?: unknown; scope?: unknown; legacy?: unknown; tags?: string[]; hang?: string[]; throwRoute?: string; links?: unknown[]; definitions?: unknown; admission?: unknown; delayLexical?: boolean; prose?:unknown; context?:unknown; names?:unknown; delays?:Record<string,number> } = {}) {
   const calls: Array<{ path: string; body: any; url: URL; signal?: AbortSignal | null }> = [];
   const client = createClient('http://localhost:5555', 'local-test', { auth: { persistSession: false }, global: { fetch: async (input, init) => {
     const url = new URL(String(input));
@@ -14,6 +14,7 @@ function fixture(options: { lexical?: unknown; semantic?: unknown; embed?: unkno
     const body = typeof init?.body === 'string' ? JSON.parse(init.body) : null;
     const route = path === 'knowledge_search_scored' ? body._signal : path;
     calls.push({ path, body, url, signal: init?.signal });
+    if (options.delays?.[route]) await new Promise(resolve => setTimeout(resolve, options.delays![route]));
     if (options.hang?.includes(route)) return new Promise<Response>(() => {}); // deliberately ignores abort
     if (route === options.throwRoute) throw new Error('transport down');
     if (path === 'read_knowledge_names') return options.names instanceof Response?options.names:json(options.names??{available:true,matches:[],entries:[],identities:[]});
@@ -51,13 +52,13 @@ describe('bounded real handler and Supabase transport contract', () => {
     const answer = await queryKnowledge(client,'p',{search:'quasar'});
     expect(answer.matches).toHaveLength(2);
     expect(answer.matches.find(r=>r.source_kind==='knowledge')!.score).toBe(1/81+1/63);
-    expect(answer).toMatchObject({incomplete:true,truncated:true,count_coverage:'partial-scored-union'});
+    expect(answer).toMatchObject({incomplete:false,truncated:true,count_coverage:'partial-scored-union'});
   });
   it('reports source-level missing embeddings without discarding lexical hits', async () => {
     const {client} = fixture({semantic:[{candidate:null,signal_rank:0,overflow:false,unavailable_sources:['document']}]});
     const answer=await queryKnowledge(client,'p',{search:'quasar'});
     expect(answer.matches[0].score).toBe(1/61);
-    expect(answer.routes_tried).toContainEqual({route:'semantic',outcome:'unavailable',reason:'sources-without-embedding:document'});
+    expect(answer.routes_tried).toContainEqual(expect.objectContaining({route:'semantic',outcome:'unavailable',reason:'sources-without-embedding:document'}));
     expect(answer.count_coverage).toBe('partial-scored-union');
   });
   it('hydrates supersession metadata without replacing score order or adding nonmatching hits',async()=>{
@@ -66,6 +67,23 @@ describe('bounded real handler and Supabase transport contract', () => {
     expect(answer.matches.map(r=>r.id)).toEqual(['old','new']);
     expect(answer.matches[0].superseded_by).toBe('new');
     expect(answer.matches[1].supersedes).toEqual(['old','outside']);
+  });
+  it('separates stale corpus and missing-source diagnostics from route completion', async () => {
+    const {client}=fixture({prose:{available:true,sources:[{enabled:true,refresh_state:'failed'}],pointers:[]},semantic:[{candidate:null,signal_rank:0,overflow:false,unavailable_sources:['document']}]});
+    const answer=await queryKnowledge(client,'p',{search:'quasar'});
+    expect(answer).toMatchObject({incomplete:false,truncated:false,count_coverage:'partial-scored-union'});
+    expect(answer.routes_tried).toEqual(expect.arrayContaining([expect.objectContaining({outcome:'stale'}),expect.objectContaining({reason:'sources-without-embedding:document'})]));
+    expect(answer.routes_tried.every(r=>Number.isFinite(r.elapsed_ms)&&r.elapsed_ms!>=0)).toBe(true);
+  });
+  it('overlaps all page enrichment and both supersession directions', async () => {
+    vi.useFakeTimers();
+    const {client}=fixture({delays:{read_claim_context:400,read_knowledge_names:400,read_knowledge_prose:400,read_knowledge_invalidations:400,knowledge_decisions:400}});
+    const pending=queryKnowledge(client,'p',{search:'quasar',type:'technical-design'});
+    await vi.advanceTimersByTimeAsync(900);
+    const answer=await pending;
+    expect(answer.incomplete).toBe(false);
+    expect(answer.elapsed_ms).toBeLessThan(1000);
+    expect(answer.routes_tried.find(r=>r.route==='supersession')).toMatchObject({outcome:'completed',elapsed_ms:400});
   });
   it('passes every normalized filter to each signal before selection', async () => {
     const {client,calls}=fixture();
@@ -89,7 +107,7 @@ describe('bounded real handler and Supabase transport contract', () => {
     await vi.advanceTimersByTimeAsync(6000);
     const answer=await pending;
     expect(answer.matches.map(r=>r.id)).toEqual(['a']);
-    expect(answer.routes_tried).toContainEqual({route:'semantic',outcome:'timeout',reason:'deadline'});
+    expect(answer.routes_tried).toContainEqual(expect.objectContaining({route:'semantic',outcome:'timeout',reason:'deadline'}));
     expect(calls.every(c=>c.signal?.aborted)).toBe(true);
     const before=JSON.stringify(answer);
     await vi.advanceTimersByTimeAsync(10000);
@@ -167,7 +185,7 @@ describe('one scored pool: questions, scope and definitions', () => {
     const {client,calls}=fixture({lexical:json({code:'PGRST202'},404)});
     const answer=await queryKnowledge(client,'p',{search:'quasar',...filters});
     expect(answer.unscored_matches).toEqual([]);
-    expect(answer.routes_tried).toContainEqual({route:'legacy',outcome:'unsupported',reason:'legacy-scope-or-question-filters-unavailable'});
+    expect(answer.routes_tried).toContainEqual(expect.objectContaining({route:'legacy',outcome:'unsupported',reason:'legacy-scope-or-question-filters-unavailable'}));
     expect(calls.some(c=>c.path==='knowledge_search_rrf_metadata')).toBe(false);
   });
   it('uses the existing scope metadata RPC only for ordered unscored legacy fallback',async()=>{
@@ -287,21 +305,21 @@ it('explains a fully admitted empty answer separately from the rank cutoff', asy
   expect(answer).toMatchObject({matches:[],below_cutoff_count:0,score_cutoff:0.0125,
     normalized_query:'zxqv plorth wimbleflax',page:{total_matches:0},
     relevance_admission:{lexical_min_similarity:0.3,semantic_max_distance:0.7,enforcement:{lexical:'enforced',semantic:'enforced'}}});
-  expect(answer.routes_tried).toContainEqual({route:'relevance-admission',outcome:'completed'});
+  expect(answer.routes_tried).toContainEqual(expect.objectContaining({route:'relevance-admission',outcome:'completed'}));
 });
 it('keeps old scored deployments usable with explicitly unknown admission enforcement', async () => {
   const {client} = fixture({admission:json({code:'PGRST202',message:'missing policy'},404)});
   const answer = await queryKnowledge(client,'p',{search:'quasar'});
   expect(answer.matches).toHaveLength(1);
   expect(answer.relevance_admission).toEqual({lexical_min_similarity:null,semantic_max_distance:null,enforcement:{lexical:'unknown',semantic:'unknown'}});
-  expect(answer.routes_tried).toContainEqual({route:'relevance-admission',outcome:'unsupported',reason:'missing-capability'});
+  expect(answer.routes_tried).toContainEqual(expect.objectContaining({route:'relevance-admission',outcome:'unsupported',reason:'missing-capability'}));
 });
 it('does not claim enforcement from malformed policy metadata', async () => {
   const {client} = fixture({admission:{version:1,lexical_min_similarity:'0.3',semantic_max_distance:0.7}});
   const answer = await queryKnowledge(client,'p',{search:'quasar'});
   expect(answer.matches).toHaveLength(1);
   expect(answer.relevance_admission.enforcement.lexical).toBe('unknown');
-  expect(answer.routes_tried).toContainEqual({route:'relevance-admission',outcome:'unsupported',reason:'invalid-capability-response'});
+  expect(answer.routes_tried).toContainEqual(expect.objectContaining({route:'relevance-admission',outcome:'unsupported',reason:'invalid-capability-response'}));
 });
 it('reports definitions participation for empty success, filtered-out route and missing storage', async () => {
   const included = await queryKnowledge(fixture().client,'p',{search:'quasar'});
@@ -312,7 +330,7 @@ it('reports definitions participation for empty success, filtered-out route and 
   expect(filteredFixture.calls.some(c=>c.path==='read_knowledge_definitions')).toBe(false);
   const missing = await queryKnowledge(fixture({definitions:json({code:'PGRST202'},404)}).client,'p',{search:'quasar'});
   expect(missing).toMatchObject({definitions_included:false,definitions_available:false});
-  expect(missing.routes_tried).toContainEqual({route:'definitions',outcome:'unsupported',reason:'missing-capability'});
+  expect(missing.routes_tried).toContainEqual(expect.objectContaining({route:'definitions',outcome:'unsupported',reason:'missing-capability'}));
 });
 it('keeps stable tied prefixes across caller page sizes and reports skipped semantic admission', async () => {
   const options={lexical:[row('b',1),row('a',1),row('c',1,{source_kind:'document'})],semantic:[],embed:json({},503)};
@@ -330,5 +348,5 @@ it('bounds a hung admission probe and labels enforcement unknown without losing 
   expect(answer.matches).toHaveLength(1);
   expect(answer.elapsed_ms).toBeLessThanOrEqual(6000);
   expect(answer.relevance_admission.enforcement).toEqual({lexical:'unknown',semantic:'unknown'});
-  expect(answer.routes_tried).toContainEqual({route:'relevance-admission',outcome:'timeout',reason:'deadline'});
+  expect(answer.routes_tried).toContainEqual(expect.objectContaining({route:'relevance-admission',outcome:'timeout',reason:'deadline'}));
 });
