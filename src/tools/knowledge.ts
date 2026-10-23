@@ -142,7 +142,7 @@ const ENTITY_COLS = 'id, workspace_id, project_id, kind, name, description, meta
 export const queryKnowledgeTool = {
   name: 'query_knowledge',
   description:
-    'Find current term definitions first; structured lists also include current source-generated deployment facts with inspectable provenance. Generated facts remain Asserted. Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Results include nullable superseded_by and inverse supersedes UUIDs; structured lists place matching successors before replaced entries, while search preserves score order. Check this before making significant implementation choices. Default search includes Accepted entries, configured source-backed document/skill headings and current Asserted generated values in one scored pool. Prose exposes provenance and a source heading link, never Accepted authority. Explicit decision status/type filters exclude prose/generated sources. Coverage and defined-in resolution are explicit; optional claim-context and historical-wording enrichment share the deadline. Explicitly marked bookkeeping is ranked last; include_bookkeeping:false excludes it before pagination. Free-text search combines type/status/all normalized tags/any domain and returns a six-second bounded envelope: scored matches, ordered unscored legacy matches, cutoff 0.0125, below_cutoff_count and coverage, normalized query/filters and routes tried. Scores use genuine global RRF ranks. Filter-only calls retain their list shape. as_of/include_superseded/offset are list-only. Optional context_tags supplies relevant surface/ticket tags for actual tag suggestions.',
+    'Find current term definitions first; structured lists also include current source-generated deployment facts with inspectable provenance. Generated facts remain Asserted. Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Results include nullable superseded_by and inverse supersedes UUIDs; structured lists place matching successors before replaced entries, while search preserves score order. Check this before making significant implementation choices. Default search includes Accepted entries, configured source-backed document/skill headings and current Asserted generated values in one scored pool. Prose exposes provenance and a source heading link, never Accepted authority. Explicit decision status/type filters exclude prose/generated sources. Coverage and defined-in resolution are explicit; optional claim-context and historical-wording enrichment share the deadline. Explicitly marked bookkeeping is ranked last; include_bookkeeping:false excludes it before pagination. Free-text search combines type/status/all normalized tags/any domain and returns a six-second bounded envelope: scored matches, ordered unscored legacy matches, cutoff 0.0125, below_cutoff_count and coverage, normalized query/filters and routes tried. Scores use genuine global RRF ranks. Filter-only calls retain their list shape. as_of, include_superseded and offset compose with search (as_of and include_superseded exclude prose and generated sources; offset pages after ranking; replaced entries carry replaced:true). Optional context_tags supplies relevant surface/ticket tags for actual tag suggestions.',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -162,7 +162,7 @@ export const queryKnowledgeTool = {
       },
       as_of: {
         type: 'string',
-        description: 'ISO timestamp — return entries valid at or before this instant (temporal query; list-only).',
+        description: 'ISO timestamp — return entries valid at or before this instant (temporal query; composes with search, which then covers decisions only).',
       },
       scope: { type: 'string', enum: ['product', 'deployment'], description: 'Product behaviour or deployment operations. Explicit filters exclude unresolved legacy scope and fail visibly before schema promotion.' },
       tags: {
@@ -180,10 +180,10 @@ export const queryKnowledgeTool = {
       include_bookkeeping: { type: 'boolean', description: 'Include explicitly marked procedural gate records after substantive knowledge (default true). False excludes them before pagination.' },
       include_superseded: {
         type: 'boolean',
-        description: 'When true and no explicit status given, return all statuses including superseded. Default false. (structured-filter path; not combinable with `search`)',
+        description: 'When true and no explicit status given, return all statuses including superseded. Default false. (composes with `search`; replaced entries carry replaced:true)',
       },
       limit: { type: 'number', description: 'Max results to return. Default 50.' },
-      offset: { type: 'number', description: 'Number of results to skip (for pagination). Default 0. (structured-filter path; not combinable with `search`)' },
+      offset: { type: 'number', description: 'Number of results to skip (for pagination). Default 0. With `search` it pages after ranking.' },
     },
   },
 };
