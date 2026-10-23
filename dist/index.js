@@ -1732,12 +1732,12 @@ var require_code2 = __commonJS({
       });
     }
     exports.checkReportMissingProp = checkReportMissingProp;
-    function checkMissingProp({ gen, data, it: { opts } }, properties2, missing2) {
-      return (0, codegen_1.or)(...properties2.map((prop) => (0, codegen_1.and)(noPropertyInData(gen, data, prop, opts.ownProperties), (0, codegen_1._)`${missing2} = ${prop}`)));
+    function checkMissingProp({ gen, data, it: { opts } }, properties2, missing3) {
+      return (0, codegen_1.or)(...properties2.map((prop) => (0, codegen_1.and)(noPropertyInData(gen, data, prop, opts.ownProperties), (0, codegen_1._)`${missing3} = ${prop}`)));
     }
     exports.checkMissingProp = checkMissingProp;
-    function reportMissingProp(cxt, missing2) {
-      cxt.setParams({ missingProperty: missing2 }, true);
+    function reportMissingProp(cxt, missing3) {
+      cxt.setParams({ missingProperty: missing3 }, true);
       cxt.error();
     }
     exports.reportMissingProp = reportMissingProp;
@@ -4846,14 +4846,14 @@ var require_required = __commonJS({
           }
         }
         function exitOnErrorMode() {
-          const missing2 = gen.let("missing");
+          const missing3 = gen.let("missing");
           if (useLoop || $data) {
             const valid = gen.let("valid", true);
-            cxt.block$data(valid, () => loopUntilMissing(missing2, valid));
+            cxt.block$data(valid, () => loopUntilMissing(missing3, valid));
             cxt.ok(valid);
           } else {
-            gen.if((0, code_1.checkMissingProp)(cxt, schema, missing2));
-            (0, code_1.reportMissingProp)(cxt, missing2);
+            gen.if((0, code_1.checkMissingProp)(cxt, schema, missing3));
+            (0, code_1.reportMissingProp)(cxt, missing3);
             gen.else();
           }
         }
@@ -4863,10 +4863,10 @@ var require_required = __commonJS({
             gen.if((0, code_1.noPropertyInData)(gen, data, prop, opts.ownProperties), () => cxt.error());
           });
         }
-        function loopUntilMissing(missing2, valid) {
-          cxt.setParams({ missingProperty: missing2 });
-          gen.forOf(missing2, schemaCode, () => {
-            gen.assign(valid, (0, code_1.propertyInData)(gen, data, missing2, opts.ownProperties));
+        function loopUntilMissing(missing3, valid) {
+          cxt.setParams({ missingProperty: missing3 });
+          gen.forOf(missing3, schemaCode, () => {
+            gen.assign(valid, (0, code_1.propertyInData)(gen, data, missing3, opts.ownProperties));
             gen.if((0, codegen_1.not)(valid), () => {
               cxt.error();
               gen.break();
@@ -5404,7 +5404,7 @@ var require_dependencies = __commonJS({
       const { gen, data, it } = cxt;
       if (Object.keys(propertyDeps).length === 0)
         return;
-      const missing2 = gen.let("missing");
+      const missing3 = gen.let("missing");
       for (const prop in propertyDeps) {
         const deps = propertyDeps[prop];
         if (deps.length === 0)
@@ -5422,8 +5422,8 @@ var require_dependencies = __commonJS({
             }
           });
         } else {
-          gen.if((0, codegen_1._)`${hasProperty} && (${(0, code_1.checkMissingProp)(cxt, deps, missing2)})`);
-          (0, code_1.reportMissingProp)(cxt, missing2);
+          gen.if((0, codegen_1._)`${hasProperty} && (${(0, code_1.checkMissingProp)(cxt, deps, missing3)})`);
+          (0, code_1.reportMissingProp)(cxt, missing3);
           gen.else();
         }
       }
@@ -45125,6 +45125,351 @@ var publishDefinitionTool = {
   }, required: ["concept_id", "expected_revision", "source_decision_id", "wording"] }
 };
 
+// src/tools/knowledge-bookkeeping.ts
+var BOOKKEEPING_TAG = "harmony:bookkeeping";
+function bookkeepingTags(tags = []) {
+  return [.../* @__PURE__ */ new Set([...tags, BOOKKEEPING_TAG])];
+}
+function isBookkeeping(entry) {
+  return entry.tags?.includes(BOOKKEEPING_TAG) ?? false;
+}
+var SUBSTANTIVE_TAG_FILTER = `tags.is.null,tags.not.cs.{${BOOKKEEPING_TAG}}`;
+async function bookkeepingPage(fetchPage, { limit = 50, offset = 0, include_bookkeeping = true }) {
+  if (!Number.isInteger(limit) || limit < 0 || !Number.isInteger(offset) || offset < 0) {
+    throw new Error("Knowledge limit and offset must be non-negative integers");
+  }
+  if (limit === 0) return [];
+  const partition = async (bookkeeping, start, size, count) => {
+    const rows = [];
+    let total;
+    while (rows.length < size) {
+      const chunk = Math.min(500, size - rows.length);
+      const result = await fetchPage({ bookkeeping, offset: start + rows.length, limit: chunk, count });
+      if (result.error?.code === "PGRST103") {
+        total = result.count ?? Number(result.error.details?.match(/only (\d+) rows/)?.[1]);
+        if (count && !Number.isFinite(total)) throw new Error(result.error.message);
+        break;
+      }
+      if (result.error) throw new Error(result.error.message);
+      total = result.count ?? total;
+      const batch = result.data ?? [];
+      rows.push(...batch);
+      if (batch.length < chunk) break;
+    }
+    return { rows, total };
+  };
+  const substantive = await partition(false, offset, limit, include_bookkeeping && offset > 0);
+  if (!include_bookkeeping || substantive.rows.length === limit) return substantive.rows;
+  const substantiveTotal = offset === 0 ? substantive.rows.length : substantive.total;
+  if (substantiveTotal == null) throw new Error("Knowledge pagination requires the substantive count");
+  const procedural = await partition(true, Math.max(0, offset - substantiveTotal), limit - substantive.rows.length, false);
+  return [...substantive.rows, ...procedural.rows];
+}
+
+// src/tools/knowledge-search.ts
+var SEARCH_BUDGET_MS = 6e3;
+var SCORE_CUTOFF = 0.0125;
+var RRF_K = 60;
+var normalizeTags = (tags = []) => [...new Set(tags.map((t) => t.trim().toLowerCase()).filter(Boolean))];
+var authError = (e) => ["401", "403", "42501", "PGRST301", "PGRST302", "PGRST303"].some((v) => [e?.code, e?.status, e?.context?.status].map(String).includes(v));
+var missing = (e) => ["PGRST202", "42883"].includes(e?.code);
+var summary = (d, query) => ({
+  id: d.id,
+  title: d.title,
+  type: d.type,
+  status: d.status,
+  domain: d.domain ?? [],
+  tags: d.tags ?? [],
+  ...d.scope !== void 0 ? { scope: d.scope } : {},
+  project_id: d.project_id,
+  updated_at: d.updated_at,
+  verified_against: d.verified_against ?? null,
+  rollout_state: d.rollout_state ?? null,
+  open_steps: d.open_steps ?? null,
+  ...questionFields(d),
+  ...claimFields(d),
+  snippet: matchedPassage(d.content ?? "", query)
+});
+function questionFields(d) {
+  const q = d.madr?.question;
+  if (d.source_activity !== "knowledge-question" || q?.version !== 1 || !["open", "parked", "decided"].includes(q.state ?? "") || !["product", "deployment"].includes(q.scope ?? "")) return {};
+  return {
+    question_state: q.state,
+    question_scope: q.scope,
+    answer: q.state === "decided" ? "decided; see resulting decision" : "not yet decided",
+    resulting_decision_id: q.state === "decided" ? d.superseded_by ?? null : null
+  };
+}
+function priority(d) {
+  const q = questionFields(d);
+  return (q.question_state === "open" || q.question_state === "parked") && typeof d.semantic_distance === "number" && d.semantic_distance <= 0.35;
+}
+async function searchKnowledge(client, projectId, args, started = performance.now()) {
+  const end = started + SEARCH_BUDGET_MS - 100;
+  const controller = new AbortController();
+  const routes = [];
+  let auth2;
+  let sealed = false;
+  let incomplete = false;
+  const result = {
+    concepts: [],
+    definitions: [],
+    refinements: [],
+    definitions_available: false,
+    matches: [],
+    unscored_matches: [],
+    incomplete: false,
+    truncated: false,
+    capability: "unavailable",
+    normalized_query: args.search.trim().replace(/\s+/g, " "),
+    normalized_filters: { type: args.type ?? null, status: args.status ?? "Accepted", domain: args.domain ?? [], tags: normalizeTags(args.tags), include_bookkeeping: args.include_bookkeeping !== false, scope: args.scope ?? null, question_state: args.question_state ?? null, question_scope: args.question_scope ?? null },
+    routes_tried: routes,
+    score_cutoff: SCORE_CUTOFF,
+    below_cutoff_count: null,
+    count_coverage: "unavailable",
+    candidate_limits: { per_class_per_signal: 200, max_scored_union: 800 },
+    tag_suggestions: [],
+    elapsed_ms: 0
+  };
+  const limit = args.limit ?? 50;
+  if (args.scope && !["product", "deployment"].includes(args.scope) || args.question_scope && !["product", "deployment"].includes(args.question_scope) || args.question_state && !["open", "parked", "decided"].includes(args.question_state)) throw new Error("Invalid scope or question state");
+  const includeDefinitions = !args.type && !args.status && !args.tags?.length && !args.as_of && !args.include_superseded && args.scope !== "deployment" && !args.question_scope && !args.question_state;
+  if (args.definitions_only && !includeDefinitions) throw new Error("definitions_only supports search, domain and limit; decision filters are not definition filters");
+  if (!Number.isInteger(limit) || limit < 0) throw new Error("Knowledge limit must be a non-negative integer");
+  if (args.as_of || args.offset || args.include_superseded) throw new Error("Search cannot combine as_of, offset or include_superseded; use an explicit status or a filter-only list");
+  const finish = () => {
+    sealed = true;
+    controller.abort();
+    if (auth2) throw auth2;
+    result.incomplete = result.truncated = incomplete;
+    result.elapsed_ms = Math.round(performance.now() - started);
+    return result;
+  };
+  const bounded = async (route, operation2, budget = end - performance.now()) => {
+    const routeController = new AbortController();
+    const requestSignal = AbortSignal.any([controller.signal, routeController.signal]);
+    let timer;
+    const ms = Math.max(0, Math.min(budget, end - performance.now()));
+    if (ms <= 0) {
+      incomplete = true;
+      routes.push({ route, outcome: "timeout", reason: "deadline" });
+      return void 0;
+    }
+    const timeout = new Promise((resolve2) => {
+      timer = setTimeout(() => {
+        routeController.abort();
+        resolve2(void 0);
+      }, ms);
+    });
+    try {
+      const response = await Promise.race([Promise.resolve().then(() => operation2(requestSignal)), timeout]);
+      if (sealed) return void 0;
+      if (!response) {
+        incomplete = true;
+        routes.push({ route, outcome: "timeout", reason: "deadline" });
+        return void 0;
+      }
+      if (response.error) {
+        if (authError(response.error) || authError({ status: response.status })) auth2 = response.error;
+        incomplete = true;
+        routes.push({ route, outcome: missing(response.error) ? "unsupported" : "failed", reason: missing(response.error) ? "missing-capability" : "request-failed" });
+        return void 0;
+      }
+      routes.push({ route, outcome: "completed" });
+      return response.data ?? void 0;
+    } catch (e) {
+      if (!sealed) {
+        if (authError(e)) auth2 = e;
+        incomplete = true;
+        routes.push({ route, outcome: "failed", reason: "request-failed" });
+      }
+      return void 0;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  const scope = await bounded("scope", (signal2) => client.from("projects").select("workspace_id").eq("id", projectId).abortSignal(signal2).single());
+  if (!scope) {
+    incomplete = true;
+    return finish();
+  }
+  const filters = result.normalized_filters;
+  const definitions = includeDefinitions && limit > 0 ? (async () => {
+    const data = await bounded("definitions", (signal2) => client.rpc("read_knowledge_definitions", {
+      p_workspace_id: scope.workspace_id,
+      p_project_id: projectId,
+      p_search: result.normalized_query,
+      p_domain: args.domain?.length ? args.domain : null,
+      p_limit: Math.min(limit, 500),
+      p_offset: 0
+    }).abortSignal(signal2));
+    result.definitions_available = data?.available === true && Array.isArray(data.definitions);
+    result.definitions = result.definitions_available ? data.definitions.slice(0, limit) : [];
+    if (data && !result.definitions_available) {
+      incomplete = true;
+      routes.push({ route: "definitions", outcome: "failed", reason: "invalid-capability-response" });
+    }
+    const ids3 = [...new Set(result.definitions.flatMap((d) => d.refinements.map((r) => r.id)))].slice(0, Math.max(0, limit - result.definitions.length));
+    if (!args.definitions_only && ids3.length) {
+      const rows = await bounded("definition-refinements", (signal2) => {
+        let query = client.from("knowledge_decisions").select("*").eq("workspace_id", scope.workspace_id).eq("project_id", projectId).eq("status", "Accepted").in("id", ids3);
+        if (args.domain?.length) query = query.overlaps("domain", args.domain);
+        if (!filters.include_bookkeeping) query = query.or("tags.is.null,tags.not.cs.{harmony:bookkeeping}");
+        return query.order("id").limit(ids3.length).abortSignal(signal2);
+      });
+      result.refinements = (rows ?? []).map((d) => summary(d, result.normalized_query));
+    }
+  })() : Promise.resolve();
+  const names = includeDefinitions && !args.definitions_only && limit > 0 ? (async () => {
+    const read = await bounded("concept-names", (signal2) => client.rpc("read_knowledge_names", {
+      p_project_id: projectId,
+      p_search: result.normalized_query,
+      p_entry_ids: [],
+      p_entity_ids: []
+    }).abortSignal(signal2));
+    result.concepts = (read?.matches ?? []).filter((m) => m.state === "no-current-definition").map((m) => ({ id: m.concept_id, kind: "concept", title: m.current_name, concept_id: m.concept_id, state: "no-current-definition", matched_alias: m.matched_alias }));
+  })() : Promise.resolve();
+  if (args.definitions_only) {
+    await definitions;
+    return finish();
+  }
+  let absent = false;
+  let scoredCompleted = false;
+  const candidates = /* @__PURE__ */ new Map();
+  const signal = async (name, embedding) => {
+    const rows = await bounded(name, async (signal2) => {
+      const response = await client.rpc("knowledge_search_scored", {
+        _workspace_id: scope.workspace_id,
+        _project_id: projectId,
+        _query_text: result.normalized_query,
+        _query_embedding: embedding,
+        _signal: name,
+        _type: filters.type,
+        _status: filters.status,
+        _domain: filters.domain.length ? filters.domain : null,
+        _tags: filters.tags.length ? filters.tags : null,
+        _include_bookkeeping: filters.include_bookkeeping,
+        _scope: filters.scope,
+        _question_state: filters.question_state,
+        _question_scope: filters.question_scope
+      }).abortSignal(signal2);
+      return response;
+    });
+    if (!rows || sealed) {
+      if (!sealed && name === "lexical" && routes.some((r) => r.route === name && r.reason === "missing-capability")) absent = true;
+      return;
+    }
+    scoredCompleted = true;
+    for (const row of rows) {
+      if (row.unavailable_sources?.length) {
+        incomplete = true;
+        routes.push({ route: name, outcome: "unavailable", reason: `sources-without-embedding:${row.unavailable_sources.join(",")}` });
+        continue;
+      }
+      if (row.overflow) {
+        incomplete = true;
+        routes.push({ route: name, outcome: "capped", reason: "candidate-ceiling" });
+        continue;
+      }
+      if (!row.candidate || !Number.isSafeInteger(Number(row.signal_rank)) || Number(row.signal_rank) < 1) continue;
+      const key = `${row.candidate.source_kind}:${row.candidate.id}`;
+      const prior = candidates.get(key);
+      const candidate = { ...row.candidate, semantic_distance: name === "semantic" ? row.candidate.semantic_distance : prior?.candidate.semantic_distance ?? null };
+      candidates.set(key, { candidate, score: (prior?.score ?? 0) + 1 / (RRF_K + Number(row.signal_rank)) });
+    }
+  };
+  const lexical = signal("lexical", null);
+  const semantic = (async () => {
+    const data = await bounded("embedding", (signal2) => client.functions.invoke("embed-knowledge", {
+      body: { text: result.normalized_query },
+      signal: signal2
+    }), 1200);
+    if (!data?.embedding?.length) {
+      incomplete = true;
+      routes.push({ route: "semantic", outcome: "unavailable", reason: "embedding-unavailable" });
+      return;
+    }
+    if (absent) return;
+    await signal("semantic", JSON.stringify(data.embedding));
+  })();
+  const suggestions = args.context_tags?.length ? bounded("tag-suggestions", (signal2) => client.rpc("knowledge_search_context_tags", {
+    _workspace_id: scope.workspace_id,
+    _project_id: projectId,
+    _context_tags: normalizeTags(args.context_tags)
+  }).abortSignal(signal2)) : Promise.resolve(void 0);
+  await lexical;
+  if (absent) {
+    result.capability = "scores-unavailable";
+    result.reason = "scored search is not deployed in this environment yet";
+    incomplete = true;
+    if (filters.status !== "Accepted" || filters.tags.length || filters.question_state || filters.question_scope) {
+      routes.push({ route: "legacy", outcome: "unsupported", reason: filters.question_state || filters.question_scope ? "legacy-scope-or-question-filters-unavailable" : filters.status !== "Accepted" ? "legacy-status-accepted-only" : "normalized-tags-unavailable" });
+    } else {
+      const legacy = await bounded("legacy", (signal2) => {
+        let q = client.rpc(filters.scope ? "knowledge_search_rrf_metadata" : "knowledge_search_rrf", {
+          ...filters.scope ? { _scope: filters.scope } : {},
+          _workspace_id: scope.workspace_id,
+          _project_id: projectId,
+          _query_embedding: null,
+          _query_text: result.normalized_query,
+          _domain: filters.domain.length ? filters.domain : null,
+          _match_limit: null
+        }).select("*");
+        if (filters.type) q = q.eq("type", filters.type);
+        if (!filters.include_bookkeeping) q = q.or("tags.is.null,tags.not.cs.{harmony:bookkeeping}");
+        return q.limit(limit).abortSignal(signal2);
+      });
+      result.unscored_matches = (legacy ?? []).slice(0, limit).map((d) => summary(d, result.normalized_query));
+    }
+  }
+  await semantic;
+  await definitions;
+  const tags = await suggestions;
+  result.tag_suggestions = normalizeTags(tags ?? []).slice(0, 8);
+  if (!absent && scoredCompleted) {
+    result.capability = "scored";
+    const all = [...candidates.values()];
+    result.below_cutoff_count = all.filter((c) => c.score < SCORE_CUTOFF).length;
+    result.matches = all.filter((c) => c.score >= SCORE_CUTOFF).sort((a, b) => Number(a.candidate.bookkeeping ?? isBookkeeping(a.candidate)) - Number(b.candidate.bookkeeping ?? isBookkeeping(b.candidate)) || Number(priority(b.candidate)) - Number(priority(a.candidate)) || b.score - a.score || a.candidate.source_kind.localeCompare(b.candidate.source_kind) || a.candidate.id.localeCompare(b.candidate.id)).slice(0, limit).map((c) => ({ ...summary(c.candidate, result.normalized_query), source_kind: c.candidate.source_kind, score: c.score }));
+    result.count_coverage = incomplete ? "partial-scored-union" : "considered-scored-union";
+  }
+  await names;
+  result.concepts = result.concepts.slice(0, Math.max(0, limit - result.definitions.length));
+  const reserved = new Set([...result.definitions, ...result.refinements].map((d) => d.id));
+  const remaining = Math.max(0, limit - result.definitions.length - result.concepts.length - result.refinements.length);
+  result.matches = result.matches.filter((d) => d.source_kind !== "knowledge" || !reserved.has(d.id)).slice(0, remaining);
+  result.unscored_matches = result.unscored_matches.filter((d) => !reserved.has(d.id)).slice(0, remaining);
+  const displayed = [...result.refinements, ...result.matches, ...result.unscored_matches];
+  const ids2 = displayed.filter((d) => !("source_kind" in d) || d.source_kind === "knowledge").map((d) => d.id);
+  if (ids2.length) {
+    const invalidations = await bounded("invalidations", (signal2) => client.rpc("read_knowledge_invalidations", { p_entry_ids: ids2 }).abortSignal(signal2));
+    for (const d of displayed) {
+      if ("source_kind" in d && d.source_kind !== "knowledge") continue;
+      d.invalidations_available = invalidations?.available === true;
+      d.invalidation_rollout_available = invalidations?.rollout_available === true;
+      d.invalidations = invalidations?.links?.filter((link) => link.affected_id === d.id) ?? [];
+    }
+    const links = await bounded("supersession", async (signal2) => {
+      const data = [];
+      for (let start = 0; start < ids2.length; start += 500) {
+        for (const column of ["id", "superseded_by"]) {
+          const part = await client.from("knowledge_decisions").select("id,superseded_by").eq("workspace_id", scope.workspace_id).eq("project_id", projectId).neq("type", "intent").in(column, ids2.slice(start, start + 500)).limit(500).abortSignal(signal2);
+          if (part.error) return { data: null, error: part.error };
+          data.push(...part.data ?? []);
+        }
+      }
+      return { data };
+    });
+    if (links) for (const d of displayed) {
+      if ("source_kind" in d && d.source_kind !== "knowledge") continue;
+      d.superseded_by = links.find((e) => e.id === d.id)?.superseded_by ?? null;
+      d.supersedes = [...new Set(links.filter((e) => e.superseded_by === d.id).map((e) => e.id))];
+    }
+  }
+  if (result.capability === "scored" && incomplete) result.count_coverage = "partial-scored-union";
+  return finish();
+}
+
 // src/tools/knowledge-supersession.ts
 function projectSupersession(entries, edges) {
   const successor = new Map(edges.map((e) => [e.id, e.superseded_by ?? null]));
@@ -45218,55 +45563,6 @@ var FIELDS = ["verified_against", "rollout_state", "open_steps"];
 function truthStatePatch(args) {
   return Object.fromEntries(FIELDS.filter((k) => args[k] !== void 0).map((k) => [k, args[k]]));
 }
-function missingTruthColumns(error2) {
-  return !!error2 && ["42703", "PGRST204"].includes(error2.code ?? "") && FIELDS.some((k) => error2.message?.includes(k));
-}
-async function truthCompatibleRead(read) {
-  const result = await read(", verified_against, rollout_state, open_steps");
-  if (!missingTruthColumns(result.error)) return result;
-  const legacy = await read("");
-  const missing2 = { verified_against: null, rollout_state: null, open_steps: null };
-  const normalize = (row) => ({ ...row, ...missing2 });
-  return { ...legacy, data: Array.isArray(legacy.data) ? legacy.data.map(normalize) : legacy.data ? normalize(legacy.data) : legacy.data };
-}
-
-// src/tools/knowledge-bookkeeping.ts
-var BOOKKEEPING_TAG = "harmony:bookkeeping";
-function bookkeepingTags(tags = []) {
-  return [.../* @__PURE__ */ new Set([...tags, BOOKKEEPING_TAG])];
-}
-var SUBSTANTIVE_TAG_FILTER = `tags.is.null,tags.not.cs.{${BOOKKEEPING_TAG}}`;
-async function bookkeepingPage(fetchPage, { limit = 50, offset = 0, include_bookkeeping = true }) {
-  if (!Number.isInteger(limit) || limit < 0 || !Number.isInteger(offset) || offset < 0) {
-    throw new Error("Knowledge limit and offset must be non-negative integers");
-  }
-  if (limit === 0) return [];
-  const partition = async (bookkeeping, start, size, count) => {
-    const rows = [];
-    let total;
-    while (rows.length < size) {
-      const chunk = Math.min(500, size - rows.length);
-      const result = await fetchPage({ bookkeeping, offset: start + rows.length, limit: chunk, count });
-      if (result.error?.code === "PGRST103") {
-        total = result.count ?? Number(result.error.details?.match(/only (\d+) rows/)?.[1]);
-        if (count && !Number.isFinite(total)) throw new Error(result.error.message);
-        break;
-      }
-      if (result.error) throw new Error(result.error.message);
-      total = result.count ?? total;
-      const batch = result.data ?? [];
-      rows.push(...batch);
-      if (batch.length < chunk) break;
-    }
-    return { rows, total };
-  };
-  const substantive = await partition(false, offset, limit, include_bookkeeping && offset > 0);
-  if (!include_bookkeeping || substantive.rows.length === limit) return substantive.rows;
-  const substantiveTotal = offset === 0 ? substantive.rows.length : substantive.total;
-  if (substantiveTotal == null) throw new Error("Knowledge pagination requires the substantive count");
-  const procedural = await partition(true, Math.max(0, offset - substantiveTotal), limit - substantive.rows.length, false);
-  return [...substantive.rows, ...procedural.rows];
-}
 
 // src/tools/text-normalize.ts
 var ENTITY_MAP = {
@@ -45335,14 +45631,14 @@ var FACT_COLS = "id, workspace_id, project_id, subject_entity_id, predicate, obj
 var ENTITY_COLS = "id, workspace_id, project_id, kind, name, description, metadata, created_at";
 var queryKnowledgeTool = {
   name: "query_knowledge",
-  description: 'Find current term definitions first, then linked refinements, current source-generated deployment facts with inspectable provenance, and ordinary decisions. Generated facts remain Asserted and are not human-ratified decisions. definitions_only returns full quotable current definitions; unavailable storage is reported explicitly. Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Results include nullable superseded_by and inverse supersedes UUIDs; matching successors precede replaced entries. Check this before making significant implementation choices. Ordinary decisions default to "Accepted"; current generated evidence is included separately, with explicitly marked bookkeeping ranked last; include_bookkeeping:false excludes it before pagination. When `search` is given, retrieval is semantic (RRF) and composes with `domain`, `limit` and `include_bookkeeping`; the other structured filters (`type`, `status`, `tags`, `as_of`, `include_superseded`, `offset`) apply to the non-search structured path only. Optional scope (product | deployment) filters by declared scope when the metadata schema is present; unsupported scope filtering fails explicitly. question_state (open | parked | decided) is a filter-only argument until B-1223 lands the scored path; combining it with search fails explicitly.',
+  description: 'Find current term definitions first; structured lists also include current source-generated deployment facts with inspectable provenance. Generated facts remain Asserted. Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Results include nullable superseded_by and inverse supersedes UUIDs; structured lists place matching successors before replaced entries, while search preserves score order. Check this before making significant implementation choices. Defaults to "Accepted" entries only, with explicitly marked bookkeeping ranked last; include_bookkeeping:false excludes it before pagination. Free-text search combines type/status/all normalized tags/any domain and returns a six-second bounded envelope: scored matches, ordered unscored legacy matches, cutoff 0.0125, below_cutoff_count and coverage, normalized query/filters and routes tried. Scores use genuine global RRF ranks. Filter-only calls retain their list shape. as_of/include_superseded/offset are list-only. Optional context_tags supplies relevant surface/ticket tags for actual tag suggestions.',
   inputSchema: {
     type: "object",
     properties: {
       definitions_only: { type: "boolean", description: "Return only current accepted term definitions; unavailable storage is reported explicitly" },
       type: {
         type: "string",
-        description: 'Filter by advisory authoring classification, not verified semantic content (e.g. "architecture", "business", "convention", "specification"). (structured-filter path; not combinable with `search`)'
+        description: 'Filter by advisory authoring classification (e.g. "architecture", "business", "convention", "specification").'
       },
       status: {
         type: "string",
@@ -45355,19 +45651,21 @@ var queryKnowledgeTool = {
       },
       as_of: {
         type: "string",
-        description: "ISO timestamp \u2014 return entries valid at or before this instant (temporal query)."
+        description: "ISO timestamp \u2014 return entries valid at or before this instant (temporal query; list-only)."
       },
       scope: { type: "string", enum: ["product", "deployment"], description: "Product behaviour or deployment operations. Explicit filters exclude unresolved legacy scope and fail visibly before schema promotion." },
       tags: {
         type: "array",
         items: { type: "string" },
-        description: "Filter entries that contain ALL of these tags. (structured-filter path; not combinable with `search`)"
+        description: "Filter entries containing ALL tags; trimmed and lowercased."
       },
+      context_tags: { type: "array", items: { type: "string" }, description: "Relevant surface/ticket tags; suggest at most eight actual tags from matching context. Omit for no suggestions." },
       search: {
         type: "string",
-        description: "Free-text search query \u2014 hybrid semantic + trigram retrieval, ranked by relevance (RRF). Composes with `domain`, `limit` and `include_bookkeeping`."
+        description: "Free-text search query \u2014 hybrid semantic + trigram retrieval, ranked by relevance (RRF). Composes with type, status, tags, domain, limit and include_bookkeeping."
       },
-      question_state: { type: "string", enum: ["open", "parked", "decided"], description: "Filter-only lists: open, parked or decided questions. Cannot combine with search until B-1223 shared ranking." },
+      question_state: { type: "string", enum: ["open", "parked", "decided"], description: "Filter open, parked or decided questions; composes with search before ranking." },
+      question_scope: { type: "string", enum: ["product", "deployment"], description: "Question metadata scope; composes with search before ranking." },
       include_bookkeeping: { type: "boolean", description: "Include explicitly marked procedural gate records after substantive knowledge (default true). False excludes them before pagination." },
       include_superseded: {
         type: "boolean",
@@ -45544,6 +45842,9 @@ function toBaseStatus(status) {
   return base;
 }
 async function queryKnowledge(client, projectId, args) {
+  const started = performance.now();
+  if (args.search?.trim()) return searchKnowledge(client, projectId, { ...args, status: args.status ? toBaseStatus(args.status) : void 0 }, started);
+  args = { ...args, tags: args.tags ? normalizeTags(args.tags) : void 0 };
   const workspaceId = await getWorkspaceId(client, projectId);
   if (args.question_state && !["open", "parked", "decided"].includes(args.question_state)) {
     throw new Error("question_state must be open, parked or decided");
@@ -45556,23 +45857,6 @@ async function queryKnowledge(client, projectId, args) {
     throw new Error("definitions_only supports search, domain, limit and offset; ordinary decision filters are not definition filters");
   }
   if (args.limit === 0) return [];
-  if (args.search) {
-    const incompatible = [];
-    if (args.question_state) {
-      throw new Error("query_knowledge: search + question_state is unavailable until B-1223 shared ranking; omit search for structured question filtering");
-    }
-    if (args.status) incompatible.push("status");
-    if (args.include_superseded) incompatible.push("include_superseded");
-    if (args.type) incompatible.push("type");
-    if (args.tags && args.tags.length > 0) incompatible.push("tags");
-    if (args.as_of) incompatible.push("as_of");
-    if (args.offset) incompatible.push("offset");
-    if (incompatible.length > 0) {
-      throw new Error(
-        `query_knowledge: "search" (semantic retrieval) cannot be combined with: ${incompatible.join(", ")}. Semantic search returns Accepted decisions ranked by relevance, optionally filtered by "domain". Omit "search" to use the structured filters.`
-      );
-    }
-  }
   const definitions = await readDefinitions(client, workspaceId, projectId, args);
   const conceptNames = args.search ? await readKnowledgeNames(client, projectId, { search: args.search }) : null;
   if (args.definitions_only) {
@@ -45620,43 +45904,6 @@ async function queryKnowledge(client, projectId, args) {
   const pagePrefixCount = (includeDefinitions ? definitions.definitions.length + noDefinition.length : 0) + generated.values.length;
   const decisionArgs = { ...args, offset: Math.max(0, (args.offset ?? 0) - prefixCount), limit: Math.max(1, (args.limit ?? 50) - pagePrefixCount) };
   if (pagePrefixCount >= (args.limit ?? 50)) return prepend([]);
-  if (args.search) {
-    const queryEmbedding = await embedText(client, args.search);
-    const data = await bookkeepingPage(({ bookkeeping, offset, limit, count }) => truthCompatibleRead((extraColumns) => {
-      let query = client.rpc(args.scope ? "knowledge_search_rrf_metadata" : "knowledge_search_rrf", {
-        ...args.scope ? { _scope: args.scope } : {},
-        _workspace_id: workspaceId,
-        _project_id: projectId,
-        _query_embedding: queryEmbedding,
-        _query_text: args.search,
-        _domain: args.domain && args.domain.length > 0 ? args.domain : null,
-        _match_limit: null
-      }, count ? { count: "exact" } : {}).select("id, title, content, type, status, domain, tags, project_id, updated_at" + extraColumns);
-      query = bookkeeping ? query.contains("tags", [BOOKKEEPING_TAG]) : query.or(SUBSTANTIVE_TAG_FILTER);
-      return query.range(offset, offset + limit - 1);
-    }), decisionArgs);
-    const matches = (data ?? []).map((d) => ({
-      id: d.id,
-      title: d.title,
-      type: d.type,
-      status: d.status,
-      ...d.scope !== void 0 ? { scope: d.scope } : {},
-      ...questionProjection(d),
-      ...claimFields(d),
-      snippet: matchedPassage(d.content ?? "", args.search),
-      domain: d.domain,
-      tags: d.tags,
-      project_id: d.project_id,
-      updated_at: d.updated_at,
-      verified_against: d.verified_against ?? null,
-      rollout_state: d.rollout_state ?? null,
-      open_steps: d.open_steps ?? null
-    }));
-    if (!matches.length) return prepend([]);
-    const questionRank = (row) => Number(row.tags?.includes(BOOKKEEPING_TAG) ?? false) * 2 + (row.question_state === "open" || row.question_state === "parked" ? 0 : 1);
-    matches.sort((left, right) => questionRank(left) - questionRank(right));
-    return prepend(await withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, matches)));
-  }
   const rows = await bookkeepingPage(({ bookkeeping, offset, limit, count }) => {
     let query = client.from("knowledge_decisions").select("*", count ? { count: "exact" } : {}).eq("workspace_id", workspaceId).eq("project_id", projectId);
     if (args.scope) query = query.eq("scope", args.scope);
@@ -45760,7 +46007,7 @@ async function createKnowledgeEntry(client, projectId, userId, args) {
     status: args.status !== void 0 ? toLegacyStatus(args.status) : "draft",
     created_by: userId
   };
-  if (args.tags !== void 0) record2.tags = args.tags;
+  if (args.tags !== void 0) record2.tags = normalizeTags(args.tags);
   if (args.source_task_id !== void 0) record2.source_task_id = args.source_task_id;
   const { data, error: error2 } = await client.from("workspace_knowledge").insert(record2).select(
     "id, workspace_id, project_id, title, content, type, status, superseded_by, tags, source_task_id, created_by, created_at, updated_at"
@@ -45830,7 +46077,7 @@ async function updateKnowledgeEntry(client, projectId, args) {
     p_content: contentWrite ? content : null,
     p_type: args.type ?? null,
     p_status: args.status !== void 0 ? toBaseStatus(args.status) : null,
-    p_tags: args.tags ?? null,
+    p_tags: args.tags === void 0 ? null : normalizeTags(args.tags),
     // Decision-axis columns recordDecision already writes but this path historically omitted
     // (B-468). Pass-through only (mirrors recordDecision — no strict validation; the DB CHECK/FK
     // constraints are the backstop). madr is a FULL-OBJECT replace, not a key-merge.
@@ -45944,7 +46191,7 @@ ${content}`);
     p_source_type: args.source_type ?? "manual",
     p_source_id: args.source_id ?? null,
     p_source_activity: args.source_activity ?? null,
-    p_tags: args.tags ?? [],
+    p_tags: normalizeTags(args.tags),
     p_source_task_id: args.source_task_id ?? null,
     p_review_by: args.review_by ?? null,
     p_realization: realization ?? null,
@@ -46356,7 +46603,7 @@ async function supersedeKnowledgeEntry(client, projectId, userId, args) {
     p_entry_id: args.entry_id ?? null,
     p_title: args.title ?? null,
     p_type: args.type ?? null,
-    p_tags: args.tags ?? null,
+    p_tags: args.tags === void 0 ? null : normalizeTags(args.tags),
     p_provenance: args.provenance ?? null,
     p_conduction_id: getConductionId() ?? null,
     p_leg: getLeg() ?? null
@@ -47236,22 +47483,22 @@ async function resolveTaskIds(client, projectId, inputs) {
     const { data, error: error2 } = await client.from("tasks").select("id, task_number").eq("project_id", projectId).in("task_number", neededNumbers);
     if (error2) throw error2;
     for (const row of data ?? []) idByNumber.set(row.task_number, row.id);
-    const missing2 = neededNumbers.filter((n) => !idByNumber.has(n));
-    if (missing2.length > 0) {
-      throw new Error(`No task(s) with number(s) ${missing2.join(", ")} in this project`);
+    const missing3 = neededNumbers.filter((n) => !idByNumber.has(n));
+    if (missing3.length > 0) {
+      throw new Error(`No task(s) with number(s) ${missing3.join(", ")} in this project`);
     }
   }
   return classified.map((c) => c.kind === "uuid" ? c.id : idByNumber.get(c.taskNumber));
 }
 
 // src/tools/knowledge-names.ts
-function missing(error2, operation2) {
+function missing2(error2, operation2) {
   return ["PGRST202", "42883"].includes(error2.code ?? "") && error2.message.includes(operation2);
 }
 async function invoke(client, operation2, args, optional2 = false) {
   const { data, error: error2 } = await client.rpc(operation2, args);
   if (error2) {
-    if (missing(error2, operation2)) {
+    if (missing2(error2, operation2)) {
       if (optional2) return void 0;
       throw new Error("Name history is not available in this environment yet.");
     }
@@ -49743,13 +49990,17 @@ async function withContradictionSignal(doc, client, projectId, taskId, diffConte
     floorRows = [];
   }
   const floorAccepted = floorRows.filter((r) => r.status === "Accepted");
-  let tierRows = [];
+  let tierRows;
+  let tierIncomplete;
   try {
-    tierRows = await queryKnowledge(client, projectId, {
+    const searched = await queryKnowledge(client, projectId, {
       search: searchTerms.join(" "),
       limit: TIER_CANDIDATE_LIMIT
     });
+    tierRows = Array.isArray(searched) ? searched : [...searched.refinements ?? [], ...searched.matches.filter((r) => r.source_kind === "knowledge"), ...searched.unscored_matches];
+    tierIncomplete = Array.isArray(searched) ? false : searched.incomplete;
   } catch {
+    tierIncomplete = true;
     tierRows = [];
   }
   const tierIds = tierRows.map((r) => r.id).filter((id) => typeof id === "string");
@@ -49776,7 +50027,7 @@ async function withContradictionSignal(doc, client, projectId, taskId, diffConte
     message: entries.length === 0 ? "does-not-fire \u2014 nothing linked/matched was touched" : `${entries.length} Accepted entr${entries.length === 1 ? "y" : "ies"} touched by this diff`,
     entries
   };
-  if (parsed.truncated) signal.truncated = parsed.truncated;
+  if (parsed.truncated || tierIncomplete) signal.truncated = [parsed.truncated, tierIncomplete ? "TIER search coverage incomplete" : null].filter(Boolean).join("; ");
   return { ...doc, frame: { ...doc.frame, contradiction_signal: signal } };
 }
 function mergeBriefDoc(prior, patch) {
@@ -51813,7 +52064,7 @@ var searchTasksTool = {
 
 // src/tools/find-related-tickets.ts
 var DEFAULT_LIMIT = 5;
-var RRF_K = 10;
+var RRF_K2 = 10;
 var BOUNDED_QUERY_CHARS = 400;
 async function findRelatedTickets(client, projectId, args) {
   if (!args.task_id?.trim()) throw new Error("task_id is required");
@@ -51941,7 +52192,7 @@ function toDegradedRoute(route, err) {
 }
 var EXCLUDED_WORKFLOW_STATES = /* @__PURE__ */ new Set(["Cancelled", "Parked", "Verified", "Deployed"]);
 function accumulateRrf(byTask, taskId, rank, route) {
-  const contribution = 1 / (RRF_K + rank);
+  const contribution = 1 / (RRF_K2 + rank);
   const existing = byTask.get(taskId);
   if (existing) {
     existing.score += contribution;
@@ -53888,18 +54139,18 @@ async function getBuildEvidenceStatus(client, projectId, args) {
   const exempt = is_umbrella || is_decision_only;
   const complete = exempt ? true : has_test_cases && all_acs_checked && has_pushed_pr;
   const exempt_reason = is_umbrella ? "umbrella \u2014 evidence carried by children" : is_decision_only ? "decision-only \u2014 the Accepted decision knowledge is the evidence" : null;
-  const missing2 = [];
+  const missing3 = [];
   if (!complete && !exempt) {
-    if (!has_test_cases) missing2.push("test cases");
+    if (!has_test_cases) missing3.push("test cases");
     if (!all_acs_checked) {
       const unchecked = acs.filter((a) => a.checked !== true).length;
       if (acs.length === 0) {
-        missing2.push("acceptance criteria (none created)");
+        missing3.push("acceptance criteria (none created)");
       } else {
-        missing2.push(`${unchecked} unchecked acceptance criteria`);
+        missing3.push(`${unchecked} unchecked acceptance criteria`);
       }
     }
-    if (!has_pushed_pr) missing2.push("pushed PR reference (no verified branch/PR recorded)");
+    if (!has_pushed_pr) missing3.push("pushed PR reference (no verified branch/PR recorded)");
   }
   const declared_evidence = await resolveDeclaredEvidenceBlock(
     client,
@@ -53908,7 +54159,7 @@ async function getBuildEvidenceStatus(client, projectId, args) {
     labelRows.map((l) => l.labels?.name).filter((n) => typeof n === "string")
   );
   if (declared_evidence?.outstanding.length) {
-    missing2.push(
+    missing3.push(
       `${declared_evidence.outstanding.length} declared evidence entr${declared_evidence.outstanding.length === 1 ? "y" : "ies"} outstanding (${declared_evidence.outstanding.join(", ")})`
     );
   }
@@ -53923,7 +54174,7 @@ async function getBuildEvidenceStatus(client, projectId, args) {
     has_pushed_pr,
     complete,
     exempt_reason,
-    missing: missing2,
+    missing: missing3,
     ...declared_evidence ? { declared_evidence } : {}
   };
 }
@@ -55228,9 +55479,9 @@ function evaluateMigrationItem(evidence) {
   return { item: "migration", label: "No migration", verdict: "pass", value };
 }
 var GATED_RISK_CLASSES = ["auth", "irreversible-destructive", "shared-core"];
-function evaluateRiskClassItem(summary, evidence) {
+function evaluateRiskClassItem(summary2, evidence) {
   const changedPaths = evidence.flatMap((e) => e.paths ?? []);
-  const classes = detectRiskClasses({ text: summary, changedPaths });
+  const classes = detectRiskClasses({ text: summary2, changedPaths });
   const gated = classes.filter((c) => GATED_RISK_CLASSES.includes(c));
   const value = `risk_classes: [${classes.join(", ")}]`;
   if (gated.length > 0) {
@@ -55245,11 +55496,11 @@ function evaluateRiskClassItem(summary, evidence) {
   return { item: "risk_class", label: "No auth/shared-core/irreversible-destructive risk", verdict: "pass", value };
 }
 var SENTENCE_WORD_LIMIT2 = 50;
-function evaluateSingleSentenceItem(summary) {
-  const trimmed = summary.trim();
+function evaluateSingleSentenceItem(summary2) {
+  const trimmed = summary2.trim();
   const wordCount = trimmed ? trimmed.split(/\s+/).filter(Boolean).length : 0;
   const value = `summary: ${wordCount} words, ${trimmed ? '"' + (trimmed.length > 80 ? trimmed.slice(0, 77) + "..." : trimmed) + '"' : "(empty)"}`;
-  if (!isSingleSentenceShaped(summary)) {
+  if (!isSingleSentenceShaped(summary2)) {
     return {
       item: "single_sentence_change",
       label: "Single-sentence-statable change",
@@ -55333,9 +55584,9 @@ var PAYLOAD_CARRYING_REASONS = /* @__PURE__ */ new Set([
 function trimmedOrEmpty(s) {
   return typeof s === "string" ? s.trim() : "";
 }
-function deriveSolving(summary) {
-  const trimmed = trimmedOrEmpty(summary).replace(/[.!?]+$/, "");
-  return trimmed ? `${trimmed}.` : summary;
+function deriveSolving(summary2) {
+  const trimmed = trimmedOrEmpty(summary2).replace(/[.!?]+$/, "");
+  return trimmed ? `${trimmed}.` : summary2;
 }
 function describeIneligibility(report) {
   const bad = report.items.filter((i) => i.verdict !== "pass" && i.verdict !== "deferred");
@@ -55563,8 +55814,8 @@ async function runRecordedWalk(client, projectId, userId, args) {
   const gates = [];
   let attestationRecorded = false;
   let summaryCriterionFiled = false;
-  const summary = trimmedOrEmpty(args.summary);
-  const solving = deriveSolving(summary);
+  const summary2 = trimmedOrEmpty(args.summary);
+  const solving = deriveSolving(summary2);
   const repos = Array.from(new Set(args.evidence.map((e) => e.repo).filter((r) => !!r)));
   const changedPaths = args.evidence.flatMap((e) => e.paths ?? []);
   const fromGate = args.from_gate ?? "clarify";
@@ -55594,7 +55845,7 @@ async function runRecordedWalk(client, projectId, userId, args) {
       const clarifyDecision = await recordDecision(client, projectId, userId, {
         type: "specification",
         title: `${args.task_id}: clarified intent (recorded)`,
-        claim: summary,
+        claim: summary2,
         content: `<placeholder \u2014 one line: 'clarified intent for ${args.task_id}; body derived from the ratified brief'>`,
         domain: ["product"],
         source_type: "manual",
@@ -55608,20 +55859,20 @@ async function runRecordedWalk(client, projectId, userId, args) {
         reason: GATE_REASONS.clarify,
         pendingActivity: "clarifying",
         decide: `Record ${args.task_id}'s intent from the supplied summary and evidence (recorded, not conducted).`,
-        why: [summary],
+        why: [summary2],
         frame: {
           kind: "clarify",
           solving,
-          in_scope: [summary],
+          in_scope: [summary2],
           not_solving: []
         },
-        claim: summary,
+        claim: summary2,
         decisionRef: { type: "specification", id: clarifyDecision.id }
       });
       gates.push({ gate: "clarify", reason: GATE_REASONS.clarify, landed: true });
       const clarifyContent = {
         solving,
-        in_scope: [summary],
+        in_scope: [summary2],
         not_solving: [],
         attestation: buildAttestation(args, userId)
       };
@@ -55642,7 +55893,7 @@ async function runRecordedWalk(client, projectId, userId, args) {
         await manageAcceptanceCriteria(client, projectId, userId, {
           task_id: taskId,
           add: [{
-            content: attestedAc ? `${summary} \u2014 recorded from ${evidenceSummary}; verify walk attested by ${userId}` : `${summary} \u2014 recorded from ${evidenceSummary}`,
+            content: attestedAc ? `${summary2} \u2014 recorded from ${evidenceSummary}; verify walk attested by ${userId}` : `${summary2} \u2014 recorded from ${evidenceSummary}`,
             checked: attestedAc
           }]
         });
@@ -55700,14 +55951,14 @@ async function runRecordedWalk(client, projectId, userId, args) {
     }
     if (runs("plan")) {
       const planEntryContent = encodeClaim(
-        `Decision: record ${args.task_id}'s plan from the supplied summary and evidence (recorded, not conducted). Why: ${summary} Scope: this ticket only.`,
-        summary
+        `Decision: record ${args.task_id}'s plan from the supplied summary and evidence (recorded, not conducted). Why: ${summary2} Scope: this ticket only.`,
+        summary2
       );
       const planDecision = await recordDecision(client, projectId, userId, {
         type: "specification",
         title: `${args.task_id}: recorded plan`,
         tags: bookkeepingTags(ticketTags),
-        claim: summary,
+        claim: summary2,
         content: planEntryContent,
         domain: ["process"],
         source_type: "manual",
@@ -55718,13 +55969,13 @@ async function runRecordedWalk(client, projectId, userId, args) {
       await referenceKnowledge(client, projectId, { task_id: taskId, decision_id: planDecision.id });
       await composeAndAccept(client, projectId, userId, taskId, {
         reason: GATE_REASONS.plan,
-        claim: summary,
+        claim: summary2,
         pendingActivity: "planning",
         decide: `Record ${args.task_id}'s plan from the supplied summary and evidence (recorded, not conducted).`,
         frame: {
           kind: "plan",
           scope: { repos: repos.length > 0 ? repos : ["(unknown \u2014 no repo derived from evidence)"], surfaces: [], has_migration: false },
-          steps: [summary],
+          steps: [summary2],
           attestation: { base_verified: "recorded walk \u2014 no live base-verify run; ratified from supplied evidence" },
           carried_unproven: [],
           ac_coverage: summaryCriterionFiled ? "Recorded from the supplied summary and evidence; one acceptance criterion was filed at clarify to satisfy the build gate's B-747 floor." : "Recorded from the supplied summary and evidence; this walk did not file a summary acceptance criterion."

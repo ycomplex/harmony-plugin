@@ -30782,6 +30782,10 @@ var PROVENANCE_AGENT_ON_BEHALF_HUMAN_IN_BROWSER = `${PROVENANCE_AGENT_ON_BEHALF}
 var PROVENANCE_HUMAN_RECORDED = "human-recorded";
 var PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED = `${PROVENANCE_AGENT_ON_BEHALF}:${PROVENANCE_HUMAN_RECORDED}`;
 
+// src/tools/knowledge-bookkeeping.ts
+var BOOKKEEPING_TAG = "harmony:bookkeeping";
+var SUBSTANTIVE_TAG_FILTER = `tags.is.null,tags.not.cs.{${BOOKKEEPING_TAG}}`;
+
 // src/tools/knowledge-invalidations.ts
 function removalLines(doc) {
   if (!doc.removes?.length) return [];
@@ -30792,10 +30796,6 @@ function removalLines(doc) {
     ""
   ];
 }
-
-// src/tools/knowledge-bookkeeping.ts
-var BOOKKEEPING_TAG = "harmony:bookkeeping";
-var SUBSTANTIVE_TAG_FILTER = `tags.is.null,tags.not.cs.{${BOOKKEEPING_TAG}}`;
 
 // src/tools/conduction-record.ts
 var CONDUCTION_LIVE_STATUSES = ["active"];

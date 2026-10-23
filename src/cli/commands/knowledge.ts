@@ -112,8 +112,12 @@ export function registerKnowledgeCommands(program: Command): void {
       (v: string, prev: string[]) => [...prev, v],
       [] as string[],
     )
+    .option('--domain <domain>', 'Filter any domain (repeat)', (v: string, prev: string[]) => [...prev, v], [] as string[])
+    .option('--context-tag <tag>', 'Relevant context tag for suggestions (repeat)', (v: string, prev: string[]) => [...prev, v], [] as string[])
+    .option('--limit <n>', 'Max results', Number)
     .option('--search <text>', 'Search term matched against title and content')
-    .option('--question-state <state>', 'Filter-only: open, parked or decided; search combination requires B-1223')
+    .option('--question-state <state>', 'Filter open, parked or decided questions')
+    .option('--question-scope <scope>', 'Question product or deployment scope')
     .option('--definitions-only', 'Return only current term definitions', false)
     .option('--all', 'Include superseded entries', false)
     .option('--no-bookkeeping', 'Exclude explicitly marked procedural gate records')
@@ -124,6 +128,9 @@ export function registerKnowledgeCommands(program: Command): void {
           queryKnowledge(ctx.client, ctx.projectId, {
             scope: opts.scope,
             definitions_only: opts.definitionsOnly,
+            domain: opts.domain?.length ? opts.domain : undefined,
+            context_tags: opts.contextTag,
+            limit: opts.limit,
             type: opts.type,
             status: opts.status,
             tags: opts.tag && opts.tag.length > 0 ? opts.tag : undefined,
@@ -131,9 +138,10 @@ export function registerKnowledgeCommands(program: Command): void {
             include_superseded: opts.all,
             include_bookkeeping: opts.bookkeeping,
             question_state: opts.questionState,
+            question_scope: opts.questionScope,
           }),
         (data) =>
-          formatTable(data, [
+          Array.isArray(data) ? formatTable(data, [
             {
               key: 'id',
               header: 'ID',
@@ -166,7 +174,7 @@ export function registerKnowledgeCommands(program: Command): void {
               header: 'Updated',
               transform: (v: string) => formatDate(v),
             },
-          ]),
+          ]) : JSON.stringify(data, null, 2),
       );
     });
 

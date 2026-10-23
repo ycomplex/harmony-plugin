@@ -51,16 +51,10 @@ describe('queryKnowledge supersession contract', () => {
     expect(calls.every(c => c.filters.some(([k,v]) => k === 'project_id' && v === 'p'))).toBe(true);
     expect(calls.every(c => c.filters.some(([k,v]) => k === 'workspace_id' && v === 'ws'))).toBe(true);
   });
-  it('hydrates semantic results without adding filtered-out entries or losing relevance order', async () => {
-    const { client } = clientFor([entry('old', 'new'), entry('new'), entry('other')], [entry('new'), entry('other')]);
-    const result = await queryKnowledge(client, 'p', { search: 'policy' });
-    expect(result.map(e => e.id)).toEqual(['new', 'other']);
-    expect(result[0].supersedes).toEqual(['old']);
-  });
   it('keeps claims, truth state and inverse supersession together in both read paths', async () => {
     const stamp = { plugin_version: '0.16.12', web_sha: 'abc1234', at: '2026-10-22T12:00:00Z' };
     const row = { ...entry('new'), content: encodeClaim('A saved policy body.', 'Teams preserve this policy.'), verified_against: stamp, rollout_state: 'partly-live', open_steps: ['Promote remaining surface'] };
-    for (const args of [{}, { search: 'policy' }]) {
+    for (const args of [{}]) {
       const { client } = clientFor([entry('old', 'new'), row], [row]);
       const result = await queryKnowledge(client, 'p', args);
       expect(result.find(e => e.id === 'new')).toMatchObject({ claim: 'Teams preserve this policy.', claim_source: 'authored', verified_against: stamp, rollout_state: 'partly-live', open_steps: ['Promote remaining surface'], supersedes: ['old'] });

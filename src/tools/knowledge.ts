@@ -4,6 +4,7 @@ import { questionProjection } from './knowledge-questions.js';
 import { metadataCapable, metadataRpc, type KnowledgeScope } from './knowledge-metadata.js';
 import { readClaimContexts, withClaimContexts, type ClaimContext, type QuestionReference } from './claim-context.js';
 import { readDefinitions, type Definition } from './knowledge-definitions.js';
+import { searchKnowledge, normalizeTags, type KnowledgeSearchResult } from './knowledge-search.js';
 import { projectSupersession } from './knowledge-supersession.js';
 import { withInvalidations, type InvalidationLink } from './knowledge-invalidations.js';
 import { truthCompatibleRead, truthStatePatch, type KnowledgeTruthState } from './knowledge-truth.js';
@@ -141,14 +142,14 @@ const ENTITY_COLS = 'id, workspace_id, project_id, kind, name, description, meta
 export const queryKnowledgeTool = {
   name: 'query_knowledge',
   description:
-    'Find current term definitions first, then linked refinements, current source-generated deployment facts with inspectable provenance, and ordinary decisions. Generated facts remain Asserted and are not human-ratified decisions. definitions_only returns full quotable current definitions; unavailable storage is reported explicitly. Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Results include nullable superseded_by and inverse supersedes UUIDs; matching successors precede replaced entries. Check this before making significant implementation choices. Ordinary decisions default to "Accepted"; current generated evidence is included separately, with explicitly marked bookkeeping ranked last; include_bookkeeping:false excludes it before pagination. When `search` is given, retrieval is semantic (RRF) and composes with `domain`, `limit` and `include_bookkeeping`; the other structured filters (`type`, `status`, `tags`, `as_of`, `include_superseded`, `offset`) apply to the non-search structured path only. Optional scope (product | deployment) filters by declared scope when the metadata schema is present; unsupported scope filtering fails explicitly. question_state (open | parked | decided) is a filter-only argument until B-1223 lands the scored path; combining it with search fails explicitly.',
+    'Find current term definitions first; structured lists also include current source-generated deployment facts with inspectable provenance. Generated facts remain Asserted. Search the knowledge base for architecture decisions, business decisions, conventions, and specifications scoped to this project. Results include nullable superseded_by and inverse supersedes UUIDs; structured lists place matching successors before replaced entries, while search preserves score order. Check this before making significant implementation choices. Defaults to "Accepted" entries only, with explicitly marked bookkeeping ranked last; include_bookkeeping:false excludes it before pagination. Free-text search combines type/status/all normalized tags/any domain and returns a six-second bounded envelope: scored matches, ordered unscored legacy matches, cutoff 0.0125, below_cutoff_count and coverage, normalized query/filters and routes tried. Scores use genuine global RRF ranks. Filter-only calls retain their list shape. as_of/include_superseded/offset are list-only. Optional context_tags supplies relevant surface/ticket tags for actual tag suggestions.',
   inputSchema: {
     type: 'object' as const,
     properties: {
       definitions_only: { type: 'boolean', description: 'Return only current accepted term definitions; unavailable storage is reported explicitly' },
       type: {
         type: 'string',
-        description: 'Filter by advisory authoring classification, not verified semantic content (e.g. "architecture", "business", "convention", "specification"). (structured-filter path; not combinable with `search`)',
+        description: 'Filter by advisory authoring classification (e.g. "architecture", "business", "convention", "specification").',
       },
       status: {
         type: 'string',
@@ -161,19 +162,21 @@ export const queryKnowledgeTool = {
       },
       as_of: {
         type: 'string',
-        description: 'ISO timestamp — return entries valid at or before this instant (temporal query).',
+        description: 'ISO timestamp — return entries valid at or before this instant (temporal query; list-only).',
       },
       scope: { type: 'string', enum: ['product', 'deployment'], description: 'Product behaviour or deployment operations. Explicit filters exclude unresolved legacy scope and fail visibly before schema promotion.' },
       tags: {
         type: 'array',
         items: { type: 'string' },
-        description: 'Filter entries that contain ALL of these tags. (structured-filter path; not combinable with `search`)',
+        description: 'Filter entries containing ALL tags; trimmed and lowercased.',
       },
+      context_tags: { type: 'array', items: { type: 'string' }, description: 'Relevant surface/ticket tags; suggest at most eight actual tags from matching context. Omit for no suggestions.' },
       search: {
         type: 'string',
-        description: 'Free-text search query — hybrid semantic + trigram retrieval, ranked by relevance (RRF). Composes with `domain`, `limit` and `include_bookkeeping`.',
+        description: 'Free-text search query — hybrid semantic + trigram retrieval, ranked by relevance (RRF). Composes with type, status, tags, domain, limit and include_bookkeeping.',
       },
-      question_state: { type: 'string', enum: ['open', 'parked', 'decided'], description: 'Filter-only lists: open, parked or decided questions. Cannot combine with search until B-1223 shared ranking.' },
+      question_state: { type: 'string', enum: ['open', 'parked', 'decided'], description: 'Filter open, parked or decided questions; composes with search before ranking.' },
+      question_scope: { type: 'string', enum: ['product', 'deployment'], description: 'Question metadata scope; composes with search before ranking.' },
       include_bookkeeping: { type: 'boolean', description: 'Include explicitly marked procedural gate records after substantive knowledge (default true). False excludes them before pagination.' },
       include_superseded: {
         type: 'boolean',
@@ -433,14 +436,22 @@ export interface QueryKnowledgeArgs {
   include_bookkeeping?: boolean;
   limit?: number;
   offset?: number;
+  context_tags?: string[];
   question_state?: 'open' | 'parked' | 'decided';
+  question_scope?: 'product' | 'deployment';
 }
 
+export function queryKnowledge(client: SupabaseClient, projectId: string, args: QueryKnowledgeArgs & { search?: undefined }): Promise<Array<KnowledgeEntrySummary | Definition | ConceptNameResult>>;
+export function queryKnowledge(client: SupabaseClient, projectId: string, args: QueryKnowledgeArgs & { search: string }): Promise<KnowledgeSearchResult>;
+export function queryKnowledge(client: SupabaseClient, projectId: string, args: QueryKnowledgeArgs): Promise<Array<KnowledgeEntrySummary | Definition | ConceptNameResult> | KnowledgeSearchResult>;
 export async function queryKnowledge(
   client: SupabaseClient,
   projectId: string,
   args: QueryKnowledgeArgs,
-): Promise<Array<KnowledgeEntrySummary | Definition | ConceptNameResult>> {
+): Promise<Array<KnowledgeEntrySummary | Definition | ConceptNameResult> | KnowledgeSearchResult> {
+  const started = performance.now();
+  if (args.search?.trim()) return searchKnowledge(client, projectId, { ...args, status: args.status ? toBaseStatus(args.status) : undefined }, started);
+  args = { ...args, tags: args.tags ? normalizeTags(args.tags) : undefined };
   const workspaceId = await getWorkspaceId(client, projectId);
   if (args.question_state && !['open', 'parked', 'decided'].includes(args.question_state)) {
     throw new Error('question_state must be open, parked or decided');
@@ -454,25 +465,6 @@ export async function queryKnowledge(
     throw new Error('definitions_only supports search, domain, limit and offset; ordinary decision filters are not definition filters');
   }
   if (args.limit === 0) return [];
-  if (args.search) {
-    const incompatible: string[] = [];
-    if (args.question_state) {
-      throw new Error('query_knowledge: search + question_state is unavailable until B-1223 shared ranking; omit search for structured question filtering');
-    }
-    if (args.status) incompatible.push('status');
-    if (args.include_superseded) incompatible.push('include_superseded');
-    if (args.type) incompatible.push('type');
-    if (args.tags && args.tags.length > 0) incompatible.push('tags');
-    if (args.as_of) incompatible.push('as_of');
-    if (args.offset) incompatible.push('offset');
-    if (incompatible.length > 0) {
-      throw new Error(
-        `query_knowledge: "search" (semantic retrieval) cannot be combined with: ${incompatible.join(', ')}. ` +
-        `Semantic search returns Accepted decisions ranked by relevance, optionally filtered by "domain". ` +
-        `Omit "search" to use the structured filters.`,
-      );
-    }
-  }
   const definitions = await readDefinitions(client, workspaceId, projectId, args);
   const conceptNames = args.search ? await readKnowledgeNames(client,projectId,{search:args.search}) : null;
   if (args.definitions_only) {
@@ -515,43 +507,6 @@ export async function queryKnowledge(
   const pagePrefixCount = (includeDefinitions ? definitions.definitions.length + noDefinition.length : 0) + generated.values.length;
   const decisionArgs = { ...args, offset: Math.max(0, (args.offset ?? 0) - prefixCount), limit: Math.max(1, (args.limit ?? 50) - pagePrefixCount) };
   if (pagePrefixCount >= (args.limit ?? 50)) return prepend([]);
-  // Semantic path: a free-text query => embed it + fuse vector ⊕ trigram via RRF (Phase C).
-  if (args.search) {
-    // Semantic retrieval (RRF) returns Accepted decisions ranked by relevance, optionally filtered by
-    // `domain` (+ `limit`). It does NOT yet compose with the other structured filters — reject rather than
-    // silently drop them (no silent wrong answer; e.g. search+include_superseded would otherwise return
-    // Accepted-only with no error). Composable semantic+filter search is tracked as a follow-up.
-    const queryEmbedding = await embedText(client, args.search);   // may be null -> fn degrades to trigram-only
-    const data = await bookkeepingPage<any>(({ bookkeeping, offset, limit, count }) => truthCompatibleRead(extraColumns => {
-      // NULL disables the RPC's INNER limit. PostgREST then filters the SETOF rows before its
-      // outer range; a finite inner limit would lose substantive hits on an older deployment.
-      let query = (client as any).rpc(args.scope ? 'knowledge_search_rrf_metadata' : 'knowledge_search_rrf', {
-        ...(args.scope ? { _scope: args.scope } : {}),
-        _workspace_id: workspaceId,
-        _project_id: projectId,
-        _query_embedding: queryEmbedding,
-        _query_text: args.search,
-        _domain: args.domain && args.domain.length > 0 ? args.domain : null,
-        _match_limit: null,
-      }, count ? { count: 'exact' } : {}).select('id, title, content, type, status, domain, tags, project_id, updated_at' + extraColumns);
-      query = bookkeeping ? query.contains('tags', [BOOKKEEPING_TAG]) : query.or(SUBSTANTIVE_TAG_FILTER);
-      return query.range(offset, offset + limit - 1);
-    }), decisionArgs);
-    const matches = (data ?? []).map((d: any) => ({
-      id: d.id, title: d.title, type: d.type, status: d.status, ...(d.scope !== undefined ? {scope:d.scope} : {}),
-      ...questionProjection(d),
-      ...claimFields(d), snippet: matchedPassage(d.content ?? '', args.search!),
-      domain: d.domain, tags: d.tags, project_id: d.project_id, updated_at: d.updated_at,
-      verified_against: d.verified_against ?? null, rollout_state: d.rollout_state ?? null, open_steps: d.open_steps ?? null,
-    })) as KnowledgeEntrySummary[];
-    if (!matches.length) return prepend([]);
-    // Full relevance-gated promotion BEFORE limiting belongs to B-1223.
-    const questionRank = (row: KnowledgeEntrySummary) =>
-      Number(row.tags?.includes(BOOKKEEPING_TAG) ?? false) * 2 +
-      (row.question_state === 'open' || row.question_state === 'parked' ? 0 : 1);
-    matches.sort((left, right) => questionRank(left) - questionRank(right));
-    return prepend(await withInvalidations(client, await hydrateSupersession(client, workspaceId, projectId, matches)));
-  }
 
   // Structured retrieval uses the same class boundary and applies every filter before pagination.
   const rows = await bookkeepingPage<KnowledgeEntrySummary>(({ bookkeeping, offset, limit, count }) => {
@@ -760,7 +715,7 @@ export async function createKnowledgeEntry(
     created_by: userId,
   };
 
-  if (args.tags !== undefined) record.tags = args.tags;
+  if (args.tags !== undefined) record.tags = normalizeTags(args.tags);
   if (args.source_task_id !== undefined) record.source_task_id = args.source_task_id;
 
   const { data, error } = await client
@@ -896,7 +851,7 @@ export async function updateKnowledgeEntry(
     p_content: contentWrite ? content : null,
     p_type: args.type ?? null,
     p_status: args.status !== undefined ? toBaseStatus(args.status) : null,
-    p_tags: args.tags ?? null,
+    p_tags: args.tags === undefined ? null : normalizeTags(args.tags),
     // Decision-axis columns recordDecision already writes but this path historically omitted
     // (B-468). Pass-through only (mirrors recordDecision — no strict validation; the DB CHECK/FK
     // constraints are the backstop). madr is a FULL-OBJECT replace, not a key-merge.
@@ -1170,7 +1125,7 @@ export async function recordDecision(
     p_source_type: args.source_type ?? 'manual',
     p_source_id: args.source_id ?? null,
     p_source_activity: args.source_activity ?? null,
-    p_tags: args.tags ?? [],
+    p_tags: normalizeTags(args.tags),
     p_source_task_id: args.source_task_id ?? null,
     p_review_by: args.review_by ?? null,
     p_realization: realization ?? null,
@@ -1928,7 +1883,7 @@ export async function supersedeKnowledgeEntry(
     p_entry_id: args.entry_id ?? null,
     p_title: args.title ?? null,
     p_type: args.type ?? null,
-    p_tags: args.tags ?? null,
+    p_tags: args.tags === undefined ? null : normalizeTags(args.tags),
     p_provenance: args.provenance ?? null,
     p_conduction_id: getConductionId() ?? null,
     p_leg: getLeg() ?? null,
