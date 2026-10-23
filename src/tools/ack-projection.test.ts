@@ -44,6 +44,7 @@ const READ_TOOLS = [
   'list_members',
   'query_knowledge',
   'read_source_inventory',
+  'read_prose_sources',
   'compare_source_coverage',
   'list_knowledge_tags',
   'search_ticket_intents',

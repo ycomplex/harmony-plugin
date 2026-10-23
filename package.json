@@ -30,6 +30,10 @@
     "chalk": "^5.4.1",
     "cli-table3": "^0.6.5",
     "commander": "^13.1.0",
+    "entities": "^8.1.0",
+    "github-slugger": "^2.0.0",
+    "marked": "^18.1.1",
+    "minimatch": "^10.2.6",
     "yaml": "^2.9.0",
     "zod": "^3.25.0"
   },

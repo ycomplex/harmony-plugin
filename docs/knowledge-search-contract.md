@@ -130,8 +130,7 @@ budgets; no source-local or question-local score/cap is introduced.
 ## Integration boundary after the B-1241/B-1228 wave
 
 Filter-only list/get retain B-1241 generated source values (including prefixCount/pagePrefixCount
-pagination) and B-1228 claim_context enrichment. The scored envelope does not yet admit generated
-source values or hydrate claim_context. Those are B-1240 extensions, not proven by this release.
+pagination) and B-1228 claim_context enrichment. The scored envelope now admits current generated values and configured document/skill snapshots through the shared relation. Default admission preserves Accepted entries while including source-backed prose and Asserted generated values. Explicit decision status/type filters exclude these source kinds. Read [configured prose indexing](prose-indexing.md) for publication, provenance, defined-in and coverage. Claim-context and historical-wording hydration are raced against the original deadline.
 Generated values must enter SearchCandidateSource before global ranks and shared class caps rather
 than being prepended as if scored. Claim-context reads must be abortable and share the original
 absolute deadline, with explicit capability/timeout diagnostics; the current unbounded list/get helper
