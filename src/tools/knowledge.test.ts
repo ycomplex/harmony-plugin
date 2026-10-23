@@ -304,11 +304,10 @@ describe('queryKnowledge', () => {
     }
   });
 
-  it('keeps historical expansion and pagination list-only', async () => {
+  it('validates as_of and offset on the search path before any request', async () => {
     const { client } = buildWorkspaceAndQueryClient({ data: [] });
-    for (const extra of [{ include_superseded: true }, { as_of: '2026-01-01' }, { offset: 1 }]) {
-      await expect(queryKnowledge(client, PROJECT_ID, { search: 'auth', ...extra })).rejects.toThrow(/Search cannot combine/);
-    }
+    await expect(queryKnowledge(client, PROJECT_ID, { search: 'auth', as_of: 'last tuesday' })).rejects.toThrow(/ISO 8601/);
+    await expect(queryKnowledge(client, PROJECT_ID, { search: 'auth', offset: -1 })).rejects.toThrow(/offset/);
   });
 
   it('passes limit and offset to .range()', async () => {

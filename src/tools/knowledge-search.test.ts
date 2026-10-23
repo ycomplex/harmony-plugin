@@ -205,6 +205,49 @@ describe('one scored pool: questions, scope and definitions', () => {
   });
 });
 
+describe('B-371 search composes with as_of, offset and include_superseded',()=>{
+ it('sends no new parameters unless asked, so an older database keeps working',async()=>{
+  const {client,calls}=fixture();
+  await queryKnowledge(client,'p',{search:'quasar'});
+  for(const c of calls.filter(c=>c.path==='knowledge_search_scored')){expect(c.body).not.toHaveProperty('_as_of');expect(c.body).not.toHaveProperty('_include_superseded');}
+ });
+ it('threads as_of as an instant and implies replaced entries are included, marking them replaced',async()=>{
+  const {client,calls}=fixture({lexical:[row('old',1,{status:'Superseded'}),row('new',2)],semantic:[]});
+  const answer=await queryKnowledge(client,'p',{search:'quasar',as_of:'2026-01-15'});
+  for(const c of calls.filter(c=>c.path==='knowledge_search_scored'))expect(c.body).toMatchObject({_as_of:'2026-01-15T00:00:00.000Z',_include_superseded:true,_status:null});
+  expect(answer.matches.find(m=>m.id==='old')).toMatchObject({replaced:true});
+  expect(answer.matches.find(m=>m.id==='new')).not.toHaveProperty('replaced');
+ });
+ it('threads include_superseded alone',async()=>{
+  const {client,calls}=fixture();
+  await queryKnowledge(client,'p',{search:'quasar',include_superseded:true});
+  for(const c of calls.filter(c=>c.path==='knowledge_search_scored')){expect(c.body).toMatchObject({_include_superseded:true});expect(c.body).not.toHaveProperty('_as_of');}
+ });
+ it('pages after ranking without repeats, and reports the total',async()=>{
+  const rows=[row('a',1),row('b',2),row('c',3)];
+  const {client}=fixture({lexical:rows,semantic:[]});
+  const first=await queryKnowledge(client,'p',{search:'quasar',limit:2});
+  const second=await queryKnowledge(client,'p',{search:'quasar',limit:2,offset:2});
+  expect(first.matches.map(m=>m.id)).toEqual(['a','b']);
+  expect(second.matches.map(m=>m.id)).toEqual(['c']);
+  expect(second.page).toEqual({offset:2,returned:1,total_matches:3});
+ });
+ it('returns an empty page that states how many results existed when offset is past the end',async()=>{
+  const {client}=fixture({lexical:[row('a',1),row('b',2)],semantic:[]});
+  const answer=await queryKnowledge(client,'p',{search:'quasar',offset:10});
+  expect(answer.matches).toEqual([]);
+  expect(answer.page).toEqual({offset:10,returned:0,total_matches:2});
+ });
+ it('says so when as_of cannot be served because scored search is not deployed',async()=>{
+  const {client,calls}=fixture({lexical:json({code:'PGRST202',message:'missing knowledge_search_scored'},404),semantic:[]});
+  const answer=await queryKnowledge(client,'p',{search:'quasar',as_of:'2026-01-15'});
+  expect(answer.capability).toBe('scores-unavailable');
+  expect(answer.reason).toMatch(/as_of and include_superseded/);
+  expect(answer.unscored_matches).toEqual([]);
+  expect(calls.some(c=>c.path==='knowledge_search_rrf')).toBe(false);
+ });
+});
+
 describe('source envelope and bounded enrichment',()=>{
  it('retains source provenance and real authority without inventing claim acceptance',async()=>{
   const provenance={source_id:'s',repository:'https://example.invalid/acme/docs',path:'guide/rules.md',commit:'a'.repeat(40),anchor:'café',heading:'Café'};
