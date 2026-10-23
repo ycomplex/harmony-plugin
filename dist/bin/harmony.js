@@ -41063,6 +41063,17 @@ function mergeBriefDoc(prior, patch) {
   }
   return merged;
 }
+function resetDocOnReasonChange(prior, patch, priorReason, newReason) {
+  if (!prior || typeof prior !== "object") return patch;
+  if (!priorReason || priorReason === newReason) return patch;
+  const out = { ...patch };
+  for (const key of Object.keys(prior)) {
+    if (key === "decide") continue;
+    if (out[key] !== void 0) continue;
+    out[key] = key === "payload" || key === "items" ? [] : null;
+  }
+  return out;
+}
 var isMissingComposeBriefRevision = (err) => {
   if (!err) return false;
   const code = err.code ?? "";
@@ -41095,18 +41106,19 @@ async function composeBrief(client, projectId, userId, args) {
     buildPr = readBuildPr(fv);
     buildPrRefs = readBuildPrReferences(fv);
   }
-  const { data: existing, error: lookupErr } = await client.from("briefs").select("id, iteration, decision_ref, doc, pending_activity").eq("task_id", taskId).eq("status", "active").maybeSingle();
+  const { data: existing, error: lookupErr } = await client.from("briefs").select("id, iteration, reason, decision_ref, doc, pending_activity").eq("task_id", taskId).eq("status", "active").maybeSingle();
   if (lookupErr) throw new Error(lookupErr.message);
   const existingRow = existing;
   const mergedDecisionRef = args.decision_ref !== void 0 ? args.decision_ref ?? null : existingRow?.decision_ref ?? null;
   const priorDoc = existingRow?.doc ?? null;
-  const mergedDoc = mergeBriefDoc(priorDoc, args.doc);
+  const patchDoc = resetDocOnReasonChange(priorDoc, args.doc, existingRow?.reason, args.reason);
+  const mergedDoc = mergeBriefDoc(priorDoc, patchDoc);
   if (derivesEntryContent(args.reason) && mergedDecisionRef?.id) {
     const explicit = args.doc.claim;
     if (explicit !== void 0 && !isSingleSentenceShaped(explicit)) {
       throw new Error("doc.claim must be one sentence of at most 50 words");
     }
-    const inherited = !args.doc.recommend && priorDoc?.claim_source !== "derived" ? priorDoc?.claim : void 0;
+    const inherited = patchDoc === args.doc && !args.doc.recommend && priorDoc?.claim_source !== "derived" ? priorDoc?.claim : void 0;
     const claim = explicit ?? inherited ?? proposeClaim(mergedDoc.recommend?.text ?? "");
     mergedDoc.claim = claim?.trim().replace(/\s+/g, " ");
     mergedDoc.claim_source = explicit !== void 0 || inherited ? "authored" : "derived";
