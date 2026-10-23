@@ -48182,6 +48182,48 @@ var declarationSchema = external_exports.object({ version: external_exports.lite
 var canonical = (value) => JSON.stringify(value, (_key, v2) => v2 && typeof v2 === "object" && !Array.isArray(v2) ? Object.fromEntries(Object.entries(v2).sort(([a3], [b]) => a3.localeCompare(b))) : v2);
 var git = (root, args) => execFileSync("git", ["-C", root, ...args], { maxBuffer: 32 * 1024 * 1024 });
 var text2 = (tokens) => Array.isArray(tokens) ? tokens.map((t) => t.type === "html" ? "" : t.tokens ? text2(t.tokens) : t.type === "codespan" ? t.text ?? "" : decodeHTML(t.text ?? t.raw ?? "")).join("") : "";
+var MAX_PROSE_CHUNK_CHARACTERS = 24e3;
+function splitSection(content, level = 0) {
+  if (content.length <= MAX_PROSE_CHUNK_CHARACTERS) return [content];
+  const boundaries = [];
+  if (level < 2) {
+    let offset = 0;
+    for (const token of T.lex(content)) {
+      if (offset > 0 && (level === 1 || token.type === "heading")) boundaries.push(offset);
+      offset += token.raw.length;
+    }
+  } else if (level === 2) {
+    for (const match2 of content.matchAll(/\n[ \t]*\n/g)) boundaries.push(match2.index + match2[0].length);
+  } else {
+    const parts2 = [];
+    for (let start2 = 0; start2 < content.length; ) {
+      let end = Math.min(start2 + MAX_PROSE_CHUNK_CHARACTERS, content.length);
+      if (end < content.length && /[\uD800-\uDBFF]/.test(content[end - 1]) && /[\uDC00-\uDFFF]/.test(content[end])) end--;
+      parts2.push(content.slice(start2, end));
+      start2 = end;
+    }
+    return parts2;
+  }
+  const parts = [];
+  let start = 0, pending = "";
+  for (const end of [...boundaries, content.length]) {
+    const segment = content.slice(start, end);
+    start = end;
+    if (pending.length + segment.length > MAX_PROSE_CHUNK_CHARACTERS) {
+      if (pending) {
+        parts.push(pending);
+        pending = "";
+      }
+      if (segment.length > MAX_PROSE_CHUNK_CHARACTERS) {
+        parts.push(...splitSection(segment, level + 1));
+        continue;
+      }
+    }
+    pending += segment;
+  }
+  if (pending) parts.push(pending);
+  return parts;
+}
 function chunkMarkdown(path4, body, selector) {
   if (Buffer.byteLength(body) > 1024 * 1024) return { chunks: [], diagnostics: [`${path4}: file exceeds 1 MiB; skipped`] };
   const slugger = new BananaSlug(), ancestry = [];
@@ -48189,11 +48231,8 @@ function chunkMarkdown(path4, body, selector) {
   let heading = path4, anchor = "", section = "", parents = [];
   const flush = () => {
     if (!section.trim()) return;
-    if (section.length > 24e3) {
-      diagnostics.push(`${path4}#${anchor}: section exceeds 24000 characters; skipped`);
-      return;
-    }
-    chunks.push({ path: path4, anchor, heading, ancestry: parents, content: section, content_hash: createHash2("sha256").update(section).digest("hex"), ...selector });
+    const parts = splitSection(section);
+    parts.forEach((content, part_index) => chunks.push({ path: path4, anchor, heading, ancestry: parents, content, content_hash: createHash2("sha256").update(content).digest("hex"), ...selector, ...parts.length > 1 ? { part_index } : {} }));
   };
   for (const token of T.lex(body)) {
     if (token.type === "heading") {
@@ -48262,9 +48301,10 @@ async function syncProse(client, projectId, root, declarationPath = ".harmony/pr
     }
     const priorCommit = source.requested_commit ?? source.indexed_commit;
     if (priorCommit) git(root, ["merge-base", "--is-ancestor", priorCommit, commit]);
+    const parsed = extractProse(root, commit, spec.selectors);
+    if (parsed.chunks.some((c) => c.part_index !== void 0) && read.chunk_parts !== true) throw new Error("Oversized prose chunking capability is unavailable; deploy the prose part-index migration before refreshing. Previous snapshot retained.");
     const started = await proseOperation(client, "begin_knowledge_prose_refresh", { p_source_id: source.id, p_revision: source.revision, p_ref: declaration.ref, p_commit: commit, p_expected_generation: source.active_generation, p_expected_token: source.refresh_token ?? null });
     try {
-      const parsed = extractProse(root, commit, spec.selectors);
       output.push(await proseOperation(client, "publish_knowledge_prose", { p_source_id: source.id, p_token: started.token, p_chunks: parsed.chunks, p_diagnostics: parsed.diagnostics, p_error: false }));
     } catch (error) {
       await proseOperation(client, "publish_knowledge_prose", { p_source_id: source.id, p_token: started.token, p_chunks: [], p_diagnostics: ["Refresh failed; previous snapshot retained"], p_error: true });
