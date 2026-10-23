@@ -1,6 +1,9 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { KnowledgeEntrySummary, QueryKnowledgeArgs } from './knowledge.js';
 import { claimFields, matchedPassage } from './knowledge-claim.js';
+import type { InvalidationRead } from './knowledge-invalidations.js';
+import type { NameRead } from './knowledge-names.js';
+import type { Definition } from './knowledge-definitions.js';
 import { isBookkeeping } from './knowledge-bookkeeping.js';
 
 export const SEARCH_BUDGET_MS = 6000;
@@ -11,6 +14,10 @@ export const normalizeTags = (tags: readonly string[] = []): string[] =>
 export interface SearchMatch extends KnowledgeEntrySummary { source_kind: string; score: number }
 export interface SearchRoute { route: string; outcome: string; reason?: string }
 export interface KnowledgeSearchResult {
+  concepts: Array<{id:string;kind:'concept';title:string;concept_id:string;state:'no-current-definition';matched_alias:string|null}>;
+  definitions: Definition[];
+  refinements: KnowledgeEntrySummary[];
+  definitions_available: boolean;
   matches: SearchMatch[];
   unscored_matches: KnowledgeEntrySummary[];
   incomplete: boolean;
@@ -18,7 +25,7 @@ export interface KnowledgeSearchResult {
   capability: 'scored' | 'scores-unavailable' | 'unavailable';
   reason?: string;
   normalized_query: string;
-  normalized_filters: { type: string | null; status: string; domain: string[]; tags: string[]; include_bookkeeping: boolean };
+  normalized_filters: { type: string | null; status: string; domain: string[]; tags: string[]; include_bookkeeping: boolean; scope: string | null; question_state: string | null; question_scope: string | null };
   routes_tried: SearchRoute[];
   score_cutoff: number;
   below_cutoff_count: number | null;
@@ -27,14 +34,28 @@ export interface KnowledgeSearchResult {
   tag_suggestions: string[];
   elapsed_ms: number;
 }
-interface Candidate extends KnowledgeEntrySummary { source_kind: string; content?: string; bookkeeping?: boolean }
+interface Candidate extends KnowledgeEntrySummary { source_kind: string; content?: string; bookkeeping?: boolean; source_activity?: string; madr?: unknown; superseded_by?: string | null; semantic_distance?: number | null }
 interface SignalRow { candidate: Candidate | null; signal_rank: number; overflow: boolean; unavailable_sources?: string[] | null }
 const authError = (e: any): boolean => ['401', '403', '42501', 'PGRST301', 'PGRST302', 'PGRST303'].some(v => [e?.code, e?.status, e?.context?.status].map(String).includes(v));
 const missing = (e: any): boolean => ['PGRST202', '42883'].includes(e?.code);
 const summary = (d: Candidate, query: string): KnowledgeEntrySummary => ({
   id: d.id, title: d.title, type: d.type, status: d.status, domain: d.domain ?? [], tags: d.tags ?? [],
-  project_id: d.project_id, updated_at: d.updated_at, ...claimFields(d), snippet: matchedPassage(d.content ?? '', query),
+  ...(d.scope !== undefined ? { scope: d.scope } : {}),
+  project_id: d.project_id, updated_at: d.updated_at, verified_against: d.verified_against ?? null, rollout_state: d.rollout_state ?? null, open_steps: d.open_steps ?? null, ...questionFields(d), ...claimFields(d), snippet: matchedPassage(d.content ?? '', query),
 });
+
+// Validate metadata on both sides of the transport boundary. No title/type inference.
+function questionFields(d: Candidate): Partial<KnowledgeEntrySummary> {
+  const q = (d.madr as { question?: { version?: unknown; state?: string; scope?: string } } | null)?.question;
+  if (d.source_activity !== 'knowledge-question' || q?.version !== 1 || !['open','parked','decided'].includes(q.state ?? '') || !['product','deployment'].includes(q.scope ?? '')) return {};
+  return { question_state: q.state as 'open' | 'parked' | 'decided', question_scope: q.scope as 'product' | 'deployment',
+    answer: q.state === 'decided' ? 'decided; see resulting decision' : 'not yet decided',
+    resulting_decision_id: q.state === 'decided' ? d.superseded_by ?? null : null };
+}
+function priority(d: Candidate): boolean {
+  const q = questionFields(d);
+  return (q.question_state === 'open' || q.question_state === 'parked') && typeof d.semantic_distance === 'number' && d.semantic_distance <= 0.35;
+}
 
 /** One owner from handler entry, including scope lookup. Every awaited network operation is raced;
  * cancellation is best effort, so a transport ignoring AbortSignal cannot extend the response. */
@@ -46,13 +67,16 @@ export async function searchKnowledge(client: SupabaseClient, projectId: string,
   let sealed = false;
   let incomplete = false;
   const result: KnowledgeSearchResult = {
-    matches: [], unscored_matches: [], incomplete: false, truncated: false, capability: 'unavailable',
+    concepts: [], definitions: [], refinements: [], definitions_available: false, matches: [], unscored_matches: [], incomplete: false, truncated: false, capability: 'unavailable',
     normalized_query: args.search!.trim().replace(/\s+/g, ' '),
-    normalized_filters: { type: args.type ?? null, status: args.status ?? 'Accepted', domain: args.domain ?? [], tags: normalizeTags(args.tags), include_bookkeeping: args.include_bookkeeping !== false },
+    normalized_filters: { type: args.type ?? null, status: args.status ?? 'Accepted', domain: args.domain ?? [], tags: normalizeTags(args.tags), include_bookkeeping: args.include_bookkeeping !== false, scope: args.scope ?? null, question_state: args.question_state ?? null, question_scope: args.question_scope ?? null },
     routes_tried: routes, score_cutoff: SCORE_CUTOFF, below_cutoff_count: null, count_coverage: 'unavailable',
     candidate_limits: { per_class_per_signal: 200, max_scored_union: 800 }, tag_suggestions: [], elapsed_ms: 0,
   };
   const limit = args.limit ?? 50;
+  if (args.scope && !['product','deployment'].includes(args.scope) || args.question_scope && !['product','deployment'].includes(args.question_scope) || args.question_state && !['open','parked','decided'].includes(args.question_state)) throw new Error('Invalid scope or question state');
+  const includeDefinitions = !args.type && !args.status && !args.tags?.length && !args.as_of && !args.include_superseded && args.scope !== 'deployment' && !args.question_scope && !args.question_state;
+  if (args.definitions_only && !includeDefinitions) throw new Error('definitions_only supports search, domain and limit; decision filters are not definition filters');
   if (!Number.isInteger(limit) || limit < 0) throw new Error('Knowledge limit must be a non-negative integer');
   if (args.as_of || args.offset || args.include_superseded) throw new Error('Search cannot combine as_of, offset or include_superseded; use an explicit status or a filter-only list');
   const finish = () => {
@@ -95,6 +119,34 @@ export async function searchKnowledge(client: SupabaseClient, projectId: string,
   const scope = await bounded<{ workspace_id: string }>('scope', signal => client.from('projects').select('workspace_id').eq('id', projectId).abortSignal(signal).single());
   if (!scope) { incomplete = true; return finish(); }
   const filters = result.normalized_filters;
+  // Definitions are a separate result class, never assigned fabricated RRF scores.
+  const definitions = includeDefinitions && limit > 0 ? (async () => {
+    const data = await bounded<{ available: boolean; definitions: Definition[] }>('definitions', signal => client.rpc('read_knowledge_definitions', {
+      p_workspace_id: scope.workspace_id, p_project_id: projectId, p_search: result.normalized_query,
+      p_domain: args.domain?.length ? args.domain : null, p_limit: Math.min(limit, 500), p_offset: 0,
+    }).abortSignal(signal));
+    result.definitions_available = data?.available === true && Array.isArray(data.definitions);
+    result.definitions = result.definitions_available ? data!.definitions.slice(0, limit) : [];
+    if (data && !result.definitions_available) { incomplete = true; routes.push({route:'definitions', outcome:'failed', reason:'invalid-capability-response'}); }
+    const ids = [...new Set(result.definitions.flatMap(d => d.refinements.map(r => r.id)))].slice(0, Math.max(0, limit - result.definitions.length));
+    if (!args.definitions_only && ids.length) {
+      const rows = await bounded<Candidate[]>('definition-refinements', signal => {
+        let query = client.from('knowledge_decisions').select('*').eq('workspace_id', scope.workspace_id).eq('project_id', projectId).eq('status','Accepted').in('id',ids);
+        if (args.domain?.length) query = query.overlaps('domain',args.domain);
+        if (!filters.include_bookkeeping) query = query.or('tags.is.null,tags.not.cs.{harmony:bookkeeping}');
+        return query.order('id').limit(ids.length).abortSignal(signal);
+      });
+      result.refinements = (rows ?? []).map(d => summary(d, result.normalized_query));
+    }
+  })() : Promise.resolve();
+  const names = includeDefinitions && !args.definitions_only && limit > 0 ? (async () => {
+    const read = await bounded<NameRead>('concept-names', signal => client.rpc('read_knowledge_names', {
+      p_project_id: projectId, p_search: result.normalized_query, p_entry_ids: [], p_entity_ids: [],
+    }).abortSignal(signal));
+    result.concepts = (read?.matches ?? []).filter(m => m.state === 'no-current-definition')
+      .map(m => ({id:m.concept_id,kind:'concept' as const,title:m.current_name,concept_id:m.concept_id,state:'no-current-definition' as const,matched_alias:m.matched_alias}));
+  })() : Promise.resolve();
+  if (args.definitions_only) { await definitions; return finish(); }
   let absent = false;
   let scoredCompleted = false;
   const candidates = new Map<string, { candidate: Candidate; score: number }>();
@@ -105,6 +157,7 @@ export async function searchKnowledge(client: SupabaseClient, projectId: string,
         _query_embedding: embedding, _signal: name, _type: filters.type, _status: filters.status,
         _domain: filters.domain.length ? filters.domain : null, _tags: filters.tags.length ? filters.tags : null,
         _include_bookkeeping: filters.include_bookkeeping,
+        _scope: filters.scope, _question_state: filters.question_state, _question_scope: filters.question_scope,
       }).abortSignal(signal);
 
       return response;
@@ -124,7 +177,9 @@ export async function searchKnowledge(client: SupabaseClient, projectId: string,
       if (!row.candidate || !Number.isSafeInteger(Number(row.signal_rank)) || Number(row.signal_rank) < 1) continue;
       const key = `${row.candidate.source_kind}:${row.candidate.id}`;
       const prior = candidates.get(key);
-      candidates.set(key, { candidate: row.candidate, score: (prior?.score ?? 0) + 1 / (RRF_K + Number(row.signal_rank)) });
+      // Lexical completion must not erase semantic distance observed by the other route.
+      const candidate = { ...row.candidate, semantic_distance: name === 'semantic' ? row.candidate.semantic_distance : prior?.candidate.semantic_distance ?? null };
+      candidates.set(key, { candidate, score: (prior?.score ?? 0) + 1 / (RRF_K + Number(row.signal_rank)) });
     }
   };
   const lexical = signal('lexical', null);
@@ -163,6 +218,7 @@ export async function searchKnowledge(client: SupabaseClient, projectId: string,
     }
   }
   await semantic;
+  await definitions;
   const tags = await suggestions;
   result.tag_suggestions = normalizeTags(tags ?? []).slice(0, 8);
   if (!absent && scoredCompleted) {
@@ -170,13 +226,26 @@ export async function searchKnowledge(client: SupabaseClient, projectId: string,
     const all = [...candidates.values()];
     result.below_cutoff_count = all.filter(c => c.score < SCORE_CUTOFF).length;
     result.matches = all.filter(c => c.score >= SCORE_CUTOFF)
-      .sort((a, b) => Number(a.candidate.bookkeeping ?? isBookkeeping(a.candidate)) - Number(b.candidate.bookkeeping ?? isBookkeeping(b.candidate)) || b.score - a.score || a.candidate.source_kind.localeCompare(b.candidate.source_kind) || a.candidate.id.localeCompare(b.candidate.id))
+      .sort((a, b) => Number(a.candidate.bookkeeping ?? isBookkeeping(a.candidate)) - Number(b.candidate.bookkeeping ?? isBookkeeping(b.candidate)) || Number(priority(b.candidate)) - Number(priority(a.candidate)) || b.score - a.score || a.candidate.source_kind.localeCompare(b.candidate.source_kind) || a.candidate.id.localeCompare(b.candidate.id))
       .slice(0, limit).map(c => ({ ...summary(c.candidate, result.normalized_query), source_kind: c.candidate.source_kind, score: c.score }));
     result.count_coverage = incomplete ? 'partial-scored-union' : 'considered-scored-union';
   }
-  const displayed = [...result.matches, ...result.unscored_matches];
+  await names;
+  result.concepts = result.concepts.slice(0, Math.max(0, limit - result.definitions.length));
+  const reserved = new Set([...result.definitions, ...result.refinements].map(d => d.id));
+  const remaining = Math.max(0, limit - result.definitions.length - result.concepts.length - result.refinements.length);
+  result.matches = result.matches.filter(d => d.source_kind !== 'knowledge' || !reserved.has(d.id)).slice(0, remaining);
+  result.unscored_matches = result.unscored_matches.filter(d => !reserved.has(d.id)).slice(0, remaining);
+  const displayed = [...result.refinements, ...result.matches, ...result.unscored_matches];
   const ids = displayed.filter(d => !('source_kind' in d) || d.source_kind === 'knowledge').map(d => d.id);
   if (ids.length) {
+    const invalidations = await bounded<InvalidationRead>('invalidations', signal => client.rpc('read_knowledge_invalidations', {p_entry_ids:ids}).abortSignal(signal));
+    for (const d of displayed) {
+      if ('source_kind' in d && d.source_kind !== 'knowledge') continue;
+      d.invalidations_available = invalidations?.available === true;
+      d.invalidation_rollout_available = invalidations?.rollout_available === true;
+      d.invalidations = invalidations?.links?.filter(link => link.affected_id === d.id) ?? [];
+    }
     const links = await bounded<Array<{ id: string; superseded_by: string | null }>>('supersession', async signal => {
       const data: Array<{ id: string; superseded_by: string | null }> = [];
       for (let start = 0; start < ids.length; start += 500) {

@@ -175,7 +175,8 @@ export const queryKnowledgeTool = {
         type: 'string',
         description: 'Free-text search query — hybrid semantic + trigram retrieval, ranked by relevance (RRF). Composes with type, status, tags, domain, limit and include_bookkeeping.',
       },
-      question_state: { type: 'string', enum: ['open', 'parked', 'decided'], description: 'Filter-only lists: open, parked or decided questions. Cannot combine with search until B-1223 shared ranking.' },
+      question_state: { type: 'string', enum: ['open', 'parked', 'decided'], description: 'Filter open, parked or decided questions; composes with search before ranking.' },
+      question_scope: { type: 'string', enum: ['product', 'deployment'], description: 'Question metadata scope; composes with search before ranking.' },
       include_bookkeeping: { type: 'boolean', description: 'Include explicitly marked procedural gate records after substantive knowledge (default true). False excludes them before pagination.' },
       include_superseded: {
         type: 'boolean',
@@ -437,8 +438,12 @@ export interface QueryKnowledgeArgs {
   offset?: number;
   context_tags?: string[];
   question_state?: 'open' | 'parked' | 'decided';
+  question_scope?: 'product' | 'deployment';
 }
 
+export function queryKnowledge(client: SupabaseClient, projectId: string, args: QueryKnowledgeArgs & { search?: undefined }): Promise<Array<KnowledgeEntrySummary | Definition | ConceptNameResult>>;
+export function queryKnowledge(client: SupabaseClient, projectId: string, args: QueryKnowledgeArgs & { search: string }): Promise<KnowledgeSearchResult>;
+export function queryKnowledge(client: SupabaseClient, projectId: string, args: QueryKnowledgeArgs): Promise<Array<KnowledgeEntrySummary | Definition | ConceptNameResult> | KnowledgeSearchResult>;
 export async function queryKnowledge(
   client: SupabaseClient,
   projectId: string,

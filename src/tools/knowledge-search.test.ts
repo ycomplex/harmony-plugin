@@ -6,7 +6,7 @@ import { normalizeTags } from './knowledge-search.js';
 const entry = (id: string, extra = {}) => ({ id, source_kind: 'knowledge', title: 'quasar design', content: 'quasar design rule', type: 'technical-design', status: 'Accepted', tags: [], domain: ['engineering'], project_id: 'p', updated_at: '2026-10-22T00:00:00Z', ...extra });
 const row = (id: string, rank = 1, extra = {}) => ({ candidate: entry(id, extra), signal_rank: rank, overflow: false });
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
-function fixture(options: { lexical?: unknown; semantic?: unknown; embed?: unknown; scope?: unknown; legacy?: unknown; tags?: string[]; hang?: string[]; throwRoute?: string; links?: unknown[] } = {}) {
+function fixture(options: { lexical?: unknown; semantic?: unknown; embed?: unknown; scope?: unknown; legacy?: unknown; tags?: string[]; hang?: string[]; throwRoute?: string; links?: unknown[]; definitions?: unknown; delayLexical?: boolean } = {}) {
   const calls: Array<{ path: string; body: any; url: URL; signal?: AbortSignal | null }> = [];
   const client = createClient('http://localhost:5555', 'local-test', { auth: { persistSession: false }, global: { fetch: async (input, init) => {
     const url = new URL(String(input));
@@ -16,12 +16,16 @@ function fixture(options: { lexical?: unknown; semantic?: unknown; embed?: unkno
     calls.push({ path, body, url, signal: init?.signal });
     if (options.hang?.includes(route)) return new Promise<Response>(() => {}); // deliberately ignores abort
     if (route === options.throwRoute) throw new Error('transport down');
+    if (path === 'read_knowledge_names') return json({available:true,matches:[],entries:[],identities:[]});
     if (path === 'projects') return json(options.scope ?? { workspace_id: 'w' });
     if (path === 'embed-knowledge') return options.embed instanceof Response ? options.embed : json(options.embed ?? { embedding: [1, 0] });
+    if (path === 'read_knowledge_definitions') return options.definitions instanceof Response ? options.definitions : json(options.definitions ?? {available:true,definitions:[]});
     if (path === 'knowledge_search_scored') {
+      if (options.delayLexical && body._signal === 'lexical') await new Promise(resolve => setTimeout(resolve, 20));
       const data = body._signal === 'lexical' ? options.lexical : options.semantic;
       return data instanceof Response ? data : json(data ?? [row('a')]);
     }
+    if (path === 'read_knowledge_invalidations') return json({available:true,rollout_available:true,links:[]});
     if (path === 'knowledge_search_context_tags') return json(options.tags ?? ['surface', 'rare']);
     if (path === 'knowledge_search_rrf' || path === 'knowledge_search_rrf_metadata') return json(options.legacy ?? [entry('legacy')]);
     if (path === 'knowledge_decisions') return json(options.links ?? []);

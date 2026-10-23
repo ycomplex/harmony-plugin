@@ -116,7 +116,8 @@ export function registerKnowledgeCommands(program: Command): void {
     .option('--context-tag <tag>', 'Relevant context tag for suggestions (repeat)', (v: string, prev: string[]) => [...prev, v], [] as string[])
     .option('--limit <n>', 'Max results', Number)
     .option('--search <text>', 'Search term matched against title and content')
-    .option('--question-state <state>', 'Filter-only: open, parked or decided; search combination requires B-1223')
+    .option('--question-state <state>', 'Filter open, parked or decided questions')
+    .option('--question-scope <scope>', 'Question product or deployment scope')
     .option('--definitions-only', 'Return only current term definitions', false)
     .option('--all', 'Include superseded entries', false)
     .option('--no-bookkeeping', 'Exclude explicitly marked procedural gate records')
@@ -137,6 +138,7 @@ export function registerKnowledgeCommands(program: Command): void {
             include_superseded: opts.all,
             include_bookkeeping: opts.bookkeeping,
             question_state: opts.questionState,
+            question_scope: opts.questionScope,
           }),
         (data) =>
           Array.isArray(data) ? formatTable(data, [

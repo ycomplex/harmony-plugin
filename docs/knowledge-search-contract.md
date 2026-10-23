@@ -126,3 +126,17 @@ The candidate relation extension contract now also includes source_activity, gua
 scope, authoritative successor, optional entry_scope and read_metadata. New sources provide null
 question metadata unless they implement that exact versioned contract. They share the same class
 budgets; no source-local or question-local score/cap is introduced.
+
+## Integration boundary after the B-1241/B-1228 wave
+
+Filter-only list/get retain B-1241 generated source values (including prefixCount/pagePrefixCount
+pagination) and B-1228 claim_context enrichment. The scored envelope does not yet admit generated
+source values or hydrate claim_context. Those are B-1240 extensions, not proven by this release.
+Generated values must enter SearchCandidateSource before global ranks and shared class caps rather
+than being prepended as if scored. Claim-context reads must be abortable and share the original
+absolute deadline, with explicit capability/timeout diagnostics; the current unbounded list/get helper
+cannot simply be awaited on the scored path. No score or completeness claim covers those omitted
+sources/enrichments. Search still projects guarded question metadata and authoritative lineage.
+Current definitions resolve retired aliases through the definition RPC, and an unscored concepts class
+reports aliases with no current definition within the shared result limit. Historical wording scans
+on decision search hits remain part of the deadline-aware enrichment extension.
