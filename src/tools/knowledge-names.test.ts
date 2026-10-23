@@ -47,7 +47,7 @@ describe('concept name operations',()=>{
 });
 
 it('name-based writers resolve retired wording before creating another entity',async()=>{
- const rpc=vi.fn().mockResolvedValue({data:{...empty,matches:[{concept_id:'survivor',current_name:'Now',matched_alias:'Old'}]}});
+ const rpc=vi.fn().mockResolvedValue({data:{...empty,matches:[{concept_id:'survivor',kind:'feature',current_name:'Now',matched_alias:'Old'}]}});
  const from=vi.fn();
  expect(await resolveOrCreateEntity({rpc,from} as unknown as SupabaseClient,'w','p',' Old ','feature')).toBe('survivor');
  expect(from).not.toHaveBeenCalled();
