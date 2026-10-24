@@ -73,6 +73,7 @@ case "$all" in
     printf '%s' "${STUB_EVENTS_JSON:-null}" ;;
   "get jobs "*) printf '%s' "${STUB_JOBS_JSON:-{\"items\":[]\}}" ;;
   "patch secret "*) echo "launcher must not patch secrets (the remote conductor cannot read them)" >> "$STUB_LOGS/PATCH-SECRET"; exit 1 ;;
-  "delete job "*) if [ -n "${STUB_DELETE_FAILS:-}" ]; then echo 'Error from server (Forbidden)' >&2; exit 1; fi ;;
+  "delete job "*) if [ -n "${STUB_DELETE_AUTH_FAILS:-}" ]; then echo 'Unauthorized' >&2; exit 1; fi
+    if [ -n "${STUB_DELETE_FAILS:-}" ]; then echo 'Error from server (Forbidden)' >&2; exit 1; fi ;;
   *) echo "stub kubectl: unhandled: $all" >&2; exit 9 ;;
 esac

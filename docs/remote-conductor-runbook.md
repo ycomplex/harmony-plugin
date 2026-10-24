@@ -360,8 +360,13 @@ a different holder is live, so a refusal means the pod is still up: scale it dow
 
 ### Startup infrastructure failures (B-1267)
 
-New GKE Jobs get 120 seconds to start the `worker` container. Scheduling alone does
-not count: image pulls and init containers can still block it. Override with the
+New GKE Jobs get 600 seconds to start the `worker` container. Scheduling alone does
+not count as worker startup. At expiry, TriggeredScaleUp / Pulling events or a
+running init container earn another window when their progress fingerprint changes.
+Repeated evidence cannot extend indefinitely: the total startup cap is twice the
+configured window. ImagePullBackOff / ErrImagePull / CrashLoopBackOff and PVC
+ProvisioningFailed override progress. Persistent unschedulability without progress
+parks at the first deadline. Override with the
 positive integer `HARMONY_GKE_STARTUP_TIMEOUT_S` on the conductor host if a pool's
 normal scale-up takes longer. Once the worker has run, the existing worker deadline
 and completion/disruption checks apply.
@@ -371,7 +376,18 @@ namespaced events, requests Job deletion, and exits 74. The conductor parks with
 `startup-unavailable`, includes the reason in the leg log and ticket comment, and
 runs its existing reap-before-park safeguard. The ticket disk is retained. Resolve
 the reported quota, image or scheduling problem before resuming the conduction.
-A failed events read is reported explicitly; PVC and pod status remain available.
+Failed reads include their kubectl error; successful reads remain usable independently.
+All startup reads, Job polling and startup deletion use an external GNU `timeout`
+(5 seconds, then a 1-second kill grace), preserving in-cluster service-account auth
+without client-side kubectl override flags. Authentication failures on deletion are
+reported separately from other deletion failures.
+
+For the false-positive rework, keep the Deployment's 5400-second stopgap until the
+fixed image is adopted by **Update or an explicit image pin**. Then recommend
+`HARMONY_GKE_STARTUP_TIMEOUT_S=600`. Verification requires a real cold-node leg
+passing the worker-start check with working reads, plus a deliberately impossible
+storage class or nonexistent image tag parking within the bounded deadline with
+the correct reason. Stub JSON alone does not prove this rollout.
 
 Rollout requires **re-applying `container/conductor/k8s/rbac-legs.yaml`** for
 namespaced event reads and **Update/restart of the conductor pod** for the code.
