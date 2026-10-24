@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import type { CompleteOutcome, RegistryClient, RegistryStatus, StatusOutcome } from '../../daemon/conductor-registry.js';
 import type { ExecResult, LifecycleDeps } from './conductor-lifecycle-deps.js';
 import { runRestart, runStart, runStatus, runStop } from './conductor-lifecycle.js';
-import { compareVersionTags, newestVersionTag } from './conductor-kube.js';
+import { compareVersionTags, newestVersionTag, pluginVersionOfTag } from './conductor-kube.js';
 
 const IMAGE = 'us-central1-docker.pkg.dev/proj/harmony-workers/harmony-conductor';
 const T0 = Date.parse('2026-10-20T12:00:00Z');
@@ -126,9 +126,31 @@ describe('version tag selection', () => {
     const list = JSON.stringify([tag('staging', 'sha256:aaa'), tag('0.15.64', 'sha256:old'), tag('0.15.65', 'sha256:aaa'), tag('0.15.66-rc1', 'sha256:aaa'), tag('0.15.7', 'sha256:aaa')]);
     expect(newestVersionTag(list, 'staging')).toBe('0.15.65');
   });
+  it('B-1269: a promote adding <version>-prod to the prod digest leaves the staging digest\'s <version>-staging resolvable', () => {
+    const list = JSON.stringify([
+      tag('staging', 'sha256:stg'), tag('0.16.41-staging', 'sha256:stg'),
+      tag('prod', 'sha256:prd'), tag('0.16.41-prod', 'sha256:prd'),
+    ]);
+    expect(newestVersionTag(list, 'staging')).toBe('0.16.41-staging');
+    expect(newestVersionTag(list, 'prod')).toBe('0.16.41-prod');
+  });
+  it('B-1269: never takes the other channel\'s version tag, even on the same digest', () => {
+    const list = JSON.stringify([tag('staging', 'sha256:aaa'), tag('0.16.41-prod', 'sha256:aaa')]);
+    expect(() => newestVersionTag(list, 'staging')).toThrow(/no plugin version tag/);
+  });
+  it('B-1269: still accepts a legacy bare version tag on the channel digest, preferring the qualified tag at the same version', () => {
+    expect(newestVersionTag(JSON.stringify([tag('staging', 'sha256:aaa'), tag('0.16.40', 'sha256:aaa')]), 'staging')).toBe('0.16.40');
+    expect(newestVersionTag(JSON.stringify([tag('staging', 'sha256:aaa'), tag('0.16.41-staging', 'sha256:aaa'), tag('0.16.41', 'sha256:aaa')]), 'staging')).toBe('0.16.41-staging');
+  });
+  it('B-1269: the plugin version of a pinned tag drops a leading v and the channel suffix', () => {
+    expect(pluginVersionOfTag('0.16.41-staging')).toBe('0.16.41');
+    expect(pluginVersionOfTag('v1.2.3-prod')).toBe('1.2.3');
+    expect(pluginVersionOfTag('0.16.41')).toBe('0.16.41');
+  });
   it('never falls back to a moving tag', () => {
     expect(() => newestVersionTag(JSON.stringify([tag('staging', 'sha256:aaa'), tag('latest', 'sha256:aaa')]), 'staging')).toThrow(/no plugin version tag/);
     expect(() => newestVersionTag(JSON.stringify([tag('prod', 'sha256:aaa')]), 'staging')).toThrow(/does not exist/);
+    expect(() => newestVersionTag(JSON.stringify([tag('staging', 'sha256:aaa'), tag('latest', 'sha256:aaa'), tag('0.16.41-rc1', 'sha256:aaa')]), 'staging')).toThrow(/no plugin version tag/);
     expect(() => newestVersionTag('nope', 'staging')).toThrow(/not valid JSON/);
   });
 });
