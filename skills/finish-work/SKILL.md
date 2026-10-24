@@ -1044,6 +1044,16 @@ For each candidate:
    Pass `acting_task_id: <this ticket UUID>` so the same-transaction re-stamp event identifies the
    release that performed the check. Use `provenance: 'agent-on-behalf:<release_provenance>'` as on the
    other release writes.
+   **Successful STAGING deploy:** for every candidate whose described behavior is present in the
+   released code and passes the check, WRITE `verified_against` using the CI-generated staging plugin
+   version, the staging deploy's web SHA and the check's ISO time (null only for an irrelevant or
+   unavailable side, with at least one observed version). Do not withhold this stamp merely because
+   production promotion is pending. When `rollout_state` is null/missing, also write
+   `rollout_state: 'designed'` and `open_steps` naming the remaining `./promote-prod.sh` promotion and
+   any required restart/cutover. An entry already `live` or `partly-live` keeps its production rollout
+   state and existing open steps: refresh only `verified_against`. Preserve other existing rollout
+   states unless independently observed production evidence authorizes a change. Record explicitly
+   in the trail that these versions were checked on staging, not production.
 3. Rollout always refers to PRODUCTION, the environment of record. `live` means live in production;
    `partly-live` means part of the change is already in production. A staging-only successor remains
    `designed`; staging alone never advances an existing production fact's rollout. Name remaining
@@ -1054,8 +1064,10 @@ For each candidate:
    signal/time for current-account consumers (B-1234). `verified_against.at` dates a verification check
    and must NEVER be substituted for that cutover time.
    Never infer rollout from Accepted/Superseded, never mark an old running fact retired merely because
-   its successor was agreed, and never stamp a production claim using staging-only evidence. Retain
-   the old verified stamp when only future behavior was checked; name that limit in the trail.
+   its successor was agreed. A staging stamp verifies behavior present in the released staging code;
+   it does not attest that behavior is running in production. Only production observation at the
+   post-promote re-check or verify may advance rollout to `live`. Retain the old stamp when the
+   described behavior was not actually checked successfully; name that limit in the trail.
 4. Read the updated entry back and comment the entry id, check performed, observed versions, rollout
    and open steps. Carry unchecked entries and stale titles into the verify runbook as outstanding
    checks. A failed check must not receive a fresh stamp.
