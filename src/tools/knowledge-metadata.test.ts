@@ -98,6 +98,7 @@ describe('one surface mapping for release, repair and settlement', () => {
 });
 
 
+const paged = (result: unknown) => Object.assign(Promise.resolve(result), { range: () => Promise.resolve(result) });
 describe('unknown authored tag recovery', () => {
   const refused = () => ({ code: '22023', message: 'Unknown knowledge tags: surfce:plugin/src/tools. Register explicitly.',
     details: JSON.stringify({ unknown: ['surfce:plugin/src/tools'], suggestions: { 'surfce:plugin/src/tools': ['unrelated'] } }) });
@@ -107,7 +108,7 @@ describe('unknown authored tag recovery', () => {
       'surface:plugin/src/tools', 'surface:plugin/src/hooks', 'surface:plugin/src/cli', 'surface:plugin/src/tools'];
     const rpc = vi.fn().mockResolvedValueOnce({ data: true })
       .mockResolvedValueOnce({ data: null, error })
-      .mockResolvedValueOnce({ data: names.map(name => ({ name })) });
+      .mockReturnValueOnce(paged({ data: names.map(name => ({ name })) }));
     const result = await metadataRpc(db(rpc), 'knowledge_record_decision', 'product', {
       p_project_id: 'project-a', p_tags: ['surfce:plugin/src/tools'],
     });
@@ -126,7 +127,7 @@ describe('unknown authored tag recovery', () => {
     const error = refused();
     const rpc = vi.fn().mockResolvedValueOnce({ data: true }).mockResolvedValueOnce({ error });
     if (mode === 'throw') rpc.mockRejectedValueOnce(new Error('offline'));
-    else rpc.mockResolvedValueOnce(mode === 'error' ? { error: { message: 'permission denied' } } : { data: {} });
+    else rpc.mockReturnValueOnce(paged(mode === 'error' ? { error: { message: 'permission denied' } } : { data: {} }));
     const result = await metadataRpc(db(rpc), 'knowledge_record_decision', 'product', { p_project_id: 'p' });
     expect(result.error).toBe(error);
     expect(result.error!.message).toBe(`Unknown knowledge tags: surfce:plugin/src/tools. Register explicitly.\n${error.details}`);
@@ -134,9 +135,37 @@ describe('unknown authored tag recovery', () => {
   });
   it('reports an empty vocabulary without inventing suggestions', async () => {
     const rpc = vi.fn().mockResolvedValueOnce({ data: true }).mockResolvedValueOnce({ error: refused() })
-      .mockResolvedValueOnce({ data: [] });
+      .mockReturnValueOnce(paged({ data: [] }));
     const result = await metadataRpc(db(rpc), 'knowledge_record_decision', 'product', { p_project_id: 'p' });
     expect(result.error!.message).toContain('(none registered)');
+  });
+  it.each([undefined, null, ''])('derives hints from the deployed message alone when details is %j', async details => {
+    // Verbatim shape of the production refusal (b1141/b1223 RAISE EXCEPTION): no structured details.
+    const error = { code: 'P0001', details,
+      message: 'Unknown knowledge tags: surfce:plugin/src/tools, queue-typo. Register a project tag explicitly or choose a known tag.' };
+    const rpc = vi.fn().mockResolvedValueOnce({ data: true }).mockResolvedValueOnce({ error })
+      .mockReturnValueOnce(paged({ data: [{ name: 'surface:plugin/src/tools' }, { name: 'queue' }] }));
+    const result = await metadataRpc(db(rpc), 'knowledge_record_decision', 'product', { p_project_id: 'p' });
+    const lines = result.error!.message.split('\n');
+    expect(lines[1]).toMatch(/^Known tags for "surfce:plugin\/src\/tools": surface:plugin\/src\/tools, queue$/);
+    expect(lines[2]).toMatch(/^Known tags for "queue-typo": queue, /);
+    expect(rpc.mock.calls.map(([name]) => name)).toEqual([
+      'knowledge_metadata_capable', 'knowledge_record_decision_metadata', 'knowledge_list_tags',
+    ]);
+  });
+  it('reads the whole vocabulary past the 1000-row API cap so later-sorting tags can be suggested', async () => {
+    const first = Array.from({ length: 1000 }, (_, i) => ({ name: `a-tag-${i}` }));
+    const ranges: Array<[number, number]> = [];
+    const list = (_n: string, _a: unknown) => ({ range: (from: number, to: number) => {
+      ranges.push([from, to]);
+      return Promise.resolve({ data: from === 0 ? first : [{ name: 'surface:plugin/src/tools' }] });
+    } });
+    const rpc = vi.fn().mockResolvedValueOnce({ data: true })
+      .mockResolvedValueOnce({ error: { message: 'Unknown knowledge tags: surfce:plugin/src/tools. Register.', details: '' } })
+      .mockImplementation(list);
+    const result = await metadataRpc(db(rpc), 'knowledge_record_decision', 'product', { p_project_id: 'p' });
+    expect(ranges).toEqual([[0, 999], [1000, 1999]]);
+    expect(result.error!.message).toMatch(/Known tags for "surfce:plugin\/src\/tools": surface:plugin\/src\/tools, /);
   });
   it('does not look up hints for successful writes, unrelated failures or malformed refusal details', async () => {
     for (const response of [{ data: { id: 'saved' } }, { error: { message: 'permission denied' } },

@@ -43,10 +43,8 @@ export async function metadataRpc(
     capable ? `${operation}_metadata` : operation,
     { ...args, ...(capable ? { p_scope: scope ?? null } : {}) },
   );
-  if (result.error && capable && typeof args.p_project_id === 'string') {
-    const hints = await refusedTagHints(client, args.p_project_id, result.error);
-    if (hints) result.error.message += `\n${hints}`;
-  }
+  if (result.error && capable && typeof args.p_project_id === 'string')
+    await appendRefusedTagHints(client, args.p_project_id, result.error);
   if (result.error?.details)
     result.error.message += `\n${result.error.details}`;
   return result;
@@ -54,6 +52,15 @@ export async function metadataRpc(
 
 // Enrichment is read-only and happens only AFTER the authoritative write refused.
 // Never retry a write or register a spelling on the author's behalf.
+export async function appendRefusedTagHints(
+  client: SupabaseClient,
+  projectId: string,
+  error: { message: string; details?: string },
+): Promise<void> {
+  const hints = await refusedTagHints(client, projectId, error);
+  if (hints) error.message += `\n${hints}`;
+}
+
 async function refusedTagHints(
   client: SupabaseClient,
   projectId: string,
@@ -61,17 +68,14 @@ async function refusedTagHints(
 ): Promise<string | undefined> {
   if (!error.message.startsWith('Unknown knowledge tags')) return;
   try {
-    const detail = JSON.parse(error.details ?? 'null');
-    if (!Array.isArray(detail?.unknown) ||
-        !detail.unknown.every((tag: unknown) => typeof tag === 'string')) return;
-    const { data, error: readError } = await client.rpc('knowledge_list_tags', {
-      p_project_id: projectId,
-    });
+    const unknown = refusedTagNames(error);
+    if (!unknown) return;
+    const { data, error: readError } = await readTagVocabulary(client, projectId);
     if (readError || !Array.isArray(data)) return;
     const names = [...new Set<string>(data
       .filter((row: { name?: unknown }) => typeof row?.name === 'string')
       .map((row: { name: string }) => row.name))];
-    return detail.unknown.map((tag: string) => {
+    return unknown.map((tag: string) => {
       const nearest = names.map(name => ({ name, distance: editDistance(tag, name) }))
         .sort((a, b) => a.distance - b.distance || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
         .slice(0, 5).map(({ name }) => name);
@@ -81,6 +85,21 @@ async function refusedTagHints(
     // Malformed/older details or an unavailable hint read must not mask the refusal.
     return;
   }
+}
+
+// The deployed refusal carries the offending tags only in its message
+// ("Unknown knowledge tags: a, b. Register ..."); structured details are optional.
+function refusedTagNames(error: { message: string; details?: string }): string[] | undefined {
+  try {
+    const detail = JSON.parse(error.details ?? 'null');
+    if (Array.isArray(detail?.unknown) && detail.unknown.length &&
+        detail.unknown.every((tag: unknown) => typeof tag === 'string')) return detail.unknown;
+  } catch {
+    // Non-JSON details fall through to the message.
+  }
+  const listed = /^Unknown knowledge tags: (.+?)(?:\.\s|\.?$)/.exec(error.message)?.[1];
+  const tags = listed?.split(', ').map(tag => tag.trim()).filter(Boolean);
+  return tags?.length ? tags : undefined;
 }
 
 function editDistance(left: string, right: string): number {
@@ -97,6 +116,22 @@ function editDistance(left: string, right: string): number {
   }
   return previous[b.length];
 }
+const TAG_PAGE = 1000; // the API's row cap: an unpaged read silently drops later-sorting tags
+const TAG_PAGE_LIMIT = 50;
+
+async function readTagVocabulary(client: SupabaseClient, projectId: string) {
+  const rows: unknown[] = [];
+  for (let page = 0; page < TAG_PAGE_LIMIT; page++) {
+    const { data, error } = await client
+      .rpc('knowledge_list_tags', { p_project_id: projectId })
+      .range(page * TAG_PAGE, (page + 1) * TAG_PAGE - 1);
+    if (error) return { data: null, error };
+    if (!Array.isArray(data)) return { data, error: null };
+    rows.push(...data);
+    if (data.length < TAG_PAGE) break;
+  }
+  return { data: rows, error: null };
+}
 export async function listKnowledgeTags(
   client: SupabaseClient,
   projectId: string,
@@ -105,9 +140,7 @@ export async function listKnowledgeTags(
     throw new Error(
       'Project tag vocabulary unavailable until the schema is promoted.',
     );
-  const { data, error } = await client.rpc('knowledge_list_tags', {
-    p_project_id: projectId,
-  });
+  const { data, error } = await readTagVocabulary(client, projectId);
   if (error) throw new Error(error.message);
   return data;
 }

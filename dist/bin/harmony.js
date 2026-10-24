@@ -36734,33 +36734,43 @@ async function metadataRpc(client, operation2, scope, args) {
     capable ? `${operation2}_metadata` : operation2,
     { ...args, ...capable ? { p_scope: scope ?? null } : {} }
   );
-  if (result.error && capable && typeof args.p_project_id === "string") {
-    const hints = await refusedTagHints(client, args.p_project_id, result.error);
-    if (hints) result.error.message += `
-${hints}`;
-  }
+  if (result.error && capable && typeof args.p_project_id === "string")
+    await appendRefusedTagHints(client, args.p_project_id, result.error);
   if (result.error?.details)
     result.error.message += `
 ${result.error.details}`;
   return result;
 }
+async function appendRefusedTagHints(client, projectId, error) {
+  const hints = await refusedTagHints(client, projectId, error);
+  if (hints) error.message += `
+${hints}`;
+}
 async function refusedTagHints(client, projectId, error) {
   if (!error.message.startsWith("Unknown knowledge tags")) return;
   try {
-    const detail = JSON.parse(error.details ?? "null");
-    if (!Array.isArray(detail?.unknown) || !detail.unknown.every((tag) => typeof tag === "string")) return;
-    const { data, error: readError } = await client.rpc("knowledge_list_tags", {
-      p_project_id: projectId
-    });
+    const unknown = refusedTagNames(error);
+    if (!unknown) return;
+    const { data, error: readError } = await readTagVocabulary(client, projectId);
     if (readError || !Array.isArray(data)) return;
     const names = [...new Set(data.filter((row) => typeof row?.name === "string").map((row) => row.name))];
-    return detail.unknown.map((tag) => {
+    return unknown.map((tag) => {
       const nearest = names.map((name) => ({ name, distance: editDistance(tag, name) })).sort((a3, b) => a3.distance - b.distance || (a3.name < b.name ? -1 : a3.name > b.name ? 1 : 0)).slice(0, 5).map(({ name }) => name);
       return `Known tags for ${JSON.stringify(tag)}: ${nearest.length ? nearest.join(", ") : "(none registered)"}`;
     }).join("\n");
   } catch {
     return;
   }
+}
+function refusedTagNames(error) {
+  try {
+    const detail = JSON.parse(error.details ?? "null");
+    if (Array.isArray(detail?.unknown) && detail.unknown.length && detail.unknown.every((tag) => typeof tag === "string")) return detail.unknown;
+  } catch {
+  }
+  const listed = /^Unknown knowledge tags: (.+?)(?:\.\s|\.?$)/.exec(error.message)?.[1];
+  const tags = listed?.split(", ").map((tag) => tag.trim()).filter(Boolean);
+  return tags?.length ? tags : void 0;
 }
 function editDistance(left, right) {
   const a3 = Array.from(left.toLowerCase());
@@ -36779,14 +36789,25 @@ function editDistance(left, right) {
   }
   return previous[b.length];
 }
+var TAG_PAGE = 1e3;
+var TAG_PAGE_LIMIT = 50;
+async function readTagVocabulary(client, projectId) {
+  const rows = [];
+  for (let page = 0; page < TAG_PAGE_LIMIT; page++) {
+    const { data, error } = await client.rpc("knowledge_list_tags", { p_project_id: projectId }).range(page * TAG_PAGE, (page + 1) * TAG_PAGE - 1);
+    if (error) return { data: null, error };
+    if (!Array.isArray(data)) return { data, error: null };
+    rows.push(...data);
+    if (data.length < TAG_PAGE) break;
+  }
+  return { data: rows, error: null };
+}
 async function listKnowledgeTags(client, projectId) {
   if (!await metadataCapable(client))
     throw new Error(
       "Project tag vocabulary unavailable until the schema is promoted."
     );
-  const { data, error } = await client.rpc("knowledge_list_tags", {
-    p_project_id: projectId
-  });
+  const { data, error } = await readTagVocabulary(client, projectId);
   if (error) throw new Error(error.message);
   return data;
 }
@@ -37967,6 +37988,7 @@ async function createKnowledgeEntry(client, projectId, userId, args) {
         `A knowledge entry titled "${args.title.trim()}" already exists in this project`
       );
     }
+    if (capable) await appendRefusedTagHints(client, projectId, error);
     throw error;
   }
   const created = data;
