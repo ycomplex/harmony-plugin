@@ -3436,6 +3436,33 @@ export async function fetchPendingResolution(
   }
 }
 
+// B-654: the elicitation claims a brief underwrites. `knowledge_decisions.underwriting_brief_id` /
+// `claim_provenance` come from a web migration; guarded like fetchPendingResolution so an older DB
+// (column absent) degrades to [] rather than failing get_brief.
+export interface UnderwritingClaim {
+  id: string;
+  title: string;
+  status: string;
+  claim_provenance: unknown;
+}
+
+/** Fetch the claims coupled to a brief. Never throws; any error (e.g. absent column) returns []. */
+export async function fetchUnderwritingClaims(
+  client: SupabaseClient,
+  briefId: string,
+): Promise<UnderwritingClaim[]> {
+  try {
+    const { data, error } = await client
+      .from('knowledge_decisions')
+      .select('id, title, status, claim_provenance')
+      .eq('underwriting_brief_id', briefId);
+    if (error || !Array.isArray(data)) return [];
+    return data as unknown as UnderwritingClaim[];
+  } catch {
+    return [];
+  }
+}
+
 // B-503 (accept-with-remark): `briefs.accept_remark` + `briefs.accept_remark_consumed_at` are added
 // by harmony-web's B-503 migration — resolve_brief persists an optional remark alongside an accept.
 // The plugin's pickup half surfaces the task's most recent UNCONSUMED remark as `pending_remark` on
@@ -3717,7 +3744,10 @@ export async function getBrief(
   // B-485: surface the browser-submitted reshape marker so a running conductor can detect+consume it.
   // Defensive (separate guarded read) so an older DB without the column returns null, not a 400.
   const pending_resolution = await fetchPendingResolution(client, taskId);
-  return { ...(data as Record<string, unknown>), pending_resolution };
+  // B-654: claims this brief underwrites (guarded; [] on an older DB or no claims).
+  const briefId = (data as unknown as { id?: string }).id;
+  const underwriting_claims = briefId ? await fetchUnderwritingClaims(client, briefId) : [];
+  return { ...(data as Record<string, unknown>), pending_resolution, underwriting_claims };
 }
 
 // ——— B-878: the brief HISTORY read ———————————————————————————————————————————————————————————————
@@ -4306,7 +4336,7 @@ export async function reshapeBrief(
 
 export const getBriefTool = {
   name: 'get_brief',
-  description: "Get the active brief for a task (its rendered content blob + canonical doc + pre-generated expand sections + related), plus `pending_resolution` — a browser-submitted reshape request ({command:'iterate', detail:<feedback>}) the running conductor consumes on pickup, or null if none. Returns null if no brief is awaiting input.",
+  description: "Get the active brief for a task (its rendered content blob + canonical doc + pre-generated expand sections + related), plus `pending_resolution` — a browser-submitted reshape request ({command:'iterate', detail:<feedback>}) the running conductor consumes on pickup, or null if none, and `underwriting_claims` — the knowledge claims ({id,title,status,claim_provenance}) this brief underwrites, [] if none. Returns null if no brief is awaiting input.",
   inputSchema: {
     type: 'object' as const,
     properties: { task_id: { type: 'string', description: 'The task whose active brief to fetch — UUID, task number, or visual ID (e.g., B-43)' } },

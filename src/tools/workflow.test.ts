@@ -278,6 +278,19 @@ describe('listTicketKnowledge', () => {
     expect(res[0].affected_entities).toEqual([{ entity_id: 'ent-1', name: 'Cloud library management', kind: 'feature' }]);
   });
 
+  it('B-654: selects claim_provenance + underwriting_brief_id and entries carry them', async () => {
+    const rows = [
+      { decision_id: 'd1', knowledge_decisions: { id: 'd1', type: 'specification', status: 'Asserted', title: 'claim', claim_provenance: 'human-stated', underwriting_brief_id: 'brief-1' } },
+      { decision_id: 'd2', knowledge_decisions: { id: 'd2', type: 'business', status: 'Accepted', title: 'plain', claim_provenance: null, underwriting_brief_id: null } },
+    ];
+    const { client, selectSpy } = mockTicketKnowledgeClient(rows);
+    const res = await listTicketKnowledge(client, 'proj', { task_id: 'B-1' });
+    expect(selectSpy).toHaveBeenCalledWith(expect.stringMatching(/claim_provenance.*underwriting_brief_id/));
+    expect(res[0]).toMatchObject({ claim_provenance: 'human-stated', underwriting_brief_id: 'brief-1' });
+    expect(res[1]).toMatchObject({ claim_provenance: null, underwriting_brief_id: null });
+    expect(listTicketKnowledgeTool.description).toContain('claim_provenance');
+  });
+
   it('B-977: no decisions -> no decision_affects_entity query at all', async () => {
     const { client } = mockTicketKnowledgeClient([]);
     const res = await listTicketKnowledge(client, 'proj', { task_id: 'B-1' });

@@ -2059,6 +2059,15 @@ describe('recordDecision', () => {
     }));
   });
 
+  it('returns claim_provenance + underwriting_brief_id from the RPC row (B-654)', async () => {
+    const { client } = buildWorkspaceAndQueryClient({ data: { ...decisionRow, claim_provenance: 'human-stated', underwriting_brief_id: 'brief-1' } });
+    const result = await recordDecision(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',
+      type: 'specification', title: 'claim: exports must be CSV-first',
+      claim_provenance: 'human-stated', underwriting_brief_id: 'brief-1',
+    });
+    expect(result).toMatchObject({ claim_provenance: 'human-stated', underwriting_brief_id: 'brief-1' });
+  });
+
   it('passes p_claim_provenance/p_underwriting_brief_id as null when not provided (a non-claim decision, B-645)', async () => {
     const { client } = buildWorkspaceAndQueryClient({ data: decisionRow });
     await recordDecision(client, PROJECT_ID, USER_ID, { claim: 'The team follows this recorded decision.',  type: 'business', title: 'ordinary decision' });
