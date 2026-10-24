@@ -6,12 +6,12 @@
 // session that wanted to reap a hung run had no way to name it. This closes that: it makes
 // `request_conduction_reap`'s `conduction_id` addressable from a session.
 //
-// A LEAN read, deliberately: it projects a fixed ten-field row (see CONDUCTION_SUMMARY_FIELDS) out
+// A LEAN read, deliberately: it projects a fixed eleven-field row (see CONDUCTION_SUMMARY_FIELDS) out
 // of the full conduction record — the operator-legible triage fields (is it running? when did it
 // last heartbeat? was a reap already requested? how did the last leg exit?) and nothing else. The
 // lease/CAS internals (lease_holder, lease_acquired_at, clean_shutdown_at, leg_started_at),
-// worker plumbing (worker_kind, last_worker_exit_code), current_pr_ref, run_config, created_by and
-// the echoed task_id are all excluded on purpose — they are daemon mechanism, not a session's
+// worker plumbing (worker_kind, last_worker_exit_code), current_pr_ref, created_by and
+// the echoed task_id are all excluded (run_config is INCLUDED since B-1274) on purpose — they are daemon mechanism, not a session's
 // business, and a wide row would bury the id the caller actually came for.
 //
 // No new read path: this delegates to the shared-core `listConductions` primitive with its B-894
@@ -20,13 +20,14 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveTaskId } from './resolve-task-id.js';
+import type { RunConfig } from '../config/run-config.js';
 import { listConductions as listConductionRecords, type ConductionRecord } from './conduction-record.js';
 
 export interface ListConductionsArgs {
   task_id: string;
 }
 
-/** The EXACT ten fields of a lean conduction row — no more, no fewer. A colocated test asserts the
+/** The EXACT eleven fields of a lean conduction row — no more, no fewer. A colocated test asserts the
  *  key set exactly, so both an accidental addition and an accidental removal fail loudly. */
 export const CONDUCTION_SUMMARY_FIELDS = [
   'id',
@@ -39,6 +40,7 @@ export const CONDUCTION_SUMMARY_FIELDS = [
   'updated_at',
   'worker_ref',
   'retry_count',
+  'run_config',
 ] as const;
 
 export interface ConductionSummary {
@@ -53,6 +55,9 @@ export interface ConductionSummary {
   updated_at: string;
   worker_ref: string | null;
   retry_count: number;
+  /** B-1274: the run settings this conduction's legs launch with (adapter, model, gates, delegate,
+   *  note, `inherited_from`), so an orchestrator can verify a relaunch without reading run.env. */
+  run_config: RunConfig | null;
 }
 
 export interface ListConductionsResult {
@@ -70,6 +75,7 @@ const toSummary = (row: ConductionRecord): ConductionSummary => ({
   updated_at: row.updated_at,
   worker_ref: row.worker_ref,
   retry_count: row.retry_count,
+  run_config: row.run_config ?? null,
 });
 
 export async function listConductions(
@@ -97,9 +103,9 @@ export const listConductionsTool = {
     'When did the run last heartbeat (a long-stale `last_heartbeat_at` on an `active` row is the ' +
     'signature of a hung leg)? Has a reap already been requested (`reap_requested_at` non-null — ' +
     'do not request another)? How did the last leg exit (`last_worker_exit_class`) and how many ' +
-    'retries has it taken (`retry_count`)? Returns a lean ten-field row per conduction (id, status, ' +
+    'retries has it taken (`retry_count`)? Returns a lean eleven-field row per conduction (id, status, ' +
     'mode, started_at, last_heartbeat_at, reap_requested_at, last_worker_exit_class, updated_at, ' +
-    'worker_ref, retry_count) — conductor lease/CAS internals are deliberately not exposed. A ticket ' +
+    'worker_ref, retry_count, run_config — the settings a leg launches with, B-1274) — conductor lease/CAS internals are deliberately not exposed. A ticket ' +
     'that has never been conducted returns an empty list, not an error.',
   inputSchema: {
     type: 'object' as const,
