@@ -2,7 +2,7 @@ import { selectEntity } from './entity-selector.js';
 import { readKnowledgeNames, withRetiredWording } from './knowledge-names.js';
 import { readSourceValues } from './knowledge-sources.js';
 import { questionProjection } from './knowledge-questions.js';
-import { metadataCapable, metadataRpc, type KnowledgeScope } from './knowledge-metadata.js';
+import { appendRefusedTagHints, metadataCapable, metadataRpc, type KnowledgeScope } from './knowledge-metadata.js';
 import { readClaimContexts, withClaimContexts, type ClaimContext, type QuestionReference } from './claim-context.js';
 import { readDefinitions, type Definition } from './knowledge-definitions.js';
 import { searchKnowledge, normalizeTags, type KnowledgeSearchResult } from './knowledge-search.js';
@@ -723,6 +723,8 @@ export async function createKnowledgeEntry(
         `A knowledge entry titled "${args.title.trim()}" already exists in this project`,
       );
     }
+    // The tag-vocabulary trigger refuses this direct insert; offer registered near-matches (read-only, no retry).
+    if (capable) await appendRefusedTagHints(client, projectId, error);
     throw error;
   }
   const created = data as KnowledgeEntryFull;
