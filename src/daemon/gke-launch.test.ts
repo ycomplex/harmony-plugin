@@ -471,7 +471,7 @@ describe.skipIf(!CAPABLE)('gke-worker-launch.sh — the wait loop is the exit-co
     const w = makeWorld(seq([ACTIVE, ACTIVE, COMPLETE], [CLEAN_POD]));
     expect(launch(w).status).toBe(0);
     expect(read(w, 'jobctr')).toBe('3');
-    const polls = verbs(w).filter((c) => /get job \S+ -o json --request-timeout=5s$/.test(c));
+    const polls = verbs(w).filter((c) => /get job \S+ -o json$/.test(c));
     expect(polls).toHaveLength(3);
   });
 
@@ -621,7 +621,7 @@ describe.skipIf(!CAPABLE)('B-1267 bounded worker startup', () => {
     expect(result.stderr).not.toContain('unrelated secret noise');
     expect(verbs(w).some(c => c.includes('delete job') && c.includes('--wait=false'))).toBe(true);
     expect(verbs(w).some(c => c.includes('delete pvc'))).toBe(false);
-    for (const c of verbs(w).filter(c => /get (pods|pvc|events)/.test(c))) expect(c).toContain('--request-timeout=5s');
+    for (const c of verbs(w).filter(c => /get (pods|pvc|events)/.test(c))) expect(c).not.toContain('--request-timeout');
   });
   it.each(['ImagePullBackOff', 'ErrImagePull', 'Unschedulable'])(
     'parks a never-started worker blocked by %s even with a Bound PVC', reason => {
@@ -638,9 +638,16 @@ describe.skipIf(!CAPABLE)('B-1267 bounded worker startup', () => {
     const w = makeWorld({ ...seq([ACTIVE], ['ERR']), HARMONY_GKE_STARTUP_TIMEOUT_S: '1', STUB_EVENTS_FORBIDDEN: '1', STUB_DELETE_FAILS: '1' });
     const result = launch(w);
     expect(result.status).toBe(74);
-    expect(result.stderr).toContain('pod status unavailable');
-    expect(result.stderr).toContain('events unavailable');
+    expect(result.stderr).toContain('pod read failed: Unable to connect to the server');
+    expect(result.stderr).toContain('events read failed: Forbidden');
     expect(result.stderr).toContain('conductor reap required');
+  });
+  it('distinguishes deletion authentication failure from reap-required deletion errors', () => {
+    const w = makeWorld({ ...seq([ACTIVE], [pending]), HARMONY_GKE_STARTUP_TIMEOUT_S: '1', STUB_DELETE_AUTH_FAILS: '1' });
+    const result = launch(w);
+    expect(result.status).toBe(74);
+    expect(result.stderr).toContain('Job deletion authentication failed: Unauthorized');
+    expect(result.stderr).not.toContain('conductor reap required');
   });
   it('a started worker disables the startup timer; existing completion checks still win', () => {
     const running = pod({}, { phase: 'Running', containerStatuses: [{ name: 'worker', state: { running: { startedAt: '2026-10-23T10:00:00Z' } } }] });
@@ -653,6 +660,24 @@ describe.skipIf(!CAPABLE)('B-1267 bounded worker startup', () => {
     const init = pod({}, { phase: 'Pending', initContainerStatuses: [{ name: 'ticket-dirs', state: { running: {} } }] });
     const w = makeWorld({ ...seq([ACTIVE], [init]), HARMONY_GKE_STARTUP_TIMEOUT_S: '1' });
     expect(launch(w).status).toBe(74);
+  });
+  it('remote service-account calls carry no client override flags, including reads and deletion', () => {
+    const w = makeWorld({ ...seq([ACTIVE], [pending]), HARMONY_CONDUCTOR_REMOTE: '1', HARMONY_GKE_STARTUP_TIMEOUT_S: '1' });
+    expect(launch(w).status).toBe(74);
+    for (const call of calls(w)) expect(call.some(a => /^--(request-timeout|context|server|token|certificate-authority)/.test(a))).toBe(false);
+  });
+  it('cold startup progress gets another bounded window, then worker startup succeeds', () => {
+    const progressing = pod({ uid: 'pod-current' }, { phase: 'Pending', initContainerStatuses: [{ name: 'ticket-dirs', state: { running: { startedAt: '2026-10-24T08:00:00Z' } } }] });
+    const running = pod({}, { phase: 'Running', containerStatuses: [{ name: 'worker', state: { running: {} } }] });
+    const w = makeWorld({ ...seq([ACTIVE, ACTIVE, ACTIVE, COMPLETE], [progressing, progressing, running, CLEAN_POD]), HARMONY_GKE_STARTUP_TIMEOUT_S: '1' });
+    expect(launch(w).status).toBe(0);
+  });
+  it.each(['TriggeredScaleUp', 'Pulling'])('recognizes %s as progress but never waits forever', reason => {
+    const w = makeWorld({ ...seq([ACTIVE], [pod({ uid: 'pod-current' }, { phase: 'Pending' })]), HARMONY_GKE_STARTUP_TIMEOUT_S: '1',
+      STUB_EVENTS_JSON: JSON.stringify({ items: [{ involvedObject: { uid: 'pod-current' }, reason, lastTimestamp: '2026-10-24T08:00:00Z' }] }) });
+    const result = launch(w);
+    expect(result.status).toBe(74);
+    expect(result.stderr).toContain('startup progressing:');
   });
   it.each(['0', '-1', 'oops'])('refuses invalid timeout %s before minting', timeout => {
     const w = makeWorld({ HARMONY_GKE_STARTUP_TIMEOUT_S: timeout });

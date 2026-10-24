@@ -77,7 +77,7 @@ _GKE_PROJECT="${CLOUDSDK_CORE_PROJECT:-harmony-conductor}"
 # HARMONY_GKE_STORAGE_CLASS: set (gke.storage_class) => used as is; unset => harmony-ticket-disk unless the cluster says it is NotFound, then standard-rwo (below).
 : "${HARMONY_GKE_DEADLINE_S:=5400}"          # the Cloud Run job's task timeout
 : "${HARMONY_GKE_POLL_S:=5}"
-: "${HARMONY_GKE_STARTUP_TIMEOUT_S:=120}"
+: "${HARMONY_GKE_STARTUP_TIMEOUT_S:=600}"
 case "$HARMONY_GKE_STARTUP_TIMEOUT_S" in
   *[!0-9]*|'') echo "gke-worker-launch: invalid startup timeout" >&2; exit 1 ;;
 esac
@@ -315,16 +315,37 @@ kill_exit() {
 # deadline permanently; a merely scheduled pod (image pull/init still pending) does not.
 STARTUP_DEADLINE=$((SECONDS + HARMONY_GKE_STARTUP_TIMEOUT_S))
 WORKER_STARTED=0
-startup_read() { "${KUBECTL[@]}" "$@" --request-timeout=5s; }
+STARTUP_HARD_DEADLINE=$((SECONDS + 2 * HARMONY_GKE_STARTUP_TIMEOUT_S))
+LAST_STARTUP_PROGRESS=""
+# Do not set kubectl override flags: client-go then skips in-cluster credentials.
+# Bound the process instead, including a SIGKILL grace for a stuck client.
+startup_read() { timeout -k 1s 5s "${KUBECTL[@]}" "$@"; }
+startup_capture() {
+  local output error_file
+  error_file="$(mktemp)"
+  if output="$(startup_read "$@" 2>"$error_file")"; then
+    printf '%s' "$output"
+  else
+    node --input-type=module -e 'import {readFileSync} from "node:fs";const s=readFileSync(process.argv[1],"utf8");console.log(JSON.stringify({readError:s || "kubectl timed out without stderr"}))' "$error_file"
+  fi
+  rm -f "$error_file"
+}
 startup_failure() {
-  local pvc events detail
-  pvc="$(startup_read get pvc "$PVC_NAME" -o json 2>/dev/null || true)"
+  local pvc events detail deletion_error
+  pvc="$(startup_capture get pvc "$PVC_NAME" -o json)"
   # One namespaced list, filtered by the exact object UIDs in the parser. This avoids selecting
   # an event from a previous Job/pod with the same name.
-  events="$(startup_read get events -o json 2>/dev/null || true)"
+  events="$(startup_capture get events -o json)"
   detail="$(printf '%s\034%s\034%s' "$STARTUP_PODS" "$pvc" "$events" | node "$HERE/gke-startup-status.mjs" diagnose)"
-  if ! startup_read delete job "$JOB_NAME" --ignore-not-found --wait=false >/dev/null 2>&1; then
-    detail="$detail; Job deletion failed — conductor reap required"
+  if deletion_error="$(startup_read delete job "$JOB_NAME" --ignore-not-found --wait=false 2>&1)"; then
+    :
+  else
+    deletion_error="$(printf '%s' "$deletion_error" | tr '\n\r' '  ' | cut -c1-500)"
+    case "$deletion_error" in
+      *Unauthorized*|*localhost:8080*|*'You must be logged in'*)
+        detail="$detail; Job deletion authentication failed: $deletion_error" ;;
+      *) detail="$detail; Job deletion failed — conductor reap required: ${deletion_error:-kubectl timed out without stderr}" ;;
+    esac
   fi
   echo "gke-worker-launch: startup-unavailable: job $JOB_NAME: $detail" >&2
   exit 74
@@ -332,14 +353,14 @@ startup_failure() {
 POD_TRIES=0
 while :; do
   set +e
-  JOB_JSON="$("${KUBECTL[@]}" get job "$JOB_NAME" -o json --request-timeout=5s 2>/dev/null)"
+  JOB_JSON="$(startup_read get job "$JOB_NAME" -o json 2>/dev/null)"
   GET_EXIT=$?
   set -e
   VERDICT=""
   if [ "$GET_EXIT" -eq 0 ]; then
     VERDICT="$(printf '%s' "$JOB_JSON" | node -e "$JOB_VERDICT_JS" 2>/dev/null || true)"
   else
-    if [ -z "$("${KUBECTL[@]}" get job "$JOB_NAME" --ignore-not-found -o name --request-timeout=5s 2>/dev/null || echo api-error)" ]; then
+    if [ -z "$(startup_read get job "$JOB_NAME" --ignore-not-found -o name 2>/dev/null || echo api-error)" ]; then
       echo "gke-worker-launch: job $JOB_NAME is gone (reaped or deleted) — dirty exit" >&2
       exit 1
     fi
@@ -372,11 +393,26 @@ while :; do
       fi ;;
   esac
   if [ "$WORKER_STARTED" -eq 0 ] && [ "$VERDICT" != "complete" ]; then
-    STARTUP_PODS="$(startup_read get pods -l "job-name=$JOB_NAME" -o json 2>/dev/null || true)"
+    STARTUP_PODS="$(startup_capture get pods -l "job-name=$JOB_NAME" -o json)"
     if printf '%s' "$STARTUP_PODS" | node "$HERE/gke-startup-status.mjs" started; then
       WORKER_STARTED=1
-    elif [ "$SECONDS" -ge "$STARTUP_DEADLINE" ]; then
-      startup_failure
+      echo "gke-worker-launch: worker startup confirmed: job $JOB_NAME (pod read succeeded)" >&2
+    else
+      # Inspect events at expiry only. A NEW progress fingerprint earns one more window;
+      # repeated Pulling/scale-up events cannot postpone the hard deadline indefinitely.
+      if [ "$SECONDS" -ge "$STARTUP_DEADLINE" ]; then
+        STARTUP_EVENTS="$(startup_capture get events -o json)"
+        STARTUP_PVC="$(startup_capture get pvc "$PVC_NAME" -o json)"
+        STARTUP_PROGRESS="$(printf '%s\034%s\034%s' "$STARTUP_PODS" "$STARTUP_EVENTS" "$STARTUP_PVC" | node "$HERE/gke-startup-status.mjs" progress)"
+        if [ -n "$STARTUP_PROGRESS" ] && [ "$STARTUP_PROGRESS" != "$LAST_STARTUP_PROGRESS" ] && [ "$SECONDS" -lt "$STARTUP_HARD_DEADLINE" ]; then
+          LAST_STARTUP_PROGRESS="$STARTUP_PROGRESS"
+          STARTUP_DEADLINE=$((SECONDS + HARMONY_GKE_STARTUP_TIMEOUT_S))
+          if [ "$STARTUP_DEADLINE" -gt "$STARTUP_HARD_DEADLINE" ]; then STARTUP_DEADLINE=$STARTUP_HARD_DEADLINE; fi
+          echo "gke-worker-launch: startup progressing: $STARTUP_PROGRESS" >&2
+        else
+          startup_failure
+        fi
+      fi
     fi
   fi
   sleep "$HARMONY_GKE_POLL_S"

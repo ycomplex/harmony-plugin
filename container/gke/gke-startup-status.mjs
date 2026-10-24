@@ -11,12 +11,28 @@ if (mode === 'started') {
     .some(c => c.name === 'worker' && (c.state?.running || c.state?.terminated || c.lastState?.terminated)));
   process.exit(started ? 0 : 1);
 }
+if (mode === 'progress') {
+  const [pods, events, pvc] = input.split('\x1c').map(parse);
+  const uids = new Set((pods?.items || []).map(p => p.metadata?.uid).filter(Boolean));
+  const relevant = (events?.items || []).filter(e => uids.has(e.involvedObject?.uid));
+  const blocked = (events?.items || []).some(e => e.involvedObject?.uid === pvc?.metadata?.uid && e.reason === 'ProvisioningFailed') || (pods?.items || []).some(p => [...(p.status?.initContainerStatuses || []), ...(p.status?.containerStatuses || [])]
+    .some(c => ['ImagePullBackOff', 'ErrImagePull', 'CrashLoopBackOff'].includes(c.state?.waiting?.reason)));
+  if (!blocked) {
+    const progress = relevant.filter(e => ['TriggeredScaleUp', 'Pulling', 'Pulled', 'Created', 'Started'].includes(e.reason))
+      .map(e => [e.reason, e.lastTimestamp || e.eventTime || e.metadata?.creationTimestamp || ''].join(' '));
+    for (const p of pods?.items || []) for (const c of p.status?.initContainerStatuses || []) {
+      if (c.state?.running) progress.push('initializing ' + c.name + ' ' + (c.state.running.startedAt || ''));
+    }
+    if (progress.length) console.log([...new Set(progress)].sort().join('; ').slice(0, 1000));
+  }
+  process.exit(0);
+}
 const [pods, pvc, events] = input.split('\x1c').map(parse);
 const messages = [];
 const objects = [...(pods?.items || []), ...(pvc ? [pvc] : [])];
 const uids = new Set(objects.map(o => o.metadata?.uid).filter(Boolean));
 if (pvc?.status?.phase) messages.push('PVC ' + pvc.status.phase);
-else messages.push('PVC status unavailable');
+else messages.push(pvc?.readError ? 'PVC read failed: ' + pvc.readError : 'PVC status unavailable');
 for (const p of pods?.items || []) {
   for (const c of p.status?.conditions || []) {
     if (c.status === 'False' && (c.type === 'PodScheduled' || c.reason === 'Unschedulable'))
@@ -26,7 +42,7 @@ for (const p of pods?.items || []) {
     if (c.state?.waiting) messages.push([c.state.waiting.reason, c.state.waiting.message].filter(Boolean).join(': '));
   }
 }
-if (!Array.isArray(pods?.items) || !pods.items.length) messages.push('pod status unavailable');
+if (!Array.isArray(pods?.items) || !pods.items.length) messages.push(pods?.readError ? 'pod read failed: ' + pods.readError : 'pod status unavailable');
 if (Array.isArray(events?.items)) {
   // Core/v1 events carry involvedObject; lastTimestamp/eventTime/series cover both event shapes.
   const relevant = events.items.filter(e => uids.has(e.involvedObject?.uid) &&
@@ -37,7 +53,7 @@ if (Array.isArray(events?.items)) {
     const e = relevant.filter(e => e.reason === reason).at(-1);
     if (e) messages.push(reason + ': ' + (e.message || 'no event message'));
   }
-} else messages.push('events unavailable (check namespaced events read permission/API access)');
+} else messages.push(events?.readError ? 'events read failed: ' + events.readError : 'events unavailable (check namespaced events read permission/API access)');
 const detail = [...new Set(messages.filter(Boolean))].join('; ') || 'worker did not start';
 // A single bounded line is the launcher-to-scheduler diagnostic contract; no arbitrary tail copied.
 console.log(detail.replace(/[\r\n\x00-\x1f\x7f]/g, ' ').slice(0, 2400));
