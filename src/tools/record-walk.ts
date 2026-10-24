@@ -62,6 +62,7 @@ import {
   type RunGhCommand,
 } from './record-eligibility.js';
 import { recordDecision, queryKnowledge, type KnowledgeDecisionFull } from './knowledge.js';
+import type { KnowledgeScope } from './knowledge-metadata.js';
 import { referenceKnowledge } from './workflow.js';
 import { slugRef } from './payload-refs.js';
 import { updateTask } from './tasks.js';
@@ -135,6 +136,10 @@ export interface RecordWalkArgs {
   summary: string;
   evidence: EligibilityEvidenceLink[];
   attest_walk?: string;
+  /** B-1275 — the scope stamped on every knowledge entry this walk writes. B-1141 made scope
+   *  mandatory for new knowledge; omitted ⇒ `'product'` (a recorded ticket describes product work
+   *  unless the caller says `'deployment'`). */
+  scope?: KnowledgeScope;
   /** B-1073 step 9 — resume the walk starting at this gate (inclusive); every gate BEFORE it in
    *  `RECORD_WALK_GATE_ORDER` is skipped. Omitted ⇒ `'clarify'` (today's unchanged default — every
    *  gate runs, exactly as before this ticket). The drain's own post-merge-request case (step 10)
@@ -553,6 +558,7 @@ async function coupleDecomposeNoSplitConvention(
   projectId: string,
   userId: string,
   taskId: string,
+  scope: KnowledgeScope,
 ): Promise<void> {
   const existing = await queryKnowledge(client, projectId, {
     type: 'convention',
@@ -578,6 +584,7 @@ async function coupleDecomposeNoSplitConvention(
       source_task_id: taskId,
       source_activity: 'decompose',
       provenance: KNOWLEDGE_WRITE_PROVENANCE_RECORDED,
+    scope,
     });
     entryId = created.id;
   }
@@ -594,6 +601,8 @@ export async function runRecordedWalk(
   userId: string,
   args: RecordWalkArgs,
 ): Promise<RecordWalkResult> {
+  // B-1275: every knowledge write below carries a scope; B-1141 refuses new knowledge without one.
+  const scope: KnowledgeScope = args.scope ?? 'product';
   const eligibility = evaluateEligibility({
     summary: args.summary,
     evidence: args.evidence,
@@ -690,6 +699,7 @@ export async function runRecordedWalk(
       source_task_id: taskId,
       tags: ticketTags,
       provenance: KNOWLEDGE_WRITE_PROVENANCE_RECORDED,
+    scope,
     });
     await referenceKnowledge(client, projectId, { task_id: taskId, decision_id: clarifyDecision.id });
 
@@ -762,7 +772,7 @@ export async function runRecordedWalk(
 
     if (runs('decompose')) {
     // ——— DECOMPOSE (no-split shape — see this file's header SCOPE NOTE) —————————————————————————
-    await coupleDecomposeNoSplitConvention(client, projectId, userId, taskId);
+    await coupleDecomposeNoSplitConvention(client, projectId, userId, taskId, scope);
     await composeAndAccept(client, projectId, userId, taskId, {
       reason: GATE_REASONS.decompose!,
       pendingActivity: 'decomposing',
@@ -791,6 +801,7 @@ export async function runRecordedWalk(
       source_activity: 'design-decide',
       source_task_id: taskId,
       provenance: KNOWLEDGE_WRITE_PROVENANCE_RECORDED,
+    scope,
     });
     await referenceKnowledge(client, projectId, { task_id: taskId, decision_id: designDecision.id });
 
@@ -832,6 +843,7 @@ export async function runRecordedWalk(
       source_activity: 'plan',
       source_task_id: taskId,
       provenance: KNOWLEDGE_WRITE_PROVENANCE_RECORDED,
+    scope,
     });
     await referenceKnowledge(client, projectId, { task_id: taskId, decision_id: planDecision.id });
 
@@ -1058,6 +1070,10 @@ export interface RecordToolArgs {
   summary: string;
   evidence: Array<{ url: string; repo?: string; paths?: string[] }>;
   attest_walk?: string;
+  /** B-1275 — the scope stamped on every knowledge entry this walk writes. B-1141 made scope
+   *  mandatory for new knowledge; omitted ⇒ `'product'` (a recorded ticket describes product work
+   *  unless the caller says `'deployment'`). */
+  scope?: KnowledgeScope;
   /** B-1073 step 9 — resume the walk starting at this gate; omitted ⇒ `'clarify'` (unchanged
    *  default). See `RecordWalkArgs.from_gate`'s own doc comment. */
   from_gate?: RecordWalkGateName;
@@ -1107,6 +1123,11 @@ export const recordTool = {
         type: 'string',
         description: 'Attest a 5+ minute verify walk — who/what was walked. Never auto-passed; omit to leave this eligibility item UNATTESTED (which refuses the walk).',
       },
+      scope: {
+        type: 'string',
+        enum: ['product', 'deployment'],
+        description: "B-1275 — scope stamped on every knowledge entry the walk writes; omitted ⇒ 'product'.",
+      },
       from_gate: {
         type: 'string',
         enum: RECORD_WALK_GATE_ORDER as unknown as string[],
@@ -1135,6 +1156,7 @@ export async function recordToolHandler(
     summary: args.summary,
     evidence: args.evidence ?? [],
     attest_walk: args.attest_walk,
+    scope: args.scope,
     from_gate: args.from_gate,
     to_gate: args.to_gate,
   });

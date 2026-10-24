@@ -408,6 +408,8 @@ describe('runRecordedWalk — mints/couples the same knowledge-entry shape a con
     // Exactly 4 mints: clarify, decompose's shared convention (create path — queryKnowledge returns
     // [] by default in beforeEach), design, plan.
     expect(recordDecision).toHaveBeenCalledTimes(4);
+    // B-1275: B-1141 refuses new knowledge without a scope; every recorded write carries one.
+    for (const call of recordDecision.mock.calls) expect((call as any[])[3].scope).toBe('product');
     const pairs = recordDecision.mock.calls.map((c: any) => [c[3].type, c[3].source_activity]);
     expect(pairs).toEqual([
       ['specification', 'clarify'],

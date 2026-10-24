@@ -23,6 +23,8 @@ interface RecordOpts {
   summary: string;
   evidence: string[];
   attestWalk?: string;
+  /** B-1275 — scope for every knowledge entry the walk writes; validated below. */
+  scope?: string;
   check?: boolean;
   /** B-1073 — raw CLI value; validated against RECORD_WALK_GATE_ORDER in the action below before
    *  being narrowed to RecordWalkGateName. */
@@ -53,6 +55,7 @@ export function registerRecordCommand(program: Command): void {
     .option('--evidence <url>', 'Evidence link (repeatable — pass --evidence multiple times)', (val: string, prev: string[]) => [...prev, val], [] as string[])
     .option('--attest-walk <who-what>', "Attest a 5+ minute verify walk — who/what was walked. Never auto-passed; omit to leave this item UNATTESTED.")
     .option('--check', 'Print every eligibility item\'s verdict and mutate nothing. Exits non-zero if any item fails or is unattested.', false)
+    .option('--scope <scope>', "B-1275 — scope stamped on every knowledge entry the walk writes: product or deployment (default: product).", 'product')
     .option(
       '--from-gate <gate>',
       `B-1073 — resume the walk starting at this gate (one of: ${RECORD_WALK_GATE_ORDER.join(', ')}). Omit to start at 'clarify' (today's unchanged default).`,
@@ -62,6 +65,10 @@ export function registerRecordCommand(program: Command): void {
       `B-1073 fast-track-daemon-ending round — bound the walk to stop at this gate, inclusive (one of: ${RECORD_WALK_GATE_ORDER.join(', ')}). Omit to run to 'verify' (today's unchanged default).`,
     )
     .action(async (ticket: string, opts: RecordOpts) => {
+      if (opts.scope !== undefined && opts.scope !== 'product' && opts.scope !== 'deployment') {
+        console.error(`harmony record: --scope must be product or deployment (got '${opts.scope}')`);
+        process.exit(1);
+      }
       if (opts.fromGate !== undefined && !RECORD_WALK_GATE_ORDER.includes(opts.fromGate as RecordWalkGateName)) {
         console.error(
           `harmony record: --from-gate must be one of: ${RECORD_WALK_GATE_ORDER.join(', ')} (got '${opts.fromGate}')`,
@@ -103,6 +110,7 @@ export function registerRecordCommand(program: Command): void {
             summary: opts.summary,
             evidence,
             attest_walk: opts.attestWalk,
+            scope: opts.scope as 'product' | 'deployment' | undefined,
             from_gate: opts.fromGate as RecordWalkGateName | undefined,
             to_gate: opts.toGate as RecordWalkGateName | undefined,
           });
