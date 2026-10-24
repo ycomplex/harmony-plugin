@@ -16,11 +16,11 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-      - name: Get released Harmony CLI (0.16.33 by default)
+      - name: Get released Harmony CLI (0.16.41 by default)
         uses: actions/checkout@v6
         with:
           repository: ycomplex/harmony-plugin
-          ref: c72d5d36b876e684ca07f4f36e90418167843653
+          ref: fc1024d73375ced1a3367549820f728dead3d6f8
           path: .harmony-cli
           persist-credentials: false
       - uses: actions/setup-node@v6
