@@ -33,6 +33,50 @@ An identical fingerprint and payload preserve the record ID and capture time (`c
 
 The Knowledge owner drawer shows a separate **Rendered surface** section after live production text, with wording grouped by kind, source and capture time. **Refresh captures** reloads the observations without editing them.
 
+## Build capture and evidence
+
+For each changed user-facing component, resolve the exact owner from this ticket's
+Accepted scope/design, read it with `read_feature_accounts`, then read its existing
+capture with `read_surface_records`. Similar names or directory proximity do not
+authorize an owner mapping.
+
+If the owner read returns `not-found`, a build may call `create_feature_account`
+**only for an exact `owner_surface` explicitly ratified in this ticket's Accepted
+scope/design**. Record the authorizing decision/scope and exact component mapping in
+the ticket evidence. Probe the create capability first, create only the empty
+identity, then read it back to confirm the stable account id and owner before
+capturing. Leave all existing clauses/accounts untouched. Do not insert clauses,
+propose amendments, or publish `current_text` to enable a capture. If ownership is
+ambiguous or creation is not authorized, report the component's missing-owner gap;
+never invent an identity. `unavailable` and permission/network errors are separate
+outcomes, not `not-found` and not permission to try another write path.
+
+Extract wording from the actual committed component source or screenshot alt text
+and follow **Capture and refresh** above. Include static accessible labels, button
+names and headings; do not invent values for runtime data or error interpolation.
+Read the capture back and compare wording, component, owner and source metadata
+before claiming success. This creates an observed record, not account text or a
+historical decision. Read the account again to confirm live text and clauses were
+left untouched; identity-only creation does not authorize publication.
+
+Every build evidence comment must include a literal `SURFACE-CAPTURE:` outcome,
+including builds that changed no user-facing components. Report each changed
+component separately, including gaps alongside successful captures. Use these
+forms with real values (the angle-bracket fields are placeholders):
+
+- `SURFACE-CAPTURE: captured <n> record(s) for <owner_surface>/<component_ref>; record=<id>; source=<locator>; fingerprint=<sha256>; readback verified`
+- `SURFACE-CAPTURE: no owner identity for <component_ref> — gap; <missing authorization or ambiguous mapping>`
+- `SURFACE-CAPTURE: unavailable (<capability and reason>) for <component_ref>`
+- `SURFACE-CAPTURE: error (<actual error>) for <component_ref>`
+- `SURFACE-CAPTURE: no user-facing component changed`
+
+If capture succeeded but readback did not, report an error and the uncertain
+record/write result, not `captured`. Preserve actual errors and refuse unsupported
+writes explicitly. Before release, disposition each unresolved gap/blocker through
+the owning ticket's tracked scope/acceptance criteria or the normal follow-up drain;
+a comment alone does not complete it. Tests of handlers cannot replace an owed live
+capture/readback. This outcome requirement applies to both agent runtimes.
+
 ## Rollout and errors
 
 Merge the web schema and reader to staging, then the plugin handlers and build instructions. Production promotion applies the web migration before promoting the plugin. No plugin version or generated bundle changes belong in the PR.
