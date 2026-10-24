@@ -54252,7 +54252,8 @@ var toSummary = (row) => ({
   last_worker_exit_class: row.last_worker_exit_class,
   updated_at: row.updated_at,
   worker_ref: row.worker_ref,
-  retry_count: row.retry_count
+  retry_count: row.retry_count,
+  run_config: row.run_config ?? null
 });
 async function listConductions2(client, projectId, args) {
   if (!args.task_id) throw new Error("task_id is required");
@@ -54262,7 +54263,7 @@ async function listConductions2(client, projectId, args) {
 }
 var listConductionsTool = {
   name: "list_conductions",
-  description: "B-894: list one ticket's conduction records \u2014 the durable per-run rows the conductor drives \u2014 newest first. This is the ONLY way to obtain a `conduction_id`, so call it first whenever you need to pass one to `request_conduction_reap` (the early-reap request for a hung run). Use it to answer: is this ticket being conducted right now, and by which conduction? When did the run last heartbeat (a long-stale `last_heartbeat_at` on an `active` row is the signature of a hung leg)? Has a reap already been requested (`reap_requested_at` non-null \u2014 do not request another)? How did the last leg exit (`last_worker_exit_class`) and how many retries has it taken (`retry_count`)? Returns a lean ten-field row per conduction (id, status, mode, started_at, last_heartbeat_at, reap_requested_at, last_worker_exit_class, updated_at, worker_ref, retry_count) \u2014 conductor lease/CAS internals are deliberately not exposed. A ticket that has never been conducted returns an empty list, not an error.",
+  description: "B-894: list one ticket's conduction records \u2014 the durable per-run rows the conductor drives \u2014 newest first. This is the ONLY way to obtain a `conduction_id`, so call it first whenever you need to pass one to `request_conduction_reap` (the early-reap request for a hung run). Use it to answer: is this ticket being conducted right now, and by which conduction? When did the run last heartbeat (a long-stale `last_heartbeat_at` on an `active` row is the signature of a hung leg)? Has a reap already been requested (`reap_requested_at` non-null \u2014 do not request another)? How did the last leg exit (`last_worker_exit_class`) and how many retries has it taken (`retry_count`)? Returns a lean eleven-field row per conduction (id, status, mode, started_at, last_heartbeat_at, reap_requested_at, last_worker_exit_class, updated_at, worker_ref, retry_count, run_config \u2014 the settings a leg launches with, B-1274) \u2014 conductor lease/CAS internals are deliberately not exposed. A ticket that has never been conducted returns an empty list, not an error.",
   inputSchema: {
     type: "object",
     properties: {
@@ -55472,15 +55473,46 @@ async function assertRunConfigRuntime(client, runConfig) {
   }
 }
 
+// src/tools/unpark-inheritance.ts
+var INHERITED_FROM_KEY = "inherited_from";
+var isPlainObject6 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+function mergeRunConfig(base, override) {
+  const merge2 = (a, b) => {
+    const out = { ...a };
+    for (const [key, value] of Object.entries(b)) {
+      if (value === void 0) continue;
+      out[key] = isPlainObject6(value) && isPlainObject6(out[key]) ? merge2(out[key], value) : value;
+    }
+    return out;
+  };
+  return RunConfigSchema.parse(merge2(base, override ?? {}));
+}
+async function resolveUnparkRunConfig(client, taskId, args) {
+  if (!args.unpark) return args.explicit;
+  const { data, error: error2 } = await client.from("tasks").select("workflow_state").eq("id", taskId).single();
+  if (error2) throw new Error(error2.message);
+  if (data?.workflow_state !== "Parked") return args.explicit;
+  const [previous] = await listConductions(client, { task_id: taskId, order: "desc" });
+  if (!previous) return args.explicit;
+  const { [INHERITED_FROM_KEY]: _dropped, ...inherited } = previous.run_config ?? {};
+  void _dropped;
+  const merged = mergeRunConfig(RunConfigSchema.parse(inherited), args.explicit);
+  return { ...merged, [INHERITED_FROM_KEY]: previous.id };
+}
+
 // src/tools/create-conduction.ts
 var HANDOFF_CONTRACT_NOTE = "the duplicate-guard can only detect an active conduction record \u2014 it can't see an in-progress terminal session, so make sure any in-session work on this ticket has stopped before handing it off.";
 async function createConduction2(client, projectId, userId, args) {
   if (!args.task_id) throw new Error("task_id is required");
-  const runConfig = args.run_config !== void 0 ? RunConfigSchema.parse(args.run_config) : void 0;
+  const explicitRunConfig = args.run_config !== void 0 ? RunConfigSchema.parse(args.run_config) : void 0;
+  const taskId = await resolveTaskId2(client, projectId, args.task_id);
+  const runConfig = await resolveUnparkRunConfig(client, taskId, {
+    unpark: args.unpark,
+    explicit: explicitRunConfig
+  });
   const defaults = await getProjectConductionDefaults(client, projectId);
   const filledRunConfig = fillRunConfigDefaults(runConfig, defaults);
   await assertRunConfigRuntime(client, filledRunConfig);
-  const taskId = await resolveTaskId2(client, projectId, args.task_id);
   try {
     await reviveParkedTicketIfNeeded(client, projectId, userId, taskId, {
       unpark: args.unpark,

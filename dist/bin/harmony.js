@@ -50503,6 +50503,33 @@ async function assertRunConfigRuntime(client, runConfig) {
   }
 }
 
+// src/tools/unpark-inheritance.ts
+var INHERITED_FROM_KEY = "inherited_from";
+var isPlainObject4 = (v2) => typeof v2 === "object" && v2 !== null && !Array.isArray(v2);
+function mergeRunConfig(base, override) {
+  const merge = (a3, b) => {
+    const out = { ...a3 };
+    for (const [key, value] of Object.entries(b)) {
+      if (value === void 0) continue;
+      out[key] = isPlainObject4(value) && isPlainObject4(out[key]) ? merge(out[key], value) : value;
+    }
+    return out;
+  };
+  return RunConfigSchema.parse(merge(base, override ?? {}));
+}
+async function resolveUnparkRunConfig(client, taskId, args) {
+  if (!args.unpark) return args.explicit;
+  const { data, error } = await client.from("tasks").select("workflow_state").eq("id", taskId).single();
+  if (error) throw new Error(error.message);
+  if (data?.workflow_state !== "Parked") return args.explicit;
+  const [previous] = await listConductions(client, { task_id: taskId, order: "desc" });
+  if (!previous) return args.explicit;
+  const { [INHERITED_FROM_KEY]: _dropped, ...inherited } = previous.run_config ?? {};
+  void _dropped;
+  const merged = mergeRunConfig(RunConfigSchema.parse(inherited), args.explicit);
+  return { ...merged, [INHERITED_FROM_KEY]: previous.id };
+}
+
 // src/cli/commands/conduct.ts
 function registerConductCommand(program3) {
   program3.command("conduct").description("Create a conduction for a ticket \u2014 the conductor picks it up and drives the run").argument("<ticket>", "Task ID (UUID, number, or B-123)").option("--unpark", "Revive a Parked ticket and hand it to the conductor in this same call (B-964)", false).option("--resume-to <state>", "Target workflow_state override when reviving a Parked ticket (defaults to the ticket's own parked_from, else Proposed)").option("--model <alias>", "B-925: explicit model alias for this run (fills run_config.model.default)").option("--session-resume", "B-925: explicitly enable session-resume for this run").option("--no-session-resume", "B-925: explicitly disable session-resume for this run").option("--auto-approve-gates <gates>", "B-925: comma-separated forward gates to auto-approve for this run").option("--no-auto-approve-gates", "B-925: explicitly auto-approve no gates for this run").option("--fast-track", "B-1073: run this conduction in fast-track mode (sets run_config.fast_track)").option("--agent <id>", "B-1147: agent runtime for this run (sets run_config.agent.adapter), e.g. claude-code, codex").action(async (ticket, opts) => {
@@ -50518,6 +50545,7 @@ function registerConductCommand(program3) {
       async (ctx) => {
         const taskId = await resolveTaskId(ctx.client, ctx.projectId, ticket);
         try {
+          const inheritedBase = await resolveUnparkRunConfig(ctx.client, taskId, { unpark: opts.unpark });
           await reviveParkedTicketIfNeeded(ctx.client, ctx.projectId, ctx.userId, taskId, {
             unpark: opts.unpark,
             resume_to: opts.resumeTo,
@@ -50540,7 +50568,8 @@ function registerConductCommand(program3) {
           if (opts.agent !== void 0) {
             runConfigInput.agent = { adapter: opts.agent };
           }
-          const callerRunConfig = Object.keys(runConfigInput).length > 0 ? RunConfigSchema.parse(runConfigInput) : void 0;
+          const flagRunConfig = Object.keys(runConfigInput).length > 0 ? RunConfigSchema.parse(runConfigInput) : void 0;
+          const callerRunConfig = inheritedBase !== void 0 ? mergeRunConfig(inheritedBase, flagRunConfig) : flagRunConfig;
           const defaults2 = await getProjectConductionDefaults(ctx.client, ctx.projectId);
           const filledRunConfig = fillRunConfigDefaults(callerRunConfig, defaults2);
           await assertRunConfigRuntime(ctx.client, filledRunConfig);

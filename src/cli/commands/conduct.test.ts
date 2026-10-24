@@ -48,6 +48,13 @@ class ExitSentinel extends Error {
   }
 }
 
+// B-1274: the unpark-inheritance read is covered by unpark-inheritance.test.ts; here it is a
+// passthrough so this suite's fake client is never queried.
+vi.mock('../../tools/unpark-inheritance.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../tools/unpark-inheritance.js')>();
+  return { ...actual, resolveUnparkRunConfig: async (_c: unknown, _t: unknown, a: { explicit?: unknown }) => a.explicit };
+});
+
 const ctx = { client: { fake: 'client' }, projectId: 'proj-1', userId: 'user-1' };
 
 const conductionRow = {
