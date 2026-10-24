@@ -37294,9 +37294,13 @@ function questionFields(d) {
     resulting_decision_id: q2.state === "decided" ? d.superseded_by ?? null : null
   };
 }
+var QUESTION_PRIORITY_MAX_DISTANCE = 0.35;
+var PROSE_PRIORITY_MAX_DISTANCE = 0.45;
 function priority(d) {
+  if (typeof d.semantic_distance !== "number") return false;
+  if (d.source_kind === "document" || d.source_kind === "skill") return d.semantic_distance <= PROSE_PRIORITY_MAX_DISTANCE;
   const q2 = questionFields(d);
-  return (q2.question_state === "open" || q2.question_state === "parked") && typeof d.semantic_distance === "number" && d.semantic_distance <= 0.35;
+  return (q2.question_state === "open" || q2.question_state === "parked") && d.semantic_distance <= QUESTION_PRIORITY_MAX_DISTANCE;
 }
 async function searchKnowledge(client, projectId, args, started = performance.now()) {
   const end = started + SEARCH_BUDGET_MS - 100;

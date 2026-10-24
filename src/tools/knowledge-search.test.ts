@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createClient } from '@supabase/supabase-js';
 import { queryKnowledge } from './knowledge.js';
-import { normalizeTags } from './knowledge-search.js';
+import { normalizeTags, PROSE_PRIORITY_MAX_DISTANCE } from './knowledge-search.js';
 
 const entry = (id: string, extra = {}) => ({ id, source_kind: 'knowledge', title: 'quasar design', content: 'quasar design rule', type: 'technical-design', status: 'Accepted', tags: [], domain: ['engineering'], project_id: 'p', updated_at: '2026-10-22T00:00:00Z', ...extra });
 const row = (id: string, rank = 1, extra = {}) => ({ candidate: entry(id, extra), signal_rank: rank, overflow: false });
@@ -349,4 +349,21 @@ it('bounds a hung admission probe and labels enforcement unknown without losing 
   expect(answer.elapsed_ms).toBeLessThanOrEqual(6000);
   expect(answer.relevance_admission.enforcement).toEqual({lexical:'unknown',semantic:'unknown'});
   expect(answer.routes_tried).toContainEqual(expect.objectContaining({route:'relevance-admission',outcome:'timeout',reason:'deadline'}));
+});
+
+describe('B-1272 prose priority tier', () => {
+  const prose = (id: string, rank: number, extra = {}) => row(id, rank, { source_kind: 'document', ...extra });
+  const ids = async (o: Parameters<typeof fixture>[0]) => (await queryKnowledge(fixture(o).client, 'p', { search: 'quasar' })).matches.map(d => d.id);
+  it('ranks close-matching prose ahead of a higher-scored plain entry', async () => {
+    expect(await ids({ lexical: [row('plain', 1)], semantic: [row('plain', 1, { semantic_distance: 0.6 }), prose('doc', 5, { semantic_distance: PROSE_PRIORITY_MAX_DISTANCE })] })).toEqual(['doc', 'plain']);
+  });
+  it('does not promote prose above the threshold', async () => {
+    expect(await ids({ lexical: [row('plain', 1)], semantic: [row('plain', 1, { semantic_distance: 0.6 }), prose('doc', 5, { semantic_distance: PROSE_PRIORITY_MAX_DISTANCE + 0.01 })] })).toEqual(['plain', 'doc']);
+  });
+  it('keeps score order for prose without semantic_distance', async () => {
+    expect(await ids({ lexical: [row('plain', 1), prose('doc', 5)], semantic: [row('plain', 1, { semantic_distance: 0.6 }), prose('skill', 6, { source_kind: 'skill', semantic_distance: null })] })).toEqual(['plain', 'doc', 'skill']);
+  });
+  it('leaves question priority unchanged at 0.35', async () => {
+    expect(await ids({ lexical: [row('plain', 1)], semantic: [row('plain', 1, { semantic_distance: 0.1 }), row('q', 5, { ...question(), semantic_distance: 0.35 })] })).toEqual(['q', 'plain']);
+  });
 });

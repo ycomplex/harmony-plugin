@@ -72,9 +72,16 @@ function questionFields(d: Candidate): Partial<KnowledgeEntrySummary> {
     answer: q.state === 'decided' ? 'decided; see resulting decision' : 'not yet decided',
     resulting_decision_id: q.state === 'decided' ? d.superseded_by ?? null : null };
 }
+/** Inclusive semantic-distance gate for open/parked knowledge questions. */
+export const QUESTION_PRIORITY_MAX_DISTANCE = 0.35;
+/** Inclusive semantic-distance gate for prose (document/skill) chunks. PLACEHOLDER (B-1272): to be re-set from
+ * measurements on staging once the prose-embedding migration has deployed. */
+export const PROSE_PRIORITY_MAX_DISTANCE = 0.45;
 function priority(d: Candidate): boolean {
+  if (typeof d.semantic_distance !== 'number') return false;
+  if (d.source_kind === 'document' || d.source_kind === 'skill') return d.semantic_distance <= PROSE_PRIORITY_MAX_DISTANCE;
   const q = questionFields(d);
-  return (q.question_state === 'open' || q.question_state === 'parked') && typeof d.semantic_distance === 'number' && d.semantic_distance <= 0.35;
+  return (q.question_state === 'open' || q.question_state === 'parked') && d.semantic_distance <= QUESTION_PRIORITY_MAX_DISTANCE;
 }
 
 /** One owner from handler entry, including scope lookup. Every awaited network operation is raced;
