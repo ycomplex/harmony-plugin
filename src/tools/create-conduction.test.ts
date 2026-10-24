@@ -44,6 +44,13 @@ vi.mock('../config/conduction-defaults.js', async (importOriginal) => {
   };
 });
 
+// B-1274: the unpark-inheritance read is covered by unpark-inheritance.test.ts; here it is a
+// passthrough so these suites' fake clients are never queried.
+vi.mock('./unpark-inheritance.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./unpark-inheritance.js')>();
+  return { ...actual, resolveUnparkRunConfig: async (_c: unknown, _t: unknown, a: { explicit?: unknown }) => a.explicit };
+});
+
 const client = { fake: 'client' } as never;
 
 const conductionRow = {

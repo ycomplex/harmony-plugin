@@ -2,7 +2,7 @@
 //
 // Mirrors create-conduction.test.ts's mocking convention (the tool handler layer): resolveTaskId
 // and the shared-core listConductions primitive are mocked; this suite is about the tool's own
-// contract — the task filter, newest-first ordering, the empty-list answer, and the EXACT ten-field
+// contract — the task filter, newest-first ordering, the empty-list answer, and the EXACT eleven-field
 // lean row shape.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -90,13 +90,13 @@ describe('listConductions (list_conductions MCP tool handler)', () => {
     expect(result.conductions).toEqual([]);
   });
 
-  it('returns the EXACT ten-field lean row — no more, no fewer', async () => {
+  it('returns the EXACT eleven-field lean row — no more, no fewer', async () => {
     const result = await listConductions(client, 'proj-1', { task_id: 'B-894' });
     const row = result.conductions[0];
 
     // Exact key set: an accidental field ADDITION or REMOVAL fails here.
     expect(Object.keys(row).sort()).toEqual([...CONDUCTION_SUMMARY_FIELDS].sort());
-    expect(Object.keys(row)).toHaveLength(10);
+    expect(Object.keys(row)).toHaveLength(11);
     expect([...CONDUCTION_SUMMARY_FIELDS].sort()).toEqual(
       [
         'id',
@@ -109,6 +109,7 @@ describe('listConductions (list_conductions MCP tool handler)', () => {
         'updated_at',
         'worker_ref',
         'retry_count',
+        'run_config',
       ].sort(),
     );
 
@@ -123,6 +124,8 @@ describe('listConductions (list_conductions MCP tool handler)', () => {
       updated_at: '2026-08-30T00:06:00Z',
       worker_ref: 'run-42',
       retry_count: 2,
+      // B-1274: the settings a leg launches with are visible without reading run.env.
+      run_config: { note: 'secret' },
     });
   });
 
@@ -135,7 +138,6 @@ describe('listConductions (list_conductions MCP tool handler)', () => {
       'worker_kind',
       'last_worker_exit_code',
       'current_pr_ref',
-      'run_config',
       'created_by',
       'leg_started_at',
       'clean_shutdown_at',

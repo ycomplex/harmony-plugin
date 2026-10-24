@@ -31,6 +31,7 @@ import {
 import { RunConfigSchema, type RunConfig } from '../config/run-config.js';
 import { getProjectConductionDefaults, fillRunConfigDefaults } from '../config/conduction-defaults.js';
 import { assertRunConfigRuntime } from '../config/runtime-validation.js';
+import { resolveUnparkRunConfig } from './unpark-inheritance.js';
 
 export interface CreateConductionArgs {
   task_id: string;
@@ -75,16 +76,23 @@ export async function createConduction(
   if (!args.task_id) throw new Error('task_id is required');
   // B-743: validate run_config BEFORE the task-id resolution round-trip — a malformed payload is a
   // caller bug that should fail fast, not after an otherwise-wasted network call.
-  const runConfig =
+  const explicitRunConfig =
     args.run_config !== undefined ? RunConfigSchema.parse(args.run_config) : undefined;
   // B-925: fill in whichever run_config field the caller left absent from this project's own
   // stored conduction defaults (settings, web-side) — field-by-field, never overriding a field the
   // caller explicitly set. Tolerant of the column not existing yet (see getProjectConductionDefaults).
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  // B-1274: an unpark of a Parked ticket inherits the previous conduction's run_config, with the
+  // caller's own run_config merged over it. Read-only and ahead of the revive, so a bad merged
+  // config still fails before the ticket is unparked.
+  const runConfig = await resolveUnparkRunConfig(client, taskId, {
+    unpark: args.unpark,
+    explicit: explicitRunConfig,
+  });
   const defaults = await getProjectConductionDefaults(client, projectId);
   const filledRunConfig = fillRunConfigDefaults(runConfig, defaults);
   // B-1147: refuse an unknown runtime, or a model that runtime cannot run.
   await assertRunConfigRuntime(client, filledRunConfig);
-  const taskId = await resolveTaskId(client, projectId, args.task_id);
 
   try {
     // B-964: a no-op when the ticket isn't Parked; refuses cleanly (TicketParkedError) when it IS

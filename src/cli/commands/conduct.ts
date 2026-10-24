@@ -47,6 +47,7 @@ import {
 import { RunConfigSchema, type RunConfig } from '../../config/run-config.js';
 import { getProjectConductionDefaults, fillRunConfigDefaults } from '../../config/conduction-defaults.js';
 import { assertRunConfigRuntime } from '../../config/runtime-validation.js';
+import { resolveUnparkRunConfig, mergeRunConfig } from '../../tools/unpark-inheritance.js';
 import { hasAdapter, listAdapterIds } from '../../agents/registry.js';
 import { runCommand } from '../run-command.js';
 
@@ -89,6 +90,9 @@ export function registerConductCommand(program: Command): void {
         async (ctx) => {
           const taskId = await resolveTaskId(ctx.client, ctx.projectId, ticket);
           try {
+            // B-1274: read the previous conduction's run_config BEFORE the revive (the ticket must
+            // still be Parked to count as an unpark); merged with this call's flags further down.
+            const inheritedBase = await resolveUnparkRunConfig(ctx.client, taskId, { unpark: opts.unpark });
             // B-964: a no-op when the ticket isn't Parked; refuses cleanly (TicketParkedError) when
             // it IS Parked and --unpark was not passed, and revalidates (tasks.stale) + unparks
             // BEFORE any conduction is created when it was.
@@ -130,10 +134,13 @@ export function registerConductCommand(program: Command): void {
             if (opts.agent !== undefined) {
               runConfigInput.agent = { adapter: opts.agent };
             }
-            const callerRunConfig: RunConfig | undefined =
+            const flagRunConfig: RunConfig | undefined =
               Object.keys(runConfigInput).length > 0
                 ? RunConfigSchema.parse(runConfigInput)
                 : undefined;
+            // B-1274: the flags are an override merged over the inherited settings, as for the tool.
+            const callerRunConfig =
+              inheritedBase !== undefined ? mergeRunConfig(inheritedBase, flagRunConfig) : flagRunConfig;
             const defaults = await getProjectConductionDefaults(ctx.client, ctx.projectId);
             const filledRunConfig = fillRunConfigDefaults(callerRunConfig, defaults);
             // B-1147: refuse an unknown runtime, or a model that runtime cannot run.
