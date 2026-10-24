@@ -2804,13 +2804,17 @@ export async function composeBrief(
     pending_activity?: string | null;
   } | null;
 
+  // B-1259: a known gate-reason change starts fresh acceptance metadata, matching B-1004's doc reset.
+  // Unknown prior reasons retain legacy carry-forward behavior.
+  const reasonChanged = !!existingRow?.reason && existingRow.reason !== args.reason;
+
   // B-866 — THE MERGED decision_ref: what the row will actually carry after this compose, not what this
   // call passed. The B-843 revision patch is a PARTIAL — an omitted `decision_ref` CARRIES FORWARD — so
   // rendering from `args.decision_ref` made a partial recompose keep the pointer on the row while
   // silently dropping the depth-pointer line from the content the human reads. Absent ≠ null here, and
-  // that distinction is the whole fix: omitted means "keep whatever is there", explicit null means clear.
+  // that distinction is the whole fix: within one reason omitted means keep, explicit null means clear.
   const mergedDecisionRef: DecisionRef | null =
-    args.decision_ref !== undefined ? (args.decision_ref ?? null) : (existingRow?.decision_ref ?? null);
+    args.decision_ref !== undefined ? (args.decision_ref ?? null) : (reasonChanged ? null : existingRow?.decision_ref ?? null);
 
   // B-901 — THE MERGED DOC, computed ONCE, here, and used by everything below: the risk-class derivation,
   // the gate slot, the entry content, the render, the lint AND the patch that is written. Before this the
@@ -2874,7 +2878,7 @@ export async function composeBrief(
   // the B-715 stale backstop, so it can now be REFUSED where it previously composed in silence. That
   // silent skip was itself a bypass of the stale backstop. There is deliberately no escape hatch.
   const mergedPendingActivity: string | null =
-    args.pending_activity !== undefined ? (pendingActivity ?? null) : (existingRow?.pending_activity ?? null);
+    args.pending_activity !== undefined ? (pendingActivity ?? null) : (reasonChanged ? null : existingRow?.pending_activity ?? null);
 
   // Compose-time guard (fail-fast): a pending_activity must yield a real transition from the current state.
   // Invariant: P1's seed has (from_state, activity) unique, so maybeSingle is exact; if a future seed adds
@@ -3077,13 +3081,14 @@ export async function composeBrief(
   // B-901: `doc` here is the MERGED doc (prior || patch, computed above), not this call's partial. That is
   // the whole shape of the fix — the database applies `prior || merged`, which is an IDEMPOTENT NO-OP, so
   // the row's doc, the `content` rendered from it, and the doc the §3.2 lint judged are one value. The
-  // absent-vs-null discipline for the OTHER keys below is unchanged: a key the caller did not pass stays
-  // absent from the patch and the DB carries it forward.
+  // absent-vs-null discipline for the OTHER keys below is unchanged within one reason. A new reason
+  // explicitly clears omitted acceptance metadata so the DB cannot carry the previous gate forward.
   const revisionPatch: Record<string, unknown> = { reason: args.reason, doc, content };
   if (args.expand_sections !== undefined) revisionPatch.expand_sections = args.expand_sections;
   if (args.related !== undefined) revisionPatch.related = args.related;
-  if (args.pending_activity !== undefined) revisionPatch.pending_activity = pendingActivity ?? null;
-  if (args.decision_ref !== undefined) revisionPatch.decision_ref = args.decision_ref ?? null;
+  // A reason change must send explicit nulls: omission would let the RPC resurrect the previous gate.
+  if (args.pending_activity !== undefined || reasonChanged) revisionPatch.pending_activity = mergedPendingActivity;
+  if (args.decision_ref !== undefined || reasonChanged) revisionPatch.decision_ref = mergedDecisionRef;
 
   let brief: unknown;
   if (existing) {
