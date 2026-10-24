@@ -41427,7 +41427,8 @@ async function composeBrief(client, projectId, userId, args) {
   const { data: existing, error: lookupErr } = await client.from("briefs").select("id, iteration, reason, decision_ref, doc, pending_activity").eq("task_id", taskId).eq("status", "active").maybeSingle();
   if (lookupErr) throw new Error(lookupErr.message);
   const existingRow = existing;
-  const mergedDecisionRef = args.decision_ref !== void 0 ? args.decision_ref ?? null : existingRow?.decision_ref ?? null;
+  const reasonChanged = !!existingRow?.reason && existingRow.reason !== args.reason;
+  const mergedDecisionRef = args.decision_ref !== void 0 ? args.decision_ref ?? null : reasonChanged ? null : existingRow?.decision_ref ?? null;
   const priorDoc = existingRow?.doc ?? null;
   const patchDoc = resetDocOnReasonChange(priorDoc, args.doc, existingRow?.reason, args.reason);
   const mergedDoc = mergeBriefDoc(priorDoc, patchDoc);
@@ -41446,7 +41447,7 @@ async function composeBrief(client, projectId, userId, args) {
   validateBriefFrame(mergedDoc.frame, FRAME_KIND_FOR_REASON[args.reason]);
   const priorRiskClasses = priorDoc?.frame?.kind === "release" ? priorDoc.frame.risk_classes : void 0;
   const pendingActivity = typeof args.pending_activity === "string" && args.pending_activity.trim().toLowerCase() === "null" ? null : args.pending_activity;
-  const mergedPendingActivity = args.pending_activity !== void 0 ? pendingActivity ?? null : existingRow?.pending_activity ?? null;
+  const mergedPendingActivity = args.pending_activity !== void 0 ? pendingActivity ?? null : reasonChanged ? null : existingRow?.pending_activity ?? null;
   let accept = null;
   if (mergedPendingActivity) {
     const { data: task, error: tErr } = await client.from("tasks").select("workflow_state, stale").eq("id", taskId).single();
@@ -41562,8 +41563,8 @@ async function composeBrief(client, projectId, userId, args) {
   const revisionPatch = { reason: args.reason, doc, content };
   if (args.expand_sections !== void 0) revisionPatch.expand_sections = args.expand_sections;
   if (args.related !== void 0) revisionPatch.related = args.related;
-  if (args.pending_activity !== void 0) revisionPatch.pending_activity = pendingActivity ?? null;
-  if (args.decision_ref !== void 0) revisionPatch.decision_ref = args.decision_ref ?? null;
+  if (args.pending_activity !== void 0 || reasonChanged) revisionPatch.pending_activity = mergedPendingActivity;
+  if (args.decision_ref !== void 0 || reasonChanged) revisionPatch.decision_ref = mergedDecisionRef;
   let brief;
   if (existing) {
     const briefId = existing.id;

@@ -5534,6 +5534,84 @@ describe('composeBrief — a reason change resets the prior gate\'s content (B-1
   const NEW_DOC = { decide: 'Is the scope revision right?', items: [{ kind: 'decision', text: 'Scope', recommendation: 'Revise' }] };
   const STALE = ['STALEPLANSURFACE', 'STALEPLANSTEP', 'STALEPAYLOADCRITERION', 'STALEREVISIONCHANGE', 'Ship the plan as drafted'];
 
+  // B-1259: row metadata must follow the same reason boundary as the document.
+  const OLD_REF = { type: 'technical-design', id: 'old-decision' };
+  const metadataPrior = (reason: string | undefined) => ({
+    data: { ...priorRow('plan-draft').data, reason, pending_activity: 'planning', decision_ref: OLD_REF },
+  });
+
+  it('B-1259 — a new reason clears omitted action and decision in both render and RPC patch', async () => {
+    const client = makeClient([metadataPrior('plan-draft'), { data: null }], revisionOk);
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'revise-scope-review', doc: { ...NEW_DOC } as any,
+    });
+    const patch = patchOf(client);
+    expect(patch.pending_activity).toBeNull();
+    expect(patch.decision_ref).toBeNull();
+    expect(patch.content).toContain('**On accept:** no state change');
+    expect(patch.content).not.toContain('fuller depth lives');
+    expect(client.from).not.toHaveBeenCalledWith('workflow_transitions');
+  });
+
+  it('B-1259 — the legacy in-place fallback also clears metadata on a new reason', async () => {
+    const client = makeClient([metadataPrior('plan-draft'), { data: revisionRow }, { data: null }]);
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'revise-scope-review', doc: { ...NEW_DOC } as any,
+    });
+    const written = client.update.mock.calls[0][0];
+    expect(written.pending_activity).toBeNull();
+    expect(written.decision_ref).toBeNull();
+    expect(written.content).toContain('**On accept:** no state change');
+  });
+
+  it.each(['plan-draft', undefined])('B-1259 — matching or unknown prior reason %s retains omitted metadata', async (reason) => {
+    const client = makeClient([
+      metadataPrior(reason),
+      { data: { workflow_state: 'Designed', stale: false } },
+      { data: { to_state: 'Planned' } },
+      { data: null },
+    ], revisionOk);
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'plan-draft', doc: { decide: 'Approve updated plan?' } as any,
+    });
+    const patch = patchOf(client);
+    expect(patch).not.toHaveProperty('pending_activity');
+    expect(patch).not.toHaveProperty('decision_ref');
+    expect(patch.content).toContain('**On accept:** advances Designed → Planned');
+    expect(patch.content).toContain('fuller depth lives');
+  });
+
+  it('B-1259 — explicitly supplied metadata wins on a reason change', async () => {
+    const newRef = { type: 'technical-design', id: 'new-decision' };
+    const client = makeClient([
+      metadataPrior('plan-draft'),
+      { data: { workflow_state: 'Designed', stale: false } },
+      { data: { to_state: 'Decomposed' } },
+      { data: null },
+    ], revisionOk);
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'revise-scope-review', pending_activity: 'revising-decomposing',
+      decision_ref: newRef, doc: { ...NEW_DOC } as any,
+    });
+    const patch = patchOf(client);
+    expect(patch.pending_activity).toBe('revising-decomposing');
+    expect(patch.decision_ref).toEqual(newRef);
+    expect(patch.content).toContain('**On accept:** advances Designed → Decomposed');
+    expect(patch.content).toContain('fuller depth lives');
+  });
+
+  it('B-1259 — explicit nulls still clear metadata within the same reason', async () => {
+    const client = makeClient([metadataPrior('revise-scope-review'), { data: null }], revisionOk);
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'revise-scope-review', pending_activity: null,
+      decision_ref: null, doc: { ...NEW_DOC } as any,
+    });
+    expect(patchOf(client).pending_activity).toBeNull();
+    expect(patchOf(client).decision_ref).toBeNull();
+    expect(patchOf(client).content).toContain('**On accept:** no state change');
+    expect(patchOf(client).content).not.toContain('fuller depth lives');
+  });
+
   it('AC1 — omitted frame/payload/revision/recommend from the old gate do not render under a new reason', async () => {
     const client = makeClient([priorRow('plan-draft'), { data: null }], revisionOk);
     await composeBrief(client, PROJECT_ID, USER_ID, {
