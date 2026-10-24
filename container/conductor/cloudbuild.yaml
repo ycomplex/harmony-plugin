@@ -4,9 +4,13 @@
 # (with _CHANNEL=prod): only those branches carry the built dist/ the image copies in (main is source only).
 # It is a SEPARATE file from container/cloudbuild.yaml on purpose — the worker-image build is untouched.
 #
-# Tags: <_IMAGE>:<plugin version>, read from .claude-plugin/plugin.json, and <_IMAGE>:<_CHANNEL>. The Deployment
-# pins the VERSION tag (never the channel tag); `harmony conductor update` resolves the channel tag to the newest
-# version tag behind it. ORDER IS THE GUARANTEE: the image is built as `candidate`, the smoke
+# Tags: <_IMAGE>:<plugin version>-<_CHANNEL> (the version read from .claude-plugin/plugin.json), and
+# <_IMAGE>:<_CHANNEL>. The version tag is CHANNEL-QUALIFIED on purpose (B-1269): prod is a fast-forward of staging, so
+# both channels build the same plugin version, and a bare <version> tag pushed by the later (prod) build used to
+# re-point from the staging digest to the prod digest, leaving the staging image with no version tag and the web's
+# Update refusing. Each channel now owns its own tag family and cannot take the other's. The Deployment pins the
+# VERSION tag (never the channel tag); `harmony conductor update` resolves the channel tag to the newest
+# <version>-<channel> tag behind it. ORDER IS THE GUARANTEE: the image is built as `candidate`, the smoke
 # (container/conductor/smoke.sh) runs against it, and only then does anything get pushed — the version tag first,
 # the channel tag last. A failing smoke therefore leaves the registry, and the channel tag, exactly as they were.
 # The image is labelled harmony.plugin_version (build-arg PLUGIN_VERSION).
@@ -58,8 +62,8 @@ steps:
       - -c
       - |
         set -euo pipefail
-        docker tag '${_IMAGE}:candidate' "${_IMAGE}:$(cat /workspace/plugin_version.txt)"
-        docker push "${_IMAGE}:$(cat /workspace/plugin_version.txt)"
+        docker tag '${_IMAGE}:candidate' "${_IMAGE}:$(cat /workspace/plugin_version.txt)-${_CHANNEL}"
+        docker push "${_IMAGE}:$(cat /workspace/plugin_version.txt)-${_CHANNEL}"
 
   # The channel tag moves LAST, only after the smoke passed and the version tag is in the registry.
   - id: push-channel

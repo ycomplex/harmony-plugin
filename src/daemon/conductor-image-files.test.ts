@@ -50,8 +50,10 @@ describe('container/conductor/cloudbuild.yaml', () => {
     expect(stepText(build.steps[0]!)).toContain('.claude-plugin/plugin.json');
   });
 
-  it('tags :<plugin version> and :<channel>, and labels the image through the PLUGIN_VERSION build-arg', () => {
-    expect(stepText(build.steps[ids.indexOf('push-version')]!)).toContain('${_IMAGE}:$(cat /workspace/plugin_version.txt)');
+  it('tags :<plugin version>-<channel> and :<channel>, never a bare :<plugin version> a promote could re-point (B-1269), and labels the image through the PLUGIN_VERSION build-arg', () => {
+    const pushVersion = stepText(build.steps[ids.indexOf('push-version')]!);
+    expect(pushVersion).toContain('${_IMAGE}:$(cat /workspace/plugin_version.txt)-${_CHANNEL}');
+    expect(pushVersion).not.toMatch(/\$\{_IMAGE\}:\$\(cat \/workspace\/plugin_version\.txt\)(?!-\$\{_CHANNEL\})/);
     expect(stepText(build.steps[ids.indexOf('push-channel')]!)).toContain("'${_IMAGE}:${_CHANNEL}'");
     expect(stepText(build.steps[ids.indexOf('build')]!)).toContain('--build-arg PLUGIN_VERSION=');
     expect(read('container/conductor/Dockerfile')).toMatch(/LABEL harmony\.plugin_version="\$\{PLUGIN_VERSION\}"/);
