@@ -30,7 +30,7 @@ secret names) belong in that deployment's own notes, not here.
 | Pod label | `app.kubernetes.io/name=harmony-conductor` |
 | Kubernetes identity | `harmony-conductor/harmony-conductor`, with a Role in `harmony-legs` and a Role in `harmony-conductor` (its own Deployment only). Nothing cluster-wide |
 | Google identity | `<conductor-account>` through Workload Identity |
-| Image | `<region>-docker.pkg.dev/<project>/<registry>/harmony-conductor`, tags `:<plugin version>` and `:<channel>`; the Deployment is pinned to a version tag |
+| Image | `<region>-docker.pkg.dev/<project>/<registry>/harmony-conductor`, tags `:<plugin version>-<channel>` (for example `0.16.41-staging`) and `:<channel>`; the Deployment is pinned to a version tag |
 | Scheduling | the cluster's `default-pool` (the system pool), PriorityClass `harmony-conductor` |
 | Sweep | CronJob `harmony-sweep` in `harmony-conductor`, every 6 hours |
 | Source files | `container/conductor/` (image and `k8s/` manifests) and `container/gke/setup-cluster.sh`, steps 18 to 27 |
@@ -256,9 +256,9 @@ M="$PLUGIN_DIR/container/conductor/k8s"            # or your edited copy
 kubectl apply --dry-run=server -f "$M/priorityclass.yaml"
 kubectl apply -f "$M/priorityclass.yaml"           # FIRST: the Deployment names it (cluster-scoped, operator-applied)
 kubectl apply -f "$M/configmap.yaml"
-sed "s/__CONDUCTOR_VERSION__/<plugin version>/" "$M/cronjob-sweep.yaml" | kubectl apply -f -
-sed "s/__CONDUCTOR_VERSION__/<plugin version>/" "$M/deployment.yaml" | kubectl apply --dry-run=server -f -
-sed "s/__CONDUCTOR_VERSION__/<plugin version>/" "$M/deployment.yaml" | kubectl apply -f -
+sed "s/__CONDUCTOR_VERSION__/<plugin version>-<channel>/" "$M/cronjob-sweep.yaml" | kubectl apply -f -
+sed "s/__CONDUCTOR_VERSION__/<plugin version>-<channel>/" "$M/deployment.yaml" | kubectl apply --dry-run=server -f -
+sed "s/__CONDUCTOR_VERSION__/<plugin version>-<channel>/" "$M/deployment.yaml" | kubectl apply -f -
 ```
 
 Proves: the manifests are valid on the live cluster. After that, the web panel's Update button (or `node "$PLUGIN_DIR/dist/bin/harmony.js" conductor restart` from a machine that runs no conductor, which asks the registry) moves the tag itself.
@@ -319,6 +319,16 @@ Publish a newer image and press Update in the conductor panel (or run
 `node "$PLUGIN_DIR/dist/bin/harmony.js" conductor restart` on a machine that runs no conductor, which queues the request). The Deployment moves to the newest version tag for the
 channel and running legs are not relaunched. Then press Update with a deliberately bad image (a tag that cannot
 start) once: the old pod keeps running, leases stay held, and the panel shows the failed update and its reason.
+
+**Version tags are channel-qualified (B-1269).** `./promote-prod.sh` rebuilds the same plugin version for the `prod`
+channel, so a bare `:<version>` tag used to move from the staging image to the prod image and the staging Update then
+refused ("carries no plugin version tag; refusing to deploy a moving tag") until the next merge. Each channel now owns
+`:<version>-staging` / `:<version>-prod`, so a promote cannot strip the other channel's version. Update still refuses a
+channel image that has only a moving tag. Images built before this change carry a bare `:<version>` tag, which Update
+still accepts on its own channel's image. **Post-promote window for those older images, and recovery if Update ever
+refuses:** pin the Deployment by hand to the version tag the channel image should run:
+`kubectl -n harmony-conductor set image deployment/harmony-conductor conductor=<image>:<version-tag>` (for a
+fixed build, `<version>-<channel>`). This fix reaches the running pod only via an Update or such a hand pin.
 
 ## 12. Soak
 
