@@ -392,7 +392,32 @@ explicit `[]`). This narrowly permits recording build observations; it does not 
 or superseding decisions. If a delegated builder reports the behaviours, this session performs the
 knowledge writes before composing the release brief.
 
-**Capture changed rendered wording (B-1236).** For each changed user-facing component, read its existing owner identity using `read_feature_accounts` and its previous capture using `read_surface_records`. Observe labels, button names and headings from the actual component source or screenshot alt text; do not infer them from the design brief. Call `capture_surface_record` with that exact existing `owner_surface`, a stable repo-relative `component_ref`, separate `labels`, `buttons`, `headings` arrays (empty means none observed), `source_kind` (`component-source` or `screenshot-alt-text`), a source locator including the commit or screenshot reference, and a SHA-256 fingerprint of the cited evidence. Keep the locator stable for an unchanged fingerprint. A changed fingerprint refreshes the record; an unchanged fingerprint is a no-op. Read it back to verify the observed wording. These are observations, never account publication or decision history: do not create an account or write current_text as a fallback. If no matching owner identity exists, or the surface-record RPC is unavailable, state the specific capture gap in the build evidence and disposition it with the owning ticket; permission/network failures remain errors, never proof of unsupported storage. Do not claim a capture succeeded when it was refused.
+**Capture changed rendered wording (B-1236).** Follow
+`docs/rendered-surface-records.md` → **Build capture and evidence** for every changed
+user-facing component. Read its exact owner identity with `read_feature_accounts`
+and its previous capture with `read_surface_records`. A missing identity permits
+`create_feature_account` ONLY when that exact `owner_surface` is explicitly ratified
+in this ticket's Accepted scope/design. Cite that authority, probe the capability,
+create the identity only, and read it back before capture. Never guess ownership,
+create clauses, propose an amendment or publish `current_text` as a capture fallback.
+Ambiguous or unauthorized ownership stays a named per-component gap.
+
+Observe exact labels, button names and headings from committed component source or
+screenshot alt text, never from the design brief. Capture with the exact owner,
+stable repo-relative component reference, separate wording arrays (empty means none
+observed), source kind, source locator including the commit/screenshot reference,
+and SHA-256 fingerprint of the cited evidence. Keep the locator stable for an
+unchanged fingerprint. Read back the record to verify wording and source; unchanged
+fingerprint is a no-op, changed fingerprint refreshes the capture. Preserve actual
+permission/network errors; unavailable capability is not a missing owner or success.
+
+**Every build evidence comment MUST carry a `SURFACE-CAPTURE:` outcome line**, even
+when no capture ran. Use the concrete forms in the linked procedure: `captured`,
+`no owner identity … — gap`, `unavailable`, `error`, or
+`no user-facing component changed`. Report each changed component's outcome; a
+successful capture never hides another component's gap. A capture claim requires
+successful readback. Disposition every gap/blocker with the owning ticket before
+release; an evidence comment alone is not a tracked deferral.
 
 **Account maintenance evidence (B-1235).** The release brief's `context` lists each
 affected account/surface, source ticket, separate Accepted decision, pending amendment
