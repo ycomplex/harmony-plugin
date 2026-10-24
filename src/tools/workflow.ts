@@ -173,7 +173,7 @@ export async function referenceKnowledge(
 export const listTicketKnowledgeTool = {
   name: 'list_ticket_knowledge',
   description:
-    "List the knowledge decisions a task references (ticket_references_knowledge), each with its type + status + source_activity (the gate/skill that authored it — use this to discriminate between multiple Accepted decisions of the same type, e.g. clarify's and decompose's specification records). Use task_id for the unchanged entry array, or task_ids (1–20 identifiers) for {tickets:[{task_id,entries}]} in first-requested order. Duplicate tickets collapse; shared entries appear under each owner; any unavailable ticket fails the whole request. Ticket-scoped read for gates that must know which design sub-tracks are already Accepted for THIS ticket — query_knowledge has no ticket filter (it projects no source_task_id).",
+    "List the knowledge decisions a task references (ticket_references_knowledge), each with its type + status + source_activity (the gate/skill that authored it — use this to discriminate between multiple Accepted decisions of the same type, e.g. clarify's and decompose's specification records), plus `claim_provenance` and `underwriting_brief_id` (elicitation-claim provenance and the brief that underwrote it; null on non-claim entries). Use task_id for the unchanged entry array, or task_ids (1–20 identifiers) for {tickets:[{task_id,entries}]} in first-requested order. Duplicate tickets collapse; shared entries appear under each owner; any unavailable ticket fails the whole request. Ticket-scoped read for gates that must know which design sub-tracks are already Accepted for THIS ticket — query_knowledge has no ticket filter (it projects no source_task_id).",
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -196,7 +196,8 @@ type TicketKnowledgeEntry = Record<string, unknown> & {
 };
 interface TicketKnowledgeBatch { tickets: { task_id: string; entries: TicketKnowledgeEntry[] }[]; }
 interface TicketKnowledgeArgs { task_id?: string; task_ids?: string[]; }
-const KNOWLEDGE_PROJECTION = 'decision_id, knowledge_decisions(id, type, status, title, domain, source_activity, content, affected_entity_ids)';
+// B-654: claim_provenance + underwriting_brief_id ride the projection (null from the DB on non-claim entries).
+const KNOWLEDGE_PROJECTION = 'decision_id, knowledge_decisions(id, type, status, title, domain, source_activity, content, affected_entity_ids, claim_provenance, underwriting_brief_id)';
 const KNOWLEDGE_PAGE_SIZE = 500;
 
 export function listTicketKnowledge(client: SupabaseClient, projectId: string, args: { task_id: string }): Promise<TicketKnowledgeEntry[]>;

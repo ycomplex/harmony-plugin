@@ -3,7 +3,7 @@ import { existsSync, readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { renderBrief, lintBrief, composeBrief, composeBriefTool, isMissingComposeBriefRevision, isMissingComposeBriefInitial, mergeBriefDoc, resetDocOnReasonChange, isMissingBriefHistorySubstrate, listBriefs, listBriefsTool, getBrief, getBriefTool, resolveBrief, resolveBriefTool, reshapeBrief, reshapeBriefTool, clearRevisionIterateFeedback, validateResolutionProvenance, PROVENANCE_AGENT_SYNTHESIZED, PROVENANCE_WEB_ONLY, fetchPendingResolution, fetchPendingRemark, consumeAcceptRemark, SENTENCE_WORD_LIMIT, DEFAULT_TAIL, STALE_PATCH_TAIL, PROPOSED_ACS_HEADING, PROMISED_WRITES_HEADING, DE_SCOPE_HEADING, ENTRY_PROVENANCE_PREFIX, frameUnits, readBuildPr, readBuildPrReferences, FRAME_KIND_FOR_REASON, type BriefDoc, type BriefItem, type GateFrame, type CriterionRow } from './briefs.js';
+import { renderBrief, lintBrief, composeBrief, composeBriefTool, isMissingComposeBriefRevision, isMissingComposeBriefInitial, mergeBriefDoc, resetDocOnReasonChange, isMissingBriefHistorySubstrate, listBriefs, listBriefsTool, getBrief, getBriefTool, resolveBrief, resolveBriefTool, reshapeBrief, reshapeBriefTool, clearRevisionIterateFeedback, validateResolutionProvenance, PROVENANCE_AGENT_SYNTHESIZED, PROVENANCE_WEB_ONLY, fetchPendingResolution, fetchUnderwritingClaims, fetchPendingRemark, consumeAcceptRemark, SENTENCE_WORD_LIMIT, DEFAULT_TAIL, STALE_PATCH_TAIL, PROPOSED_ACS_HEADING, PROMISED_WRITES_HEADING, DE_SCOPE_HEADING, ENTRY_PROVENANCE_PREFIX, frameUnits, readBuildPr, readBuildPrReferences, FRAME_KIND_FOR_REASON, type BriefDoc, type BriefItem, type GateFrame, type CriterionRow } from './briefs.js';
 
 // Pass-through: the handlers delegate id resolution to resolveTaskId (like the sibling task tools); the
 // mock returns the input verbatim so the call-order assertions below stay valid for any id shape.
@@ -2303,7 +2303,7 @@ describe('getBrief', () => {
     const result = await getBrief(client, PROJECT_ID, { task_id: 'task-1' });
     expect(client.from).toHaveBeenCalledWith('briefs');
     expect(client.eq).toHaveBeenCalledWith('status', 'active');
-    expect(result).toEqual({ ...row, pending_resolution: null });
+    expect(result).toEqual({ ...row, pending_resolution: null, underwriting_claims: [] });
   });
 
   it('surfaces a browser-submitted reshape marker on pending_resolution (B-485 / AC3)', async () => {
@@ -2312,7 +2312,7 @@ describe('getBrief', () => {
     // responses: [brief row] -> [pending_resolution read: the reshape marker]
     const client = makeClient([{ data: row }, { data: { pending_resolution: pending } }]);
     const result = await getBrief(client, PROJECT_ID, { task_id: 'task-1' });
-    expect(result).toEqual({ ...row, pending_resolution: pending });
+    expect(result).toEqual({ ...row, pending_resolution: pending, underwriting_claims: [] });
   });
 
   it('returns null (not an enriched object) when there is no active brief', async () => {
@@ -2326,7 +2326,30 @@ describe('getBrief', () => {
     // responses: [brief row] -> [pending_resolution read errors: column absent]
     const client = makeClient([{ data: row }, { data: null, error: { message: 'column briefs.pending_resolution does not exist' } }]);
     const result = await getBrief(client, PROJECT_ID, { task_id: 'task-1' });
-    expect(result).toEqual({ ...row, pending_resolution: null });
+    expect(result).toEqual({ ...row, pending_resolution: null, underwriting_claims: [] });
+  });
+
+  it('surfaces the claims the brief underwrites as underwriting_claims (B-654)', async () => {
+    const row = { id: 'brief-1', task_id: 'task-1', status: 'active' };
+    const claims = [{ id: 'k1', title: 'claim one', status: 'Asserted', claim_provenance: 'human-stated' }];
+    // responses: [brief row] -> [pending_resolution read] -> [underwriting claims read]
+    const client = makeClient([{ data: row }, { data: { pending_resolution: null } }, { data: claims }]);
+    const result = await getBrief(client, PROJECT_ID, { task_id: 'task-1' });
+    expect(client.from).toHaveBeenCalledWith('knowledge_decisions');
+    expect(client.eq).toHaveBeenCalledWith('underwriting_brief_id', 'brief-1');
+    expect(result).toEqual({ ...row, pending_resolution: null, underwriting_claims: claims });
+  });
+
+  it('degrades underwriting_claims to [] when the claims read errors (B-654)', async () => {
+    const row = { id: 'brief-1', task_id: 'task-1', status: 'active' };
+    const client = makeClient([{ data: row }, { data: { pending_resolution: null } }, { data: null, error: { message: 'column knowledge_decisions.underwriting_brief_id does not exist' } }]);
+    const result = await getBrief(client, PROJECT_ID, { task_id: 'task-1' });
+    expect(result).toEqual({ ...row, pending_resolution: null, underwriting_claims: [] });
+  });
+
+  it('fetchUnderwritingClaims never throws: a thrown client error returns [] (B-654)', async () => {
+    const client = { from: () => { throw new Error('boom'); } } as any;
+    await expect(fetchUnderwritingClaims(client, 'brief-1')).resolves.toEqual([]);
   });
 
   it('resolves a visual ID via resolveTaskId before looking up the brief', async () => {

@@ -46966,7 +46966,7 @@ async function referenceKnowledge(client, projectId, args) {
 }
 var listTicketKnowledgeTool = {
   name: "list_ticket_knowledge",
-  description: "List the knowledge decisions a task references (ticket_references_knowledge), each with its type + status + source_activity (the gate/skill that authored it \u2014 use this to discriminate between multiple Accepted decisions of the same type, e.g. clarify's and decompose's specification records). Use task_id for the unchanged entry array, or task_ids (1\u201320 identifiers) for {tickets:[{task_id,entries}]} in first-requested order. Duplicate tickets collapse; shared entries appear under each owner; any unavailable ticket fails the whole request. Ticket-scoped read for gates that must know which design sub-tracks are already Accepted for THIS ticket \u2014 query_knowledge has no ticket filter (it projects no source_task_id).",
+  description: "List the knowledge decisions a task references (ticket_references_knowledge), each with its type + status + source_activity (the gate/skill that authored it \u2014 use this to discriminate between multiple Accepted decisions of the same type, e.g. clarify's and decompose's specification records), plus `claim_provenance` and `underwriting_brief_id` (elicitation-claim provenance and the brief that underwrote it; null on non-claim entries). Use task_id for the unchanged entry array, or task_ids (1\u201320 identifiers) for {tickets:[{task_id,entries}]} in first-requested order. Duplicate tickets collapse; shared entries appear under each owner; any unavailable ticket fails the whole request. Ticket-scoped read for gates that must know which design sub-tracks are already Accepted for THIS ticket \u2014 query_knowledge has no ticket filter (it projects no source_task_id).",
   inputSchema: {
     type: "object",
     properties: {
@@ -46976,7 +46976,7 @@ var listTicketKnowledgeTool = {
     oneOf: [{ required: ["task_id"], not: { required: ["task_ids"] } }, { required: ["task_ids"], not: { required: ["task_id"] } }]
   }
 };
-var KNOWLEDGE_PROJECTION = "decision_id, knowledge_decisions(id, type, status, title, domain, source_activity, content, affected_entity_ids)";
+var KNOWLEDGE_PROJECTION = "decision_id, knowledge_decisions(id, type, status, title, domain, source_activity, content, affected_entity_ids, claim_provenance, underwriting_brief_id)";
 var KNOWLEDGE_PAGE_SIZE = 500;
 async function listTicketKnowledge(client, projectId, args) {
   const single = args.task_id !== void 0;
@@ -50765,6 +50765,15 @@ async function fetchPendingResolution(client, taskId) {
     return null;
   }
 }
+async function fetchUnderwritingClaims(client, briefId) {
+  try {
+    const { data, error: error2 } = await client.from("knowledge_decisions").select("id, title, status, claim_provenance").eq("underwriting_brief_id", briefId);
+    if (error2 || !Array.isArray(data)) return [];
+    return data;
+  } catch {
+    return [];
+  }
+}
 function reconstructReferent(doc, entryId, reason, warning) {
   const isDoc = !!doc && typeof doc === "object" && !Array.isArray(doc) && typeof doc.decide === "string";
   if (!isDoc) {
@@ -50881,7 +50890,9 @@ async function getBrief(client, projectId, args) {
   if (error2) throw new Error(error2.message);
   if (!data) return null;
   const pending_resolution = await fetchPendingResolution(client, taskId);
-  return { ...data, pending_resolution };
+  const briefId = data.id;
+  const underwriting_claims = briefId ? await fetchUnderwritingClaims(client, briefId) : [];
+  return { ...data, pending_resolution, underwriting_claims };
 }
 var BRIEF_HISTORY_COLS = `${BRIEF_COLS}, lineage_id, iterate_feedback, revision_cause`;
 var BRIEF_HISTORY_COLS_NO_CAUSE = `${BRIEF_COLS}, lineage_id, iterate_feedback`;
@@ -51178,7 +51189,7 @@ async function reshapeBrief(client, projectId, args) {
 }
 var getBriefTool = {
   name: "get_brief",
-  description: "Get the active brief for a task (its rendered content blob + canonical doc + pre-generated expand sections + related), plus `pending_resolution` \u2014 a browser-submitted reshape request ({command:'iterate', detail:<feedback>}) the running conductor consumes on pickup, or null if none. Returns null if no brief is awaiting input.",
+  description: "Get the active brief for a task (its rendered content blob + canonical doc + pre-generated expand sections + related), plus `pending_resolution` \u2014 a browser-submitted reshape request ({command:'iterate', detail:<feedback>}) the running conductor consumes on pickup, or null if none, and `underwriting_claims` \u2014 the knowledge claims ({id,title,status,claim_provenance}) this brief underwrites, [] if none. Returns null if no brief is awaiting input.",
   inputSchema: {
     type: "object",
     properties: { task_id: { type: "string", description: "The task whose active brief to fetch \u2014 UUID, task number, or visual ID (e.g., B-43)" } },

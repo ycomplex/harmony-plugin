@@ -24030,7 +24030,7 @@ async function referenceKnowledge(client, projectId, args) {
   if (error) throw error;
   return { task_id: id, decision_id: args.decision_id, linked: true };
 }
-var KNOWLEDGE_PROJECTION = "decision_id, knowledge_decisions(id, type, status, title, domain, source_activity, content, affected_entity_ids)";
+var KNOWLEDGE_PROJECTION = "decision_id, knowledge_decisions(id, type, status, title, domain, source_activity, content, affected_entity_ids, claim_provenance, underwriting_brief_id)";
 var KNOWLEDGE_PAGE_SIZE = 500;
 async function listTicketKnowledge(client, projectId, args) {
   const single = args.task_id !== void 0;
