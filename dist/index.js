@@ -56156,7 +56156,7 @@ async function composeAndAccept(client, projectId, userId, taskId, args) {
   }
 }
 var DECOMPOSE_NO_SPLIT_TAG = "decompose-no-split";
-async function coupleDecomposeNoSplitConvention(client, projectId, userId, taskId) {
+async function coupleDecomposeNoSplitConvention(client, projectId, userId, taskId, scope) {
   const existing = await queryKnowledge(client, projectId, {
     type: "convention",
     tags: [DECOMPOSE_NO_SPLIT_TAG],
@@ -56174,13 +56174,15 @@ async function coupleDecomposeNoSplitConvention(client, projectId, userId, taskI
       status: "Accepted",
       source_task_id: taskId,
       source_activity: "decompose",
-      provenance: KNOWLEDGE_WRITE_PROVENANCE_RECORDED
+      provenance: KNOWLEDGE_WRITE_PROVENANCE_RECORDED,
+      scope
     });
     entryId = created.id;
   }
   await referenceKnowledge(client, projectId, { task_id: taskId, decision_id: entryId });
 }
 async function runRecordedWalk(client, projectId, userId, args) {
+  const scope = args.scope ?? "product";
   const eligibility = evaluateEligibility({
     summary: args.summary,
     evidence: args.evidence,
@@ -56245,7 +56247,8 @@ async function runRecordedWalk(client, projectId, userId, args) {
         source_activity: "clarify",
         source_task_id: taskId,
         tags: ticketTags,
-        provenance: KNOWLEDGE_WRITE_PROVENANCE_RECORDED
+        provenance: KNOWLEDGE_WRITE_PROVENANCE_RECORDED,
+        scope
       });
       await referenceKnowledge(client, projectId, { task_id: taskId, decision_id: clarifyDecision.id });
       await composeAndAccept(client, projectId, userId, taskId, {
@@ -56294,7 +56297,7 @@ async function runRecordedWalk(client, projectId, userId, args) {
       }
     }
     if (runs("decompose")) {
-      await coupleDecomposeNoSplitConvention(client, projectId, userId, taskId);
+      await coupleDecomposeNoSplitConvention(client, projectId, userId, taskId, scope);
       await composeAndAccept(client, projectId, userId, taskId, {
         reason: GATE_REASONS.decompose,
         pendingActivity: "decomposing",
@@ -56319,7 +56322,8 @@ async function runRecordedWalk(client, projectId, userId, args) {
         source_type: "manual",
         source_activity: "design-decide",
         source_task_id: taskId,
-        provenance: KNOWLEDGE_WRITE_PROVENANCE_RECORDED
+        provenance: KNOWLEDGE_WRITE_PROVENANCE_RECORDED,
+        scope
       });
       await referenceKnowledge(client, projectId, { task_id: taskId, decision_id: designDecision.id });
       await composeAndAccept(client, projectId, userId, taskId, {
@@ -56357,7 +56361,8 @@ async function runRecordedWalk(client, projectId, userId, args) {
         source_type: "manual",
         source_activity: "plan",
         source_task_id: taskId,
-        provenance: KNOWLEDGE_WRITE_PROVENANCE_RECORDED
+        provenance: KNOWLEDGE_WRITE_PROVENANCE_RECORDED,
+        scope
       });
       await referenceKnowledge(client, projectId, { task_id: taskId, decision_id: planDecision.id });
       await composeAndAccept(client, projectId, userId, taskId, {
@@ -56535,6 +56540,11 @@ var recordTool = {
         type: "string",
         description: "Attest a 5+ minute verify walk \u2014 who/what was walked. Never auto-passed; omit to leave this eligibility item UNATTESTED (which refuses the walk)."
       },
+      scope: {
+        type: "string",
+        enum: ["product", "deployment"],
+        description: "B-1275 \u2014 scope stamped on every knowledge entry the walk writes; omitted \u21D2 'product'."
+      },
       from_gate: {
         type: "string",
         enum: RECORD_WALK_GATE_ORDER,
@@ -56557,6 +56567,7 @@ async function recordToolHandler(client, projectId, userId, args) {
     summary: args.summary,
     evidence: args.evidence ?? [],
     attest_walk: args.attest_walk,
+    scope: args.scope,
     from_gate: args.from_gate,
     to_gate: args.to_gate
   });

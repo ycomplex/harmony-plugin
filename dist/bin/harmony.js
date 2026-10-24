@@ -55475,7 +55475,7 @@ async function composeAndAccept(client, projectId, userId, taskId, args) {
   }
 }
 var DECOMPOSE_NO_SPLIT_TAG = "decompose-no-split";
-async function coupleDecomposeNoSplitConvention(client, projectId, userId, taskId) {
+async function coupleDecomposeNoSplitConvention(client, projectId, userId, taskId, scope) {
   const existing = await queryKnowledge(client, projectId, {
     type: "convention",
     tags: [DECOMPOSE_NO_SPLIT_TAG],
@@ -55493,13 +55493,15 @@ async function coupleDecomposeNoSplitConvention(client, projectId, userId, taskI
       status: "Accepted",
       source_task_id: taskId,
       source_activity: "decompose",
-      provenance: KNOWLEDGE_WRITE_PROVENANCE_RECORDED
+      provenance: KNOWLEDGE_WRITE_PROVENANCE_RECORDED,
+      scope
     });
     entryId = created.id;
   }
   await referenceKnowledge(client, projectId, { task_id: taskId, decision_id: entryId });
 }
 async function runRecordedWalk(client, projectId, userId, args) {
+  const scope = args.scope ?? "product";
   const eligibility = evaluateEligibility({
     summary: args.summary,
     evidence: args.evidence,
@@ -55564,7 +55566,8 @@ async function runRecordedWalk(client, projectId, userId, args) {
         source_activity: "clarify",
         source_task_id: taskId,
         tags: ticketTags,
-        provenance: KNOWLEDGE_WRITE_PROVENANCE_RECORDED
+        provenance: KNOWLEDGE_WRITE_PROVENANCE_RECORDED,
+        scope
       });
       await referenceKnowledge(client, projectId, { task_id: taskId, decision_id: clarifyDecision.id });
       await composeAndAccept(client, projectId, userId, taskId, {
@@ -55613,7 +55616,7 @@ async function runRecordedWalk(client, projectId, userId, args) {
       }
     }
     if (runs("decompose")) {
-      await coupleDecomposeNoSplitConvention(client, projectId, userId, taskId);
+      await coupleDecomposeNoSplitConvention(client, projectId, userId, taskId, scope);
       await composeAndAccept(client, projectId, userId, taskId, {
         reason: GATE_REASONS.decompose,
         pendingActivity: "decomposing",
@@ -55638,7 +55641,8 @@ async function runRecordedWalk(client, projectId, userId, args) {
         source_type: "manual",
         source_activity: "design-decide",
         source_task_id: taskId,
-        provenance: KNOWLEDGE_WRITE_PROVENANCE_RECORDED
+        provenance: KNOWLEDGE_WRITE_PROVENANCE_RECORDED,
+        scope
       });
       await referenceKnowledge(client, projectId, { task_id: taskId, decision_id: designDecision.id });
       await composeAndAccept(client, projectId, userId, taskId, {
@@ -55676,7 +55680,8 @@ async function runRecordedWalk(client, projectId, userId, args) {
         source_type: "manual",
         source_activity: "plan",
         source_task_id: taskId,
-        provenance: KNOWLEDGE_WRITE_PROVENANCE_RECORDED
+        provenance: KNOWLEDGE_WRITE_PROVENANCE_RECORDED,
+        scope
       });
       await referenceKnowledge(client, projectId, { task_id: taskId, decision_id: planDecision.id });
       await composeAndAccept(client, projectId, userId, taskId, {
@@ -55841,13 +55846,17 @@ function formatWalkResult(result) {
 function registerRecordCommand(program3) {
   program3.command("record").description(
     "Walk a non-conducted ticket's gates (clarify -> decompose -> design -> plan -> build -> release) from a human-supplied summary + evidence links, with ZERO worker legs \u2014 producing the same gate-slot/knowledge-entry trail a conducted ticket would get, marked 'recorded, not conducted'."
-  ).argument("<ticket>", "Task ID (UUID, number, or B-123)").requiredOption("--summary <text>", "A one-sentence-statable account of the change this ticket records").option("--evidence <url>", "Evidence link (repeatable \u2014 pass --evidence multiple times)", (val, prev) => [...prev, val], []).option("--attest-walk <who-what>", "Attest a 5+ minute verify walk \u2014 who/what was walked. Never auto-passed; omit to leave this item UNATTESTED.").option("--check", "Print every eligibility item's verdict and mutate nothing. Exits non-zero if any item fails or is unattested.", false).option(
+  ).argument("<ticket>", "Task ID (UUID, number, or B-123)").requiredOption("--summary <text>", "A one-sentence-statable account of the change this ticket records").option("--evidence <url>", "Evidence link (repeatable \u2014 pass --evidence multiple times)", (val, prev) => [...prev, val], []).option("--attest-walk <who-what>", "Attest a 5+ minute verify walk \u2014 who/what was walked. Never auto-passed; omit to leave this item UNATTESTED.").option("--check", "Print every eligibility item's verdict and mutate nothing. Exits non-zero if any item fails or is unattested.", false).option("--scope <scope>", "B-1275 \u2014 scope stamped on every knowledge entry the walk writes: product or deployment (default: product).", "product").option(
     "--from-gate <gate>",
     `B-1073 \u2014 resume the walk starting at this gate (one of: ${RECORD_WALK_GATE_ORDER.join(", ")}). Omit to start at 'clarify' (today's unchanged default).`
   ).option(
     "--to-gate <gate>",
     `B-1073 fast-track-daemon-ending round \u2014 bound the walk to stop at this gate, inclusive (one of: ${RECORD_WALK_GATE_ORDER.join(", ")}). Omit to run to 'verify' (today's unchanged default).`
   ).action(async (ticket, opts) => {
+    if (opts.scope !== void 0 && opts.scope !== "product" && opts.scope !== "deployment") {
+      console.error(`harmony record: --scope must be product or deployment (got '${opts.scope}')`);
+      process.exit(1);
+    }
     if (opts.fromGate !== void 0 && !RECORD_WALK_GATE_ORDER.includes(opts.fromGate)) {
       console.error(
         `harmony record: --from-gate must be one of: ${RECORD_WALK_GATE_ORDER.join(", ")} (got '${opts.fromGate}')`
@@ -55884,6 +55893,7 @@ function registerRecordCommand(program3) {
           summary: opts.summary,
           evidence,
           attest_walk: opts.attestWalk,
+          scope: opts.scope,
           from_gate: opts.fromGate,
           to_gate: opts.toGate
         });
