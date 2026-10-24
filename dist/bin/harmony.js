@@ -51555,7 +51555,15 @@ var REMOTE_START_BUDGET_MS = 18e4;
 var REMOTE_START_POLL_MS = 5e3;
 var REMOTE_STOP_BUDGET_MS = 6e4;
 var firstLine = (s) => s.trim().split("\n")[0] ?? "";
-var VERSION_TAG = /^v?(\d+)\.(\d+)\.(\d+)$/;
+var VERSION_TAG = /^v?(\d+)\.(\d+)\.(\d+)(?:-(staging|prod))?$/;
+function pluginVersionOfTag(tag) {
+  const m = VERSION_TAG.exec(tag);
+  return m ? `${m[1]}.${m[2]}.${m[3]}` : tag.replace(/^v/, "");
+}
+function isOwnVersionTag(tag, channel) {
+  const m = VERSION_TAG.exec(tag);
+  return m !== null && (m[4] === void 0 || m[4] === channel);
+}
 function compareVersionTags(a3, b) {
   const pa = VERSION_TAG.exec(a3);
   const pb = VERSION_TAG.exec(b);
@@ -51582,11 +51590,12 @@ function newestVersionTag(listJson, channel) {
   const channelEntry = entries.find((e) => e.tag === channel);
   if (!channelEntry) throw new Error(`the channel tag "${channel}" does not exist on the conductor image`);
   if (!channelEntry.digest) throw new Error(`the channel tag "${channel}" has no image digest in the listing`);
-  const versions = entries.filter((e) => e.digest === channelEntry.digest && VERSION_TAG.test(e.tag)).map((e) => e.tag);
+  const versions = entries.filter((e) => e.digest === channelEntry.digest && isOwnVersionTag(e.tag, channel)).map((e) => e.tag);
   if (versions.length === 0) {
     throw new Error(`the image behind the channel tag "${channel}" carries no plugin version tag; refusing to deploy a moving tag`);
   }
-  return versions.sort(compareVersionTags).at(-1);
+  const qualified = (t) => t.endsWith(`-${channel}`) ? 1 : 0;
+  return versions.sort((a3, b) => compareVersionTags(a3, b) || qualified(a3) - qualified(b)).at(-1);
 }
 function kubectl(deps, t, verb, extra = []) {
   return deps.exec("kubectl", [...verb, ...extra, "-n", KUBE_NAMESPACE, ...t.context ? ["--context", t.context] : []], { env: t.env });
@@ -51634,7 +51643,7 @@ async function runKubeRestart(deps, opts, onLine) {
       return fail2(`${err instanceof Error ? err.message : String(err)}. The Deployment was not changed.`);
     }
     newImage = `${image}:${version4}`;
-    versionAfter = version4.replace(/^v/, "");
+    versionAfter = pluginVersionOfTag(version4);
     out.line(`  channel ${channel}: newest plugin version ${version4} -> ${newImage}`);
   }
   const data = { ...base, plugin_version_after: versionAfter, image: newImage ?? currentImage };

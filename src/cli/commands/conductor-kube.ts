@@ -40,8 +40,20 @@ type Env = Record<string, string | undefined>;
 
 const firstLine = (s: string): string => s.trim().split('\n')[0] ?? '';
 
-/** A release tag: 1.2.3 or v1.2.3 (no pre-release / sha / moving tags). */
-const VERSION_TAG = /^v?(\d+)\.(\d+)\.(\d+)$/;
+/** A release tag: 1.2.3 or v1.2.3, optionally channel-qualified (1.2.3-staging, B-1269). No other pre-release / sha /
+ *  moving tags. */
+const VERSION_TAG = /^v?(\d+)\.(\d+)\.(\d+)(?:-(staging|prod))?$/;
+
+/** The plugin version a pinned image tag stands for: the tag without a leading `v` or a channel suffix. */
+export function pluginVersionOfTag(tag: string): string {
+  const m = VERSION_TAG.exec(tag);
+  return m ? `${m[1]}.${m[2]}.${m[3]}` : tag.replace(/^v/, '');
+}
+
+function isOwnVersionTag(tag: string, channel: string): boolean {
+  const m = VERSION_TAG.exec(tag);
+  return m !== null && (m[4] === undefined || m[4] === channel);
+}
 
 export function compareVersionTags(a: string, b: string): number {
   const pa = VERSION_TAG.exec(a);
@@ -55,7 +67,8 @@ export function compareVersionTags(a: string, b: string): number {
 }
 
 /** From `gcloud artifacts docker tags list <image> --format=json`: the newest plugin version tag that points at the
- *  same image as the channel tag. Throws with the reason when there is none (never falls back to a moving tag). */
+ *  same image as the channel tag. A tag qualifies when it is `<version>-<channel>` for THIS channel, or a legacy bare
+ *  `<version>` (images built before B-1269); another channel's `<version>-<other>` never does. Throws with the reason when there is none (never falls back to a moving tag). */
 export function newestVersionTag(listJson: string, channel: string): string {
   let list: unknown;
   try {
@@ -72,11 +85,13 @@ export function newestVersionTag(listJson: string, channel: string): string {
   const channelEntry = entries.find((e) => e.tag === channel);
   if (!channelEntry) throw new Error(`the channel tag "${channel}" does not exist on the conductor image`);
   if (!channelEntry.digest) throw new Error(`the channel tag "${channel}" has no image digest in the listing`);
-  const versions = entries.filter((e) => e.digest === channelEntry.digest && VERSION_TAG.test(e.tag)).map((e) => e.tag);
+  const versions = entries.filter((e) => e.digest === channelEntry.digest && isOwnVersionTag(e.tag, channel)).map((e) => e.tag);
   if (versions.length === 0) {
     throw new Error(`the image behind the channel tag "${channel}" carries no plugin version tag; refusing to deploy a moving tag`);
   }
-  return versions.sort(compareVersionTags).at(-1) as string;
+  // Equal versions: the channel-qualified tag wins over a legacy bare one (the sort is stable, so it goes last).
+  const qualified = (t: string): number => (t.endsWith(`-${channel}`) ? 1 : 0);
+  return versions.sort((a, b) => compareVersionTags(a, b) || qualified(a) - qualified(b)).at(-1) as string;
 }
 
 interface KubeTarget {
@@ -151,7 +166,7 @@ export async function runKubeRestart(deps: LifecycleDeps, opts: KubeRestartOptio
       return fail(`${err instanceof Error ? err.message : String(err)}. The Deployment was not changed.`);
     }
     newImage = `${image}:${version}`;
-    versionAfter = version.replace(/^v/, '');
+    versionAfter = pluginVersionOfTag(version);
     out.line(`  channel ${channel}: newest plugin version ${version} -> ${newImage}`);
   }
   const data = { ...base, plugin_version_after: versionAfter, image: newImage ?? currentImage };
