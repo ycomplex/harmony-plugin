@@ -1,6 +1,6 @@
 # Remote conductor runbook (B-1173, B-1186)
 
-> **Living · product · Tier 2** · verified against plugin 0.16.0 / web 1b45424 on 2026-10-21 · **revise when:** the conductor image, its manifests, `setup-cluster.sh`, the leg size or the quotas the ceiling needs change. Convention: harmony-workspace `docs/README.md` (B-1044).
+> **Living · product · Tier 2** · verified against plugin 0.16.51 / web ec86088 on 2026-10-24 · **revise when:** the conductor image, its manifests, `setup-cluster.sh`, the leg size or the quotas the ceiling needs change. Convention: harmony-workspace `docs/README.md` (B-1044).
 
 How to run a project's conductor as **one pod on the project's own GKE cluster**, from a machine that has only this
 plugin installed. Follow it top to bottom. Every command is written so it works from any directory: the plugin is
@@ -235,7 +235,7 @@ The shipped manifests carry **placeholders and the reference deployment's names*
 | File | What to set |
 |---|---|
 | `container/conductor/k8s/configmap.yaml` | `config_repo` (`<config-repo>`), the GitHub App `app_id` and `installation_id` (ids, not secrets), `gcloud.account`, `gcp.project` and `gcp.region`, and the `secrets` block (Secret Manager secret **names**). In the seed project file: `gke.cluster`, `gke.location`, `gke.registry` |
-| `container/conductor/k8s/deployment.yaml` | the image path and `HARMONY_CONDUCTOR_IMAGE` (`<region>-docker.pkg.dev/<project>/<registry>/harmony-conductor`) |
+| `container/conductor/k8s/deployment.yaml` | the image path and `HARMONY_CONDUCTOR_IMAGE` (`<region>-docker.pkg.dev/<project>/<registry>/harmony-conductor`), and `HARMONY_PLUGIN_POSTURE`: the channel the registry reports and Update follows. It ships as `prod` (B-1222); set `ack:staging` to run staging builds, and set the seed project file's `channel` to match |
 | `container/conductor/k8s/cronjob-sweep.yaml` | the same image path |
 | `container/conductor/k8s/serviceaccount.yaml` | the `iam.gke.io/gcp-service-account` annotation (`<conductor-account>`) |
 
@@ -377,8 +377,8 @@ Repeated evidence cannot extend indefinitely: the total startup cap is twice the
 configured window. ImagePullBackOff / ErrImagePull / CrashLoopBackOff and PVC
 ProvisioningFailed override progress. Persistent unschedulability without progress
 parks at the first deadline. Override with the
-positive integer `HARMONY_GKE_STARTUP_TIMEOUT_S` on the conductor host if a pool's
-normal scale-up takes longer. Once the worker has run, the existing worker deadline
+positive integer `HARMONY_GKE_STARTUP_TIMEOUT_S` in the conductor's environment (the
+Deployment's `env` for the pod) if a pool's normal scale-up takes longer. Once the worker has run, the existing worker deadline
 and completion/disruption checks apply.
 
 At startup expiry the launcher reads the PVC, pod status and the latest relevant
@@ -392,16 +392,11 @@ All startup reads, Job polling and startup deletion use an external GNU `timeout
 without client-side kubectl override flags. Authentication failures on deletion are
 reported separately from other deletion failures.
 
-For the false-positive rework, keep the Deployment's 5400-second stopgap until the
-fixed image is adopted by **Update or an explicit image pin**. Then recommend
-`HARMONY_GKE_STARTUP_TIMEOUT_S=600`. Verification requires a real cold-node leg
-passing the worker-start check with working reads, plus a deliberately impossible
-storage class or nonexistent image tag parking within the bounded deadline with
-the correct reason. Stub JSON alone does not prove this rollout.
-
-Rollout requires **re-applying `container/conductor/k8s/rbac-legs.yaml`** for
-namespaced event reads and **Update/restart of the conductor pod** for the code.
-Merging alone does not update a running conductor. Without the Role update the
-new launcher still fails promptly, but event detail is unavailable. An old
-conductor treats exit 74 as dirty-exit, so roll out the launcher and classifier
-in the same conductor image. No PVC retention or quota setting changes here.
+Upgrading a deployment from an image built before B-1267: **re-apply
+`container/conductor/k8s/rbac-legs.yaml`** (it adds namespaced event reads), then
+Update or restart the conductor pod. Merging alone does not update a running
+conductor. Without the Role update the launcher still fails promptly, but event
+detail is unavailable. An older conductor treats exit 74 as a dirty exit, so the
+launcher and its classifier must come from the same conductor image. If you raised
+`HARMONY_GKE_STARTUP_TIMEOUT_S` as a stopgap before the upgrade, set it back to
+600 (or leave it unset) once the pod runs the new image.
