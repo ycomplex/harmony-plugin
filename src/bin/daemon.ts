@@ -491,27 +491,6 @@ async function main(): Promise<void> {
 
   const leaseHolder = `${hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
 
-  // B-1011: the daemon's WORKSPACE uuid — B-1010's broadcast topic is `workspace:<uuid>`. ONE
-  // authenticated read, pinned for the whole lifetime exactly like projectKey above (same reason:
-  // a daemon must never re-resolve its identity mid-run). TOLERANT: a failure here is not a boot
-  // failure — it just means no hint channel, i.e. today's 25s poll, which is state (A) of the
-  // lifecycle in src/daemon/hints.ts. Same read shape as src/tools/labels.ts's own resolver.
-  let workspaceId: string | null = null;
-  try {
-    const { data, error } = await client
-      .from('projects')
-      .select('workspace_id')
-      .eq('id', projectId)
-      .single();
-    if (error) throw error;
-    workspaceId = (data as { workspace_id: string }).workspace_id;
-  } catch (err) {
-    log(
-      `could not resolve the workspace for hints (${formatDaemonError(err)}) — ` +
-        `continuing on the ${config.pollMs}ms poll interval alone`,
-    );
-  }
-
   // B-739: real timers, unref'd so they can never hold the process open on their own. Hoisted out
   // of the SchedulerDeps literal below (B-1011) so the hint subscription's debounce window uses the
   // very same injected seam the scheduler does — never a bare global setTimeout.
@@ -648,32 +627,33 @@ async function main(): Promise<void> {
   }
 
   // B-1011: the hint channel, created LAZILY — after boot, and without ever awaiting the join, so
-  // nothing about startup can block on a socket. With no workspace uuid (or a channel that never
-  // subscribes) this is simply absent and runScheduler runs the identical poll loop it always has.
+  // nothing about startup can block on a socket. A channel that never subscribes (or a create that
+  // throws) is state (A) — a tolerant no-op — and runScheduler runs the identical poll loop it always
+  // has. B-1285: the topic is `project:<projectId>` — the daemon runs on a PROJECT-scoped token,
+  // which B-1010's policy refuses on `workspace:<uuid>` and admits only on its own project's topic.
+  // The project id is the one already pinned above, so there is no extra boot read to fail.
   let realChannel: ReturnType<typeof client.channel> | null = null;
-  const hints: HintSubscription | null = workspaceId
-    ? startHintSubscription({
-        createChannel: (topic) => {
-          // The EXISTING authenticated client's own channel — no new dependency and no token
-          // plumbing: the realtime socket authenticates through the same accessToken callback
-          // src/supabase.ts already passes. `private: true` is required by B-1010's RLS policy.
-          realChannel = client.channel(topic, { config: { private: true } });
-          return realChannel as unknown as HintChannelLike;
-        },
-        removeChannel: () => (realChannel ? client.removeChannel(realChannel) : Promise.resolve()),
-        workspaceId,
-        leaseHolder,
-        debounceMs: config.hintDebounceMs,
-        startTimeout,
-        log,
-        // B-1045: recover from a post-subscribed CHANNEL_ERROR whose token has expired — same
-        // HarmonyAuth instance SchedulerDeps.forceRefresh already reuses, same client the
-        // `.channel()`/`.removeChannel()` calls above already use.
-        forceRefresh: () => auth.forceRefresh(),
-        setAuth: () => client.realtime.setAuth(),
-        pollMs: config.pollMs,
-      })
-    : null;
+  const hints: HintSubscription = startHintSubscription({
+    createChannel: (topic) => {
+      // The EXISTING authenticated client's own channel — no new dependency and no token
+      // plumbing: the realtime socket authenticates through the same accessToken callback
+      // src/supabase.ts already passes. `private: true` is required by B-1010's RLS policy.
+      realChannel = client.channel(topic, { config: { private: true } });
+      return realChannel as unknown as HintChannelLike;
+    },
+    removeChannel: () => (realChannel ? client.removeChannel(realChannel) : Promise.resolve()),
+    projectId,
+    leaseHolder,
+    debounceMs: config.hintDebounceMs,
+    startTimeout,
+    log,
+    // B-1045: recover from a post-subscribed CHANNEL_ERROR whose token has expired — same
+    // HarmonyAuth instance SchedulerDeps.forceRefresh already reuses, same client the
+    // `.channel()`/`.removeChannel()` calls above already use.
+    forceRefresh: () => auth.forceRefresh(),
+    setAuth: () => client.realtime.setAuth(),
+    pollMs: config.pollMs,
+  });
 
   const prMergeStateReader = createGithubPrMergeStateReader({ env: process.env });
   log(
@@ -710,9 +690,10 @@ async function main(): Promise<void> {
       return () => clearInterval(timer);
     },
     startTimeout,
-    // B-1011: OPTIONAL. Present only when the workspace uuid resolved and a channel was created;
-    // absent otherwise, which leaves the scheduler's sleep the literal line it has always been.
-    hints: hints?.source,
+    // B-1011: OPTIONAL in SchedulerDeps. Always wired here since B-1285 (the project id is pinned, so
+    // there is no lookup to fail); a channel that never subscribes simply never resolves next(),
+    // which leaves the scheduler's sleep exactly the line it has always been.
+    hints: hints.source,
     // B-1172: no NEW legs once the registry row is held elsewhere or a restart/update request was claimed.
     launchPaused: () => registryLost || restartClaimed,
     takeoverConduction: (args) => takeoverConduction(client, args),
@@ -806,7 +787,7 @@ async function main(): Promise<void> {
     // moment this process leaves, and nothing about the socket may delay that) and BEFORE the
     // clean-shutdown marker write, so the daemon is not still taking wakes it can never act on
     // while it stamps its final rows. Bounded and best-effort, exactly like the write below.
-    if (hints) await closeHintsBounded(hints, log, HINT_CLOSE_TIMEOUT_MS);
+    await closeHintsBounded(hints, log, HINT_CLOSE_TIMEOUT_MS);
     // B-761: mark every row this process instance still holds as CLEANLY shut down — a same-host
     // successor's takeoverConduction CAS then adopts it immediately instead of waiting out the
     // full staleness window. Best-effort and bounded: the write must never block the deliberate
@@ -834,7 +815,7 @@ async function main(): Promise<void> {
       `worker timeout ${config.workerTimeoutMs}ms, ` +
       // B-1011: "requested" — the channel is created lazily and its join has NOT been awaited at
       // this point. Whether it actually subscribed is reported by its own status line.
-      `hints ${hints ? `requested (${config.hintDebounceMs}ms debounce)` : 'off'}`,
+      `hints requested (${config.hintDebounceMs}ms debounce)`,
   );
   try {
     await runScheduler(deps, keeper);

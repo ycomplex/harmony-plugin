@@ -13,9 +13,13 @@
 // The filter is an OPTIMISATION; if it were deleted the daemon would be noisier and still correct.
 // Nothing downstream of this module ever sees a payload byte.
 //
-// WIRE CONTRACT (B-1010, cited — never re-derived here): private topic `workspace:<workspace_uuid>`,
-// events `task_change` and `conduction_change`, payload from `realtime.broadcast_changes`, RLS a
-// SELECT policy on `realtime.messages` gated by `is_workspace_member`. The `conductions` trigger
+// WIRE CONTRACT (B-1010 as amended by B-1285, cited — never re-derived here): every hint is
+// broadcast on BOTH private topics `workspace:<workspace_uuid>` and `project:<project_uuid>`, events
+// `task_change` and `conduction_change`, payload from `realtime.broadcast_changes` (unchanged:
+// `payload.record` / `payload.old_record`), RLS a SELECT policy on `realtime.messages`. A
+// PROJECT-scoped token (the daemon's) is refused on `workspace:<uuid>` and admitted only on
+// `project:<its project uuid>`, so the daemon joins `project:<uuid>`; unscoped web sessions join
+// `workspace:<uuid>`. Supersedes knowledge entry a47116a6 (workspace topic only). The `conductions` trigger
 // carries a WHEN clause that never fires on a `last_heartbeat_at`-only write — the heartbeat-only
 // filter below is therefore belt-and-braces, not the primary defence.
 //

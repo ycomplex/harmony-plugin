@@ -17,8 +17,12 @@
 // NO BACKOFF IS IMPLEMENTED HERE. The library already carries two capped schedules (cited in
 // ./hints.ts's createHintLifecycle doc). A third would only make recovery slower.
 //
-// The wire contract is B-1010's and is cited, never re-derived: private topic
-// `workspace:<workspace_uuid>`, events `task_change` / `conduction_change`.
+// The wire contract is B-1010's as amended by B-1285, cited, never re-derived: every hint is
+// broadcast on BOTH private topics `workspace:<workspace_uuid>` and `project:<project_uuid>`,
+// events `task_change` / `conduction_change`. The daemon runs on a PROJECT-scoped token (its JWT
+// carries project_id), which the RLS policy refuses on `workspace:<uuid>` and admits only on
+// `project:<its project uuid>` — so the daemon joins `project:<uuid>`; unscoped web sessions join
+// `workspace:<uuid>`. This supersedes knowledge entry a47116a6 (workspace topic only).
 
 import {
   createHintCoalescer,
@@ -46,8 +50,9 @@ export interface HintSubscriptionDeps {
   /** `client.removeChannel(channel)` — tears the channel down. Called in state (A), and by
    *  `close()` at shutdown. NEVER called for a post-subscribe error (state B). */
   removeChannel(channel: HintChannelLike): Promise<unknown> | unknown;
-  /** The workspace uuid, resolved ONCE at boot and pinned for the daemon's lifetime. */
-  workspaceId: string;
+  /** The daemon's project uuid — the one its project-scoped token is pinned to for its lifetime.
+   *  B-1285: the hint topic is keyed by it (`project:<uuid>`). */
+  projectId: string;
   /** This daemon instance's lease holder — the read-to-discard self-hint filter's input. */
   leaseHolder: string;
   /** The FIXED debounce window (config.hintDebounceMs). */
@@ -83,9 +88,9 @@ export interface HintSubscription {
   isDead(): boolean;
 }
 
-/** B-1010's topic: PRIVATE, keyed by workspace uuid. */
-export function hintTopic(workspaceId: string): string {
-  return `workspace:${workspaceId}`;
+/** B-1285's daemon topic: PRIVATE, keyed by project uuid (the project-scoped token's own topic). */
+export function hintTopic(projectId: string): string {
+  return `project:${projectId}`;
 }
 
 /** Wire the channel and return the scheduler's hint dep.
@@ -97,7 +102,7 @@ export function hintTopic(workspaceId: string): string {
  *  a board where B-1010's RLS policy is not live yet (prod, until the founder promote), the daemon
  *  logs one line and runs exactly as it does today. */
 export function startHintSubscription(deps: HintSubscriptionDeps): HintSubscription {
-  const topic = hintTopic(deps.workspaceId);
+  const topic = hintTopic(deps.projectId);
   const coalescer = createHintCoalescer({
     leaseHolder: deps.leaseHolder,
     debounceMs: deps.debounceMs,
