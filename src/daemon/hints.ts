@@ -19,7 +19,8 @@
 // `payload.record` / `payload.old_record`), RLS a SELECT policy on `realtime.messages`. A
 // PROJECT-scoped token (the daemon's) is refused on `workspace:<uuid>` and admitted only on
 // `project:<its project uuid>`, so the daemon joins `project:<uuid>`; unscoped web sessions join
-// `workspace:<uuid>`. Supersedes knowledge entry a47116a6 (workspace topic only). The `conductions` trigger
+// `workspace:<uuid>`. Knowledge entry a47116a6 (originally workspace topic only) was amended in place by
+// B-1285 to name both topics. The `conductions` trigger
 // carries a WHEN clause that never fires on a `last_heartbeat_at`-only write — the heartbeat-only
 // filter below is therefore belt-and-braces, not the primary defence.
 //
@@ -209,8 +210,9 @@ export function createHintCoalescer(opts: {
 // The three-state lifecycle.
 
 /** The four statuses the realtime library reports through the subscribe callback, plus the
- *  synthetic SETUP_FAILED the adapter raises when there is no channel to report one (the workspace
- *  uuid could not be resolved, or `client.channel()` itself threw). */
+ *  synthetic SETUP_FAILED the adapter raises when there is no channel to report one
+ *  (`client.channel()` itself threw — since B-1285 the topic comes from the daemon's pinned
+ *  project id, so there is no lookup left to fail). */
 export type HintStatus = 'SUBSCRIBED' | 'CHANNEL_ERROR' | 'TIMED_OUT' | 'CLOSED' | 'SETUP_FAILED';
 
 export type HintLifecycleAction =

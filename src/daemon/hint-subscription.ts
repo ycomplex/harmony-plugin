@@ -22,7 +22,8 @@
 // events `task_change` / `conduction_change`. The daemon runs on a PROJECT-scoped token (its JWT
 // carries project_id), which the RLS policy refuses on `workspace:<uuid>` and admits only on
 // `project:<its project uuid>` — so the daemon joins `project:<uuid>`; unscoped web sessions join
-// `workspace:<uuid>`. This supersedes knowledge entry a47116a6 (workspace topic only).
+// `workspace:<uuid>`. Knowledge entry a47116a6 (originally workspace topic only) was amended in
+// place by B-1285 to name both topics.
 
 import {
   createHintCoalescer,
