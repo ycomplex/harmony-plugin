@@ -31,12 +31,12 @@ harmony tasks create --title "New task" --priority high
 - **Language:** Node.js / TypeScript
 - **Transport:** stdio
 - **Auth:** Requires `HARMONY_API_TOKEN` environment variable
-- **Build:** `npm run build` (runs `esbuild` — bundles all runtime deps into `dist/` as ESM). The bundled output is self-contained: `node dist/index.js` works with no `node_modules/` present. Its `postbuild` also writes `dist/THIRD_PARTY_NOTICES` from esbuild's metafile (`.build/meta.json`, gitignored), so the bundled packages' licence texts travel with the bundle that `staging` and `prod` serve (`scripts/generate-third-party-notices.mjs`, B-1295)
+- **Build:** `npm run build` (runs `esbuild` — bundles all runtime deps into `dist/` as ESM). The bundled output is self-contained: `node dist/index.js` works with no `node_modules/` present. Its `postbuild` also writes `dist/THIRD_PARTY_NOTICES` from esbuild's metafile (`.build/meta.json`, gitignored), so the bundled packages' licence texts travel with the bundle that `staging` and `prod` serve (`scripts/generate-third-party-notices.mjs`, B-1295).
 - **Type-check:** `npm run typecheck` (runs `tsc --noEmit`)
 - **Lint:** `npm run lint` (runs `eslint . --max-warnings=0` — enforced 0 warnings; fix or suppress inline with a reason)
 - **Module resolution:** Node16 — source imports must use `.js` extensions (even for `.ts` source files). esbuild resolves them at bundle time.
-- **Dependencies:** the runtime `dependencies` in `package.json` (`@modelcontextprotocol/sdk`, `@supabase/supabase-js` and `zod` among them). Every one is bundled, so adding one is a licence change too: the package must ship a single licence file or declare an SPDX licence the generator has a template for (MIT, ISC, 0BSD, BSD-2-Clause, BSD-3-Clause, BlueOak-1.0.0), or `npm run build` fails naming it (B-1295)
-- **Licence (B-1295):** proprietary to YCOMPLEX LTD (`LICENSE`); `plugin.json` reads `"license": "SEE LICENSE IN LICENSE"`, and `package.json` reads `"UNLICENSED"` with no `publishConfig`. Never describe the plugin itself as MIT or open source; the bundled third-party code keeps its own licences (`dist/THIRD_PARTY_NOTICES`)
+- **Dependencies:** the runtime `dependencies` in `package.json` (`@modelcontextprotocol/sdk`, `@supabase/supabase-js` and `zod` among them). Every one is bundled, so adding one is a licence change too. It, and every package it pulls into the bundle, must either ship exactly one root licence file (`LICENSE*`, `LICENCE*` or `COPYING*`; more than one fails) or ship none and declare an SPDX licence the generator has a template for (MIT, ISC, 0BSD, BSD-2-Clause, BSD-3-Clause, BlueOak-1.0.0). Otherwise `npm run build` fails, naming the package (B-1295).
+- **Licence (B-1295):** proprietary to YCOMPLEX LTD (`LICENSE`); `plugin.json` reads `"license": "SEE LICENSE IN LICENSE"`, and `package.json` reads `"UNLICENSED"` with no `publishConfig`. Never describe the plugin itself as MIT or open source; the bundled third-party code keeps its own licences (`dist/THIRD_PARTY_NOTICES`).
 
 ## Skills
 
