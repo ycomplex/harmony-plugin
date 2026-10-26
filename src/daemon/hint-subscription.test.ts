@@ -1,9 +1,11 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, it, expect, vi } from 'vitest';
 import { startHintSubscription, hintTopic, type HintChannelLike } from './hint-subscription.js';
 
 const ME = 'this-host:1:abcd1234';
-const WS = '11111111-2222-3333-4444-555555555555';
-const TOPIC = `workspace:${WS}`;
+const PROJECT = '11111111-2222-3333-4444-555555555555';
+const TOPIC = `project:${PROJECT}`;
 
 /** A FAKED channel — no socket anywhere. It records what was bound and lets a test drive the
  *  status callback by hand, which is the only way to exercise all three lifecycle states. */
@@ -59,7 +61,7 @@ function makeHarness(opts: HarnessOpts = {}) {
       removed.push(c);
       return Promise.resolve('ok');
     },
-    workspaceId: WS,
+    projectId: PROJECT,
     leaseHolder: ME,
     debounceMs: 1_000,
     startTimeout: (ms, fn) => {
@@ -126,13 +128,35 @@ async function settled(p: Promise<void>): Promise<boolean> {
 }
 
 describe('startHintSubscription — wiring', () => {
-  it("subscribes to B-1010's private workspace topic for both broadcast events, and never blocks", () => {
+  it("subscribes to B-1285's private project topic for both broadcast events, and never blocks", () => {
     const h = makeHarness();
     expect(h.topics).toEqual([TOPIC]);
-    expect(hintTopic(WS)).toBe(TOPIC);
+    expect(hintTopic(PROJECT)).toBe(TOPIC);
     expect(h.channel.events()).toEqual(['task_change', 'conduction_change']);
     expect(h.channel.subscribeCalls()).toBe(1);
     expect(h.removed).toEqual([]);
+  });
+});
+
+describe('B-1285 — the daemon joins project:<projectId>, never workspace:<uuid>', () => {
+  it('the topic is exactly `project:<projectId>`', () => {
+    expect(hintTopic(PROJECT)).toBe(`project:${PROJECT}`);
+    const h = makeHarness();
+    expect(h.topics).toEqual([`project:${PROJECT}`]);
+    expect(h.topics.some((t) => t.startsWith('workspace:'))).toBe(false);
+  });
+
+  it('logs `hint channel subscribed: project:<uuid>` on the first SUBSCRIBED (the release runbook greps it)', () => {
+    const h = makeHarness();
+    h.channel.status('SUBSCRIBED');
+    expect(h.logs.some((l) => l.includes(`hint channel subscribed: project:${PROJECT}`))).toBe(true);
+  });
+
+  it('the daemon entry does no workspace lookup — it passes its pinned projectId straight through', () => {
+    const src = readFileSync(fileURLToPath(new URL('../bin/daemon.ts', import.meta.url)), 'utf8');
+    expect(src).not.toMatch(/select\(\s*['"]workspace_id['"]\s*\)/);
+    expect(src).not.toMatch(/\bworkspaceId\b/);
+    expect(src).toMatch(/startHintSubscription\(\{[\s\S]*?\bprojectId,[\s\S]*?\}\)/);
   });
 });
 
@@ -229,7 +253,7 @@ describe('startHintSubscription — (A) PRE-SUBSCRIBED failure', () => {
     const sub = startHintSubscription({
       createChannel: () => channel,
       removeChannel: () => Promise.reject(new Error('socket already gone')),
-      workspaceId: WS,
+      projectId: PROJECT,
       leaseHolder: ME,
       debounceMs: 1_000,
       startTimeout: () => () => {},
@@ -563,7 +587,7 @@ describe('startHintSubscription — close()', () => {
     const sub = startHintSubscription({
       createChannel: () => channel,
       removeChannel: () => new Promise<void>((resolve) => (release = resolve)),
-      workspaceId: WS,
+      projectId: PROJECT,
       leaseHolder: ME,
       debounceMs: 1_000,
       startTimeout: () => () => {},

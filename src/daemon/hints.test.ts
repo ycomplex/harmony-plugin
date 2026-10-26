@@ -200,7 +200,7 @@ describe('createHintCoalescer — the fixed window', () => {
 });
 
 describe('createHintLifecycle — the latched everSubscribed discriminator', () => {
-  const topic = 'workspace:ws-uuid';
+  const topic = 'project:proj-uuid';
 
   it('(C) SUBSCRIBED is the steady state: one log line, messages accepted', () => {
     const l = createHintLifecycle({ topic });
@@ -287,7 +287,7 @@ describe('isExpiredJwtError — B-1045', () => {
 });
 
 describe('createHintLifecycle — B-1045 round 2: onStatus() no longer decides recovery', () => {
-  const topic = 'workspace:ws-uuid';
+  const topic = 'project:proj-uuid';
 
   it.each(['CHANNEL_ERROR', 'TIMED_OUT', 'CLOSED'] as const)(
     'onStatus() never returns a reauth-flavoured action for a post-subscribed %s — always a plain log/none, repeat-suppressed',
@@ -307,7 +307,7 @@ describe('createHintLifecycle — B-1045 round 2: onStatus() no longer decides r
 });
 
 describe('createHintLifecycle — B-1045 round 2: armRecovery()', () => {
-  const topic = 'workspace:ws-uuid';
+  const topic = 'project:proj-uuid';
 
   it.each(['CHANNEL_ERROR', 'TIMED_OUT'] as const)(
     "armRecovery() returns 'reauth' when the tracked last status is %s",
@@ -376,7 +376,7 @@ describe('createHintLifecycle — B-1045 round 2: armRecovery()', () => {
 });
 
 describe('createHintLifecycle — isDown()', () => {
-  const topic = 'workspace:ws-uuid';
+  const topic = 'project:proj-uuid';
 
   it('is false before any SUBSCRIBED, false while live, true on a post-subscribed drop, false again on re-SUBSCRIBED', () => {
     const l = createHintLifecycle({ topic });
