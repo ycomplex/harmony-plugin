@@ -203,7 +203,8 @@ package goes into the human's queue, with your independent findings summarized b
 ## 6. Watching effectively
 
 **The primary signal is your project's own board-watch subscriber** — a Realtime subscriber on
-the board's own private workspace topic, not the conductor's console log; if the project provides
+the board's own private project topic (`project:<project uuid>`; an API token is project-scoped and
+is refused on the workspace topic, B-1285), not the conductor's console log; if the project provides
 one, its own orchestration guidance names it and gives the exact invocation. It runs from any
 machine holding the right credentials; the board's `awaiting_human_input` flag is still a trap
 when read directly (§2) — the subscriber exists precisely so you never have to poll it yourself.
