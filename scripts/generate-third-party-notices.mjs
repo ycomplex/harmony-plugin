@@ -410,14 +410,29 @@ export function buildNotices(records) {
 
 // --- Filesystem side --------------------------------------------------------------------------
 
-/** The first case-insensitive match of each prefix, tried in order; null when none matches. */
-export function findLicenseFile(entries, prefixes) {
-  const sorted = [...entries].sort(cmp);
-  for (const prefix of prefixes) {
-    const hit = sorted.find((e) => e.toLowerCase().startsWith(prefix.toLowerCase()));
-    if (hit) return hit;
+// Source/data files that merely share a license-ish name (license.js, licence.json, ...) are code,
+// not license text, and must never be reproduced as a notice.
+const NOT_LICENSE_TEXT = /\.(js|mjs|cjs|ts|json|map)$/i;
+
+/**
+ * The single root file whose name starts (case-insensitively) with one of `prefixes`, excluding
+ * code/data files; null when none matches. More than one candidate is a FAILURE, never a silent
+ * pick: reproducing only one of several license files would drop a notice without anyone noticing.
+ * `pkgName` only labels the error.
+ */
+export function findLicenseFile(entries, prefixes, pkgName = "<package>") {
+  const lowered = prefixes.map((p) => p.toLowerCase());
+  const candidates = [...entries]
+    .filter((e) => !NOT_LICENSE_TEXT.test(e))
+    .filter((e) => lowered.some((p) => e.toLowerCase().startsWith(p)))
+    .sort(cmp);
+  if (candidates.length > 1) {
+    throw new Error(
+      `${pkgName} ships more than one ${prefixes.join("/")} file (${candidates.join(", ")}) — ` +
+        `reproduce them all deliberately before bundling it; refusing to pick one silently.`,
+    );
   }
-  return null;
+  return candidates[0] ?? null;
 }
 
 function readRecord(repoRoot, pkg) {
@@ -428,8 +443,8 @@ function readRecord(repoRoot, pkg) {
   }
   const json = JSON.parse(readFileSync(pkgJsonPath, "utf8"));
   const files = readdirSync(dir).filter((f) => statSync(join(dir, f)).isFile());
-  const licenseFile = findLicenseFile(files, ["LICENSE", "LICENCE", "COPYING"]);
-  const noticeFile = findLicenseFile(files, ["NOTICE"]);
+  const licenseFile = findLicenseFile(files, ["LICENSE", "LICENCE", "COPYING"], pkg.name);
+  const noticeFile = findLicenseFile(files, ["NOTICE"], pkg.name);
   return {
     name: json.name ?? pkg.name,
     version: json.version ?? "0.0.0",

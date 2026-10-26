@@ -111,12 +111,29 @@ describe("package metadata", () => {
     expect(authorString(undefined)).toBeNull();
   });
 
-  it("finds license files case-insensitively in LICENSE, LICENCE, COPYING order", () => {
+  it("finds a license file case-insensitively under LICENSE, LICENCE or COPYING", () => {
     expect(findLicenseFile(["README.md", "license"], ["LICENSE", "LICENCE", "COPYING"])).toBe("license");
-    expect(findLicenseFile(["COPYING", "Licence.txt"], ["LICENSE", "LICENCE", "COPYING"])).toBe(
+    expect(findLicenseFile(["README.md", "Licence.txt"], ["LICENSE", "LICENCE", "COPYING"])).toBe(
       "Licence.txt",
     );
+    expect(findLicenseFile(["COPYING"], ["LICENSE", "LICENCE", "COPYING"])).toBe("COPYING");
     expect(findLicenseFile(["README.md"], ["LICENSE", "LICENCE", "COPYING"])).toBeNull();
+  });
+
+  it("never treats a code or data file with a license-ish name as license text", () => {
+    for (const code of ["license.js", "License.mjs", "licence.cjs", "LICENSE.ts", "license.json", "LICENSE.js.map"]) {
+      expect(findLicenseFile(["README.md", code], ["LICENSE", "LICENCE", "COPYING"])).toBeNull();
+    }
+    expect(findLicenseFile(["license.js", "LICENSE"], ["LICENSE", "LICENCE", "COPYING"])).toBe("LICENSE");
+  });
+
+  it("fails, naming the package and the files, when more than one license file matches", () => {
+    expect(() =>
+      findLicenseFile(["LICENSE-MIT", "LICENSE-APACHE"], ["LICENSE", "LICENCE", "COPYING"], "dual-pkg"),
+    ).toThrow(/dual-pkg.*LICENSE-APACHE, LICENSE-MIT/);
+    expect(() => findLicenseFile(["COPYING", "LICENSE"], ["LICENSE", "LICENCE", "COPYING"], "two-pkg")).toThrow(
+      /two-pkg.*COPYING, LICENSE/,
+    );
   });
 });
 
