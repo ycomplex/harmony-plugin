@@ -41583,11 +41583,11 @@ function createHintLifecycle(opts) {
 }
 
 // src/daemon/hint-subscription.ts
-function hintTopic(workspaceId) {
-  return `workspace:${workspaceId}`;
+function hintTopic(projectId) {
+  return `project:${projectId}`;
 }
 function startHintSubscription(deps) {
-  const topic = hintTopic(deps.workspaceId);
+  const topic = hintTopic(deps.projectId);
   const coalescer = createHintCoalescer({
     leaseHolder: deps.leaseHolder,
     debounceMs: deps.debounceMs
@@ -41907,16 +41907,6 @@ ${err instanceof Error ? err.message : String(err)}
   const projectKey = (await getProject(client, projectId)).key;
   conductorLogger.setProjectKey(projectKey);
   const leaseHolder = `${hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
-  let workspaceId = null;
-  try {
-    const { data, error } = await client.from("projects").select("workspace_id").eq("id", projectId).single();
-    if (error) throw error;
-    workspaceId = data.workspace_id;
-  } catch (err) {
-    log(
-      `could not resolve the workspace for hints (${formatDaemonError(err)}) \u2014 continuing on the ${config.pollMs}ms poll interval alone`
-    );
-  }
   const startTimeout = (ms, fn) => {
     const timer = setTimeout(fn, ms);
     timer.unref?.();
@@ -42037,13 +42027,13 @@ ${err instanceof Error ? err.message : String(err)}
     return;
   }
   let realChannel = null;
-  const hints = workspaceId ? startHintSubscription({
+  const hints = startHintSubscription({
     createChannel: (topic) => {
       realChannel = client.channel(topic, { config: { private: true } });
       return realChannel;
     },
     removeChannel: () => realChannel ? client.removeChannel(realChannel) : Promise.resolve(),
-    workspaceId,
+    projectId,
     leaseHolder,
     debounceMs: config.hintDebounceMs,
     startTimeout,
@@ -42054,7 +42044,7 @@ ${err instanceof Error ? err.message : String(err)}
     forceRefresh: () => auth.forceRefresh(),
     setAuth: () => client.realtime.setAuth(),
     pollMs: config.pollMs
-  }) : null;
+  });
   const prMergeStateReader = createGithubPrMergeStateReader({ env: process.env });
   log(
     prMergeStateReader ? "fast-track post-merge recording: conductor-filed (GitHub credential found for PR merge-state reads)" : "fast-track post-merge recording: NOT conductor-filed \u2014 no GitHub credential in the conductor env (set HARMONY_APP_ID/HARMONY_APP_INSTALLATION_ID/HARMONY_APP_PRIVATE_KEY_PATH or HARMONY_APP_PRIVATE_KEY, or GH_TOKEN); fast-track accepts fall back to a worker leg"
@@ -42081,9 +42071,10 @@ ${err instanceof Error ? err.message : String(err)}
       return () => clearInterval(timer);
     },
     startTimeout,
-    // B-1011: OPTIONAL. Present only when the workspace uuid resolved and a channel was created;
-    // absent otherwise, which leaves the scheduler's sleep the literal line it has always been.
-    hints: hints?.source,
+    // B-1011: OPTIONAL in SchedulerDeps. Always wired here since B-1285 (the project id is pinned, so
+    // there is no lookup to fail); a channel that never subscribes simply never resolves next(),
+    // which leaves the scheduler's sleep exactly the line it has always been.
+    hints: hints.source,
     // B-1172: no NEW legs once the registry row is held elsewhere or a restart/update request was claimed.
     launchPaused: () => registryLost || restartClaimed,
     takeoverConduction: (args) => takeoverConduction(client, args),
@@ -42169,7 +42160,7 @@ ${err instanceof Error ? err.message : String(err)}
     if (remoteMode) readiness.clear();
     keeper.stopAll();
     registryKeeper.stop();
-    if (hints) await closeHintsBounded(hints, log, HINT_CLOSE_TIMEOUT_MS);
+    await closeHintsBounded(hints, log, HINT_CLOSE_TIMEOUT_MS);
     await markCleanShutdownBounded(client, leaseHolder, log, CLEAN_SHUTDOWN_TIMEOUT_MS);
     await registryKeeper.release();
     log(shutdownLine(signal, detectSupervisor(process.env)));
@@ -42185,7 +42176,7 @@ ${err instanceof Error ? err.message : String(err)}
     void stop("SIGINT");
   });
   log(
-    `conductor up: lease holder ${leaseHolder}, poll ${config.pollMs}ms, heartbeat ${config.heartbeatMs}ms, stale ${config.staleMs}ms, worker timeout ${config.workerTimeoutMs}ms, hints ${hints ? `requested (${config.hintDebounceMs}ms debounce)` : "off"}`
+    `conductor up: lease holder ${leaseHolder}, poll ${config.pollMs}ms, heartbeat ${config.heartbeatMs}ms, stale ${config.staleMs}ms, worker timeout ${config.workerTimeoutMs}ms, hints requested (${config.hintDebounceMs}ms debounce)`
   );
   try {
     await runScheduler(deps, keeper);
