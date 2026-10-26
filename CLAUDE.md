@@ -1,6 +1,6 @@
 # Harmony Plugin for Claude Code
 
-> **Living · project · Tier 1** · verified against plugin 0.16.51 / web ec86088 on 2026-10-24 · **revise when:** versioning, the staging channel, a release rule or a plugin convention changes. Convention: harmony-workspace `docs/README.md` (B-1044).
+> **Living · project · Tier 1** · verified against plugin 0.16.55 / web fc84ba6 on 2026-10-26 · **revise when:** versioning, the staging channel, a release rule or a plugin convention changes. Convention: harmony-workspace `docs/README.md` (B-1044).
 
 This is the Harmony plugin for Claude Code — an MCP server, CLI, and workflow skills for Harmony project management.
 
@@ -31,11 +31,12 @@ harmony tasks create --title "New task" --priority high
 - **Language:** Node.js / TypeScript
 - **Transport:** stdio
 - **Auth:** Requires `HARMONY_API_TOKEN` environment variable
-- **Build:** `npm run build` (runs `esbuild` — bundles all runtime deps into `dist/` as ESM). The bundled output is self-contained: `node dist/index.js` works with no `node_modules/` present.
+- **Build:** `npm run build` (runs `esbuild` — bundles all runtime deps into `dist/` as ESM). The bundled output is self-contained: `node dist/index.js` works with no `node_modules/` present. Its `postbuild` also writes `dist/THIRD_PARTY_NOTICES` from esbuild's metafile (`.build/meta.json`, gitignored), so the bundled packages' licence texts travel with the bundle that `staging` and `prod` serve (`scripts/generate-third-party-notices.mjs`, B-1295)
 - **Type-check:** `npm run typecheck` (runs `tsc --noEmit`)
 - **Lint:** `npm run lint` (runs `eslint . --max-warnings=0` — enforced 0 warnings; fix or suppress inline with a reason)
 - **Module resolution:** Node16 — source imports must use `.js` extensions (even for `.ts` source files). esbuild resolves them at bundle time.
-- **Dependencies:** `@modelcontextprotocol/sdk`, `@supabase/supabase-js`, `zod`
+- **Dependencies:** the runtime `dependencies` in `package.json` (`@modelcontextprotocol/sdk`, `@supabase/supabase-js` and `zod` among them). Every one is bundled, so adding one is a licence change too: the package must ship a single licence file or declare an SPDX licence the generator has a template for (MIT, ISC, 0BSD, BSD-2-Clause, BSD-3-Clause, BlueOak-1.0.0), or `npm run build` fails naming it (B-1295)
+- **Licence (B-1295):** proprietary to YCOMPLEX LTD (`LICENSE`); `plugin.json` reads `"license": "SEE LICENSE IN LICENSE"`, and `package.json` reads `"UNLICENSED"` with no `publishConfig`. Never describe the plugin itself as MIT or open source; the bundled third-party code keeps its own licences (`dist/THIRD_PARTY_NOTICES`)
 
 ## Skills
 
@@ -107,7 +108,7 @@ Claude Code's auto-update only advances when the `prod` branch moves.
 
 **Why:** the MCP server selects columns/RPCs from the production Supabase DB, which deploys only from harmony-web's `prod` branch and deliberately lags staging during active schema work. If the plugin tracked `main`, a fresh session could auto-update to a version that selects schema prod doesn't have yet, hard-breaking core tools (the `WITHIN GROUP … mode` / `column tasks.workflow_state does not exist` failures — see Harmony **B-383**).
 
-**Invariant:** `prod` must never select DB columns/RPCs that harmony-web *production* lacks.
+**Invariant:** `prod` must never select DB columns/RPCs that harmony-web *production* lacks. Access rules count too. Since B-1285 the daemon joins the `project:<uuid>` board-hint topic, which only web's B-1285 realtime policy admits; on a board without that policy it is refused and falls back to its poll.
 
 **Promotion cadence:** when harmony-web is promoted to production, this repo is promoted in the same
 step — by the workspace's `./promote-prod.sh`, which pushes web `main → prod`, waits for that deploy
