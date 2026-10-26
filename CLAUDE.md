@@ -1,6 +1,6 @@
 # Harmony Plugin for Claude Code
 
-> **Living · project · Tier 1** · verified against plugin 0.16.55 / web fc84ba6 on 2026-10-26 · **revise when:** versioning, the staging channel, a release rule or a plugin convention changes. Convention: harmony-workspace `docs/README.md` (B-1044).
+> **Living · project · Tier 1** · verified against plugin 0.16.55 / web 34b7b3d on 2026-10-26 · **revise when:** versioning, the staging channel, a release rule or a plugin convention changes. Convention: harmony-workspace `docs/README.md` (B-1044).
 
 This is the Harmony plugin for Claude Code — an MCP server, CLI, and workflow skills for Harmony project management.
 
