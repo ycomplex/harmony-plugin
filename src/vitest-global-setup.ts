@@ -19,6 +19,10 @@
 // spawns, so every worker sees a built `dist/`.
 //
 // It is a NO-OP when `dist/index.js` is already present: a normal local run does not rebuild.
+//
+// B-1295: the build it runs is the full `npm run build`, so it also writes the esbuild metafile
+// (`.build/meta.json`) and, in `postbuild`, `dist/THIRD_PARTY_NOTICES`, which
+// src/third-party-notices.test.ts checks.
 
 import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';

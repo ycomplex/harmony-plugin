@@ -1,21 +1,28 @@
-MIT License
+Harmony plugin — Proprietary License
 
-Copyright (c) 2025 ycomplex
+Copyright (c) 2026 YCOMPLEX LTD. All rights reserved.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+This software, including its source code, skills, documentation and built
+files, is the property of YCOMPLEX LTD.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+You may install and use this software only if you hold a license from
+YCOMPLEX LTD: either an active Harmony account, used under the terms that
+apply to that account, or a separate written agreement with YCOMPLEX LTD.
+
+No other rights are granted. Unless your license expressly allows it, you may
+not copy (except as needed to install and run the software), modify, merge,
+publish, distribute, sublicense, sell, or create derivative works of this
+software. Being able to read the source code does not grant any of these rights.
+
+Third-party components included in this software remain under their own
+licenses; see dist/THIRD_PARTY_NOTICES.
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+YCOMPLEX LTD BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+For licensing enquiries, contact YCOMPLEX LTD at 3rd Floor 86-90 Paul Street,
+London, England, EC2A 4NE.
