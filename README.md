@@ -180,4 +180,4 @@ Note: This project uses Node16 module resolution. All imports must use `.js` ext
 
 ## License
 
-MIT
+The Harmony plugin is proprietary software of YCOMPLEX LTD. Use requires a license (an active Harmony account or a written agreement); see LICENSE.

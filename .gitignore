@@ -53,3 +53,6 @@ evals/clarify-replay/cases/ctrl-*/fixtures/fresh-brief.md
 # B-1037 (same suite): the two control cases' own weight-0 reasoning-grader rubric, generated
 # alongside judge.md by the same script — label-bearing, same gitignore discipline.
 evals/clarify-replay/cases/*/graders/judge-reasoning.md
+
+# B-1295: esbuild metafile, read by the notices generator; never committed
+.build/
