@@ -106,12 +106,14 @@ Figma path (planner: `src/tools/figma-composition.ts`):
 6. Every MCP call passes through the shared limiter when present. Count MCP calls: **hard cap 6 per leg**
    (typical 2-3). At the cap, stop composing options and say so on the brief. Record the call count
    (`mcp_call_count`) on the brief.
-7. **The stored record is B-1202's `design_artefact` (schema_version 1), not yet persisted here.** Its fields
+7. **The stored record is B-1202's `design_artefact` (schema_version 1).** Its fields
    are `tool`, `composed_at`, `provenance_notes`, `mcp_call_count`, and an ordered `nodes` list of
    `{ id, name, caption, preview_attachment_id, preview_filename }`; for Figma only, also `file_key`,
-   `file_url` and `version_id`. It holds **no signed URLs**. Until B-1202's capability exists, this path
-   attaches the checked previews and lists them on the brief, and does **not** persist a `design_artefact`.
-   Do not invent a frame field or a slot schema.
+   `file_url` and `version_id`. It holds **no signed URLs**. Attach the checked previews, build it with
+   `assemblePendingArtefact` and recompose the design brief with it as `frame.design_artefact`
+   (see [Durable design record](#durable-design-record-b-1202) and `docs/design-artefact-contract.md`);
+   `compose_brief` refuses with the promote prerequisite on a board that lacks the capability, so report
+   that rather than working around it. Do not invent a frame field or a slot schema.
 8. **Throttled (HTTP 429): back off, never retry straight away** (`nextThrottleDelay`, `THROTTLE_BACKOFF`).
    Wait the `Retry-After` the response names (capped), else bounded exponential backoff (2 s doubling,
    at most 60 s, 5 attempts), then retry; a retry is never immediate. Each request actually issued counts
@@ -135,31 +137,37 @@ reshape: do not run the iterate path. Reconcile instead (`src/tools/figma-reconc
 (`X-Figma-Token`), at explicit versions, with zero MCP reads**, and the file is never edited.
 
 1. **Baseline.** Read it from the active brief's `frame.design_artefact`: `file_key`, `version_id` and the ordered
-   `nodes[].id`. That pinned version is the "before".
-2. **Fresh version.** `chooseFreshVersion`: anchored on the file's **last-modified** time (not the press time:
-   an autosave taken before the press already holds the edit), bounded by `FRESHNESS_WAIT`. If none appears,
-   or last-modified is unavailable and nothing differs from the pinned version, **do not guess**: the result becomes a
+   `nodes[].id`. That pinned version is the "before". Anything but a Figma artefact is a typed refusal
+   (`baseline-not-figma`): say so on the brief.
+2. **Call `reconcileDesign`** with that baseline, the `containerId` (the page or section whose children are the
+   frames; the artefact stores frame ids, not their parent) and the Figma token. It chooses the fresh version
+   (`chooseFreshVersion`: anchored on the file's **last-modified** time, not the press time, since an autosave
+   taken before the press already holds the edit; bounded by `FRESHNESS_WAIT`), reads both snapshots over REST,
+   diffs, interprets, and renders previews pinned to one explicit version with B-1202's
+   `prepareVersionedPreviews`; if that settles on a different version it re-diffs there, so the change lines
+   match the previews. If no saved version appears (`save-a-version`), **do not guess**: the result becomes a
    **question item** telling the designer to save a version (File > Save to version history) and press the action again.
-3. **Read both snapshots** with `GET /v1/files/:key/nodes?ids=…&version=<id>` at the pinned and the fresh
-   version. A 404 is `version-not-found`, never "no change"; a 429 stops the read-back (no retry loop, no MCP
-   fallback) and says so on the brief.
-4. **Diff and interpret** (`diffSnapshots`, `interpret`). Geometry, style and order changes are plain change lines.
-   Text changes, added or removed frames and swapped instances are a change line **and** a question: method change,
-   or illustrative only? Repeats collapse into **one** question (seven rows edited the same way is one). Anything
-   unclassified is a question, never dropped.
-5. **Render previews at the fresh version and attach** (the compose rule of step 3c.5: every changed or kept frame
-   present at that version, every image non-null and downloadable, `version=<fresh>`, **never fall back to latest**).
-6. **Recompose the design brief in place** with `compose_brief`: `revision_cause: { source: 'refreshed-inputs', lines: [the reconciled changes] }`;
+3. **Failures are typed, never "no change".** `version-not-found` is a 404, never "no change"; `rate-limited` carries
+   the retry-after and stops the read-back (no retry loop, no MCP fallback); `frames-missing` means the autosave
+   never captured every frame. Say which on the brief and attach nothing.
+4. **Use the result.** `lines` are the plain change lines (geometry, style and order are lines only); `questions`
+   are decision items: text changes, added or removed frames and swapped instances are a line **and** a question
+   (method change, or illustrative only?), repeats collapse into **one** question
+   (seven rows edited the same way is one), and anything unclassified is a question, never dropped.
+5. **Attach and assemble.** Upload each returned preview with `mcp__harmony__attach_file`, then call
+   `assemblePendingArtefact` with the result's `versionId`, `frames`, the uploaded attachment ids and
+   `provenanceNotes = markHumanInTool(<your own notes>, changedElementIds)` (your lines stay as they were; the
+   designer's per-element marks are `human-in-tool`). It refuses on any compose-rule gap (never fall back to latest).
+6. **Recompose the design brief in place** with `compose_brief`, `frame.design_artefact` = the assembled record
+   (`compose_brief` probes `design_artefact_capability` and validates the attachments; on a board without the
+   capability it refuses with the promote prerequisite, so report that rather than working around it):
+   `revision_cause: { source: 'refreshed-inputs', lines: [the reconciled changes] }`;
    `iterate_feedback` = the designer's note **verbatim, only if one was given** (when both are passed `revision_cause`
    wins and the note rides in its `lines`, per `skills/harmony-shared/brief-authoring.md` §Stating the cause of a
    redraft rather than restating it); a **"What changed in Figma"** block; the question items among the decision
-   items; designer-changed elements marked **`human-in-tool`** in the provenance notes (`markHumanInTool`; your own
-   lines stay as they were). That recompose consumes the marker.
+   items. That recompose consumes the marker.
 7. **Accept pins the version whose previews are on the accepted brief** (`design_artefact.version_id`), never the latest
-   at accept time.
-8. **The writer refuses until B-1202's capability exists** (`assemblePendingArtefact` with `capabilityPresent: false`
-   returns the prerequisite message): do not persist a `design_artefact` or attach previews, and say why on the brief.
-   The B-1202 validator and the recompose write are B-1202's, not built here.
+   at accept time. B-1202's accept path records drift; do not reimplement it.
 
 ### 4. Iterate — elicit, don't guess (D2)
 

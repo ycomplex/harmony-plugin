@@ -16,7 +16,7 @@ describe('harmony-visual-handoff skill contract', () => {
       expect(REGISTERED.has(tool), `unknown tool mcp__harmony__${tool}`).toBe(true);
     }
   });
-  it("B-1204: reconcile a designer's edits — trigger, REST-only read-back, fresh-version anchor, collapse, recompose cause, accept pin, capability refusal", () => {
+  it("B-1204: reconcile a designer's edits — trigger, REST-only read-back, fresh-version anchor, collapse, recompose cause, accept pin, wired flow and compose-time capability refusal", () => {
     const body = skill.body;
     const i = body.indexOf("### 3d. Reconcile a designer's edits (B-1204)");
     expect(i, 'missing the reconcile section').toBeGreaterThan(-1);
@@ -40,7 +40,19 @@ describe('harmony-visual-handoff skill contract', () => {
     expect(seg).toContain('What changed in Figma');
     expect(seg).toContain('human-in-tool');
     expect(seg).toMatch(/never the latest\s+at accept time/);
-    expect(seg).toMatch(/refuses until B-1202's capability exists/);
+    expect(seg).toContain('reconcileDesign');
+    expect(seg).toContain('prepareVersionedPreviews');
+    expect(seg).toContain('containerId');
+    expect(seg).toContain('mcp__harmony__attach_file');
+    expect(seg).toContain('assemblePendingArtefact');
+    expect(seg).toContain('markHumanInTool');
+    expect(seg).toMatch(/frame\.design_artefact. = the assembled record/);
+    expect(seg).toContain('design_artefact_capability');
+    expect(seg).toMatch(/refuses with the promote prerequisite/);
+    expect(seg).toMatch(/report that rather than working around it/);
+    expect(seg).toMatch(/B-1202's accept path records drift; do not reimplement it/);
+    expect(seg).not.toMatch(/capabilityPresent|writer refuses until/);
+    expect(body).not.toMatch(/does \*\*not\*\* persist a `design_artefact`/);
     expect(seg).toContain('brief-authoring.md');
     expect(seg).toMatch(/Stating the cause of a\s+redraft/);
   });
