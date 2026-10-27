@@ -240,7 +240,19 @@ export function registerFigmaCommands(program: Command): void {
             "base64",
           ).toString() || '{"state":"disconnected"}',
         );
-        if (frozen.state === "disconnected" || frozen.state === "reconnect") return;
+        if (frozen.state === "disconnected" || frozen.state === "reconnect") {
+          return;
+        }
+        const omitFigma = (context: FigmaMetadata) => {
+          const path = process.env.HARMONY_FIGMA_WORKER_CONTEXT_FILE;
+          if (path) {
+            writeFileSync(
+              path,
+              Buffer.from(JSON.stringify(context)).toString("base64"),
+              { mode: 0o600 },
+            );
+          }
+        };
         let meta: FigmaMetadata;
         try {
           const ctx = await getAuthenticatedContext();
@@ -253,6 +265,7 @@ export function registerFigmaCommands(program: Command): void {
           process.stderr.write(
             "Figma preflight unavailable; continuing without Figma.\n",
           );
+          omitFigma({ state: "disconnected", connections_enabled: false });
           return;
         }
         if (
@@ -262,6 +275,12 @@ export function registerFigmaCommands(program: Command): void {
         ) {
           process.stderr.write(
             "Figma unavailable; Figma-dependent work requires reconnect.\n",
+          );
+          omitFigma(
+            meta.state === "disconnected" ? { state: "disconnected" } : {
+              state: "reconnect",
+              connections_enabled: meta.connections_enabled,
+            },
           );
           return;
         }

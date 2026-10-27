@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Command } from "commander";
 import { registerFigmaCommands } from "./figma.js";
 import { getAuthenticatedContext } from "../auth.js";
@@ -48,4 +51,30 @@ it("auth or context transport failure cannot abort an unrelated worker", async (
     "/nonexistent",
   ], { from: "user" });
   expect(process.exitCode ?? 0).toBe(0);
+});
+
+it("publishes an effective disconnected context for provision after a transport error", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "figma-worker-"));
+  const path = join(dir, "context");
+  vi.stubEnv("HARMONY_FIGMA_WORKER_CONTEXT_FILE", path);
+  vi.mocked(getAuthenticatedContext).mockRejectedValue(
+    new Error("unavailable"),
+  );
+  try {
+    const program = new Command();
+    registerFigmaCommands(program);
+    await program.parseAsync([
+      "figma",
+      "install-worker",
+      "--adapter",
+      "codex",
+      "--plugin-dir",
+      "/nonexistent",
+    ], { from: "user" });
+    expect(
+      JSON.parse(Buffer.from(readFileSync(path, "utf8"), "base64").toString()),
+    ).toEqual({ state: "disconnected", connections_enabled: false });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
