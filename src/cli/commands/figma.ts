@@ -221,7 +221,7 @@ export function registerFigmaCommands(program: Command, ports = {
         }
       },
     );
-  figma.command("context").action(async () => {
+  figma.command("context").alias("health").action(async () => {
     try {
       const ctx = await getAuthenticatedContext();
       const { data, error } = await ctx.client.rpc("figma_launch_context", {

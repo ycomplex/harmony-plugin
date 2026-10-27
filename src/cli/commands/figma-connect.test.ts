@@ -70,3 +70,8 @@ it.each([403,500])("only an identified registration 403 receives approved-client
   expect(out.includes("Figma has not approved this client")).toBe(status===403);expect(out).not.toContain("SYNTHETIC");
   if(status===403)expect(out.indexOf("--claude-sign-in")).toBeLessThan(out.indexOf("--claude-credentials"));
 });
+
+it("the recovery health command reads the existing credential-free context",async()=>{
+  const c=new Command();registerFigmaCommands(c);await c.parseAsync(["figma","health"],{from:"user"});
+  expect(out).toContain('"generation":7');expect(invoke).not.toHaveBeenCalled();expect(out).not.toContain("SYNTHETIC");
+});
