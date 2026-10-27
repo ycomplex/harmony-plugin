@@ -75,3 +75,8 @@ it("the recovery health command reads the existing credential-free context",asyn
   const c=new Command();registerFigmaCommands(c);await c.parseAsync(["figma","health"],{from:"user"});
   expect(out).toContain('"generation":7');expect(invoke).not.toHaveBeenCalled();expect(out).not.toContain("SYNTHETIC");
 });
+
+it("does not announce a completed setup when post-save cleanup fails",async()=>{
+  const p=ports();p.mint=vi.fn(async cb=>{await cb("private",new AbortController().signal);throw new Error("Temporary sign-in cleanup could not be completed.");});
+  await run(["--claude-sign-in"],p);expect(invoke).toHaveBeenCalledTimes(2);expect(out).toContain("cleanup could not be completed");expect(out).not.toContain("Figma connection saved.");expect(out).not.toContain("refresh job now owns");
+});

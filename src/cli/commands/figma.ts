@@ -512,19 +512,23 @@ export function registerFigmaCommands(program: Command, ports = {
           saveAttempted = true;
           await invoke({ ...input, confirm_low_budget: candidate.lowBudget });
           saved = true;
-          process.stdout.write(`Figma connection saved. Edits are made as @${candidate.metadata.handle}.\n`);
+          return candidate.metadata.handle as string;
         };
         if (opts.claudeSignIn) {
           process.stderr.write("Connect Figma with a fresh Claude Code sign-in.\nYour everyday Claude Code login will not be used.\nIt runs in a throwaway pod that is deleted afterwards.\n");
           if (await ports.prompt("Continue? Type yes: ") !== "yes") throw new Error("Setup cancelled. No connection was saved.");
           imported = true;
-          await ports.mint(async (file, signal) => connectWithGrant(ports.readGrant(file), signal));
+          const handle = await ports.mint(async (file, signal) => connectWithGrant(ports.readGrant(file), signal));
+          process.stdout.write(`Figma connection saved. Edits are made as @${handle}.\n`);
           process.stdout.write("The workspace refresh job now owns this sign-in.\n");
         } else if (opts.claudeCredentials) {
           process.stderr.write("Use a fresh sign-in created only for this workspace.\nStop its Claude Code process before continuing.\n");
           if (await ports.prompt("This is an isolated sign-in and no other process will refresh it. Type yes: ") !== "yes") throw new Error("Setup cancelled. No connection was saved.");
           imported = true;
-          try { await connectWithGrant(ports.readGrant(opts.claudeCredentials)); }
+          try {
+            const handle = await connectWithGrant(ports.readGrant(opts.claudeCredentials));
+            process.stdout.write(`Figma connection saved. Edits are made as @${handle}.\n`);
+          }
           finally { process.stderr.write("After handoff, remove the imported file and its isolated config.\nDo not use this sign-in in Claude Code again.\n"); }
           process.stdout.write("The workspace refresh job now owns this sign-in.\n");
         } else {
@@ -535,7 +539,8 @@ export function registerFigmaCommands(program: Command, ports = {
             // eslint-disable-next-line preserve-caught-error -- OAuth errors can embed credential-bearing response bodies.
             throw new Error("Figma OAuth authorization failed; retry harmony figma connect.");
           }
-          await connectWithGrant(grant);
+          const handle = await connectWithGrant(grant);
+          process.stdout.write(`Figma connection saved. Edits are made as @${handle}.\n`);
         }
       } catch (error) {
         let message = error instanceof Error ? error.message : "Figma connect failed";
