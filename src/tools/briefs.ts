@@ -210,6 +210,14 @@ export interface ContradictionSignal {
   truncated?: string;
 }
 
+export interface ClarifySketch {
+  file_link: string;
+  pinned_version: string;
+  frames: Array<{ name: string; caption: string }>;
+  preview_attachment_ids: string[];
+  mcp_call_count: number;
+}
+
 export type GateFrame =
   // `solving` is the OUTCOME paragraph — what becomes true for the product when this ships, in product
   // terms. NEVER a restatement of the problem: briefs restate pain well and never state the outcome
@@ -219,6 +227,9 @@ export type GateFrame =
       solving: string;
       in_scope: string[];
       not_solving: Excluded[];
+      /** B-1203 — optional flow sketch composed in Figma (connected workspaces only). Absent on every
+       *  other ticket; an absent sketch changes no byte of the brief or the slot. */
+      sketch?: ClarifySketch;
       /** B-838 — the FLOOR set (this ticket's `ticket_references_knowledge`-linked Accepted entries)
        *  this gate confirmed reviewed for contradiction before compose, by entry id. Absent/empty on an
        *  empty FLOOR set is NORMAL and warns on nothing (see `lintBrief`'s B-838 rule); absent on a
@@ -1393,6 +1404,15 @@ export function renderSlot(doc: BriefDoc, gate: GateSlotName): GateSlotContent |
       if (frame.in_scope !== undefined) out.in_scope = [...frame.in_scope];
       if (frame.not_solving !== undefined) {
         out.not_solving = frame.not_solving.map((e) => ({ item: e.item, lands: e.lands }));
+      }
+      if (frame.sketch !== undefined) {
+        out.sketch = {
+          file_link: frame.sketch.file_link,
+          pinned_version: frame.sketch.pinned_version,
+          frames: frame.sketch.frames.map((f) => ({ name: f.name, caption: f.caption })),
+          preview_attachment_ids: [...frame.sketch.preview_attachment_ids],
+          mcp_call_count: frame.sketch.mcp_call_count,
+        };
       }
       return out;
     }
