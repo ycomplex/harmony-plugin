@@ -165,6 +165,18 @@ export interface VerifyStep {
   action: string;
   expect: string;
   covers: string[];
+  /** B-1205 — the accepted design screen this step checks; the preview is a ticket attachment named by
+   *  filename only (never a URL). Absent on steps that cover no designed screen. */
+  design_node?: DesignNodeRef;
+}
+
+/** B-1205 — one accepted design node, as carried on a verify step. */
+export interface DesignNodeRef {
+  node_id: string;
+  name: string;
+  caption?: string;
+  preview_attachment_id: string;
+  preview_filename: string;
 }
 
 /** Design's three sub-tracks. Declared as its own alias rather than inlined: an indexed access like
@@ -268,6 +280,8 @@ export type GateFrame =
       /** Lint-warned as REQUIRED when the scope names more than one repo or carries a migration (§8 item 6). */
       landing?: LandingShape;
       design_delta?: string;
+      /** B-1205 — attestation that the build read the ticket's accepted design. Absent when none. */
+      design_read?: { version_id: string | null; screens: string[]; drift: 'changed' | 'unchanged' | 'unchecked' };
       floor_reviewed?: string[]; // B-838 — see the clarify variant's doc comment; identical contract.
     }
   | {
@@ -296,6 +310,8 @@ export type GateFrame =
        *  dispositioned 'walk'; optional/absent otherwise (a brief with no walk criteria has nothing to
        *  walk). See `VerifyStep`'s own doc comment for the cross-checks the lint enforces. */
       steps?: VerifyStep[];
+      /** B-1205 — one-line note that accepted-design previews sit beside the steps. */
+      design_comparison?: string;
       exempt_reason?: string;
       evidence_status: string;
       bounded_accept?: { open_ac_ids: string[]; closes_when: string };
@@ -716,6 +732,7 @@ function walkLines(frame: Extract<GateFrame, { kind: 'verify' }>): string[] {
   steps.forEach((s, i) => {
     const covers = (s.covers ?? []).map((id) => `#${id}`).join(', ');
     out.push(`${i + 1}. ${s.action} — expect: ${s.expect} (covers: ${covers})`);
+    if (s.design_node) out.push(`   Compare with the design above: ${s.design_node.name} (${s.design_node.preview_filename})`);
   });
   out.push('');
   return out;
@@ -786,6 +803,10 @@ function renderFrame(frame: GateFrame): string[] {
         out.push(`**Landing:** ${renderLanding(frame.landing)}`, `**One-way in this:** ${renderIrreversible(frame.landing)}`);
       }
       if (frame.design_delta) out.push(`**Design delta:** ${frame.design_delta}`);
+      if (frame.design_read) {
+        const dr = frame.design_read;
+        out.push(`**Design read:** ${dr.screens?.length ? dr.screens.join(', ') : 'no screens'} — version ${dr.version_id ?? 'none'} — drift: ${dr.drift}`);
+      }
       break;
     }
     case 'release': {
@@ -1441,7 +1462,10 @@ export function renderSlot(doc: BriefDoc, gate: GateSlotName): GateSlotContent |
       // gate slot months later must see what was actually walked, not just a step number pointing at a
       // brief that has since scrolled off.
       if (frame.steps !== undefined) {
-        out.steps = frame.steps.map((s) => ({ ref: s.ref, action: s.action, expect: s.expect, covers: [...(s.covers ?? [])] }));
+        out.steps = frame.steps.map((s) => ({
+          ref: s.ref, action: s.action, expect: s.expect, covers: [...(s.covers ?? [])],
+          ...(s.design_node ? { design_node: { ...s.design_node } } : {}),
+        }));
       }
       if (frame.evidence_status !== undefined) out.evidence_status = frame.evidence_status;
       if (frame.exempt_reason !== undefined) out.exempt_reason = frame.exempt_reason;
@@ -3355,7 +3379,7 @@ export const composeBriefTool = {
           frame: {
             type: 'object',
             description:
-              "B-876 — the gate-specific frame, discriminated by `kind` (must match the gate reason): 'clarify' { solving, in_scope[], not_solving[{item,lands}], floor_reviewed?[] } | 'decompose' { elements[{text,surface?,covers?}], coverage, existing_children_checked, floor_reviewed?[] } | 'design' { track, tracks[{track,status,note?}], reach[], not_reopened?[], derisk?{run[],not_run[]}, files_on_accept?[], floor_reviewed?[] } | 'plan' { scope{repos[],surfaces[],has_migration}, steps[], attestation{base_verified,derisked_by_running?}, carried_unproven[{item,reason}], ac_coverage, landing?, design_delta?, floor_reviewed?[] } | 'release' { settled_beyond_design?[{behaviour,ac,knowledge_entry_id}], act(LandingShape), unproven[{item,reason}], evidence_status{proven_by_run,walk_at_verify,unproven,total,detail?}, risk_classes[], pr_review_state?, contradiction_signal?{status,message,entries[{entry_id,title,state,matched_values[],source}],truncated?}, floor_reviewed?[] } | 'verify' { environment, criteria[{ac_id,text,checked,disposition,step_ref?,blocked_reason?,carried_to?,backed_by?}], steps?[{ref,action,expect,covers[]}], exempt_reason?, evidence_status, bounded_accept? }. `floor_reviewed` (B-838) applies to the FIVE forward gates only — never verify. LandingShape = { repos[], pr_count, lands_in: 'staging'|'production'|'both'|'merged-main', atomicity: 'single'|'together'|'ordered', ordering? (required when ordered), irreversible[], prs?[{repo,number,url}] (B-890, optional forever — populated from field_values.prerequisite_pr then build_pr) }. Every rule over this field is a WARNING, with two exceptions: (B-1016) a `release` frame missing `evidence_status` is REFUSED outright; (B-1068) a `verify` frame is REFUSED when a `walk`-kind criterion has no `frame.steps` at all, when a `step_ref` matches no declared step, when a step covers no filed criterion, when a `walk` criterion names no `step_ref`, when a step's `action` or `expect` is blank, or when `items[].kind === 'step'` / a raw `frame.runbook` key is present — author the walk as `frame.steps: [{ ref, action, expect, covers }]`, one action plus one expected observation per step, `covers` naming the acceptance-criterion ids it discharges. Omit the frame entirely and the render is byte-identical to the pre-B-876 output.",
+              "B-876 — the gate-specific frame, discriminated by `kind` (must match the gate reason): 'clarify' { solving, in_scope[], not_solving[{item,lands}], floor_reviewed?[] } | 'decompose' { elements[{text,surface?,covers?}], coverage, existing_children_checked, floor_reviewed?[] } | 'design' { track, tracks[{track,status,note?}], reach[], not_reopened?[], derisk?{run[],not_run[]}, files_on_accept?[], floor_reviewed?[] } | 'plan' { scope{repos[],surfaces[],has_migration}, steps[], attestation{base_verified,derisked_by_running?}, carried_unproven[{item,reason}], ac_coverage, landing?, design_delta?, design_read?{version_id|null,screens[],drift: 'changed'|'unchanged'|'unchecked'} (B-1205), floor_reviewed?[] } | 'release' { settled_beyond_design?[{behaviour,ac,knowledge_entry_id}], act(LandingShape), unproven[{item,reason}], evidence_status{proven_by_run,walk_at_verify,unproven,total,detail?}, risk_classes[], pr_review_state?, contradiction_signal?{status,message,entries[{entry_id,title,state,matched_values[],source}],truncated?}, floor_reviewed?[] } | 'verify' { environment, criteria[{ac_id,text,checked,disposition,step_ref?,blocked_reason?,carried_to?,backed_by?}], steps?[{ref,action,expect,covers[],design_node?{node_id,name,caption?,preview_attachment_id,preview_filename}}], design_comparison?, exempt_reason?, evidence_status, bounded_accept? }. `floor_reviewed` (B-838) applies to the FIVE forward gates only — never verify. LandingShape = { repos[], pr_count, lands_in: 'staging'|'production'|'both'|'merged-main', atomicity: 'single'|'together'|'ordered', ordering? (required when ordered), irreversible[], prs?[{repo,number,url}] (B-890, optional forever — populated from field_values.prerequisite_pr then build_pr) }. Every rule over this field is a WARNING, with two exceptions: (B-1016) a `release` frame missing `evidence_status` is REFUSED outright; (B-1068) a `verify` frame is REFUSED when a `walk`-kind criterion has no `frame.steps` at all, when a `step_ref` matches no declared step, when a step covers no filed criterion, when a `walk` criterion names no `step_ref`, when a step's `action` or `expect` is blank, or when `items[].kind === 'step'` / a raw `frame.runbook` key is present — author the walk as `frame.steps: [{ ref, action, expect, covers }]`, one action plus one expected observation per step, `covers` naming the acceptance-criterion ids it discharges. Omit the frame entirely and the render is byte-identical to the pre-B-876 output.",
           },
           revision: {
             type: 'object',
