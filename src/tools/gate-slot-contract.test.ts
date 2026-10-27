@@ -269,22 +269,22 @@ describe('a slot is born WITHOUT the entry projection furniture (B-902 must not 
 describe('GATE_REASON_FLOW.writes_slot — stated for all eight reasons (B-867)', () => {
   const REASONS = Object.keys(GATE_REASON_FLOW);
 
-  it('EXACTLY THREE reasons write a slot — clarify, release, verify', () => {
+  it('FOUR reasons can write a slot — including artefact-bearing design', () => {
     const writes = REASONS.filter((r) => GATE_REASON_FLOW[r].writes_slot);
-    expect(writes.sort()).toEqual(['clarification-draft', 'release-decision-pending', 'verification-ack-pending']);
-    expect(writes).toHaveLength(3);
+    expect(writes.sort()).toEqual(['clarification-draft', 'design-decision-draft', 'release-decision-pending', 'verification-ack-pending']);
+    expect(writes).toHaveLength(4);
   });
 
   it('every one of the eight rows STATES the field — never inherits it by omission', () => {
     for (const reason of REASONS) expect(typeof GATE_REASON_FLOW[reason].writes_slot).toBe('boolean');
   });
 
-  it('writes_slot is NOT carries_writes — the two columns disagree at FIVE of the eight rows', () => {
+  it('writes_slot is NOT carries_writes — the two columns disagree at FOUR of the eight rows', () => {
     // Deriving one from the other would be wrong in BOTH directions: decompose/design/plan carry writes
     // and land no section, while release/verify land a section and carry no writes at all.
     const disagree = REASONS.filter((r) => GATE_REASON_FLOW[r].writes_slot !== GATE_REASON_FLOW[r].carries_writes);
     expect(disagree.sort()).toEqual([
-      'decomposition-proposal', 'design-decision-draft', 'plan-draft',
+      'decomposition-proposal', 'plan-draft',
       'release-decision-pending', 'verification-ack-pending',
     ]);
   });

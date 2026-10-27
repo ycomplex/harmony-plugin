@@ -1,3 +1,4 @@
+import { type DesignArtefact, validateDesignAttachments, renderDesignArtefact } from './design-artefact.js';
 import { encodeClaim, isSingleSentenceShaped, proposeClaim } from './knowledge-claim.js';
 import { validateRemovals, requireRemovalCapability, removalLines, type RemovalDeclaration } from './knowledge-invalidations.js';
 // P3: Brief substrate + command set (gate-ui-conductor §3, §4). The structured doc is canonical; the
@@ -233,6 +234,7 @@ export type GateFrame =
     }
   | {
       kind: 'design';
+      design_artefact?: DesignArtefact;
       track: DesignTrack;
       tracks: DesignTrackEntry[];
       /** `[]` is a real answer ("this reaches nothing beyond the ticket"); an ABSENT key is not. */
@@ -737,6 +739,7 @@ function renderFrame(frame: GateFrame): string[] {
       break;
     }
     case 'design': {
+      if (frame.design_artefact) out.push(...renderDesignArtefact(frame.design_artefact), '');
       const others = (frame.tracks ?? [])
         .filter((t) => t.track !== frame.track)
         .map((t) => `${t.track} ${t.status}${t.note ? ` (${t.note})` : ''}`);
@@ -1335,11 +1338,12 @@ export function deriveEntryTitle(doc: BriefDoc, reason: string, ctx: EntryRender
 
 /** The gates that land a durable section on the ticket. Three today; the storage key is open (the DB
  *  puts no enum CHECK on it) so a fourth gate stores and displays without a web deploy. */
-export type GateSlotName = 'clarify' | 'release' | 'verify';
-export const GATE_SLOT_NAMES: readonly GateSlotName[] = ['clarify', 'release', 'verify'];
+export type GateSlotName = 'clarify' | 'design' | 'release' | 'verify';
+export const GATE_SLOT_NAMES: readonly GateSlotName[] = ['clarify', 'design', 'release', 'verify'];
 
 /** Which gate reason's brief carries each slot's content — the brief `renderSlot` must be given. */
 export const REASON_FOR_GATE_SLOT: Record<GateSlotName, string> = {
+  design: 'design-decision-draft',
   clarify: 'clarification-draft',
   release: 'release-decision-pending',
   verify: 'verification-ack-pending',
@@ -1379,6 +1383,10 @@ export function renderSlot(doc: BriefDoc, gate: GateSlotName): GateSlotContent |
   const out: GateSlotContent = {};
 
   switch (gate) {
+    case 'design': {
+      if (frame.kind !== 'design' || !frame.design_artefact) return null;
+      return { design_artefact: frame.design_artefact };
+    }
     case 'clarify': {
       if (frame.kind !== 'clarify') return null;
       if (frame.solving !== undefined) out.solving = frame.solving;
@@ -2048,8 +2056,8 @@ export const GATE_REASON_FLOW: Record<string, GateReasonFlow> = {
     carries_decision_ref: true,
     derives_entry_content: true,
     carries_writes: true,
-    writes_slot: false,
-    note: "Promotes the design decision entry (technical / product / ux-ui track), recorded as a placeholder by this same gate; its `madr` block keeps its own authored value, only the body is projected. Promises the product track's AC manifest and the decision-only label. Writes NO slot: its durable record is the design decision ENTRY it promotes (and the AC manifest it files); a section restating that on the ticket would be a third copy of one decision.",
+    writes_slot: true,
+    note: "Promotes the design decision entry (technical / product / ux-ui track), recorded as a placeholder by this same gate; its `madr` block keeps its own authored value, only the body is projected. Promises the product track's AC manifest and the decision-only label. Writes a design slot only when its frame carries a design artefact; without one, preserves the prior accepted slot. Legacy decision record: its durable record is the design decision ENTRY it promotes (and the AC manifest it files); a section restating that on the ticket would be a third copy of one decision.",
   },
   'stale-patch-review': {
     carries_decision_ref: true,
@@ -2124,6 +2132,7 @@ export function needsAcceptanceEventVehicle(reason: string | undefined): boolean
  *  reasons, so their accept mints no acceptance event and a payload item would have nothing to ride.
  *  Keyed by reason (not by gate) because that is what `composeBrief` actually holds. */
 const GATE_SLOT_FOR_PAYLOAD_REASON: Record<string, GateSlotName> = {
+  'design-decision-draft': 'design',
   'clarification-draft': 'clarify',
 };
 
@@ -2986,6 +2995,9 @@ export async function composeBrief(
   // `frame.kind === 'verify'` (the release derivations narrow on 'release'), so the two cannot
   // cross-fire; with no `manifest_root`, no manifest, or no declared entries it returns its input by
   // identity and this whole chain is byte-for-byte what it was before B-974.
+  if (docWithContradiction.frame?.kind === 'design' && docWithContradiction.frame.design_artefact) {
+    await validateDesignAttachments(client, taskId, docWithContradiction.frame.design_artefact);
+  }
   const manifestEvidence = await withManifestEvidence(client, taskId, docWithContradiction, args);
   const doc = withDerivedEntryContent(
     withDerivedGateSlot(manifestEvidence.doc, args.reason),
