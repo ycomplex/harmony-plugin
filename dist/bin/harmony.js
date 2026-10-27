@@ -34987,23 +34987,23 @@ var ZodEffects = class extends ZodType {
     }
     if (effect.type === "transform") {
       if (ctx.common.async === false) {
-        const base = this._def.schema._parseSync({
+        const base2 = this._def.schema._parseSync({
           data: ctx.data,
           path: ctx.path,
           parent: ctx
         });
-        if (!isValid(base))
+        if (!isValid(base2))
           return INVALID;
-        const result = effect.transform(base.value, checkCtx);
+        const result = effect.transform(base2.value, checkCtx);
         if (result instanceof Promise) {
           throw new Error(`Asynchronous transform encountered during synchronous parse operation. Use .parseAsync instead.`);
         }
         return { status: status.value, value: result };
       } else {
-        return this._def.schema._parseAsync({ data: ctx.data, path: ctx.path, parent: ctx }).then((base) => {
-          if (!isValid(base))
+        return this._def.schema._parseAsync({ data: ctx.data, path: ctx.path, parent: ctx }).then((base2) => {
+          if (!isValid(base2))
             return INVALID;
-          return Promise.resolve(effect.transform(base.value, checkCtx)).then((result) => ({
+          return Promise.resolve(effect.transform(base2.value, checkCtx)).then((result) => ({
             status: status.value,
             value: result
           }));
@@ -35739,8 +35739,8 @@ var BUILTIN_PROFILES = {
   }
 };
 var isPlain = (v2) => typeof v2 === "object" && v2 !== null && !Array.isArray(v2);
-function mergeInto(base, over) {
-  const out = { ...base };
+function mergeInto(base2, over) {
+  const out = { ...base2 };
   for (const [k, v2] of Object.entries(over)) {
     if (v2 === void 0) continue;
     out[k] = isPlain(v2) && isPlain(out[k]) ? mergeInto(out[k], v2) : v2;
@@ -37835,13 +37835,13 @@ var BASE_STATUS_MAP = {
   Archived: "Archived"
 };
 function toBaseStatus(status) {
-  const base = BASE_STATUS_MAP[status];
-  if (base === void 0) {
+  const base2 = BASE_STATUS_MAP[status];
+  if (base2 === void 0) {
     throw new Error(
       `Unsupported status "${status}". Use Asserted/draft, Accepted/accepted, Superseded/superseded, or Archived.`
     );
   }
-  return base;
+  return base2;
 }
 async function queryKnowledge(client, projectId, args) {
   const { task_id, gate, ...queryArgs } = args;
@@ -39343,6 +39343,52 @@ async function resolveAssignee(client, projectId, assignee) {
   throw new Error(`No member found matching "${assignee}". Use list_members to see available members.`);
 }
 
+// src/tools/design-artefact.ts
+var uuid = external_exports.string().uuid();
+var NodeSchema = external_exports.object({ id: external_exports.string().min(1), name: external_exports.string().min(1), caption: external_exports.string(), preview_attachment_id: uuid, preview_filename: external_exports.string().min(1) }).strict();
+var base = { schema_version: external_exports.literal(1), composed_at: external_exports.string().datetime(), provenance_notes: external_exports.string(), mcp_call_count: external_exports.number().int().nonnegative() };
+var DesignArtefactSchema = external_exports.discriminatedUnion("tool", [
+  external_exports.object({ ...base, tool: external_exports.literal("figma"), file_key: external_exports.string().regex(/^[a-zA-Z0-9]+$/), file_url: external_exports.string().url().refine((s) => {
+    const u = new URL(s);
+    return u.protocol === "https:" && u.hostname === "www.figma.com";
+  }), version_id: external_exports.string().min(1), nodes: external_exports.array(NodeSchema).min(1) }).strict(),
+  external_exports.object({ ...base, tool: external_exports.literal("html"), surface_attachment_id: uuid, surface_filename: external_exports.string().min(1), nodes: external_exports.array(NodeSchema).max(0).optional() }).strict()
+]);
+function designAttachmentIds(a3) {
+  return a3.tool === "html" ? [a3.surface_attachment_id] : a3.nodes.map((n) => n.preview_attachment_id);
+}
+async function validateDesignAttachments(client, taskId, raw) {
+  const a3 = DesignArtefactSchema.parse(raw);
+  const { data: capability, error: capError } = await client.rpc("design_artefact_capability");
+  if (capError || capability?.schema_version !== 1) throw new Error("Design artefacts require the B-1202 web migration on this board; promote web before composing artefacts.");
+  const ids = [...new Set(designAttachmentIds(a3))];
+  const { data, error } = await client.from("attachments").select("id, filename, content_type").eq("task_id", taskId).eq("status", "finalized").in("id", ids);
+  if (error) throw new Error(error.message);
+  for (const id of ids) {
+    const row = data?.find((r) => r.id === id);
+    const filename = a3.tool === "html" ? a3.surface_filename : a3.nodes.find((n) => n.preview_attachment_id === id).preview_filename;
+    if (!row || row.filename !== filename || (a3.tool === "html" ? row.content_type !== "text/html" : !["image/png", "image/jpeg", "image/webp", "image/gif"].includes(row.content_type))) throw new Error("Design preview must reference a finalized same-ticket attachment with its actual filename and expected media type.");
+  }
+  return a3;
+}
+function renderDesignArtefact(a3) {
+  if (a3.tool === "html") return [`**Design preview:** ${a3.surface_filename} (ticket attachment ${a3.surface_attachment_id}; download and open locally)`];
+  return [`**Design previews:** [Open Figma file \u2014 version ${a3.version_id}](${a3.file_url})`, ...a3.nodes.map((n) => `- ${n.name}: ${n.caption} \u2014 ${n.preview_filename} (ticket attachment ${n.preview_attachment_id})`)];
+}
+async function observeDesignDrift(a3, token, request = fetch) {
+  const checked_at = (/* @__PURE__ */ new Date()).toISOString();
+  if (a3.tool !== "figma" || !token) return { status: "unchecked", checked_at };
+  try {
+    const r = await request(`https://api.figma.com/v1/files/${a3.file_key}/nodes?ids=${encodeURIComponent(a3.nodes.map((n) => n.id).join(","))}`, { headers: { "X-Figma-Token": token }, signal: AbortSignal.timeout(1e4) });
+    if (!r.ok) throw new Error("lookup failed");
+    const body = await r.json();
+    if (!body.version) throw new Error("missing version");
+    return { status: body.version === a3.version_id ? "unchanged" : "changed", checked_at, latest_version_id: body.version };
+  } catch {
+    return { status: "unchecked", checked_at };
+  }
+}
+
 // src/tools/brief-frame-schema.ts
 var object = (shape) => external_exports.object(shape).passthrough();
 var strings = external_exports.array(external_exports.string());
@@ -40455,6 +40501,7 @@ function renderFrame(frame) {
       break;
     }
     case "design": {
+      if (frame.design_artefact) out.push(...renderDesignArtefact(frame.design_artefact), "");
       const others = (frame.tracks ?? []).filter((t) => t.track !== frame.track).map((t) => `${t.track} ${t.status}${t.note ? ` (${t.note})` : ""}`);
       out.push(`**Track:** ${[frame.track, ...others].join(" \xB7 ")}`);
       const reach = frame.reach ?? [];
@@ -40775,7 +40822,7 @@ function deriveEntryTitle(doc, reason, ctx) {
   }
   return void 0;
 }
-var GATE_SLOT_NAMES = ["clarify", "release", "verify"];
+var GATE_SLOT_NAMES = ["clarify", "design", "release", "verify"];
 function criterionSlotRow(row) {
   const how = [row.step_ref ? `runbook step ${row.step_ref}` : null, row.backed_by ?? null].filter((part) => typeof part === "string" && part.trim().length > 0).join(" \xB7 ");
   const out = { text: row.text, disposition: dispositionLabel(row) };
@@ -40788,6 +40835,10 @@ function renderSlot(doc, gate) {
   if (!frame) return null;
   const out = {};
   switch (gate) {
+    case "design": {
+      if (frame.kind !== "design" || !frame.design_artefact) return null;
+      return { design_artefact: frame.design_artefact };
+    }
     case "clarify": {
       if (frame.kind !== "clarify") return null;
       if (frame.solving !== void 0) out.solving = frame.solving;
@@ -41183,8 +41234,8 @@ var GATE_REASON_FLOW = {
     carries_decision_ref: true,
     derives_entry_content: true,
     carries_writes: true,
-    writes_slot: false,
-    note: "Promotes the design decision entry (technical / product / ux-ui track), recorded as a placeholder by this same gate; its `madr` block keeps its own authored value, only the body is projected. Promises the product track's AC manifest and the decision-only label. Writes NO slot: its durable record is the design decision ENTRY it promotes (and the AC manifest it files); a section restating that on the ticket would be a third copy of one decision."
+    writes_slot: true,
+    note: "Promotes the design decision entry (technical / product / ux-ui track), recorded as a placeholder by this same gate; its `madr` block keeps its own authored value, only the body is projected. Promises the product track's AC manifest and the decision-only label. Writes a design slot only when its frame carries a design artefact; without one, preserves the prior accepted slot. Legacy decision record: its durable record is the design decision ENTRY it promotes (and the AC manifest it files); a section restating that on the ticket would be a third copy of one decision."
   },
   "stale-patch-review": {
     carries_decision_ref: true,
@@ -41226,6 +41277,7 @@ function derivesEntryContent(reason) {
   return !!reason && GATE_REASON_FLOW[reason]?.derives_entry_content === true;
 }
 var GATE_SLOT_FOR_PAYLOAD_REASON = {
+  "design-decision-draft": "design",
   "clarification-draft": "clarify"
 };
 function withDerivedGateSlot(doc, reason) {
@@ -41515,6 +41567,9 @@ async function composeBrief(client, projectId, userId, args) {
     taskId,
     args.diff_content
   );
+  if (docWithContradiction.frame?.kind === "design" && docWithContradiction.frame.design_artefact) {
+    await validateDesignAttachments(client, taskId, docWithContradiction.frame.design_artefact);
+  }
   const manifestEvidence = await withManifestEvidence(client, taskId, docWithContradiction, args);
   const doc = withDerivedEntryContent(
     withDerivedGateSlot(manifestEvidence.doc, args.reason),
@@ -42081,8 +42136,8 @@ async function resolveBrief(client, projectId, args) {
   throw new Error(error.message);
 }
 function withRemarkRecorded(data, recorded) {
-  const base = data && typeof data === "object" ? data : {};
-  return { ...base, remark_recorded: recorded };
+  const base2 = data && typeof data === "object" ? data : {};
+  return { ...base2, remark_recorded: recorded };
 }
 
 // src/elicitation/engine.ts
@@ -42565,6 +42620,7 @@ var VerifySlotSchema = external_exports.object({
 }).passthrough();
 var UnknownGateSlotSchema = external_exports.record(external_exports.unknown());
 var GATE_SLOT_SCHEMAS = {
+  design: external_exports.object({ design_artefact: DesignArtefactSchema.optional() }).passthrough(),
   clarify: ClarifySlotSchema,
   release: ReleaseSlotSchema,
   verify: VerifySlotSchema
@@ -42603,6 +42659,9 @@ async function writeGateSlot(client, args) {
   const content = parseGateSlotContent(gate, args.content);
   const keys = Object.keys(content);
   if (args.target.via === "acceptance-event") {
+    if (gate === "design" && content.design_artefact) {
+      content.drift = await observeDesignDrift(DesignArtefactSchema.parse(content.design_artefact), process.env.HARMONY_FIGMA_TOKEN);
+    }
     const { data, error } = await client.rpc("consume_gate_slot_write", {
       _event_id: args.target.event_id,
       _external_ref: args.target.external_ref,
@@ -45901,13 +45960,13 @@ var BASE91_INVERSE = /* @__PURE__ */ (() => {
   return table;
 })();
 function decodeTrieDict(input, resultLength, atomCount, dict1AtomCount, ngramCount, dictSize) {
-  const base = 91;
+  const base2 = 91;
   const inputLength = input.length;
-  const twoCharBias = dictSize * (base - 1);
+  const twoCharBias = dictSize * (base2 - 1);
   let pos = 0;
   const readSlotCode = () => {
     const c12 = BASE91_INVERSE[input.charCodeAt(pos++)];
-    return c12 < dictSize ? c12 : c12 * base - twoCharBias + BASE91_INVERSE[input.charCodeAt(pos++)];
+    return c12 < dictSize ? c12 : c12 * base2 - twoCharBias + BASE91_INVERSE[input.charCodeAt(pos++)];
   };
   const dict2AtomCount = atomCount - dict1AtomCount;
   const slotCount = atomCount + ngramCount;
@@ -45932,7 +45991,7 @@ function decodeTrieDict(input, resultLength, atomCount, dict1AtomCount, ngramCou
       } else {
         const next = BASE91_INVERSE[input.charCodeAt(pos++)];
         previous += 89 + // eslint-disable-next-line unicorn/prefer-minimal-ternary -- branches read a different number of side-effecting input bytes
-        (next < 90 ? next * base + BASE91_INVERSE[input.charCodeAt(pos++)] : BASE91_INVERSE[input.charCodeAt(pos++)] * 8281 + BASE91_INVERSE[input.charCodeAt(pos++)] * base + BASE91_INVERSE[input.charCodeAt(pos++)]);
+        (next < 90 ? next * base2 + BASE91_INVERSE[input.charCodeAt(pos++)] : BASE91_INVERSE[input.charCodeAt(pos++)] * 8281 + BASE91_INVERSE[input.charCodeAt(pos++)] * base2 + BASE91_INVERSE[input.charCodeAt(pos++)]);
         single[slot++] = previous;
       }
     }
@@ -45979,7 +46038,7 @@ function decodeTrieDict(input, resultLength, atomCount, dict1AtomCount, ngramCou
   while (pos < inputLength) {
     let slot = BASE91_INVERSE[input.charCodeAt(pos++)];
     if (slot >= dictSize) {
-      slot = slot * base - twoCharBias + BASE91_INVERSE[input.charCodeAt(pos++)];
+      slot = slot * base2 - twoCharBias + BASE91_INVERSE[input.charCodeAt(pos++)];
     }
     const value = single[slot];
     if (value < 0) {
@@ -48410,11 +48469,11 @@ function initProseSources(root, input) {
     { path: ".harmony/prose-sources.json", content: JSON.stringify(declaration, null, 2) + "\n" },
     { path: ".github/workflows/prose-index.yml", content: proseRefreshWorkflow(opts.branch, opts.cliCommit) }
   ];
-  const base = resolve(root);
+  const base2 = resolve(root);
   for (const file of files) {
     const parts = file.path.split("/");
     for (let i = 1; i <= parts.length; i++) {
-      const path4 = join5(base, ...parts.slice(0, i));
+      const path4 = join5(base2, ...parts.slice(0, i));
       try {
         const stat = lstatSync(path4);
         if (stat.isSymbolicLink()) throw new Error(`Refusing symlink: ${path4}`);
@@ -48425,11 +48484,11 @@ function initProseSources(root, input) {
       }
     }
   }
-  if (!existsSync3(base)) throw new Error(`Repository directory does not exist: ${base}`);
+  if (!existsSync3(base2)) throw new Error(`Repository directory does not exist: ${base2}`);
   const written = [];
   try {
     for (const file of files) {
-      const target = join5(base, file.path);
+      const target = join5(base2, file.path);
       mkdirSync(dirname3(target), { recursive: true });
       writeFileSync(target, file.content, { flag: "wx" });
       written.push(target);
@@ -48564,7 +48623,7 @@ var surfaceRecordTools = [
 ];
 
 // src/tools/feature-accounts.ts
-var uuid = external_exports.string().uuid();
+var uuid2 = external_exports.string().uuid();
 var operation = external_exports.discriminatedUnion("op", [
   external_exports.object({ op: external_exports.literal("replace"), clause_id: external_exports.string().trim().min(1), content: external_exports.string() }).strict(),
   external_exports.object({
@@ -48574,26 +48633,26 @@ var operation = external_exports.discriminatedUnion("op", [
     ordinal: external_exports.number().int().positive()
   }).strict()
 ]);
-var createAccountSchema = external_exports.object({ owner_surface: external_exports.string().trim().min(1), concept_id: uuid.optional() }).strict();
+var createAccountSchema = external_exports.object({ owner_surface: external_exports.string().trim().min(1), concept_id: uuid2.optional() }).strict();
 var readAccountsSchema = external_exports.object({
-  account_id: uuid.optional(),
+  account_id: uuid2.optional(),
   owner_surface: external_exports.string().optional(),
   history_limit: external_exports.number().int().min(1).max(100).optional(),
   history_before: external_exports.number().int().positive().optional()
 }).strict();
 var previewAmendmentSchema = external_exports.object({
-  account_id: uuid,
+  account_id: uuid2,
   expected_revision: external_exports.number().int().nonnegative(),
   operations: external_exports.array(operation).min(1)
 }).strict();
 var proposeAmendmentSchema = previewAmendmentSchema.extend({
-  source_decision_id: uuid,
-  source_task_id: uuid,
+  source_decision_id: uuid2,
+  source_task_id: uuid2,
   idempotency_key: external_exports.string().trim().min(1),
   leaves_untouched: external_exports.array(
     external_exports.object({
-      account_id: uuid.optional(),
-      entry_id: uuid.optional(),
+      account_id: uuid2.optional(),
+      entry_id: uuid2.optional(),
       owner_surface: external_exports.string().min(1).optional(),
       clause_id: external_exports.string().min(1).optional()
     }).strict().refine((value) => Object.keys(value).length > 0, "Name the untouched scope")
@@ -48601,8 +48660,8 @@ var proposeAmendmentSchema = previewAmendmentSchema.extend({
   evidence: external_exports.object({ pr_url: external_exports.string().url().optional(), commit: external_exports.string().min(1).optional() }).strict().optional()
 });
 var applyAmendmentSchema = external_exports.object({
-  amendment_id: uuid,
-  production_event_id: uuid.optional(),
+  amendment_id: uuid2,
+  production_event_id: uuid2.optional(),
   confirm_production: external_exports.boolean().optional()
 }).strict().refine(
   (value) => !!value.production_event_id !== (value.confirm_production === true),
@@ -50528,7 +50587,7 @@ async function assertRunConfigRuntime(client, runConfig) {
 // src/tools/unpark-inheritance.ts
 var INHERITED_FROM_KEY = "inherited_from";
 var isPlainObject4 = (v2) => typeof v2 === "object" && v2 !== null && !Array.isArray(v2);
-function mergeRunConfig(base, override) {
+function mergeRunConfig(base2, override) {
   const merge = (a3, b) => {
     const out = { ...a3 };
     for (const [key, value] of Object.entries(b)) {
@@ -50537,7 +50596,7 @@ function mergeRunConfig(base, override) {
     }
     return out;
   };
-  return RunConfigSchema.parse(merge(base, override ?? {}));
+  return RunConfigSchema.parse(merge(base2, override ?? {}));
 }
 async function resolveUnparkRunConfig(client, taskId, args) {
   if (!args.unpark) return args.explicit;
@@ -51629,12 +51688,12 @@ async function runKubeRestart(deps, opts, onLine) {
   const target = { env: deps.env };
   const container = deps.env.HARMONY_CONDUCTOR_CONTAINER || KUBE_CONTAINER;
   const versionBefore = pluginVersion(deps, deps.env.HARMONY_PLUGIN_DIR || deps.cliPluginDir);
-  const base = { remote_kube: true, action, plugin_version_before: versionBefore };
+  const base2 = { remote_kube: true, action, plugin_version_before: versionBefore };
   const fail2 = async (reason2, data2 = {}) => {
     out.err(reason2);
-    const { line: line2, note: note2 } = await completeRequest(deps, void 0, requestId, "failed", reason2, { ...base, ...data2 });
+    const { line: line2, note: note2 } = await completeRequest(deps, void 0, requestId, "failed", reason2, { ...base2, ...data2 });
     out.line(line2);
-    return out.result(EXIT.failure, { ...base, ...data2, error: reason2, request: { id: requestId, result: "failed", completion: note2 } });
+    return out.result(EXIT.failure, { ...base2, ...data2, error: reason2, request: { id: requestId, result: "failed", completion: note2 } });
   };
   out.line(`Remote conductor: ${action} request ${requestId} \u2014 patching deployment ${KUBE_DEPLOYMENT} in namespace ${KUBE_NAMESPACE} (no git pull, no local restart).`);
   const got = await kubectl(deps, target, ["get", deployment], ["-o", "json"]);
@@ -51667,7 +51726,7 @@ async function runKubeRestart(deps, opts, onLine) {
     versionAfter = pluginVersionOfTag(version4);
     out.line(`  channel ${channel}: newest plugin version ${version4} -> ${newImage}`);
   }
-  const data = { ...base, plugin_version_after: versionAfter, image: newImage ?? currentImage };
+  const data = { ...base2, plugin_version_after: versionAfter, image: newImage ?? currentImage };
   if (opts.dryRun) {
     out.line("Dry run: nothing changed. A real run would:");
     out.line(newImage ? `  - kubectl set image ${deployment} ${container}=${newImage} -n ${KUBE_NAMESPACE}` : `  - kubectl rollout restart ${deployment} -n ${KUBE_NAMESPACE}`);

@@ -3600,10 +3600,10 @@ var require_fast_uri = __commonJS({
       schemelessOptions.skipEscape = true;
       return serialize(resolved, schemelessOptions);
     }
-    function resolveComponent(base, relative, options, skipNormalization) {
+    function resolveComponent(base2, relative, options, skipNormalization) {
       const target = {};
       if (!skipNormalization) {
-        base = parse3(serialize(base, options), options);
+        base2 = parse3(serialize(base2, options), options);
         relative = parse3(serialize(relative, options), options);
       }
       options = options || {};
@@ -3623,32 +3623,32 @@ var require_fast_uri = __commonJS({
           target.query = relative.query;
         } else {
           if (!relative.path) {
-            target.path = base.path;
+            target.path = base2.path;
             if (relative.query !== void 0) {
               target.query = relative.query;
             } else {
-              target.query = base.query;
+              target.query = base2.query;
             }
           } else {
             if (relative.path[0] === "/") {
               target.path = removeDotSegments(relative.path);
             } else {
-              if ((base.userinfo !== void 0 || base.host !== void 0 || base.port !== void 0) && !base.path) {
+              if ((base2.userinfo !== void 0 || base2.host !== void 0 || base2.port !== void 0) && !base2.path) {
                 target.path = "/" + relative.path;
-              } else if (!base.path) {
+              } else if (!base2.path) {
                 target.path = relative.path;
               } else {
-                target.path = base.path.slice(0, base.path.lastIndexOf("/") + 1) + relative.path;
+                target.path = base2.path.slice(0, base2.path.lastIndexOf("/") + 1) + relative.path;
               }
               target.path = removeDotSegments(target.path);
             }
             target.query = relative.query;
           }
-          target.userinfo = base.userinfo;
-          target.host = base.host;
-          target.port = base.port;
+          target.userinfo = base2.userinfo;
+          target.host = base2.host;
+          target.port = base2.port;
         }
-        target.scheme = base.scheme;
+        target.scheme = base2.scheme;
       }
       target.fragment = relative.fragment;
       return target;
@@ -27808,23 +27808,23 @@ var ZodEffects = class extends ZodType {
     }
     if (effect.type === "transform") {
       if (ctx.common.async === false) {
-        const base = this._def.schema._parseSync({
+        const base2 = this._def.schema._parseSync({
           data: ctx.data,
           path: ctx.path,
           parent: ctx
         });
-        if (!isValid(base))
+        if (!isValid(base2))
           return INVALID;
-        const result = effect.transform(base.value, checkCtx);
+        const result = effect.transform(base2.value, checkCtx);
         if (result instanceof Promise) {
           throw new Error(`Asynchronous transform encountered during synchronous parse operation. Use .parseAsync instead.`);
         }
         return { status: status.value, value: result };
       } else {
-        return this._def.schema._parseAsync({ data: ctx.data, path: ctx.path, parent: ctx }).then((base) => {
-          if (!isValid(base))
+        return this._def.schema._parseAsync({ data: ctx.data, path: ctx.path, parent: ctx }).then((base2) => {
+          if (!isValid(base2))
             return INVALID;
-          return Promise.resolve(effect.transform(base.value, checkCtx)).then((result) => ({
+          return Promise.resolve(effect.transform(base2.value, checkCtx)).then((result) => ({
             status: status.value,
             value: result
           }));
@@ -34464,8 +34464,8 @@ var Protocol = class {
 function isPlainObject2(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
-function mergeCapabilities(base, additional) {
-  const result = { ...base };
+function mergeCapabilities(base2, additional) {
+  const result = { ...base2 };
   for (const key in additional) {
     const k = key;
     const addValue = additional[k];
@@ -43988,8 +43988,8 @@ var BUILTIN_PROFILES = {
   }
 };
 var isPlain = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
-function mergeInto(base, over) {
-  const out = { ...base };
+function mergeInto(base2, over) {
+  const out = { ...base2 };
   for (const [k, v] of Object.entries(over)) {
     if (v === void 0) continue;
     out[k] = isPlain(v) && isPlain(out[k]) ? mergeInto(out[k], v) : v;
@@ -46084,13 +46084,13 @@ var BASE_STATUS_MAP = {
   Archived: "Archived"
 };
 function toBaseStatus(status) {
-  const base = BASE_STATUS_MAP[status];
-  if (base === void 0) {
+  const base2 = BASE_STATUS_MAP[status];
+  if (base2 === void 0) {
     throw new Error(
       `Unsupported status "${status}". Use Asserted/draft, Accepted/accepted, Superseded/superseded, or Archived.`
     );
   }
-  return base;
+  return base2;
 }
 async function queryKnowledge(client, projectId, args) {
   const { task_id, gate, ...queryArgs } = args;
@@ -48275,6 +48275,52 @@ async function resolveAssignee(client, projectId, assignee) {
   throw new Error(`No member found matching "${assignee}". Use list_members to see available members.`);
 }
 
+// src/tools/design-artefact.ts
+var uuid3 = external_exports.string().uuid();
+var NodeSchema = external_exports.object({ id: external_exports.string().min(1), name: external_exports.string().min(1), caption: external_exports.string(), preview_attachment_id: uuid3, preview_filename: external_exports.string().min(1) }).strict();
+var base = { schema_version: external_exports.literal(1), composed_at: external_exports.string().datetime(), provenance_notes: external_exports.string(), mcp_call_count: external_exports.number().int().nonnegative() };
+var DesignArtefactSchema = external_exports.discriminatedUnion("tool", [
+  external_exports.object({ ...base, tool: external_exports.literal("figma"), file_key: external_exports.string().regex(/^[a-zA-Z0-9]+$/), file_url: external_exports.string().url().refine((s) => {
+    const u = new URL(s);
+    return u.protocol === "https:" && u.hostname === "www.figma.com";
+  }), version_id: external_exports.string().min(1), nodes: external_exports.array(NodeSchema).min(1) }).strict(),
+  external_exports.object({ ...base, tool: external_exports.literal("html"), surface_attachment_id: uuid3, surface_filename: external_exports.string().min(1), nodes: external_exports.array(NodeSchema).max(0).optional() }).strict()
+]);
+function designAttachmentIds(a) {
+  return a.tool === "html" ? [a.surface_attachment_id] : a.nodes.map((n) => n.preview_attachment_id);
+}
+async function validateDesignAttachments(client, taskId, raw) {
+  const a = DesignArtefactSchema.parse(raw);
+  const { data: capability, error: capError } = await client.rpc("design_artefact_capability");
+  if (capError || capability?.schema_version !== 1) throw new Error("Design artefacts require the B-1202 web migration on this board; promote web before composing artefacts.");
+  const ids2 = [...new Set(designAttachmentIds(a))];
+  const { data, error: error2 } = await client.from("attachments").select("id, filename, content_type").eq("task_id", taskId).eq("status", "finalized").in("id", ids2);
+  if (error2) throw new Error(error2.message);
+  for (const id of ids2) {
+    const row = data?.find((r) => r.id === id);
+    const filename = a.tool === "html" ? a.surface_filename : a.nodes.find((n) => n.preview_attachment_id === id).preview_filename;
+    if (!row || row.filename !== filename || (a.tool === "html" ? row.content_type !== "text/html" : !["image/png", "image/jpeg", "image/webp", "image/gif"].includes(row.content_type))) throw new Error("Design preview must reference a finalized same-ticket attachment with its actual filename and expected media type.");
+  }
+  return a;
+}
+function renderDesignArtefact(a) {
+  if (a.tool === "html") return [`**Design preview:** ${a.surface_filename} (ticket attachment ${a.surface_attachment_id}; download and open locally)`];
+  return [`**Design previews:** [Open Figma file \u2014 version ${a.version_id}](${a.file_url})`, ...a.nodes.map((n) => `- ${n.name}: ${n.caption} \u2014 ${n.preview_filename} (ticket attachment ${n.preview_attachment_id})`)];
+}
+async function observeDesignDrift(a, token, request = fetch) {
+  const checked_at = (/* @__PURE__ */ new Date()).toISOString();
+  if (a.tool !== "figma" || !token) return { status: "unchecked", checked_at };
+  try {
+    const r = await request(`https://api.figma.com/v1/files/${a.file_key}/nodes?ids=${encodeURIComponent(a.nodes.map((n) => n.id).join(","))}`, { headers: { "X-Figma-Token": token }, signal: AbortSignal.timeout(1e4) });
+    if (!r.ok) throw new Error("lookup failed");
+    const body = await r.json();
+    if (!body.version) throw new Error("missing version");
+    return { status: body.version === a.version_id ? "unchanged" : "changed", checked_at, latest_version_id: body.version };
+  } catch {
+    return { status: "unchecked", checked_at };
+  }
+}
+
 // src/tools/brief-frame-schema.ts
 var object3 = (shape) => external_exports.object(shape).passthrough();
 var strings = external_exports.array(external_exports.string());
@@ -49427,6 +49473,7 @@ function renderFrame(frame) {
       break;
     }
     case "design": {
+      if (frame.design_artefact) out.push(...renderDesignArtefact(frame.design_artefact), "");
       const others = (frame.tracks ?? []).filter((t) => t.track !== frame.track).map((t) => `${t.track} ${t.status}${t.note ? ` (${t.note})` : ""}`);
       out.push(`**Track:** ${[frame.track, ...others].join(" \xB7 ")}`);
       const reach = frame.reach ?? [];
@@ -49747,8 +49794,9 @@ function deriveEntryTitle(doc, reason, ctx) {
   }
   return void 0;
 }
-var GATE_SLOT_NAMES = ["clarify", "release", "verify"];
+var GATE_SLOT_NAMES = ["clarify", "design", "release", "verify"];
 var REASON_FOR_GATE_SLOT = {
+  design: "design-decision-draft",
   clarify: "clarification-draft",
   release: "release-decision-pending",
   verify: "verification-ack-pending"
@@ -49765,6 +49813,10 @@ function renderSlot(doc, gate) {
   if (!frame) return null;
   const out = {};
   switch (gate) {
+    case "design": {
+      if (frame.kind !== "design" || !frame.design_artefact) return null;
+      return { design_artefact: frame.design_artefact };
+    }
     case "clarify": {
       if (frame.kind !== "clarify") return null;
       if (frame.solving !== void 0) out.solving = frame.solving;
@@ -50160,8 +50212,8 @@ var GATE_REASON_FLOW = {
     carries_decision_ref: true,
     derives_entry_content: true,
     carries_writes: true,
-    writes_slot: false,
-    note: "Promotes the design decision entry (technical / product / ux-ui track), recorded as a placeholder by this same gate; its `madr` block keeps its own authored value, only the body is projected. Promises the product track's AC manifest and the decision-only label. Writes NO slot: its durable record is the design decision ENTRY it promotes (and the AC manifest it files); a section restating that on the ticket would be a third copy of one decision."
+    writes_slot: true,
+    note: "Promotes the design decision entry (technical / product / ux-ui track), recorded as a placeholder by this same gate; its `madr` block keeps its own authored value, only the body is projected. Promises the product track's AC manifest and the decision-only label. Writes a design slot only when its frame carries a design artefact; without one, preserves the prior accepted slot. Legacy decision record: its durable record is the design decision ENTRY it promotes (and the AC manifest it files); a section restating that on the ticket would be a third copy of one decision."
   },
   "stale-patch-review": {
     carries_decision_ref: true,
@@ -50203,6 +50255,7 @@ function derivesEntryContent(reason) {
   return !!reason && GATE_REASON_FLOW[reason]?.derives_entry_content === true;
 }
 var GATE_SLOT_FOR_PAYLOAD_REASON = {
+  "design-decision-draft": "design",
   "clarification-draft": "clarify"
 };
 function withDerivedGateSlot(doc, reason) {
@@ -50492,6 +50545,9 @@ async function composeBrief(client, projectId, userId, args) {
     taskId,
     args.diff_content
   );
+  if (docWithContradiction.frame?.kind === "design" && docWithContradiction.frame.design_artefact) {
+    await validateDesignAttachments(client, taskId, docWithContradiction.frame.design_artefact);
+  }
   const manifestEvidence = await withManifestEvidence(client, taskId, docWithContradiction, args);
   const doc = withDerivedEntryContent(
     withDerivedGateSlot(manifestEvidence.doc, args.reason),
@@ -51115,8 +51171,8 @@ async function resolveBrief(client, projectId, args) {
   throw new Error(error2.message);
 }
 function withRemarkRecorded(data, recorded) {
-  const base = data && typeof data === "object" ? data : {};
-  return { ...base, remark_recorded: recorded };
+  const base2 = data && typeof data === "object" ? data : {};
+  return { ...base2, remark_recorded: recorded };
 }
 var isReshapeRpcSchemaDrift = (msg) => !!msg && /(log_brief_decision_event|submit_brief_command)/.test(msg) && /(does not exist|could not find|schema cache|function)/i.test(msg);
 async function reshapeBrief(client, projectId, args) {
@@ -51194,13 +51250,13 @@ async function reshapeBrief(client, projectId, args) {
     }
     throw new Error(error2.message);
   }
-  const base = data && typeof data === "object" ? data : {};
+  const base2 = data && typeof data === "object" ? data : {};
   return {
     brief_id: brief.id,
     task_id: taskId,
     command: "iterate",
     reason: brief.reason,
-    ...base,
+    ...base2,
     provenance
   };
 }
@@ -53524,6 +53580,7 @@ var VerifySlotSchema = external_exports.object({
 }).passthrough();
 var UnknownGateSlotSchema = external_exports.record(external_exports.unknown());
 var GATE_SLOT_SCHEMAS = {
+  design: external_exports.object({ design_artefact: DesignArtefactSchema.optional() }).passthrough(),
   clarify: ClarifySlotSchema,
   release: ReleaseSlotSchema,
   verify: VerifySlotSchema
@@ -53575,6 +53632,9 @@ async function writeGateSlot(client, args) {
   const content = parseGateSlotContent(gate, args.content);
   const keys = Object.keys(content);
   if (args.target.via === "acceptance-event") {
+    if (gate === "design" && content.design_artefact) {
+      content.drift = await observeDesignDrift(DesignArtefactSchema.parse(content.design_artefact), process.env.HARMONY_FIGMA_TOKEN);
+    }
     const { data, error: error2 } = await client.rpc("consume_gate_slot_write", {
       _event_id: args.target.event_id,
       _external_ref: args.target.external_ref,
@@ -53642,6 +53702,13 @@ async function writeGateSlotToolHandler(client, projectId, args) {
     const prs = pinBuildPrs(taskRow?.field_values);
     content.prs = prs;
   }
+  if (gate === "design") {
+    const { data: event, error: error2 } = await client.from("pending_acceptance_events").select("id").eq("brief_id", brief.id).order("created_at", { ascending: false }).limit(1).maybeSingle();
+    if (error2) throw new Error(error2.message);
+    if (!event) throw new Error("Design slot requires the accepted brief event; accept the design before writing its slot.");
+    const result2 = await writeGateSlot(client, { gate, content, target: { via: "acceptance-event", event_id: event.id, external_ref: "slot-design" } });
+    return { task_id: taskId, gate, written: true, applied: result2.applied, keys: result2.keys, brief_id: brief.id };
+  }
   const result = await writeGateSlot(client, { gate, content, target: { via: "task", task_id: taskId } });
   return { task_id: taskId, gate, written: true, applied: result.applied, keys: result.keys, brief_id: brief.id };
 }
@@ -53654,8 +53721,8 @@ var writeGateSlotTool = {
       task_id: { type: "string", description: "Task identifier \u2014 UUID, task number (e.g., 867), or visual ID (e.g., B-867)" },
       gate: {
         type: "string",
-        enum: ["clarify", "release", "verify"],
-        description: "Which gate's section to land \u2014 'release' after the release accept, 'verify' after the verify accept."
+        enum: ["clarify", "design", "release", "verify"],
+        description: "Which gate's section to land \u2014 design replays only its accepted event; 'release' after the release accept, 'verify' after the verify accept."
       }
     },
     required: ["task_id", "gate"]
@@ -55509,7 +55576,7 @@ async function assertRunConfigRuntime(client, runConfig) {
 // src/tools/unpark-inheritance.ts
 var INHERITED_FROM_KEY = "inherited_from";
 var isPlainObject6 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
-function mergeRunConfig(base, override) {
+function mergeRunConfig(base2, override) {
   const merge2 = (a, b) => {
     const out = { ...a };
     for (const [key, value] of Object.entries(b)) {
@@ -55518,7 +55585,7 @@ function mergeRunConfig(base, override) {
     }
     return out;
   };
-  return RunConfigSchema.parse(merge2(base, override ?? {}));
+  return RunConfigSchema.parse(merge2(base2, override ?? {}));
 }
 async function resolveUnparkRunConfig(client, taskId, args) {
   if (!args.unpark) return args.explicit;

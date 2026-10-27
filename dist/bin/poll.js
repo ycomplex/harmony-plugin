@@ -29374,23 +29374,23 @@ var ZodEffects = class extends ZodType {
     }
     if (effect.type === "transform") {
       if (ctx.common.async === false) {
-        const base = this._def.schema._parseSync({
+        const base2 = this._def.schema._parseSync({
           data: ctx.data,
           path: ctx.path,
           parent: ctx
         });
-        if (!isValid(base))
+        if (!isValid(base2))
           return INVALID;
-        const result = effect.transform(base.value, checkCtx);
+        const result = effect.transform(base2.value, checkCtx);
         if (result instanceof Promise) {
           throw new Error(`Asynchronous transform encountered during synchronous parse operation. Use .parseAsync instead.`);
         }
         return { status: status.value, value: result };
       } else {
-        return this._def.schema._parseAsync({ data: ctx.data, path: ctx.path, parent: ctx }).then((base) => {
-          if (!isValid(base))
+        return this._def.schema._parseAsync({ data: ctx.data, path: ctx.path, parent: ctx }).then((base2) => {
+          if (!isValid(base2))
             return INVALID;
-          return Promise.resolve(effect.transform(base.value, checkCtx)).then((result) => ({
+          return Promise.resolve(effect.transform(base2.value, checkCtx)).then((result) => ({
             status: status.value,
             value: result
           }));
@@ -30119,8 +30119,8 @@ var BUILTIN_PROFILES = {
   }
 };
 var isPlain = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
-function mergeInto(base, over) {
-  const out = { ...base };
+function mergeInto(base2, over) {
+  const out = { ...base2 };
   for (const [k, v] of Object.entries(over)) {
     if (v === void 0) continue;
     out[k] = isPlain(v) && isPlain(out[k]) ? mergeInto(out[k], v) : v;
@@ -31131,6 +31131,22 @@ async function resolveTaskId(client, projectId, input) {
   return data.id;
 }
 
+// src/tools/design-artefact.ts
+var uuid = external_exports.string().uuid();
+var NodeSchema = external_exports.object({ id: external_exports.string().min(1), name: external_exports.string().min(1), caption: external_exports.string(), preview_attachment_id: uuid, preview_filename: external_exports.string().min(1) }).strict();
+var base = { schema_version: external_exports.literal(1), composed_at: external_exports.string().datetime(), provenance_notes: external_exports.string(), mcp_call_count: external_exports.number().int().nonnegative() };
+var DesignArtefactSchema = external_exports.discriminatedUnion("tool", [
+  external_exports.object({ ...base, tool: external_exports.literal("figma"), file_key: external_exports.string().regex(/^[a-zA-Z0-9]+$/), file_url: external_exports.string().url().refine((s) => {
+    const u = new URL(s);
+    return u.protocol === "https:" && u.hostname === "www.figma.com";
+  }), version_id: external_exports.string().min(1), nodes: external_exports.array(NodeSchema).min(1) }).strict(),
+  external_exports.object({ ...base, tool: external_exports.literal("html"), surface_attachment_id: uuid, surface_filename: external_exports.string().min(1), nodes: external_exports.array(NodeSchema).max(0).optional() }).strict()
+]);
+function renderDesignArtefact(a) {
+  if (a.tool === "html") return [`**Design preview:** ${a.surface_filename} (ticket attachment ${a.surface_attachment_id}; download and open locally)`];
+  return [`**Design previews:** [Open Figma file \u2014 version ${a.version_id}](${a.file_url})`, ...a.nodes.map((n) => `- ${n.name}: ${n.caption} \u2014 ${n.preview_filename} (ticket attachment ${n.preview_attachment_id})`)];
+}
+
 // src/tools/brief-frame-schema.ts
 var object = (shape) => external_exports.object(shape).passthrough();
 var strings = external_exports.array(external_exports.string());
@@ -31652,6 +31668,7 @@ function renderFrame(frame) {
       break;
     }
     case "design": {
+      if (frame.design_artefact) out.push(...renderDesignArtefact(frame.design_artefact), "");
       const others = (frame.tracks ?? []).filter((t) => t.track !== frame.track).map((t) => `${t.track} ${t.status}${t.note ? ` (${t.note})` : ""}`);
       out.push(`**Track:** ${[frame.track, ...others].join(" \xB7 ")}`);
       const reach = frame.reach ?? [];
@@ -32372,11 +32389,11 @@ function ballReturned(previous, current) {
   return ballWithHuman(previous) && !ballWithHuman(current);
 }
 function exchangeWentInactive(previous, current) {
-  const base = previous.active_exchange ?? null;
+  const base2 = previous.active_exchange ?? null;
   const cur = current.active_exchange ?? null;
-  if (base == null || base.status !== "active") return false;
+  if (base2 == null || base2.status !== "active") return false;
   if (cur == null) return true;
-  if ((cur.exchange_id ?? null) !== (base.exchange_id ?? null)) return true;
+  if ((cur.exchange_id ?? null) !== (base2.exchange_id ?? null)) return true;
   return cur.status != null && cur.status !== "active";
 }
 
