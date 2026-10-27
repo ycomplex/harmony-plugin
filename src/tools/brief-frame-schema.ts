@@ -12,10 +12,17 @@ const landing = object({
   irreversible: strings,
   prs: z.array(object({ repo: z.string(), number: z.number(), url: z.string() })).optional(),
 });
+// B-1203 — optional flow-sketch record on the clarify frame (Figma-connected workspaces only).
+const sketch = object({
+  file_link: z.string(), pinned_version: z.string(),
+  frames: z.array(object({ name: z.string(), caption: z.string() })),
+  preview_attachment_ids: strings, mcp_call_count: z.number(),
+});
 const floor = { floor_reviewed: strings.optional() };
 export const briefFrameSchema = z.discriminatedUnion('kind', [
   object({ kind: z.literal('clarify'), solving: z.string(), in_scope: strings,
-    not_solving: z.array(object({ item: z.string(), lands: z.string() })), ...floor }),
+    not_solving: z.array(object({ item: z.string(), lands: z.string() })),
+    sketch: sketch.optional(), ...floor }),
   object({ kind: z.literal('decompose'),
     elements: z.array(object({ text: z.string(), surface: z.string().optional(), covers: z.string().optional() })),
     coverage: z.string(), existing_children_checked: z.boolean(), ...floor }),

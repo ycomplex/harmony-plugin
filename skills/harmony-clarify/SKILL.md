@@ -178,6 +178,17 @@ the ticket body, Accepted KB, and the ticket's own non-marker comments alike. Cl
 as *inferable* (ticket + Accepted KB settle it) / *inference-needing-validation* / *unknown*, and by
 stakes: *low* / *load-bearing*.
 
+**Flow-sketch validate item (B-1203) — Figma-connected workspaces only.** On a **UI-heavy** ticket
+(screens or a multi-step flow are the product behaviour), and **only when the Figma connection preflight
+resolves to `figma`** (`src/tools/figma-connection.ts`; the same preflight `harmony-visual-handoff` step 3c
+uses), add ONE validate item to the residual: *"would a flow sketch settle this?"* It is never asked on a
+non-UI ticket and never by default. When the preflight resolves to `html`, `stop`, or cannot be read, the item
+does not exist: clarify behaves exactly as before. A **yes** composes the sketch through
+`harmony-visual-handoff`'s Figma path BEFORE the clarification brief composes, and records it as
+`doc.frame.sketch` (`file_link`, `pinned_version`, ordered `frames[{ name, caption }]`,
+`preview_attachment_ids`, `mcp_call_count`) so it lands on the clarify slot. A sketch is a clarification aid,
+not a design decision.
+
 **Phase-split detection (B-518).** While assessing the scope boundaries, check whether the ticket
 **bundles a now-phase and a later-phase of product intent** — two asks at different priority horizons
 ("do X — and eventually Y"). A detected now-vs-later mixture is a **load-bearing scope-boundary
