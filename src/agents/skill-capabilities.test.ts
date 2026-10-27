@@ -31,7 +31,8 @@ const BASELINE: Record<string, { allowed: string; disallowed?: string }> = {
   'harmony-research': { allowed: 'mcp__harmony__* Read Grep Glob WebSearch WebFetch' },
   'harmony-revise-scope': { allowed: 'mcp__harmony__* Read Grep Glob WebSearch WebFetch' },
   'harmony-stale-patch': { allowed: 'mcp__harmony__* Read Grep Glob WebSearch WebFetch' },
-  'harmony-visual-handoff': { allowed: 'mcp__harmony__* Read Grep Glob WebSearch WebFetch Write Bash(open *) Bash(mkdir *)' },
+  // B-1201 intentionally extends the historical envelope for the native Figma MCP and budget CLI.
+  'harmony-visual-handoff': { allowed: 'mcp__harmony__* mcp__figma__* Read Grep Glob WebSearch WebFetch Write Bash(open *) Bash(mkdir *) Bash(node *)' },
   'start-work': {
     allowed: 'mcp__harmony__* Read Grep Glob Write Edit Bash',
     disallowed: 'mcp__harmony__record_decision mcp__harmony__supersede_decision',

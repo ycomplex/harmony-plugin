@@ -1,0 +1,46 @@
+# Founder applies only after schema, operator registration, WI/IAM and image build.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: harmony-figma-refresh
+  namespace: harmony-conductor
+  annotations:
+    iam.gke.io/gcp-service-account: harmony-figma-refresh@harmony-conductor.iam.gserviceaccount.com
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: harmony-figma-refresh
+  namespace: harmony-conductor
+spec:
+  schedule: "0 * * * *"
+  suspend: true
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 600
+      template:
+        spec:
+          serviceAccountName: harmony-figma-refresh
+          restartPolicy: Never
+          containers:
+            - name: refresh
+              image: REPLACE_WITH_TESTED_PINNED_REFRESH_IMAGE
+              command: [node, /app/dist/figma-refresh-runner.js]
+              env:
+                - name: HARMONY_SUPABASE_URL
+                  valueFrom:
+                    secretKeyRef: {name: harmony-figma-refresh-board, key: url}
+                - name: HARMONY_SUPABASE_ANON_KEY
+                  valueFrom:
+                    secretKeyRef: {name: harmony-figma-refresh-board, key: anon-key}
+                - name: HARMONY_API_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: harmony-figma-refresh-board
+                      key: token
+              resources:
+                requests: {cpu: 100m, memory: 128Mi}
+                limits: {cpu: "1", memory: 512Mi}

@@ -62,6 +62,7 @@ function makeWorld(extra: Record<string, string> = {}): World {
     `if [ "$1" = "-e" ]; then exec ${JSON.stringify(process.execPath)} "$@"; fi`,
     'echo "node $*" >> "$STUB_LOGS/node.log"',
     'case "$*" in',
+    '  *"figma context"*) printf \'%s\' \'{"state":"disconnected"}\'; exit 0 ;;',
     '  *mint-installation-token.mjs*)',
     '    out=""; prev=""',
     '    for a in "$@"; do [ "$prev" = "--out" ] && out="$a"; prev="$a"; done',
@@ -118,9 +119,9 @@ describe.skipIf(!CAPABLE)('cloud-worker-launch.sh — a Claude run is byte-ident
     const after = makeWorld();
     expect(launch(before, PRE_B1076, rc).status).toBe(0);
     expect(launch(after, SCRIPT, rc).status).toBe(0);
-    expect(gcloudCalls(after)).toEqual(gcloudCalls(before));
+    expect(gcloudCalls(after).map(c=>c.filter(a=>!a.startsWith("--remove-secrets=")))).toEqual(gcloudCalls(before));
     expect(gcloudCalls(after).some(isDescribe)).toBe(false);
-    expect(envFile(after)).toBe(envFile(before));
+    expect(envFile(after).replace(/^HARMONY_FIGMA_CONTEXT_B64:.*\n/m, "")).toBe(envFile(before));
     expect(envFile(after)).not.toContain('HARMONY_CODEX_AUTH_FILE');
   });
 

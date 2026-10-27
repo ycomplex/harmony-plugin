@@ -109,6 +109,7 @@ function renderClaudeMcp(connection: McpConnection): { fileName: string; content
 // skill's class order is the line's order. skill-capabilities.test.ts pins every skill's rendered line.
 const CLAUDE_CLASS_TOOLS: Readonly<Record<string, readonly string[]>> = {
   'harmony-mcp': ['mcp__harmony__*'],
+  'figma-mcp': ['mcp__figma__*'],
   read: ['Read', 'Grep', 'Glob'],
   web: ['WebSearch', 'WebFetch'],
   edit: ['Edit'],

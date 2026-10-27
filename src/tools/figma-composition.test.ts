@@ -81,9 +81,9 @@ describe('waitForVersionAfter', () => {
 });
 
 describe('nextThrottleDelay (429 backoff)', () => {
-  it('honours Retry-After (seconds to ms), capped', () => {
+  it('honours Retry-After without shortening the server cooldown', () => {
     expect(nextThrottleDelay({ attempt: 1, retryAfterSeconds: 7 })).toEqual({ retry: true, delayMs: 7000 });
-    expect(nextThrottleDelay({ attempt: 1, retryAfterSeconds: 9999 })).toEqual({ retry: true, delayMs: THROTTLE_BACKOFF.maxMs });
+    expect(nextThrottleDelay({ attempt: 1, retryAfterSeconds: 9999 })).toEqual({ retry: true, delayMs: 9999000 });
   });
   it('grows exponentially without Retry-After, bounded by maxMs', () => {
     const d = (attempt: number) => (nextThrottleDelay({ attempt, maxAttempts: 50 }) as { delayMs: number }).delayMs;

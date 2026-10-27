@@ -14,7 +14,7 @@ describe('figma connection preflight (B-1203)', () => {
   });
   it('failing never falls back to html, and names the reconnect', () => {
     expect(resolveFigmaRoute({ state: 'failing', reason: 'x' })).not.toBe('html');
-    expect(reconnectInstruction({ state: 'failing', reason: 'token expired' })).toMatch(/Reconnect Figma/);
+    expect(reconnectInstruction({ state: 'failing', reason: 'token expired' })).toMatch(/harmony figma connect/);
   });
   it('figma-gated behaviours are enabled only on the figma route', () => {
     expect(figmaBehavioursEnabled('figma')).toBe(true);
