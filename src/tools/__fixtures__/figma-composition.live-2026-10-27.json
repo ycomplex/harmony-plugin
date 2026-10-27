@@ -1,0 +1,220 @@
+{
+  "_recorded": "REAL — captured live by the v1.11 orchestrator seat on 2026-10-27 from an interactive Claude Code session with Figma's hosted MCP server connected, against the B-1200 spike file. Not synthetic. Component keys are the library's published component-set keys (not secrets).",
+  "file_key": "EmLrtRcjHsVSQeVYixlGUF",
+  "composed_at": "2026-10-27T11:57:45Z",
+  "plan_input": {
+    "ticket": "B-1203 proof",
+    "componentMap": {
+      "Button": "cc8b558dc7d9684011b6b99ce8e6509399bc836b",
+      "Tag": "0fcd16616b41884b21451ffa4a2fc98a03093b49",
+      "Switch Field": "7a8dc511d7173ec44c06ef0e8b1a5a6947c4a19c",
+      "Menu Item": "65409007a977110e3a178463c810889e6840d49f"
+    },
+    "options": [
+      {
+        "name": "Inline retire switch",
+        "recommended": true,
+        "components": [
+          "Switch Field",
+          "Tag",
+          "Button"
+        ],
+        "provenance": [
+          {
+            "element": "Switch Field, Tag, Button",
+            "provenance": "real"
+          },
+          {
+            "element": "Retired count copy",
+            "provenance": "illustrative"
+          }
+        ]
+      },
+      {
+        "name": "Retire from the row menu",
+        "components": [
+          "Menu Item",
+          "Menu Item",
+          "Tag"
+        ],
+        "provenance": [
+          {
+            "element": "Menu Item, Tag",
+            "provenance": "real"
+          },
+          {
+            "element": "Undo toast",
+            "provenance": "invented",
+            "note": "no library toast; drawn as text"
+          }
+        ]
+      }
+    ]
+  },
+  "plan": {
+    "kind": "options",
+    "frames": [
+      {
+        "order": 1,
+        "name": "B-1203 proof · Inline retire switch",
+        "instances": [
+          {
+            "component": "Switch Field",
+            "componentKey": "7a8dc511d7173ec44c06ef0e8b1a5a6947c4a19c"
+          },
+          {
+            "component": "Tag",
+            "componentKey": "0fcd16616b41884b21451ffa4a2fc98a03093b49"
+          },
+          {
+            "component": "Button",
+            "componentKey": "cc8b558dc7d9684011b6b99ce8e6509399bc836b"
+          }
+        ],
+        "recommended": true,
+        "notes": [
+          "Recommended",
+          "real: Switch Field, Tag, Button",
+          "illustrative: Retired count copy"
+        ]
+      },
+      {
+        "order": 2,
+        "name": "B-1203 proof · Retire from the row menu",
+        "instances": [
+          {
+            "component": "Menu Item",
+            "componentKey": "65409007a977110e3a178463c810889e6840d49f"
+          },
+          {
+            "component": "Menu Item",
+            "componentKey": "65409007a977110e3a178463c810889e6840d49f"
+          },
+          {
+            "component": "Tag",
+            "componentKey": "0fcd16616b41884b21451ffa4a2fc98a03093b49"
+          }
+        ],
+        "notes": [
+          "real: Menu Item, Tag",
+          "invented: Undo toast — no library toast; drawn as text"
+        ]
+      }
+    ],
+    "calls": [
+      {
+        "tool": "use_figma",
+        "purpose": "compose",
+        "frames": [
+          {
+            "order": 1,
+            "name": "B-1203 proof · Inline retire switch",
+            "instances": [
+              {
+                "component": "Switch Field",
+                "componentKey": "7a8dc511d7173ec44c06ef0e8b1a5a6947c4a19c"
+              },
+              {
+                "component": "Tag",
+                "componentKey": "0fcd16616b41884b21451ffa4a2fc98a03093b49"
+              },
+              {
+                "component": "Button",
+                "componentKey": "cc8b558dc7d9684011b6b99ce8e6509399bc836b"
+              }
+            ],
+            "recommended": true,
+            "notes": [
+              "Recommended",
+              "real: Switch Field, Tag, Button",
+              "illustrative: Retired count copy"
+            ]
+          },
+          {
+            "order": 2,
+            "name": "B-1203 proof · Retire from the row menu",
+            "instances": [
+              {
+                "component": "Menu Item",
+                "componentKey": "65409007a977110e3a178463c810889e6840d49f"
+              },
+              {
+                "component": "Menu Item",
+                "componentKey": "65409007a977110e3a178463c810889e6840d49f"
+              },
+              {
+                "component": "Tag",
+                "componentKey": "0fcd16616b41884b21451ffa4a2fc98a03093b49"
+              }
+            ],
+            "notes": [
+              "real: Menu Item, Tag",
+              "invented: Undo toast — no library toast; drawn as text"
+            ]
+          }
+        ]
+      }
+    ],
+    "unmapped": []
+  },
+  "call_ledger": [
+    {
+      "n": 1,
+      "tool": "use_figma",
+      "purpose": "discovery",
+      "counts_toward_compose": false,
+      "note": "read-only: frames and library component sets used by existing instances; stands in for B-1201's saved component map, so a connected workspace does not make it"
+    },
+    {
+      "n": 2,
+      "tool": "use_figma",
+      "purpose": "compose",
+      "counts_toward_compose": true,
+      "note": "all planned frames in one call, from the plan above"
+    }
+  ],
+  "create_session_required": false,
+  "fix_calls": 0,
+  "compose_request": {
+    "tool": "use_figma",
+    "fileKey": "EmLrtRcjHsVSQeVYixlGUF",
+    "shape": "the plan's frames embedded as JSON; for each frame: createAutoLayout('VERTICAL'), title text, importComponentSetByKeyAsync(componentKey).defaultVariant.createInstance() per planned instance, provenance-notes text; recommended frame stroked 3px"
+  },
+  "compose_response": {
+    "createdFrames": [
+      {
+        "id": "9:76",
+        "name": "B-1203 proof · Inline retire switch",
+        "order": 1,
+        "recommended": true,
+        "w": 311,
+        "h": 284
+      },
+      {
+        "id": "9:94",
+        "name": "B-1203 proof · Retire from the row menu",
+        "order": 2,
+        "recommended": false,
+        "w": 370,
+        "h": 319
+      }
+    ],
+    "instanceIds": [
+      "9:78",
+      "9:84",
+      "9:89",
+      "9:96",
+      "9:107",
+      "9:116"
+    ],
+    "importedComponents": [
+      "Switch Field",
+      "Tag",
+      "Button",
+      "Menu Item",
+      "Menu Item",
+      "Tag"
+    ],
+    "setsImported": 4
+  }
+}

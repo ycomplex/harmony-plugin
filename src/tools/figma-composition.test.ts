@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import { planComposition, CallBudget, limited, waitForVersionAfter, MCP_CALL_CAP } from './figma-composition.js';
 
-// PLACEHOLDER (B-1203): these fixtures are SYNTHETIC. The real recorded use_figma fixture is to be captured
-// in a live proof by the seat and added as a separate, clearly-recorded file. Nothing here claims to be recorded.
+// SYNTHETIC fixtures. The real recorded use_figma fixture from the 2026-10-27 live proof is in
+// __fixtures__/figma-composition.live-2026-10-27.json, exercised by figma-composition.recorded.test.ts.
 const componentMap = { Button: 'key-button', Card: 'key-card', Table: 'key-table' };
 
 describe('planComposition (synthetic fixture)', () => {
