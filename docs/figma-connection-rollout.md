@@ -4,6 +4,72 @@ Nothing here authorizes a promote, IAM change or cluster apply by a worker. Use 
 identifiers; never paste credentials into board comments. Run **staging first**, prove it, then prod.
 Keep the CronJob suspended and workspace connections disabled until prerequisites are complete.
 
+## Isolated Claude Code sign-in (B-1314)
+
+Figma currently refuses dynamic registration for `Harmony workspace Figma` with HTTP 403.
+Harmony keeps its own honest registration for future approval; never register under another client's
+name. For the founder's own projects and contributed consulting workspaces, use a fresh sign-in made
+by real Claude Code. Open self-service and asking Figma to approve Harmony are separate decisions.
+
+The operator entry point is:
+
+```sh
+harmony figma connect --claude-sign-in
+```
+
+Run the CLI from the target project's authenticated Harmony directory in an interactive terminal.
+It checks workspace ownership and the environment's connection switch before minting or reading
+credentials. The operator needs `kubectl` access to namespace `harmony-legs`, permission to create,
+exec, copy from and delete pods there, and a browser. No local Docker daemon is required.
+The command creates a fresh `node:22-bookworm-slim` pod and installs Claude Code; the one version
+setting is `HARMONY_FIGMA_CLAUDE_VERSION` (default `2.1.312`, the disposable-probe version).
+It runs real `claude mcp add` and `claude mcp login figma --no-browser`; approve the fresh Figma login.
+It copies the private credentials with `kubectl cp` into a mode-0700 temporary directory, confirms
+pod deletion **before** import, and then asks for the same-account REST token, library and plan.
+Check the verified editing identity and confirm save. Existing low-budget confirmation still applies.
+The existing handler validates the candidate and appends versions before activating the generation;
+a rejected candidate preserves the working connection. The CLI never refreshes the grant.
+
+After successful handoff the scheduled workspace job is the **only refresh owner**. The command
+removes its temporary file/directory on success, error and ordinary interruption. It never uses an
+everyday Claude profile, revokes/logs out a grant, prints credentials or keeps a reusable export.
+A killed host process (`SIGKILL`, power loss) cannot guarantee cleanup: inspect leftover
+`harmony-figma-<uuid>` pods in `harmony-legs` and `harmony-figma-*` private directories under the
+host temporary directory. Delete the named pod and private files before reconnecting. A cleanup
+failure reports only those locations; do not use the sign-in in Claude Code again.
+
+Fallback for an operator who already made a **fresh isolated** sign-in and stopped its Claude Code:
+
+```sh
+harmony figma connect --claude-credentials <private-file>
+```
+
+The file must be a private, owner-readable regular JSON file, at most 1 MiB, containing exactly one
+Figma `mcpOAuth` entry. Symlinks and ambiguous, incomplete or expired entries are refused. The importer
+supports the observed flat `accessToken`, `refreshToken`, `expiresAt` (epoch milliseconds), `clientId`,
+`clientSecret`, `serverName`, `serverUrl` and `scope` fields, pins Figma's token endpoint and
+`client_secret_post`, and ignores arbitrary additional fields. This mode requires an explicit
+isolation/sole-owner acknowledgement. The operator removes the supplied file and isolated config
+after handoff; Harmony never deletes an arbitrary operator-supplied profile.
+
+A locally rejected import can be replaced by a new isolated sign-in. An **uncertain save must not be
+retried**: check `harmony figma health` and the workspace connection first. If ownership is uncertain,
+reconcile status and use a fresh grant rather than spending/reusing a possibly handed-off one.
+Never probe, copy or refresh the shared spike secret `harmony-figma-mcp-auth`.
+
+### Availability and evidence
+
+Per the founder's 2026-10-27 operator record, connections are **ON for staging only, OFF on prod**.
+The default-off mechanism below remains authoritative for a new environment. This records the
+founder's staging action, not a claim that the remaining rollout proofs passed. B-1314 releases on
+automated evidence; the founder performs the fresh disposable import/save/scheduled-refresh walk
+after merge as B-1201 proof (a). A one-off disposable refresh probe is not that end-to-end proof.
+
+This change needs no schema migration or Conductor Update. Source operators use a locally built CLI
+after the plugin merge; generated staging and installed prod CLI follow their normal versioned
+channels. Installed prod code still requires deliberate promotion and a new session; that does not
+enable production connections. The designer guide update follows the plugin and B-1206's guide merge.
+
 ## Default-off switch and mandatory enable gate
 
 This release is DARK by founder decision (2026-10-27). The database switch is
