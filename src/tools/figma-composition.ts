@@ -144,6 +144,9 @@ export interface FigmaVersion {
 
 export type VersionWait = { ok: true; version: FigmaVersion } | { ok: false; message: string };
 
+/** Measured 2026-10-27: autosave created a version 79 s after a compose. 15 s x 12 = 3 minutes. */
+export const FRESHNESS_WAIT = { intervalMs: 15_000, maxAttempts: 12 } as const;
+
 /** Poll for a file version created after `afterIso`; bounded, with injected attempts/interval/sleep. */
 export async function waitForVersionAfter(opts: {
   listVersions: () => Promise<FigmaVersion[]>;

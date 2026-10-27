@@ -216,5 +216,46 @@
       "Tag"
     ],
     "setsImported": 4
+  },
+  "freshness": {
+    "_recorded": "REAL — founder-run REST probe over the PAT, 2026-10-27, statuses/ids/hashes only",
+    "composed_at": "2026-10-27T11:57:45Z",
+    "first_version_after_compose": {
+      "id": "2415011976844736495",
+      "created_at": "2026-10-27T11:59:04Z",
+      "label": null
+    },
+    "autosave_delay_seconds": 79,
+    "at_fresh_version": {
+      "nodes_http": 200,
+      "frames_present": {
+        "9:76": true,
+        "9:94": true
+      },
+      "images_http": 200,
+      "images_present": {
+        "9:76": true,
+        "9:94": true
+      }
+    },
+    "at_previous_version": {
+      "version": "2413448338732155223",
+      "nodes_http": 200,
+      "frames_present": {
+        "9:76": false,
+        "9:94": false
+      },
+      "images_http": 200,
+      "images_err": null,
+      "images_present": {
+        "9:76": false,
+        "9:94": false
+      },
+      "note": "a render pinned to a pre-compose version is a silent miss: HTTP 200, err null, no image URL"
+    },
+    "fresh_vs_latest": {
+      "9:76": "identical sha256 prefix 1d6717aceebb",
+      "9:94": "inconclusive: the latest download was 0 bytes (network blip)"
+    }
   }
 }

@@ -95,9 +95,14 @@ Figma path (planner: `src/tools/figma-composition.ts`):
    (`real` / `invented` / `illustrative`) as frame notes. A second `use_figma` call only to fix.
 4. A flow is N frames in order with a caption each; the artefact records the order.
 5. MCP is used only for writing (`use_figma`). Render previews over REST `GET /v1/images`, **pinned to the
-   file version**, with the workspace token (not `get_screenshot`), download, and attach them. Render
-   immediately after composing; if the pinned version lacks the new frames, use the bounded
-   version-freshness fallback (`waitForVersionAfter`).
+   file version**, with the workspace token (not `get_screenshot`), download, and attach them. Do not
+   render straight after composing. The newest version then is still the pre-compose one: Figma's
+   autosave created the next version **79 s** after a compose in the 2026-10-27 live proof, and a render
+   pinned to the earlier version returns HTTP 200 with `err: null` and **no image**, not an error. So:
+   wait for a version created after the compose (`waitForVersionAfter` with `FRESHNESS_WAIT`, 15 s × 12),
+   confirm every composed frame is present in `GET /v1/files/:key/nodes?ids=…&version=<id>` and every
+   image URL is non-null, then pin that version. If no version appears within the wait, or a frame is
+   missing, say so on the brief and attach no preview. Never attach a render you have not checked.
 6. Every MCP call passes through the shared limiter when present. Count MCP calls: **hard cap 6 per leg**
    (typical 2-3). At the cap, stop composing options and say so on the brief. Record the call count
    (`mcp_call_count`) on the brief.
