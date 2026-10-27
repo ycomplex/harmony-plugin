@@ -1,10 +1,10 @@
-import { it, expect } from "vitest";
+import { expect, it } from "vitest";
 import {
-  mkdtempSync,
-  writeFileSync,
-  readFileSync,
   chmodSync,
+  mkdtempSync,
+  readFileSync,
   rmSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -28,7 +28,9 @@ it("launcher reads only pinned token versions, and rejects an unhealthy connecti
       '#!/bin/bash\nprintf "%s\\n" "$*" >> "$READ_LOG"\nfor arg; do case "$arg" in --out-file=*) printf fixture > "${arg#--out-file=}";; esac; done\n',
     );
     chmodSync(gcloud, 0o700);
-    const script = `source "${resolve("container/figma/launch-context.sh")}"; node() { if [ "$1" = fake/dist/bin/harmony.js ]; then printf '%s' "$TEST_CONTEXT"; else command node "$@"; fi; }; figma_launch_context && figma_read_tokens "$TOKEN_DIR"`;
+    const script = `source "${
+      resolve("container/figma/launch-context.sh")
+    }"; node() { if [ "$1" = fake/dist/bin/harmony.js ]; then printf '%s' "$TEST_CONTEXT"; else command node "$@"; fi; }; figma_launch_context && figma_read_tokens "$TOKEN_DIR"`;
     const env = {
       ...process.env,
       PATH: `${dir}:${process.env.PATH}`,
@@ -63,8 +65,35 @@ it("launcher reads only pinned token versions, and rejects an unhealthy connecti
         TEST_CONTEXT: JSON.stringify({ ...context, state: "reconnect" }),
       },
     });
-    expect(failed.status).not.toBe(0);
+    expect(failed.status).toBe(0);
     expect(() => readFileSync(log)).toThrow();
+    for (
+      const metadata of [{ state: "disconnected", connections_enabled: true }, {
+        ...context,
+        access_expires_at: "2000-01-01T00:00:00Z",
+      }]
+    ) {
+      expect(
+        spawnSync("bash", ["-c", script], {
+          env: { ...env, TEST_CONTEXT: JSON.stringify(metadata) },
+        }).status,
+      ).toBe(0);
+      expect(() => readFileSync(log)).toThrow();
+    }
+    const unavailable = script.replace(
+      `printf '%s' "$TEST_CONTEXT"`,
+      "return 1",
+    );
+    expect(spawnSync("bash", ["-c", unavailable], { env }).status).toBe(0);
+    expect(() => readFileSync(log)).toThrow();
+    expect(
+      spawnSync("bash", ["-c", script], {
+        env: {
+          ...env,
+          TEST_CONTEXT: JSON.stringify({ ...context, access_version: "bad" }),
+        },
+      }).status,
+    ).not.toBe(0);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
