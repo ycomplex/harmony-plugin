@@ -1,3 +1,4 @@
+import { DesignArtefactSchema, observeDesignDrift } from './design-artefact.js';
 // B-867 — GATE SLOTS: a gate's ratified content, landed on the ticket and kept visible.
 //
 // A gate brief is a MOMENT. The human accepts it, the conductor advances, and the wording the gate
@@ -160,6 +161,7 @@ export const VerifySlotSchema = z.object({
 export const UnknownGateSlotSchema = z.record(z.unknown());
 
 export const GATE_SLOT_SCHEMAS: Record<GateSlotName, z.ZodTypeAny> = {
+  design: z.object({ design_artefact: DesignArtefactSchema.optional() }).passthrough(),
   clarify: ClarifySlotSchema,
   release: ReleaseSlotSchema,
   verify: VerifySlotSchema,
@@ -320,6 +322,9 @@ export async function writeGateSlot(
   const keys = Object.keys(content);
 
   if (args.target.via === 'acceptance-event') {
+    if (gate === 'design' && content.design_artefact) {
+      content.drift = await observeDesignDrift(DesignArtefactSchema.parse(content.design_artefact), process.env.HARMONY_FIGMA_TOKEN);
+    }
     const { data, error } = await client.rpc('consume_gate_slot_write', {
       _event_id: args.target.event_id,
       _external_ref: args.target.external_ref,
@@ -446,6 +451,13 @@ export async function writeGateSlotToolHandler(
     content.prs = prs;
   }
 
+  if (gate === 'design') {
+    const { data: event, error } = await client.from('pending_acceptance_events').select('id').eq('brief_id', brief.id).order('created_at', { ascending: false }).limit(1).maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!event) throw new Error('Design slot requires the accepted brief event; accept the design before writing its slot.');
+    const result = await writeGateSlot(client, { gate, content, target: { via: 'acceptance-event', event_id: event.id, external_ref: 'slot-design' } });
+    return { task_id: taskId, gate, written: true, applied: result.applied, keys: result.keys, brief_id: brief.id };
+  }
   const result = await writeGateSlot(client, { gate, content, target: { via: 'task', task_id: taskId } });
   return { task_id: taskId, gate, written: true, applied: result.applied, keys: result.keys, brief_id: brief.id };
 }
@@ -472,8 +484,8 @@ export const writeGateSlotTool = {
       task_id: { type: 'string', description: 'Task identifier — UUID, task number (e.g., 867), or visual ID (e.g., B-867)' },
       gate: {
         type: 'string',
-        enum: ['clarify', 'release', 'verify'],
-        description: "Which gate's section to land — 'release' after the release accept, 'verify' after the verify accept.",
+        enum: ['clarify', 'design', 'release', 'verify'],
+        description: "Which gate's section to land — design replays only its accepted event; 'release' after the release accept, 'verify' after the verify accept.",
       },
     },
     required: ['task_id', 'gate'],

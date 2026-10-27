@@ -267,3 +267,50 @@ mcp__harmony__compose_brief({
   and just `resolve_brief({ task_id, command: "defer", provenance: "human-in-session" })`. Never hard-block
   the "not now". (Web `defer` is mechanical-only and never authors this — documented v1 asymmetry.)
 - **iterate** → step 4 (regenerate); **expand**/**related** → show the pre-generated sections from `get_brief`.
+
+## Durable design record (B-1202)
+
+Before filing a visual decision, attach its review surface to the ticket. Never file a
+container-local path or an expiring screenshot URL as the durable surface. Download and
+attach HTML previews as self-contained HTML (download-only, never iframe/embed).
+
+A design frame may carry `design_artefact` with this version-1 contract:
+
+```json
+{
+  "schema_version": 1,
+  "tool": "figma",
+  "file_key": "FILEKEY",
+  "file_url": "https://www.figma.com/design/FILEKEY",
+  "version_id": "VERSION",
+  "nodes": [{"id":"1:2","name":"Screen","caption":"What to review","preview_attachment_id":"UUID","preview_filename":"screen.png"}],
+  "composed_at": "2026-10-27T12:00:00Z",
+  "provenance_notes": "Rendered with explicit version=VERSION; frames present and downloads checked",
+  "mcp_call_count": 0
+}
+```
+
+For HTML use `tool: "html"`, `surface_attachment_id`, `surface_filename` and the
+same schema/composition/provenance/call-count fields; omit Figma fields and nodes.
+Use actual same-ticket finalized attachment IDs and filenames. Preserve frame order.
+Do not store tokens or signed URLs. The plugin rejects artefact composition until
+`design_artefact_capability` on the target board reports `schema_version: 1`.
+The B-1202 web migration must be promoted to production first for prod-board workers.
+
+Figma preparation: read the version from REST nodes, check every frame exists at that
+explicit version, request PNGs with `version=<id>`, and download/check every result.
+`prepareVersionedPreviews` in `src/tools/design-artefact.ts` provides this bounded path
+(12 attempts, 10-second intervals, per-request timeouts). A 200 response with null
+images is a miss, not proof: autosave can lag composition. Stop with an actionable
+failure if frames never appear; never substitute an unversioned/latest screenshot.
+Upload returned bytes through ordinary `attach_file` and construct the manifest.
+REST calls are outside the MCP budget; record the measured MCP call count separately.
+
+The active brief shows a pending revision. Its acceptance payload projects that exact
+record into the design gate slot; a no-artefact brief preserves the previous slot.
+Acceptance always pins compose-time X. The consuming worker may inject a REST token
+through `HARMONY_FIGMA_TOKEN` solely for the latest-version drift read (this module
+owns no credential storage). Absent/failed reads explicitly record `unchecked`.
+The database freezes the first observation on the event and makes retries no-ops.
+A newer version never replaces the attachment manifest or its pin. On the ticket,
+both accepted and pending design views link to the file with their pinned version.
