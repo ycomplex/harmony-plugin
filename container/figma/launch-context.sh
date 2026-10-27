@@ -1,6 +1,8 @@
 # Sourced by launchers. Nonsecret metadata only; values never appear in argv/logs.
 figma_launch_context() {
   FIGMA_CONTEXT="$(node "$HARMONY_PLUGIN_DIR/dist/bin/harmony.js" figma context)" || return 1
+  # Fail closed on absent/false enablement, even if stale metadata contains refs.
+  FIGMA_CONTEXT="$(printf '%s' "$FIGMA_CONTEXT" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{const m=JSON.parse(s);process.stdout.write(JSON.stringify(m.connections_enabled===true?m:{state:"disconnected",connections_enabled:false}))})')" || return 1
   FIGMA_CONTEXT_B64="$(printf '%s' "$FIGMA_CONTEXT" | base64 | tr -d '\n')"
   FIGMA_ACCESS_REF="$(printf '%s' "$FIGMA_CONTEXT" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{const m=JSON.parse(s);if(m.state==="disconnected")return;if(m.state!=="connected"||!Number.isFinite(Date.parse(m.access_expires_at))||Date.parse(m.access_expires_at)<=Date.now())process.exit(1);for(const k of ["access_version","pat_version"])if(!/^projects\/harmony-conductor\/secrets\/harmony-figma-ws-[a-f0-9-]{36}-(access|pat)\/versions\/\d+$/.test(m[k]||""))process.exit(1);process.stdout.write(m.access_version)})')" || { echo 'Figma needs reconnection; refusing launch.' >&2; return 1; }
   FIGMA_PAT_REF="$(printf '%s' "$FIGMA_CONTEXT" | node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>process.stdout.write(JSON.parse(s).pat_version||""))')" || return 1

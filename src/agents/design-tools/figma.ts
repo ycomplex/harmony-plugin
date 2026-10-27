@@ -6,6 +6,7 @@ export const FIGMA_MOUNT = "/secrets/figma";
 
 export interface FigmaMetadata {
   state: "disconnected" | "connected" | "reconnect";
+  connections_enabled?: boolean;
   workspace_id?: string;
   generation?: number;
   handle?: string;
@@ -21,6 +22,7 @@ export function assertFigmaReady(meta: FigmaMetadata, now: number): void {
   if (meta.state === "disconnected") return;
   const expiry = Date.parse(meta.access_expires_at ?? "");
   if (
+    meta.connections_enabled !== true ||
     meta.state !== "connected" ||
     !Number.isFinite(expiry) ||
     expiry <= now ||

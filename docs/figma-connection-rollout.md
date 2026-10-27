@@ -4,6 +4,36 @@ Nothing here authorizes a promote, IAM change or cluster apply by a worker. Use 
 identifiers; never paste credentials into board comments. Run **staging first**, prove it, then prod.
 Keep the CronJob suspended and workspace connections disabled until prerequisites are complete.
 
+## Default-off switch and mandatory enable gate
+
+This release is DARK by founder decision (2026-10-27). The database switch is
+`private.figma_rollout.connections_enabled`, seeded **false**, with no client write privileges.
+`figma_connections_enabled()` is the shared availability check. Off or unavailable means the UI
+has no connect controls; the CLI refuses before OAuth; the handler refuses before credential validation
+or Secret Manager writes; activation refuses; refresh queue returns no work and transitions refuse;
+launch context returns only disconnected + false, without token references. Launchers additionally
+require explicit `connections_enabled:true` before reading or mounting access/PAT. Missing means off.
+Disconnect remains available through its owner RPC so disabling never prevents credential retirement.
+
+Merging either PR does **not** enable connections. Never change this migration's default to true.
+Founder SQL to inspect: `SELECT connections_enabled FROM private.figma_rollout WHERE id`.
+Founder SQL to disable: `UPDATE private.figma_rollout SET connections_enabled=false WHERE id`.
+Existing running legs may retain tokens; disabling prevents new launches, not retroactive revocation.
+
+The enable gate is, in order: staging setup below; (a) disposable-grant rotation through the real
+refresher with crash/ambiguity and grant-before-access proof; (b) add-only allowed-prefix and denied
+read/create/outside-prefix checks; (c) actual GKE, Cloud Run and Docker-host token-only mounts,
+existing bindings, cleanup, disconnect and generation races. **All three are UNRUN at release.**
+Use an isolated staging validation environment and disposable workspace/credentials for the candidate
+proofs, never a customer connection or the working spike grant. A founder may exercise the candidate
+on that isolated validation database; leave the deployed staging/production switch false until all
+proofs are recorded PASS. No proof exception is granted to an ordinary user, CLI flag or launcher env.
+After all three PASS, schema/secrets/images are ready and the Conductor Update is complete, the founder
+alone enables the target environment with
+`UPDATE private.figma_rollout SET connections_enabled=true WHERE id`.
+Record environment, proof outcomes and enabling time on B-1201. Do not unsuspend/enable on a mock pass.
+
+
 ## Staging preparation
 
 1. Create `harmony-figma-connect@harmony-conductor.iam.gserviceaccount.com`:
@@ -53,7 +83,7 @@ Keep the CronJob suspended and workspace connections disabled until prerequisite
 ## Production, after staging proof
 
 Respect milestone merge order: B-1202 web + founder promote; B-1204/B-1205; B-1201 web then plugin; B-1206.
-Restamp the migration after origin/main before pushing. `promote-prod.sh` waits for production web
+Check the migration sorts after current origin/main before pushing; restamp if necessary. `promote-prod.sh` waits for production web
 schema/functions before plugin promotion. Wait for images. Repeat the provisioning/key and board-user
 steps against **prod**, apply/repin the suspended CronJob, check bindings and token-only mount paths,
 enable the job only after schema/secrets exist, and explicitly Update the conductor. Verify versions
@@ -87,3 +117,13 @@ Retry-After is honored fully (bounded exponential fallback if absent), and persi
 operator elicitation. Human-answer workers resume the original logical budget. There is no aggregate ledger.
 Parallel legs share Pro Full 200/day 10/min, Organization Full 200/day 15/min, Enterprise Full 600/day 20/min;
 View/Collab or Starter is about 20/month. Library components are cached; only owner-requested refresh updates them.
+
+
+Library lifecycle, founder UX revision (2026-10-27): Settings displays the library read-only and says
+to change it with `harmony figma connect` (validated replacement). Save metadata changes only
+component-name → repository-path mappings; Refresh library queues a re-read of the saved file by the
+refresher. No unvalidated library can be saved in Settings.
+
+Feature-account maintenance disposition: **fold-into-existing: B-1308 (criterion 3)**. Original intents
+remain unpublished; B-1308 resolves the predecessor amendment and ordinal sequence. No rebase or live
+account publication is part of this release.

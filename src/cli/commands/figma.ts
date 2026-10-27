@@ -307,6 +307,8 @@ export function registerFigmaCommands(program: Command): void {
           { p_project_id: ctx.projectId },
         );
         if (contextError) throw new Error("Connection schema unavailable");
+        if (current?.connections_enabled !== true)
+          throw new Error("Figma connections are not enabled");
         let grant: Record<string, unknown>;
         try {
           grant = await authorizeFigma();

@@ -14,6 +14,7 @@ it("launcher reads only pinned token versions, and rejects an unhealthy connecti
   try {
     const context = {
       state: "connected",
+      connections_enabled: true,
       access_expires_at: "2099-01-01T00:00:00Z",
       access_version:
         "projects/harmony-conductor/secrets/harmony-figma-ws-11111111-1111-4111-8111-111111111111-access/versions/7",
@@ -42,6 +43,20 @@ it("launcher reads only pinned token versions, and rejects an unhealthy connecti
     expect(reads).toContain("versions access 3");
     expect(reads).not.toMatch(/grant|latest/);
     rmSync(log);
+    for (const enabled of [false, undefined]) {
+      expect(
+        spawnSync("bash", ["-c", script], {
+          env: {
+            ...env,
+            TEST_CONTEXT: JSON.stringify({
+              ...context,
+              connections_enabled: enabled,
+            }),
+          },
+        }).status,
+      ).toBe(0);
+      expect(() => readFileSync(log)).toThrow();
+    }
     const failed = spawnSync("bash", ["-c", script], {
       env: {
         ...env,
