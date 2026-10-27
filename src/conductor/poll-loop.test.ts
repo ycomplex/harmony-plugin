@@ -245,6 +245,63 @@ describe('detectChange — discuss-requested (B-461 discuss verb)', () => {
   });
 });
 
+describe('detectChange — edited-in-tool (B-1204)', () => {
+  const baseline: PollBaseline = { workflowState: 'Proposed', pendingResolution: null, awaitingHumanInput: true };
+  const pr = { command: 'edited-in-tool', detail: "I've made edits in Figma. Swapped the header." };
+
+  it("classifies edited-in-tool when the flag clears with a { command: 'edited-in-tool' } marker, carrying the marker", () => {
+    expect(
+      detectChange(baseline, { workflow_state: 'Proposed', pending_resolution: pr, awaiting_human_input: false }),
+    ).toEqual({ trigger: 'edited-in-tool', workflow_state: 'Proposed', pending_resolution: pr });
+  });
+
+  it('is not a reshape and not a discuss: iterate and discuss keep their classifications', () => {
+    const t = (command: string) =>
+      detectChange(baseline, { workflow_state: 'Proposed', pending_resolution: { command, detail: 'x' }, awaiting_human_input: false })?.trigger;
+    expect(t('iterate')).toBe('pending_resolution');
+    expect(t('discuss')).toBe('discuss-requested');
+    expect(t('edited-in-tool')).toBe('edited-in-tool');
+  });
+
+  it('GATE unchanged: the marker with the flag still up is NOT an exit', () => {
+    expect(detectChange(baseline, { workflow_state: 'Proposed', pending_resolution: pr, awaiting_human_input: true })).toBeNull();
+  });
+
+  it('a marker identical to the baseline is STALE — resolved, never a fresh edited-in-tool', () => {
+    const change = detectChange(
+      { workflowState: 'Proposed', pendingResolution: pr, awaitingHumanInput: true },
+      { workflow_state: 'Proposed', pending_resolution: pr, awaiting_human_input: false },
+    );
+    expect(change?.trigger).toBe('resolved');
+  });
+
+  it('a state advance still outranks the marker', () => {
+    expect(
+      detectChange(baseline, { workflow_state: 'Designed', pending_resolution: pr, awaiting_human_input: false })?.trigger,
+    ).toBe('state-advanced');
+  });
+
+  it('runPollLoop exits changed with the edited-in-tool detail', async () => {
+    const clock = makeClock();
+    const reader = readTaskAfter(
+      2,
+      { workflow_state: 'Proposed', pending_resolution: null, awaiting_human_input: true },
+      { workflow_state: 'Proposed', pending_resolution: pr, awaiting_human_input: false },
+    );
+    const res = await runPollLoop({
+      readTask: reader.read,
+      now: clock.now,
+      sleep: clock.sleep,
+      launchStamp: 0,
+      baseline: { workflowState: 'Proposed', pendingResolution: null, awaitingHumanInput: true },
+    });
+    expect(res).toEqual({
+      reason: 'changed',
+      detail: { trigger: 'edited-in-tool', workflow_state: 'Proposed', pending_resolution: pr },
+    });
+  });
+});
+
 describe('detectChange — discussion-cancelled (B-461, the one no-flag-transition exit)', () => {
   // The watch is armed mid-discussion: awaiting flag up, discuss exchange active on the brief.
   const activeEx = { exchange_id: 'ex-1', status: 'active', round: 1, answers_submitted_at: null, force_quit_requested_at: null };

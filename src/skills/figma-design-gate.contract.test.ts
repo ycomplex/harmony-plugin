@@ -77,7 +77,8 @@ describe('visual-handoff: the artefact write', () => {
     expect(figmaPath).toMatch(/B-1201/);
     expect(figmaPath).toMatch(/B-1202/);
     expect(figmaPath).toContain('`design_artefact` (schema_version 1)');
-    expect(figmaPath).toMatch(/does \*\*not\*\* persist a `design_artefact`/);
+    expect(figmaPath).toMatch(/recompose the design brief with it as `frame\.design_artefact`/);
+    expect(figmaPath).toMatch(/refuses with the promote prerequisite/);
     for (const f of ['composed_at', 'provenance_notes', 'preview_attachment_id', 'preview_filename', 'file_key', 'file_url', 'version_id']) {
       expect(figmaPath).toContain(f);
     }

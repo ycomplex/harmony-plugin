@@ -1,0 +1,13 @@
+{
+  "_fixture": "HAND-AUTHORED from Figma's documented REST response shapes (GET /v1/files/:key/nodes, /versions, /images, /files/:key). NOT live-captured.",
+  "name": "Design options",
+  "lastModified": "2026-10-27T10:00:00Z",
+  "version": "900",
+  "role": "editor",
+  "document": {
+    "id": "0:0",
+    "name": "Document",
+    "type": "DOCUMENT",
+    "children": []
+  }
+}

@@ -1275,7 +1275,7 @@ background poll script** — `dist/bin/poll.js`. It reads the ticket **IN-PROCES
 `dist/index.js` — with auth + project **pinned once at launch from `HARMONY_API_TOKEN`** (immune to a
 mid-watch `~/.harmony` active-project switch). It exits the instant the human resolves — the **canonical exit
 signal is `awaiting_human_input` clearing (true→false)** (B-611), after which it classifies what the human did
-(state advanced / `pending_resolution` reshape / a Discuss request (`discuss-requested`, B-461) / `Parked` /
+(state advanced / `pending_resolution` reshape / a Discuss request (`discuss-requested`, B-461) / an `edited-in-tool` request (B-1204) / `Parked` /
 submitted elicitation answers (`answers-landed`, B-645) / a non-advancing sub-track accept) — it also exits on
 `discussion-cancelled` (B-461: the active exchange went non-active WITHOUT the flag transition — a mechanical
 cancel restores the flag directly) — or the ~90-min window expires. To arm it, after surfacing the
@@ -1351,7 +1351,7 @@ resolved (in the browser or terminal); classify which resolution it was:
    `pending_resolution = { command: 'iterate', detail: <feedback> }`; `awaiting_human_input` is `false`
    (ball → agent) and the active brief is unchanged (the web did NOT advance state — it left the brief
    `active` for you to revise). **Run the LLM iterate in-session** (§4d). (A marker whose `command` is
-   `'discuss'` is NOT a reshape — see case 3.)
+   `'discuss'` or `'edited-in-tool'` is NOT a reshape — see cases 3 and 3a.)
 3. **`discuss-requested` — a browser Discuss on the active brief (B-461).** The flag cleared and the
    marker is `pending_resolution = { command: 'discuss', detail: <remark> }` — the human wants a
    conversation on this brief, not a regenerated one. **Route to the OWNING gate skill** for the brief's
@@ -1359,6 +1359,12 @@ resolved (in the browser or terminal); classify which resolution it was:
    `skills/harmony-shared/elicitation-engine.md` §The discuss trigger (the remark seeds round 1; filing
    round 1 CONSUMES the marker — it clears `pending_resolution`). Brief resolution is suspended while the
    discussion is open. The round re-sets the flag and re-arms the watch.
+3a. **`edited-in-tool` — a designer's "I've made edits in Figma" on an active design brief (B-1204).** The flag
+   cleared and the marker is `pending_resolution = { command: 'edited-in-tool', detail: "I've made edits in Figma. <note>" }`
+   — checked beside case 3 and BEFORE the reshape fallback in case 2, so it is never run as an iterate. **Route to the
+   OWNING design gate** (`/harmony-plugin:harmony-design-decide <ticket>`), whose reconcile path
+   (`skills/harmony-visual-handoff/SKILL.md` → Reconcile a designer's edits) reads the edits back over REST and
+   recomposes the brief in place; that recompose consumes the marker, re-sets the flag and re-arms the watch.
 4. **`answers-landed` — the human submitted an elicitation round's answers (or a force-quit) from the
    web (B-645/B-462).** The flag cleared and the task's `active_exchange` carries an unconsumed
    `answers_submitted_at` (or `force_quit_requested_at`) — checked BEFORE case 5, or an exchange answer

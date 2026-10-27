@@ -7,7 +7,7 @@
 // nodes[{ id, name, caption, preview_attachment_id, preview_filename }] and, Figma only, file_key, file_url,
 // version_id; no signed URLs. Not persisted until B-1202's capability exists.
 
-export type Provenance = 'real' | 'invented' | 'illustrative';
+export type Provenance = 'real' | 'invented' | 'illustrative' | 'human-in-tool'; // B-1204: 'human-in-tool' = a designer's edit read back from Figma
 
 export interface ProvenanceNote {
   element: string;

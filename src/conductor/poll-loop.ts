@@ -47,7 +47,9 @@ export interface PollBaseline {
  * consume cases. `answers-landed` (B-645) is a submitted elicitation round (or a force-quit request) — the
  * agent reads the answers via get_elicitation and files the next round / concludes. `discuss-requested`
  * (B-461) is a browser Discuss on the active brief (`pending_resolution.command === 'discuss'`) — the agent
- * opens a discussion exchange rather than re-composing. `resolved` is the non-advancing case (the flag
+ * opens a discussion exchange rather than re-composing. `edited-in-tool` (B-1204) is a browser "I've made
+ * edits in Figma" on an active design brief (`pending_resolution.command === 'edited-in-tool'`) — the agent
+ * reads the designer's edits back and reconciles them into a recomposed brief. `resolved` is the non-advancing case (the flag
  * cleared with no state advance / reshape / discuss / exchange answer / park — e.g. a design sub-track
  * accept composed with `pending_activity: null`).
  *
@@ -64,6 +66,7 @@ export type ChangeTrigger =
   | 'state-advanced'
   | 'pending_resolution'
   | 'discuss-requested'
+  | 'edited-in-tool'
   | 'parked'
   | 'answers-landed'
   | 'discussion-cancelled'
@@ -229,7 +232,9 @@ function sameExchangeMarker(
  *   3. `pending_resolution` — a browser reshape left a (new/changed) `pending_resolution` marker on the
  *                             active brief with the state unchanged. When the marker's command is 'discuss'
  *                             (B-461) this classifies as `discuss-requested` instead — a request to open a
- *                             discussion exchange on the active brief, not a reshape.
+ *                             discussion exchange on the active brief, not a reshape. 'edited-in-tool'
+ *                             (B-1204) likewise classifies as `edited-in-tool` — a request to read the
+ *                             designer's Figma edits back and reconcile them, not a worded reshape.
  *   4. `answers-landed`     — (B-645) the active elicitation exchange carries an unconsumed marker: the human
  *                             submitted a round's answers (`answers_submitted_at`) or requested a force-quit
  *                             (`force_quit_requested_at`). The consumer reads the answers via get_elicitation
@@ -287,6 +292,11 @@ export function detectChange(baseline: PollBaseline, task: Taskish): ChangeDetai
     // existing 'pending_resolution' (reshape) classification.
     if (pr.command === 'discuss') {
       return withRemark({ trigger: 'discuss-requested', workflow_state: state, pending_resolution: pr }, baseline, task);
+    }
+    // B-1204: the designer pressed "I've made edits in Figma" — read the edits back and reconcile; also
+    // not a worded reshape. Checked BEFORE the reshape fallback.
+    if (pr.command === 'edited-in-tool') {
+      return withRemark({ trigger: 'edited-in-tool', workflow_state: state, pending_resolution: pr }, baseline, task);
     }
     return withRemark({ trigger: 'pending_resolution', workflow_state: state, pending_resolution: pr }, baseline, task);
   }

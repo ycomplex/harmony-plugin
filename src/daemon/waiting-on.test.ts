@@ -75,6 +75,8 @@ describe('strandedWorkSignal (B-1157)', () => {
     expect(strandedWorkSignal({ awaiting_human_input: true })).toBe('late-human-ball');
     expect(strandedWorkSignal({ pending_resolution: { command: 'reshape' } })).toBe('late-reshape');
     expect(strandedWorkSignal({ pending_acceptance_event_id: 'e1' })).toBe('late-acceptance');
+    // B-1204: an edited-in-tool marker is stranded work like any staged marker (not dropped, not dirty).
+    expect(strandedWorkSignal({ pending_resolution: { command: 'edited-in-tool', detail: "I've made edits in Figma." } })).toBe('late-reshape');
   });
   it('a signal already present on a row the leg saw is NOT late (it had its chance)', () => {
     const ex = { answers_submitted_at: 'a1' };
