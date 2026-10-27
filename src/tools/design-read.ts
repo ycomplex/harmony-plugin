@@ -57,10 +57,11 @@ export function readAcceptedDesign(fieldValues: unknown): AcceptedDesign {
     const slot = fieldValues.gate_slots.design;
     if (!isObj(slot)) return { status: 'absent' };
     const artefact = findArtefact(slot);
-    if (!artefact || !Array.isArray(artefact.nodes)) return { status: 'absent' };
+    // An html design (B-1202) carries a surface attachment and no nodes; it is still an accepted design.
+    if (!artefact || (!Array.isArray(artefact.nodes) && artefact.tool !== 'html')) return { status: 'absent' };
     const screens: DesignScreen[] = [];
     let skippedNodes = 0;
-    for (const n of artefact.nodes) {
+    for (const n of Array.isArray(artefact.nodes) ? artefact.nodes : []) {
       const id = isObj(n) ? str(n.id) : null;
       const name = isObj(n) ? str(n.name) : null;
       if (!isObj(n) || !id || !name) { skippedNodes++; continue; }

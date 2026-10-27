@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { DesignArtefactSchema } from './design-artefact.js';
 import {
   readAcceptedDesign, checkDrift, describeDrift, assertBuildMayStart, resolveComponent, planDesignRead,
   type DesignVersionPort,
@@ -140,5 +141,31 @@ describe('planDesignRead', () => {
       "Build screen 'Login' from the accepted design (compare with 'login.png')",
       "Build screen 'Home' from the accepted design (compare with 'home.png')",
     ]);
+  });
+});
+
+describe('contract with B-1202\'s accepted design record', () => {
+  // A slot shaped exactly as B-1202's writer stores it: the artefact validated by its own schema, plus the drift observation.
+  const real = DesignArtefactSchema.parse({
+    schema_version: 1, tool: 'figma', composed_at: '2026-10-27T10:00:00.000Z', provenance_notes: 'real: Button; invented: none', mcp_call_count: 2,
+    file_key: 'AbC123', file_url: 'https://www.figma.com/design/AbC123/Epics', version_id: '2001',
+    nodes: [
+      { id: '1:1', name: 'Epics page', caption: 'List with retired section', preview_attachment_id: '3b7e2c1a-0d4f-4a8e-9c11-5e6f7a8b9c0d', preview_filename: 'epics-page.png' },
+    ],
+  });
+  const slot = (drift: unknown) => ({ gate_slots: { design: { design_artefact: real, drift, ratified_by: 'design', ratified_at: '2026-10-27T11:00:00.000Z' } } });
+
+  it('reads a slot the real schema accepts, with the recorded drift observation', () => {
+    const d = readAcceptedDesign(slot({ status: 'changed', checked_at: '2026-10-27T11:00:01.000Z', latest_version_id: '2002' }));
+    expect(d).toMatchObject({ status: 'present', tool: 'figma', versionId: '2001', fileKey: 'AbC123', acceptedDrift: 'changed' });
+    if (d.status === 'present') expect(d.screens).toEqual([{ nodeId: '1:1', name: 'Epics page', caption: 'List with retired section', previewAttachmentId: '3b7e2c1a-0d4f-4a8e-9c11-5e6f7a8b9c0d', previewFilename: 'epics-page.png' }]);
+  });
+  it('reads unchecked and unchanged observations', () => {
+    expect(readAcceptedDesign(slot({ status: 'unchecked', checked_at: 'x' }))).toMatchObject({ acceptedDrift: 'unchecked' });
+    expect(readAcceptedDesign(slot({ status: 'unchanged', checked_at: 'x', latest_version_id: '2001' }))).toMatchObject({ acceptedDrift: 'unchanged' });
+  });
+  it('reads an html design as present with no screens', () => {
+    const html = DesignArtefactSchema.parse({ schema_version: 1, tool: 'html', composed_at: '2026-10-27T10:00:00.000Z', provenance_notes: '', mcp_call_count: 0, surface_attachment_id: '3b7e2c1a-0d4f-4a8e-9c11-5e6f7a8b9c0d', surface_filename: 'surface.html' });
+    expect(readAcceptedDesign({ gate_slots: { design: { design_artefact: html } } })).toMatchObject({ status: 'present', tool: 'html', screens: [] });
   });
 });
