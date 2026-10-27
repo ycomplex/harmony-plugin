@@ -7,9 +7,12 @@
 // A 429 is a typed rate-limited error carrying retry-after; there is NO retry loop here and NO fallback to
 // another transport. This module NEVER edits the Figma file: every request below is a GET.
 //
-// SPLIT OF OWNERSHIP: the stored record is B-1202's `design_artefact` (schema_version 1). This module builds
-// the pending value (assemblePendingArtefact) but does not validate it against B-1202's validator, detect
-// B-1202's capability, or write the recomposed brief; the caller passes `capabilityPresent` explicitly.
+// SPLIT OF OWNERSHIP: the stored record is B-1202's `design_artefact` (schema_version 1). This module builds a
+// pending value that passes B-1202's DesignArtefactSchema (assemblePendingArtefact) and orchestrates the
+// read-back (reconcileDesign). It never writes: the caller uploads the previews with attach_file and WRITES the
+// pending revision by recomposing the design brief with `frame.design_artefact`; compose_brief's
+// validateDesignAttachments probes `design_artefact_capability` and checks the attachments (B-1202).
+import { DesignArtefactSchema, prepareVersionedPreviews, type DesignArtefact } from './design-artefact.js';
 import {
   FRESHNESS_WAIT,
   waitForVersionAfter,
@@ -433,37 +436,40 @@ export function markHumanInTool(
   return out;
 }
 
-// ——— pending artefact (PARTIAL by design) ————————————————————————————————————————————————————
+// ——— provenance notes -> B-1202's string field ———————————————————————————————————————————————
 
-/** B-1202's stored record, schema_version 1 (Figma flavour). Built here, validated and written elsewhere. */
-export interface PendingDesignArtefact {
-  schema_version: 1;
-  tool: 'figma';
-  composed_at: string;
-  provenance_notes: ProvenanceNote[];
-  mcp_call_count: number;
-  nodes: Array<{ id: string; name: string; caption: string; preview_attachment_id: string; preview_filename: string }>;
-  file_key: string;
-  file_url: string;
-  version_id: string;
+export const NO_PROVENANCE_NOTES = 'No per-element provenance notes were recorded.';
+
+/**
+ * B-1202's `provenance_notes` is a STRING. One line per note, `<provenance> | <element> | <note>` (`-` when a
+ * note has no text; newlines inside a note are flattened). An empty list is the honest sentence
+ * NO_PROVENANCE_NOTES (the schema would accept '', but an empty string reads as "nobody looked").
+ */
+export function serializeProvenanceNotes(notes: ProvenanceNote[]): string {
+  if (notes.length === 0) return NO_PROVENANCE_NOTES;
+  return notes
+    .map((n) => `${n.provenance} | ${n.element} | ${(n.note ?? '').replace(/\s*[\r\n]+\s*/g, ' ').trim() || '-'}`)
+    .join('\n');
 }
 
-export const CAPABILITY_PREREQUISITE_MESSAGE =
-  "Cannot record the reconciled design: the design_artefact capability (B-1202) is not live yet. B-1202's web migration must be promoted and the plugin's design_artefact validator must be live before a Figma design brief can be recomposed with previews. Nothing was written.";
+// ——— pending artefact ———————————————————————————————————————————————————————————————————————
+
+export type PendingFigmaArtefact = Extract<DesignArtefact, { tool: 'figma' }>;
 
 export type AssembleResult =
-  | { ok: true; artefact: PendingDesignArtefact }
-  | { ok: false; code: 'capability-absent' | 'frame-missing' | 'image-missing' | 'attachment-missing' | 'unsafe-url'; message: string; ids: string[] };
+  | { ok: true; artefact: PendingFigmaArtefact }
+  | { ok: false; code: 'frame-missing' | 'image-missing' | 'attachment-missing' | 'unsafe-url' | 'invalid-artefact'; message: string; ids: string[] };
 
 /**
  * Assemble the pending design_artefact from what was read AT `versionId`, enforcing the compose rule:
  * every requested frame exists at that version, every image is non-null and has bytes, every frame has an
- * attachment. Any gap is a typed failure; this NEVER substitutes the latest version. `capabilityPresent` is
- * required and explicit: false is a refusal carrying the prerequisite message. B-1202's own validator,
- * capability detection and the recompose write are NOT here.
+ * attachment. Any gap is a typed failure; this NEVER substitutes the latest version. The result is parsed with
+ * B-1202's DesignArtefactSchema, so an ok artefact is a valid stored record. The capability gate and the
+ * same-ticket attachment check are NOT here: they run when the caller recomposes the brief with this value
+ * (compose_brief -> validateDesignAttachments), which refuses with the promote prerequisite on a board that
+ * lacks `design_artefact_capability`.
  */
 export function assemblePendingArtefact(input: {
-  capabilityPresent: boolean;
   fileKey: string;
   fileUrl: string;
   versionId: string;
@@ -473,15 +479,12 @@ export function assemblePendingArtefact(input: {
   nodesAtVersion: FigmaNodesResponse['nodes'];
   /** Image results keyed by node id; bytes null = not downloadable. */
   images: Record<string, { bytes: Uint8Array | null } | undefined>;
-  /** Caller-supplied attachment ids/filenames keyed by node id. */
+  /** Caller-supplied attachment ids/filenames keyed by node id (from attach_file). */
   attachments: Record<string, { attachment_id: string; filename: string } | undefined>;
   composedAt: string;
   provenanceNotes: ProvenanceNote[];
   mcpCallCount?: number;
 }): AssembleResult {
-  if (input.capabilityPresent !== true) {
-    return { ok: false, code: 'capability-absent', message: CAPABILITY_PREREQUISITE_MESSAGE, ids: [] };
-  }
   if (/[?&#](token|access_token|signature|x-amz-[a-z-]+|x-goog-[a-z-]+|sig)=/i.test(input.fileUrl)) {
     return { ok: false, code: 'unsafe-url', message: 'file_url carries a token or signature; store the plain file URL only.', ids: [] };
   }
@@ -504,22 +507,157 @@ export function assemblePendingArtefact(input: {
   if (noAttachment.length) {
     return { ok: false, code: 'attachment-missing', ids: noAttachment, message: `No attachment recorded for the preview of frame(s) ${noAttachment.join(', ')}.` };
   }
-  return {
-    ok: true,
-    artefact: {
-      schema_version: 1,
-      tool: 'figma',
-      composed_at: input.composedAt,
-      provenance_notes: input.provenanceNotes,
-      mcp_call_count: input.mcpCallCount ?? 0,
-      nodes: input.frames.map((f) => ({
-        id: f.id, name: f.name, caption: f.caption,
-        preview_attachment_id: input.attachments[f.id]!.attachment_id,
-        preview_filename: input.attachments[f.id]!.filename,
-      })),
-      file_key: input.fileKey,
-      file_url: input.fileUrl,
-      version_id: input.versionId,
-    },
+  const parsed = DesignArtefactSchema.safeParse({
+    schema_version: 1,
+    tool: 'figma',
+    composed_at: input.composedAt,
+    provenance_notes: serializeProvenanceNotes(input.provenanceNotes),
+    mcp_call_count: input.mcpCallCount ?? 0,
+    file_key: input.fileKey,
+    file_url: input.fileUrl,
+    version_id: input.versionId,
+    nodes: input.frames.map((f) => ({
+      id: f.id, name: f.name, caption: f.caption,
+      preview_attachment_id: input.attachments[f.id]!.attachment_id,
+      preview_filename: input.attachments[f.id]!.filename,
+    })),
+  });
+  if (!parsed.success) {
+    return { ok: false, code: 'invalid-artefact', ids: [], message: `The assembled record does not satisfy the design_artefact schema: ${parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}` };
+  }
+  return { ok: true, artefact: parsed.data as PendingFigmaArtefact };
+}
+
+// ——— (e) the orchestration ——————————————————————————————————————————————————————————————————
+
+export const ADDED_FRAME_CAPTION = 'Added by the designer in Figma; not described yet.';
+
+export interface ReconcileFrame { id: string; name: string; caption: string }
+
+export type ReconcileRefusalCode =
+  | 'baseline-not-figma' | 'baseline-invalid' | 'save-a-version' | 'version-not-found' | 'file-not-found'
+  | 'rate-limited' | 'unauthorized' | 'http-error' | 'container-missing' | 'no-frames'
+  | 'frames-missing' | 'previews-failed' | 'frames-changed';
+
+export type ReconcileResult =
+  | {
+      ok: true;
+      fileKey: string;
+      fileUrl: string;
+      /** The version the previews were rendered at and the changes were diffed at: the pin. */
+      versionId: string;
+      baselineVersionId: string;
+      changes: Change[];
+      lines: string[];
+      questions: ReconcileQuestion[];
+      changedElementIds: string[];
+      /** Ordered as the previews; captions come from the baseline for kept frames. */
+      frames: ReconcileFrame[];
+      previews: Array<{ id: string; bytes: Uint8Array }>;
+      /** The time to pass as `composedAt` to assemblePendingArtefact. */
+      composedAt: string;
+    }
+  | { ok: false; code: ReconcileRefusalCode; message: string; becomesQuestion?: true; retryAfterSeconds?: number | null };
+
+export type PrepareFn = typeof prepareVersionedPreviews;
+
+/**
+ * Wire the read-back: baseline artefact -> fresh version -> two REST snapshots -> diff -> previews pinned to an
+ * explicit version (B-1202's prepareVersionedPreviews) -> typed result. REST only; no tool-server client; never falls
+ * back to the latest version silently. If `prepare` settles on a version other than the one diffed, the fresh
+ * snapshot is re-read at THAT version and re-diffed once, so the change lines match the previews attached.
+ * The caller then uploads preview bytes (attach_file), assemblePendingArtefact, and recomposes the brief.
+ *
+ * `containerId` is the page/section whose direct children are the brief's frames (the baseline stores frame
+ * ids, not their parent, so it cannot be derived from the record).
+ */
+export async function reconcileDesign(opts: {
+  baseline: DesignArtefact;
+  containerId: string;
+  token: string;
+  /** Injected for tests; used to build the REST client when `client` is not given. */
+  fetch?: FetchLike;
+  client?: Pick<FigmaRestClient, 'fileMeta' | 'listVersions' | 'getNodesAtVersion'>;
+  sleep?: (ms: number) => Promise<void>;
+  prepare?: PrepareFn;
+  now?: () => Date;
+}): Promise<ReconcileResult> {
+  const fail = (code: ReconcileRefusalCode, message: string, extra: { becomesQuestion?: true; retryAfterSeconds?: number | null } = {}): ReconcileResult =>
+    ({ ok: false, code, message, ...extra });
+
+  const parsed = DesignArtefactSchema.safeParse(opts.baseline);
+  if (!parsed.success) return fail('baseline-invalid', `The baseline design_artefact does not satisfy the schema: ${parsed.error.issues[0]?.message ?? 'invalid'}`);
+  const baseline = parsed.data;
+  if (baseline.tool !== 'figma') return fail('baseline-not-figma', `The active brief's design_artefact is tool "${baseline.tool}", not figma; there is nothing to reconcile from Figma.`);
+
+  const fetchImpl: FetchLike = opts.fetch ?? ((url, init) => (fetch as unknown as FetchLike)(url, init));
+  const client = opts.client ?? createFigmaRestClient({ token: opts.token, fetch: fetchImpl, fileKey: baseline.file_key });
+  const prepare = opts.prepare ?? prepareVersionedPreviews;
+  const now = opts.now ?? (() => new Date());
+
+  const typed = (e: unknown): ReconcileResult => {
+    if (e instanceof FigmaRestError) return fail(e.code, e.message, e.code === 'rate-limited' ? { retryAfterSeconds: e.retryAfterSeconds } : {});
+    const message = e instanceof Error ? e.message : String(e);
+    if (/autosave did not capture/i.test(message)) return fail('frames-missing', message);
+    if (/\b429\b/.test(message)) return fail('rate-limited', `Figma rate-limited the preview render (${message}). Not retrying and not substituting the latest version.`, { retryAfterSeconds: null });
+    return fail('previews-failed', message);
   };
+
+  const snapshotAt = async (versionId: string): Promise<Snapshot> =>
+    buildSnapshot(await client.getNodesAtVersion([opts.containerId], versionId), opts.containerId, versionId);
+
+  try {
+    const fresh = await chooseFreshVersion({ client, pinnedVersionId: baseline.version_id, sleep: opts.sleep });
+    if (!fresh.ok) return fail('save-a-version', fresh.message, { becomesQuestion: true });
+
+    let baseSnap: Snapshot;
+    let freshSnap: Snapshot;
+    try {
+      baseSnap = await snapshotAt(baseline.version_id);
+      freshSnap = await snapshotAt(fresh.version.id);
+    } catch (e) {
+      if (e instanceof Error && e.message.startsWith('buildSnapshot: container')) return fail('container-missing', e.message);
+      throw e;
+    }
+    if (freshSnap.frames.length === 0) return fail('no-frames', `No frames found under ${opts.containerId} at version ${fresh.version.id}; nothing to preview.`);
+
+    const prepared = await prepare(
+      baseline.file_key, freshSnap.frames.map((f) => f.id), opts.token,
+      fetchImpl as unknown as typeof fetch, opts.sleep,
+    );
+
+    let finalSnap = freshSnap;
+    if (prepared.version_id !== freshSnap.versionId) {
+      try {
+        finalSnap = await snapshotAt(prepared.version_id);
+      } catch (e) {
+        if (e instanceof Error && e.message.startsWith('buildSnapshot: container')) return fail('container-missing', e.message);
+        throw e;
+      }
+    }
+    const previewById = new Map(prepared.previews.map((p) => [p.id, p.bytes]));
+    const lacking = finalSnap.frames.filter((f) => !previewById.has(f.id)).map((f) => f.id);
+    if (lacking.length) {
+      return fail('frames-changed', `Frame(s) ${lacking.join(', ')} appeared at version ${prepared.version_id}, after the previews were requested; press the action again. Nothing was attached.`);
+    }
+
+    const changes = diffSnapshots(baseSnap, finalSnap);
+    const { lines, questions } = interpret(changes);
+    const baselineCaption = new Map(baseline.nodes.map((n) => [n.id, n.caption]));
+    const frames = finalSnap.frames.map((f) => ({ id: f.id, name: f.name, caption: baselineCaption.get(f.id) ?? ADDED_FRAME_CAPTION }));
+    return {
+      ok: true,
+      fileKey: baseline.file_key,
+      fileUrl: baseline.file_url,
+      versionId: prepared.version_id,
+      baselineVersionId: baseline.version_id,
+      changes, lines, questions,
+      changedElementIds: changedElementIds(changes),
+      frames,
+      previews: frames.map((f) => ({ id: f.id, bytes: previewById.get(f.id)! })),
+      composedAt: now().toISOString(),
+    };
+  } catch (e) {
+    return typed(e);
+  }
 }

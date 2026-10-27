@@ -3,10 +3,11 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
   createFigmaRestClient, FigmaRestError, chooseFreshVersion, buildSnapshot, diffSnapshots, interpret,
-  changedElementIds, markHumanInTool, assemblePendingArtefact, SAVE_VERSION_QUESTION, CAPABILITY_PREREQUISITE_MESSAGE,
-  type FetchLike, type FigmaNodesResponse,
+  changedElementIds, markHumanInTool, assemblePendingArtefact, serializeProvenanceNotes, reconcileDesign, SAVE_VERSION_QUESTION,
+  NO_PROVENANCE_NOTES, ADDED_FRAME_CAPTION, type FetchLike, type FigmaNodesResponse, type PrepareFn,
 } from './figma-reconcile.js';
 import { FRESHNESS_WAIT, type ProvenanceNote } from './figma-composition.js';
+import { DesignArtefactSchema, type DesignArtefact } from './design-artefact.js';
 
 // Fixtures are HAND-AUTHORED from Figma's documented REST shapes (each carries a _fixture note); NOT live-captured.
 const fx = <T = any>(name: string): T =>
@@ -247,6 +248,28 @@ describe('human-in-tool provenance', () => {
   });
 });
 
+describe('serializeProvenanceNotes', () => {
+  it('one stable line per note: <provenance> | <element> | <note>, "-" for no note, newlines flattened', () => {
+    expect(serializeProvenanceNotes([
+      { element: '3:2', provenance: 'invented', note: 'agent made\nthis up' },
+      { element: '9:9', provenance: 'real' },
+      { element: '2:1', provenance: 'human-in-tool', note: 'Changed by the designer in Figma' },
+    ])).toBe('invented | 3:2 | agent made this up\nreal | 9:9 | -\nhuman-in-tool | 2:1 | Changed by the designer in Figma');
+  });
+  it('an empty list is an honest sentence, not an empty string', () => {
+    expect(serializeProvenanceNotes([])).toBe(NO_PROVENANCE_NOTES);
+    expect(NO_PROVENANCE_NOTES.length).toBeGreaterThan(0);
+  });
+  it('marking then serializing is idempotent across a second marking', () => {
+    const once = markHumanInTool([{ element: '3:2', provenance: 'invented', note: 'x' }], ['2:1']);
+    expect(serializeProvenanceNotes(markHumanInTool(once, ['2:1']))).toBe(serializeProvenanceNotes(once));
+  });
+});
+
+// UUIDs are hand-authored; the artefact is checked with B-1202's real schema.
+const A1 = '11111111-1111-4111-8111-111111111111';
+const A2 = '22222222-2222-4222-8222-222222222222';
+
 describe('assemblePendingArtefact (compose rule)', () => {
   const frames = [
     { id: '1:1', name: 'B-1 · Option A', caption: 'A' },
@@ -255,30 +278,31 @@ describe('assemblePendingArtefact (compose rule)', () => {
   const doc = fx<FigmaNodesResponse>('base').nodes['0:1']!.document;
   const nodes: FigmaNodesResponse['nodes'] = Object.fromEntries(doc.children!.map((c) => [c.id, { document: c }]));
   const img = { bytes: new Uint8Array([1]) };
-  const attachments = { '1:1': { attachment_id: 'att-1', filename: 'a.png' }, '1:2': { attachment_id: 'att-2', filename: 'b.png' } };
+  const attachments = { '1:1': { attachment_id: A1, filename: 'a.png' }, '1:2': { attachment_id: A2, filename: 'b.png' } };
   const ok = {
-    capabilityPresent: true, fileKey: 'KEY', fileUrl: 'https://www.figma.com/design/KEY/x', versionId: '900', frames,
+    fileKey: 'KEY', fileUrl: 'https://www.figma.com/design/KEY/x', versionId: '900', frames,
     nodesAtVersion: nodes, images: { '1:1': img, '1:2': img }, attachments, composedAt: '2026-10-27T10:05:00Z',
     provenanceNotes: [] as ProvenanceNote[],
   };
 
-  it('builds the schema_version 1 Figma artefact in frame order, mcp_call_count 0', () => {
-    expect(assemblePendingArtefact(ok)).toEqual({
-      ok: true,
-      artefact: {
-        schema_version: 1, tool: 'figma', composed_at: '2026-10-27T10:05:00Z', provenance_notes: [], mcp_call_count: 0,
-        nodes: [
-          { id: '1:1', name: 'B-1 · Option A', caption: 'A', preview_attachment_id: 'att-1', preview_filename: 'a.png' },
-          { id: '1:2', name: 'B-1 · Option B', caption: 'B', preview_attachment_id: 'att-2', preview_filename: 'b.png' },
-        ],
-        file_key: 'KEY', file_url: 'https://www.figma.com/design/KEY/x', version_id: '900',
-      },
+  it('builds a record that PASSES DesignArtefactSchema, in frame order, mcp_call_count 0', () => {
+    const r = assemblePendingArtefact(ok);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(() => DesignArtefactSchema.parse(r.artefact)).not.toThrow();
+    expect(r.artefact).toEqual({
+      schema_version: 1, tool: 'figma', composed_at: '2026-10-27T10:05:00Z', provenance_notes: NO_PROVENANCE_NOTES, mcp_call_count: 0,
+      nodes: [
+        { id: '1:1', name: 'B-1 · Option A', caption: 'A', preview_attachment_id: A1, preview_filename: 'a.png' },
+        { id: '1:2', name: 'B-1 · Option B', caption: 'B', preview_attachment_id: A2, preview_filename: 'b.png' },
+      ],
+      file_key: 'KEY', file_url: 'https://www.figma.com/design/KEY/x', version_id: '900',
     });
   });
-  it('capabilityPresent false is a refusal with the prerequisite message, checked first', () => {
-    const r = assemblePendingArtefact({ ...ok, capabilityPresent: false, nodesAtVersion: {} });
-    expect(r).toEqual({ ok: false, code: 'capability-absent', message: CAPABILITY_PREREQUISITE_MESSAGE, ids: [] });
-    expect(CAPABILITY_PREREQUISITE_MESSAGE).toMatch(/B-1202/);
+  it('carries the serialized provenance notes, human-in-tool marks included', () => {
+    const r = assemblePendingArtefact({ ...ok, provenanceNotes: markHumanInTool([{ element: '9:9', provenance: 'real' }], ['2:1']), mcpCallCount: 2 });
+    expect(r.ok && r.artefact.provenance_notes).toBe('real | 9:9 | -\nhuman-in-tool | 2:1 | Changed by the designer in Figma');
+    expect(r.ok && r.artefact.mcp_call_count).toBe(2);
   });
   it('a frame absent at the version is a typed failure (never latest)', () => {
     const r = assemblePendingArtefact({ ...ok, nodesAtVersion: { '1:1': nodes['1:1'], '1:2': null } });
@@ -294,6 +318,163 @@ describe('assemblePendingArtefact (compose rule)', () => {
   });
   it('refuses a file_url carrying a token or signature', () => {
     expect(assemblePendingArtefact({ ...ok, fileUrl: 'https://x/y?token=abc' })).toMatchObject({ ok: false, code: 'unsafe-url' });
+  });
+  it('a record the schema would refuse (non-uuid attachment id) is a typed invalid-artefact failure', () => {
+    const r = assemblePendingArtefact({ ...ok, attachments: { ...attachments, '1:1': { attachment_id: 'att-1', filename: 'a.png' } } });
+    expect(r).toMatchObject({ ok: false, code: 'invalid-artefact' });
+  });
+  it('no capability argument exists: the refusal is compose_brief\'s (validateDesignAttachments)', () => {
+    expect(readFileSync(fileURLToPath(new URL('./figma-reconcile.ts', import.meta.url)), 'utf8')).not.toMatch(/capabilityPresent|capability-absent/);
+  });
+});
+
+describe('reconcileDesign (hand-authored fixtures, fake client, fake prepare)', () => {
+  const PNG = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+  const baseline: DesignArtefact = {
+    schema_version: 1, tool: 'figma', composed_at: '2026-10-27T09:00:00.000Z', provenance_notes: 'real | 1:1 | -', mcp_call_count: 1,
+    file_key: 'KEY', file_url: 'https://www.figma.com/design/KEY/x', version_id: '800',
+    nodes: [
+      { id: '1:1', name: 'B-1 · Option A', caption: 'Caption A', preview_attachment_id: A1, preview_filename: 'a.png' },
+      { id: '1:2', name: 'B-1 · Option B', caption: 'Caption B', preview_attachment_id: A2, preview_filename: 'b.png' },
+    ],
+  };
+  const meta = { lastModified: '2026-10-27T10:00:00Z', version: '900', name: 'n' };
+  const v900 = { id: '900', created_at: '2026-10-27T10:00:30Z' };
+  const v950 = { id: '950', created_at: '2026-10-27T10:05:30Z' };
+  // The fake serves a fixture per version id.
+  const clientFor = (byVersion: Record<string, string>, over: Record<string, unknown> = {}) => ({
+    fileMeta: async () => meta,
+    listVersions: async () => [v900],
+    getNodesAtVersion: vi.fn(async (_ids: string[], v: string) => {
+      if (!byVersion[v]) throw new FigmaRestError('version-not-found', `404 at ${v}`, 404);
+      return fx<FigmaNodesResponse>(byVersion[v]);
+    }),
+    ...over,
+  });
+  const prepareFor = (version: string, ids?: string[]): PrepareFn =>
+    (async (_k, nodeIds) => ({ version_id: version, previews: (ids ?? nodeIds).map((id) => ({ id, bytes: PNG })) })) as PrepareFn;
+  const common = { baseline, containerId: '0:1', token: 't', sleep: async () => {}, now: () => new Date('2026-10-27T10:06:00Z') };
+
+  it('happy path: diffs baseline vs fresh, prepares in fresh frame order, captions from baseline / default for added', async () => {
+    const client = clientFor({ '800': 'base', '900': 'frame-added' });
+    const prepare = vi.fn(prepareFor('900'));
+    const r = await reconcileDesign({ ...common, client, prepare });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(client.getNodesAtVersion.mock.calls.map((c) => c[1])).toEqual(['800', '900']);
+    expect(prepare.mock.calls[0][0]).toBe('KEY');
+    expect(prepare.mock.calls[0][1]).toEqual(['1:1', '1:2', '1:3', '1:4']);
+    expect(r.versionId).toBe('900');
+    expect(r.baselineVersionId).toBe('800');
+    expect(r.lines).toContain('Frame added: "B-1 · Option D"');
+    expect(r.questions.map((q) => q.kind)).toContain('frame-added');
+    expect(r.changedElementIds).toContain('1:4');
+    expect(r.frames.map((f) => f.caption)).toEqual(['Caption A', 'Caption B', ADDED_FRAME_CAPTION, ADDED_FRAME_CAPTION]);
+    expect(r.previews.map((p) => p.id)).toEqual(['1:1', '1:2', '1:3', '1:4']);
+    expect(r.composedAt).toBe('2026-10-27T10:06:00.000Z');
+  });
+
+  it('re-diffs once at the version prepare returned when it differs from the one first diffed', async () => {
+    const client = clientFor({ '800': 'base', '900': 'base', '950': 'text-changed-7' });
+    const r = await reconcileDesign({ ...common, client, prepare: prepareFor('950', ['1:1', '1:2', '1:3']) });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(client.getNodesAtVersion.mock.calls.map((c) => c[1])).toEqual(['800', '900', '950']);
+    expect(r.versionId).toBe('950');
+    expect(r.lines).toHaveLength(7);
+    expect(r.questions).toHaveLength(1);
+  });
+
+  it('refuses when the version prepare returned has frames that were never previewed', async () => {
+    const client = clientFor({ '800': 'base', '900': 'base', '950': 'frame-added' });
+    const r = await reconcileDesign({ ...common, client, prepare: prepareFor('950', ['1:1', '1:2', '1:3']) });
+    expect(r).toMatchObject({ ok: false, code: 'frames-changed' });
+  });
+
+  it('no saved version after the last edit: the save-a-version question, nothing read or rendered', async () => {
+    const client = clientFor({ '800': 'base' }, { listVersions: async () => [{ id: '800', created_at: '2026-10-27T09:00:00Z' }] });
+    const prepare = vi.fn(prepareFor('900'));
+    const r = await reconcileDesign({ ...common, client, prepare });
+    expect(r).toMatchObject({ ok: false, code: 'save-a-version', becomesQuestion: true });
+    if (!r.ok) expect(r.message).toContain('File > Save to version history');
+    expect(prepare).not.toHaveBeenCalled();
+    expect(client.getNodesAtVersion).not.toHaveBeenCalled();
+  });
+
+  it('404 at a version is version-not-found, never "no change"', async () => {
+    const client = clientFor({ '800': 'base' }); // 900 missing -> 404
+    const r = await reconcileDesign({ ...common, client, prepare: prepareFor('900') });
+    expect(r).toMatchObject({ ok: false, code: 'version-not-found' });
+  });
+
+  it('429 from the REST read carries retry-after and does not retry', async () => {
+    const getNodesAtVersion = vi.fn(async () => { throw new FigmaRestError('rate-limited', '429', 429, 42); });
+    const r = await reconcileDesign({ ...common, client: clientFor({}, { getNodesAtVersion }), prepare: prepareFor('900') });
+    expect(r).toMatchObject({ ok: false, code: 'rate-limited', retryAfterSeconds: 42 });
+    expect(getNodesAtVersion).toHaveBeenCalledTimes(1);
+  });
+
+  it('429 surfaced by prepare is rate-limited too', async () => {
+    const prepare = (async () => { throw new Error('Pinned Figma images: HTTP 429'); }) as PrepareFn;
+    const r = await reconcileDesign({ ...common, client: clientFor({ '800': 'base', '900': 'base' }), prepare });
+    expect(r).toMatchObject({ ok: false, code: 'rate-limited', retryAfterSeconds: null });
+  });
+
+  it('frames that never appear (prepare timeout) are frames-missing, with its actionable message', async () => {
+    const prepare = (async () => { throw new Error('Figma autosave did not capture every frame within 12 attempts; save the file and retry. No latest screenshots were substituted.'); }) as PrepareFn;
+    const r = await reconcileDesign({ ...common, client: clientFor({ '800': 'base', '900': 'base' }), prepare });
+    expect(r).toMatchObject({ ok: false, code: 'frames-missing' });
+    if (!r.ok) expect(r.message).toMatch(/No latest screenshots were substituted/);
+  });
+
+  it('an unrelated prepare failure is previews-failed, message kept', async () => {
+    const prepare = (async () => { throw new Error('Figma preview is not a PNG'); }) as PrepareFn;
+    const r = await reconcileDesign({ ...common, client: clientFor({ '800': 'base', '900': 'base' }), prepare });
+    expect(r).toMatchObject({ ok: false, code: 'previews-failed', message: 'Figma preview is not a PNG' });
+  });
+
+  it('a container absent at a version is container-missing', async () => {
+    const client = clientFor({ '800': 'base', '900': 'base' });
+    const r = await reconcileDesign({ ...common, client, containerId: '9:9', prepare: prepareFor('900') });
+    expect(r).toMatchObject({ ok: false, code: 'container-missing' });
+  });
+
+  it('an html baseline is a typed refusal before any read', async () => {
+    const html: DesignArtefact = { schema_version: 1, tool: 'html', composed_at: '2026-10-27T09:00:00.000Z', provenance_notes: 'x', mcp_call_count: 0, surface_attachment_id: A1, surface_filename: 's.html' };
+    const client = clientFor({});
+    const r = await reconcileDesign({ ...common, baseline: html, client, prepare: prepareFor('900') });
+    expect(r).toMatchObject({ ok: false, code: 'baseline-not-figma' });
+    expect(client.getNodesAtVersion).not.toHaveBeenCalled();
+  });
+
+  it('an invalid baseline is baseline-invalid', async () => {
+    const r = await reconcileDesign({ ...common, baseline: { tool: 'figma' } as unknown as DesignArtefact, client: clientFor({}), prepare: prepareFor('900') });
+    expect(r).toMatchObject({ ok: false, code: 'baseline-invalid' });
+  });
+
+  it('builds its own REST client from token + fetch when none is injected (GET only, token header)', async () => {
+    const seen: Array<{ url: string; init: any }> = [];
+    const fetch: FetchLike = async (url, init) => {
+      seen.push({ url, init });
+      if (url.includes('?depth=1')) return res(200, fx('file-meta'));
+      if (url.endsWith('/versions')) return res(200, fx('versions'));
+      return res(200, fx(url.includes('version=800') ? 'base' : 'frame-added'));
+    };
+    const r = await reconcileDesign({ ...common, fetch, prepare: prepareFor('900') });
+    expect(r.ok).toBe(true);
+    expect(seen.every((x) => x.init.method === 'GET' && x.init.headers['X-Figma-Token'] === 't')).toBe(true);
+  });
+
+  it('never silently falls back to the latest version: every nodes read names an explicit version', async () => {
+    const urls: string[] = [];
+    const fetch: FetchLike = async (url) => {
+      urls.push(url);
+      if (url.includes('?depth=1')) return res(200, fx('file-meta'));
+      if (url.endsWith('/versions')) return res(200, fx('versions'));
+      return res(200, fx('base'));
+    };
+    await reconcileDesign({ ...common, fetch, prepare: prepareFor('900') });
+    for (const u of urls.filter((x) => x.includes('/nodes'))) expect(u).toMatch(/version=\d+/);
   });
 });
 
