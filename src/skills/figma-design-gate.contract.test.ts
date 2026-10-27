@@ -76,6 +76,12 @@ describe('visual-handoff: the artefact write', () => {
   it('names B-1201 / B-1202 as dependencies, not assumptions', () => {
     expect(figmaPath).toMatch(/B-1201/);
     expect(figmaPath).toMatch(/B-1202/);
+    expect(figmaPath).toContain('`design_artefact` (schema_version 1)');
+    expect(figmaPath).toMatch(/does \*\*not\*\* persist a `design_artefact`/);
+    for (const f of ['composed_at', 'provenance_notes', 'preview_attachment_id', 'preview_filename', 'file_key', 'file_url', 'version_id']) {
+      expect(figmaPath).toContain(f);
+    }
+    expect(figmaPath).toMatch(/no signed URLs/);
   });
 });
 

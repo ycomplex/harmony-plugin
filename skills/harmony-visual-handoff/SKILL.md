@@ -83,7 +83,7 @@ Run the preflight (`src/tools/figma-connection.ts`, `resolveFigmaRoute`) before 
 - **failing → `stop`:** stop with the reconnect instruction. **Never silently fall back** to HTML.
 
 Dependencies, not assumptions: the connection reader, the **saved component map** and the shared rate limiter
-are **B-1201's**; the stored design-record shape is **B-1202's**. Until B-1201 lands the preflight resolves to
+are **B-1201's**; the stored record, `design_artefact` (schema_version 1), is **B-1202's**. Until B-1201 lands the preflight resolves to
 `html`, so this step does not run.
 
 Figma path (planner: `src/tools/figma-composition.ts`):
@@ -93,7 +93,7 @@ Figma path (planner: `src/tools/figma-composition.ts`):
 3. Call `use_figma` **once** to build all option frames from **library instances** (not imported layers),
    named `<ticket> · <option>`, the recommendation marked on exactly one frame, and provenance
    (`real` / `invented` / `illustrative`) as frame notes. A second `use_figma` call only to fix.
-4. A flow is N frames in order with a caption each; the artefact records the order.
+4. A flow is N frames in order with a caption each; the order is kept in the planned `nodes` list.
 5. MCP is used only for writing (`use_figma`). Render previews over REST `GET /v1/images`, **pinned to the
    file version**, with the workspace token (not `get_screenshot`), download, and attach them. Do not
    render straight after composing. The newest version then is still the pre-compose one: Figma's
@@ -106,7 +106,13 @@ Figma path (planner: `src/tools/figma-composition.ts`):
 6. Every MCP call passes through the shared limiter when present. Count MCP calls: **hard cap 6 per leg**
    (typical 2-3). At the cap, stop composing options and say so on the brief. Record the call count
    (`mcp_call_count`) on the brief.
-7. A Claude Design scaffold or any inception sketch is **reference only**: the recorded artefact is always
+7. **The stored record is B-1202's `design_artefact` (schema_version 1), not yet persisted here.** Its fields
+   are `tool`, `composed_at`, `provenance_notes`, `mcp_call_count`, and an ordered `nodes` list of
+   `{ id, name, caption, preview_attachment_id, preview_filename }`; for Figma only, also `file_key`,
+   `file_url` and `version_id`. It holds **no signed URLs**. Until B-1202's capability exists, this path
+   attaches the checked previews and lists them on the brief, and does **not** persist a `design_artefact`.
+   Do not invent a frame field or a slot schema.
+8. A Claude Design scaffold or any inception sketch is **reference only**: the recorded artefact is always
    re-composed from library instances.
 
 Then continue at step 4.

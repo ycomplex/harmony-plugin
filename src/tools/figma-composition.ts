@@ -2,7 +2,10 @@
 // the ordered use_figma call plan; the skill executes it. See skills/harmony-visual-handoff/SKILL.md 3c.
 //
 // DEPENDENCIES (B-1201): the saved component map, the connection reader and the shared per-identity
-// RateLimiter (10/min, 200/day). The stored design-record shape is B-1202's.
+// RateLimiter (10/min, 200/day). The stored record is B-1202's
+// `design_artefact` (schema_version 1): tool, composed_at, provenance_notes, mcp_call_count, ordered
+// nodes[{ id, name, caption, preview_attachment_id, preview_filename }] and, Figma only, file_key, file_url,
+// version_id; no signed URLs. Not persisted until B-1202's capability exists.
 
 export type Provenance = 'real' | 'invented' | 'illustrative';
 
