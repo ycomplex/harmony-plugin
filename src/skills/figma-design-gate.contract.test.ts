@@ -120,6 +120,18 @@ describe('design-decide: product-track coverage check', () => {
   });
 });
 
+describe('visual-handoff: throttling (429)', () => {
+  it('backs off per Retry-After, never retries immediately, asks the operator when exhausted, no silent HTML fallback', () => {
+    expect(figmaPath).toMatch(/Throttled \(HTTP 429\)/);
+    expect(figmaPath).toMatch(/`Retry-After`/);
+    expect(figmaPath).toMatch(/exponential backoff/);
+    expect(figmaPath).toMatch(/never immediate/);
+    expect(figmaPath).toMatch(/start_elicitation[\s\S]*worker-question[\s\S]*designing/);
+    expect(figmaPath).toContain('file_elicitation_round');
+    expect(figmaPath).toMatch(/do \*\*not\*\* fail the gate and do \*\*not\*\* fall back to the HTML path silently/);
+  });
+});
+
 describe('every referenced tool is real', () => {
   it('references only registered MCP tools', () => {
     for (const body of [clarify, design, handoff]) {

@@ -173,3 +173,36 @@ export async function waitForVersionAfter(opts: {
     message: `No Figma file version created after ${opts.afterIso} appeared in ${opts.maxAttempts} attempts; the new frames cannot be pinned for preview rendering.`,
   };
 }
+
+/**
+ * Throttle (HTTP 429) backoff. Bounded: 5 attempts, 2 s doubling, never above 60 s. A retry is NEVER immediate.
+ * CallBudget choice: a backoff wait is not a call, but every request actually issued is, so each retry
+ * after a 429 calls `tryConsume()` once (the throttled attempt counted when it was issued). The hard cap
+ * therefore still bounds total requests, and an exhausted cap stops the retries too.
+ */
+export const THROTTLE_BACKOFF = { baseMs: 2_000, maxMs: 60_000, maxAttempts: 5 } as const;
+
+export type ThrottleDelay = { retry: true; delayMs: number } | { retry: false; reason: 'backoff-exhausted' };
+
+/**
+ * Pure: the wait before retrying a throttled call. `attempt` is the 1-based number of the throttled
+ * attempt just made. Retry-After (seconds) wins when present and positive, capped at maxMs; otherwise
+ * exponential baseMs * 2^(attempt-1), capped at maxMs. The delay is always at least 1 ms.
+ */
+export function nextThrottleDelay(opts: {
+  attempt: number;
+  retryAfterSeconds?: number;
+  baseMs?: number;
+  maxMs?: number;
+  maxAttempts?: number;
+}): ThrottleDelay {
+  const baseMs = Math.max(1, opts.baseMs ?? THROTTLE_BACKOFF.baseMs);
+  const maxMs = Math.max(1, opts.maxMs ?? THROTTLE_BACKOFF.maxMs);
+  const maxAttempts = opts.maxAttempts ?? THROTTLE_BACKOFF.maxAttempts;
+  if (opts.attempt >= maxAttempts) return { retry: false, reason: 'backoff-exhausted' };
+  const ra = opts.retryAfterSeconds;
+  const raw = ra !== undefined && Number.isFinite(ra) && ra > 0
+    ? ra * 1000
+    : baseMs * 2 ** Math.max(0, opts.attempt - 1);
+  return { retry: true, delayMs: Math.max(1, Math.min(maxMs, Math.ceil(raw))) };
+}

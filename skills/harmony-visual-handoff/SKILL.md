@@ -112,7 +112,16 @@ Figma path (planner: `src/tools/figma-composition.ts`):
    `file_url` and `version_id`. It holds **no signed URLs**. Until B-1202's capability exists, this path
    attaches the checked previews and lists them on the brief, and does **not** persist a `design_artefact`.
    Do not invent a frame field or a slot schema.
-8. A Claude Design scaffold or any inception sketch is **reference only**: the recorded artefact is always
+8. **Throttled (HTTP 429): back off, never retry straight away** (`nextThrottleDelay`, `THROTTLE_BACKOFF`).
+   Wait the `Retry-After` the response names (capped), else bounded exponential backoff (2 s doubling,
+   at most 60 s, 5 attempts), then retry; a retry is never immediate. Each request actually issued counts
+   once against the step 6 cap; the waiting does not. When the backoff is used up and the call is still
+   throttled, do **not** fail the gate and do **not** fall back to the HTML path silently (a configured
+   connection that cannot be used stops, per the `stop` route). Instead file an elicitation round asking
+   the operator when it is safe to proceed, and resume on the answer:
+   `mcp__harmony__start_elicitation({ task_id, trigger: 'worker-question', gate: 'designing' })` then
+   `mcp__harmony__file_elicitation_round({ task_id, context_line: "Figma is throttling (429)...", questions: [...] })`.
+9. A Claude Design scaffold or any inception sketch is **reference only**: the recorded artefact is always
    re-composed from library instances.
 
 Then continue at step 4.

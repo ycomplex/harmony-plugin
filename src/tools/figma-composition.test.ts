@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { planComposition, CallBudget, limited, waitForVersionAfter, MCP_CALL_CAP } from './figma-composition.js';
+import { planComposition, CallBudget, limited, waitForVersionAfter, nextThrottleDelay, THROTTLE_BACKOFF, MCP_CALL_CAP } from './figma-composition.js';
 
 // SYNTHETIC fixtures. The real recorded use_figma fixture from the 2026-10-27 live proof is in
 // __fixtures__/figma-composition.live-2026-10-27.json, exercised by figma-composition.recorded.test.ts.
@@ -77,5 +77,27 @@ describe('waitForVersionAfter', () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.message).toMatch(/3 attempts/);
     expect(listVersions).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('nextThrottleDelay (429 backoff)', () => {
+  it('honours Retry-After (seconds to ms), capped', () => {
+    expect(nextThrottleDelay({ attempt: 1, retryAfterSeconds: 7 })).toEqual({ retry: true, delayMs: 7000 });
+    expect(nextThrottleDelay({ attempt: 1, retryAfterSeconds: 9999 })).toEqual({ retry: true, delayMs: THROTTLE_BACKOFF.maxMs });
+  });
+  it('grows exponentially without Retry-After, bounded by maxMs', () => {
+    const d = (attempt: number) => (nextThrottleDelay({ attempt, maxAttempts: 50 }) as { delayMs: number }).delayMs;
+    expect([d(1), d(2), d(3)]).toEqual([2000, 4000, 8000]);
+    expect(d(20)).toBe(THROTTLE_BACKOFF.maxMs);
+  });
+  it('never returns an immediate retry, even for Retry-After 0 or a zero base', () => {
+    for (const retryAfterSeconds of [undefined, 0, -3, NaN]) {
+      const r = nextThrottleDelay({ attempt: 1, retryAfterSeconds, baseMs: 0 });
+      expect(r.retry && r.delayMs).toBeGreaterThan(0);
+    }
+  });
+  it('is exhausted at maxAttempts', () => {
+    expect(nextThrottleDelay({ attempt: THROTTLE_BACKOFF.maxAttempts })).toEqual({ retry: false, reason: 'backoff-exhausted' });
+    expect(nextThrottleDelay({ attempt: 2, maxAttempts: 2, retryAfterSeconds: 1 })).toEqual({ retry: false, reason: 'backoff-exhausted' });
   });
 });
