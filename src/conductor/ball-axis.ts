@@ -43,7 +43,8 @@ export interface Taskish {
   knowledge_reference_count?: number | null;
 }
 
-/** The browser-submitted reshape/discuss marker (`briefs.pending_resolution`). */
+/** The browser-submitted reshape/discuss/edited-in-tool marker (`briefs.pending_resolution`; `command` is
+ *  'iterate' | 'discuss' | 'edited-in-tool' (B-1204), kept `string` so an unknown value never throws). */
 export interface PendingResolutionish {
   command?: string;
   detail?: string | null;
