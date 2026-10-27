@@ -3,21 +3,21 @@ import { createInterface } from "node:readline/promises";
 import { Writable } from "node:stream";
 import { randomUUID } from "node:crypto";
 import {
-  readFileSync,
-  writeFileSync,
   chmodSync,
+  existsSync,
   mkdirSync,
+  readFileSync,
   renameSync,
   rmSync,
-  existsSync,
+  writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import {
   assertFigmaReady,
+  type FigmaMetadata,
   readMountedFigmaToken,
   renderFigmaMcp,
-  type FigmaMetadata,
 } from "../../agents/design-tools/figma.js";
 import {
   auth,
@@ -30,10 +30,10 @@ import type {
 import { getAuthenticatedContext } from "../auth.js";
 import {
   emptyBudget,
-  reserveCall,
-  recordThrottle,
-  resumeBudget,
   type LegBudget,
+  recordThrottle,
+  reserveCall,
+  resumeBudget,
 } from "../../tools/figma-leg-budget.js";
 import { parseFigmaRedirect } from "../../agents/design-tools/oauth.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -41,8 +41,9 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 
 /** Keep tokens, redirect codes and PKCE secrets out of terminal echo/history and disk. */
 async function secretPrompt(prompt: string): Promise<string> {
-  if (!process.stdin.isTTY)
+  if (!process.stdin.isTTY) {
     throw new Error("Use an interactive terminal for credential entry");
+  }
   process.stderr.write(prompt);
   const output = new Writable({
     write(_chunk, _encoding, cb) {
@@ -106,8 +107,9 @@ async function authorizeFigma(): Promise<Record<string, unknown>> {
     });
   }
   const saved = tokens as OAuthTokens | undefined;
-  if (!saved?.refresh_token || !saved.expires_in || !info)
+  if (!saved?.refresh_token || !saved.expires_in || !info) {
     throw new Error("Figma did not issue a complete expiring OAuth grant");
+  }
   return {
     ...saved,
     ...info,
@@ -144,10 +146,11 @@ export function registerFigmaCommands(program: Command): void {
           !/^[a-zA-Z0-9-]+$/.test(conduction) ||
           !leg ||
           !/^\d+$/.test(leg)
-        )
+        ) {
           throw new Error(
             "Per-leg budget requires a conduction id and leg number",
           );
+        }
         // All launchers persist .claude/projects per conduction. A throttle answer starts a new
         // physical worker leg; its active pointer must still select the original logical call budget.
         const dir = join(
@@ -165,8 +168,9 @@ export function registerFigmaCommands(program: Command): void {
           const sourceLeg = existsSync(active)
             ? readFileSync(active, "utf8")
             : leg;
-          if (!/^\d+$/.test(sourceLeg))
+          if (!/^\d+$/.test(sourceLeg)) {
             throw new Error("Invalid persisted Figma budget identity");
+          }
           const file = join(dir, `${sourceLeg}.json`);
           if (opts.close) {
             rmSync(active, { force: true });
@@ -179,10 +183,12 @@ export function registerFigmaCommands(program: Command): void {
             : emptyBudget();
           const now = Date.now();
           let outcome: Record<string, unknown> = {};
-          if (opts.throttled)
+          if (opts.throttled) {
             state = recordThrottle(state, now, opts.retryAfter);
-          if (opts.resumeAt)
+          }
+          if (opts.resumeAt) {
             state = resumeBudget(state, Date.parse(opts.resumeAt), now);
+          }
           if (opts.reserve) {
             const result = reserveCall(state, now);
             state = result.state;
@@ -228,30 +234,47 @@ export function registerFigmaCommands(program: Command): void {
         // Older launchers cannot name Figma mounts. Connections are enabled only after
         // Conductor Update; tolerate the legacy no-context path until that ordered rollout.
         if (!process.env.HARMONY_FIGMA_CONTEXT_B64) return;
-        const ctx = await getAuthenticatedContext();
-        const { data, error } = await ctx.client.rpc("figma_launch_context", {
-          p_project_id: ctx.projectId,
-        });
-        if (error && error.code !== "PGRST202" && error.code !== "42883")
-          throw new Error("Figma preflight unavailable");
-        const meta: FigmaMetadata = data ?? { state: "disconnected" };
         const frozen: FigmaMetadata = JSON.parse(
           Buffer.from(
             process.env.HARMONY_FIGMA_CONTEXT_B64 ?? "",
             "base64",
           ).toString() || '{"state":"disconnected"}',
         );
+        if (frozen.state === "disconnected" || frozen.state === "reconnect") return;
+        let meta: FigmaMetadata;
+        try {
+          const ctx = await getAuthenticatedContext();
+          const { data, error } = await ctx.client.rpc("figma_launch_context", {
+            p_project_id: ctx.projectId,
+          });
+          if (error) throw error;
+          meta = data ?? { state: "disconnected" };
+        } catch {
+          process.stderr.write(
+            "Figma preflight unavailable; continuing without Figma.\n",
+          );
+          return;
+        }
+        if (
+          meta.state === "disconnected" || meta.state === "reconnect" ||
+          (Number.isFinite(Date.parse(meta.access_expires_at ?? "")) &&
+            Date.parse(meta.access_expires_at ?? "") <= Date.now())
+        ) {
+          process.stderr.write(
+            "Figma unavailable; Figma-dependent work requires reconnect.\n",
+          );
+          return;
+        }
         assertFigmaReady(meta, Date.now());
         if (
-          meta.state !== "disconnected" &&
           (meta.generation !== frozen.generation ||
             meta.access_version !== frozen.access_version ||
             meta.pat_version !== frozen.pat_version)
-        )
+        ) {
           throw new Error(
             "Figma connection changed since launch; rerun the leg",
           );
-        if (meta.state === "disconnected") return; // Fresh clone has no Figma configuration.
+        }
         const token = readMountedFigmaToken();
         if (opts.adapter === "codex") {
           const path = join(
@@ -292,23 +315,26 @@ export function registerFigmaCommands(program: Command): void {
           .select("workspace_id")
           .eq("id", ctx.projectId)
           .single();
-        if (projectError || !project)
+        if (projectError || !project) {
           throw new Error("Project workspace unavailable");
+        }
         const { data: membership } = await ctx.client
           .from("workspace_members")
           .select("role")
           .eq("workspace_id", project.workspace_id)
           .eq("user_id", ctx.userId)
           .single();
-        if (membership?.role !== "owner")
+        if (membership?.role !== "owner") {
           throw new Error("Workspace owner required");
+        }
         const { data: current, error: contextError } = await ctx.client.rpc(
           "figma_launch_context",
           { p_project_id: ctx.projectId },
         );
         if (contextError) throw new Error("Connection schema unavailable");
-        if (current?.connections_enabled !== true)
+        if (current?.connections_enabled !== true) {
           throw new Error("Figma connections are not enabled");
+        }
         let grant: Record<string, unknown>;
         try {
           grant = await authorizeFigma();
@@ -339,11 +365,13 @@ export function registerFigmaCommands(program: Command): void {
           let identity = who.structuredContent as
             | { handle?: string; plans?: unknown }
             | undefined;
-          if (!identity)
-            for (const content of who.content as Array<{
-              type: string;
-              text?: string;
-            }>) {
+          if (!identity) {
+            for (
+              const content of who.content as Array<{
+                type: string;
+                text?: string;
+              }>
+            ) {
               if (content.type === "text" && content.text) {
                 try {
                   identity = JSON.parse(content.text);
@@ -353,12 +381,14 @@ export function registerFigmaCommands(program: Command): void {
                 }
               }
             }
+          }
           if (
             who.isError ||
             !identity?.handle ||
             !Array.isArray(identity.plans)
-          )
+          ) {
             throw new Error();
+          }
           const plans = identity.plans.map(
             (p: { name?: string; seat?: string; tier?: string }) => ({
               name: p.name,
@@ -367,7 +397,9 @@ export function registerFigmaCommands(program: Command): void {
             }),
           );
           process.stderr.write(
-            `Verified Figma identity/plans: ${JSON.stringify({ handle: identity.handle, plans })}\n`,
+            `Verified Figma identity/plans: ${
+              JSON.stringify({ handle: identity.handle, plans })
+            }\n`,
           );
         } catch {
           throw new Error(
@@ -385,8 +417,9 @@ export function registerFigmaCommands(program: Command): void {
           (await secretPrompt(
             "Confirm this plan owns the library file (yes): ",
           )) !== "yes"
-        )
+        ) {
           throw new Error("Library plan not confirmed");
+        }
         const input = {
           workspace_id: project.workspace_id,
           generation: current?.generation ?? 0,
@@ -402,10 +435,21 @@ export function registerFigmaCommands(program: Command): void {
             "figma-connect",
             { body },
           );
-          if (error || data?.error)
+          if (error || data?.error) {
+            let message = data?.error;
+            if (
+              !message && error && "context" in error &&
+              error.context instanceof Response
+            ) {
+              try {
+                message = (await error.context.json()).error;
+              } catch { /* use safe fallback */ }
+            }
+            if (typeof message === "string") throw new Error(message);
             throw new Error(
               "Figma validation/publication failed; previous connection remains active. Check identity/library/seat. Operator: provision workspace grant, PAT and access slots with gcloud secrets create and the conditioned secretVersionAdder binding.",
             );
+          }
           return data;
         };
         const candidate = await invoke({
@@ -416,15 +460,17 @@ export function registerFigmaCommands(program: Command): void {
         process.stderr.write(
           `Figma edits are made as @${candidate.metadata.handle}\nLibrary: ${fileKey}; seat: ${candidate.metadata.seat}; tier: ${candidate.metadata.tier}\n`,
         );
-        if (candidate.lowBudget)
+        if (candidate.lowBudget) {
           process.stderr.write(
             "Warning: View/Collab or Starter has about 20 MCP calls/month.\n",
           );
+        }
         if (
           (await secretPrompt("Save this workspace connection (yes): ")) !==
-          "yes"
-        )
+            "yes"
+        ) {
           throw new Error("Connection not saved");
+        }
         await invoke({ ...input, confirm_low_budget: candidate.lowBudget });
         process.stdout.write(
           "Figma connected. Saved credentials cannot be retrieved.\n",

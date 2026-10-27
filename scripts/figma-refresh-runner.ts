@@ -1,9 +1,9 @@
 // Executed only by the dedicated CronJob, never imported into a worker launch.
 import { getAuthenticatedContext } from "../src/cli/auth.js";
 import {
-  refreshWorkspace,
   type FigmaGrant,
   type RefreshWork,
+  refreshWorkspaceSafely,
 } from "../src/tools/figma-refresh.js";
 
 const ctx = await getAuthenticatedContext();
@@ -28,21 +28,25 @@ const call = async (path: string, init: RequestInit = {}) => {
   if (!response.ok) throw new Error("Secret operation failed");
   return response.json() as Promise<Record<string, any>>;
 };
-for (const work of (queue ?? []) as (RefreshWork & {
-  library_refresh_requested: boolean;
-  pat_version: string;
-  library_file_key: string;
-  refresh_due: boolean;
-})[]) {
+for (
+  const work of (queue ?? []) as (RefreshWork & {
+    library_refresh_requested: boolean;
+    pat_version: string;
+    library_file_key: string;
+    refresh_due: boolean;
+  })[]
+) {
   if (work.library_refresh_requested && !work.in_flight) {
     try {
       if (
-        !/^projects\/harmony-conductor\/secrets\/harmony-figma-ws-[a-f0-9-]{36}-pat\/versions\/\d+$/.test(
-          work.pat_version,
-        ) ||
+        !/^projects\/harmony-conductor\/secrets\/harmony-figma-ws-[a-f0-9-]{36}-pat\/versions\/\d+$/
+          .test(
+            work.pat_version,
+          ) ||
         !/^[-_a-zA-Z0-9]+$/.test(work.library_file_key)
-      )
+      ) {
         throw new Error("Invalid library references");
+      }
       const encoded = await call(work.pat_version + ":access");
       const pat = Buffer.from(encoded.payload.data, "base64").toString();
       const response = await fetch(
@@ -77,7 +81,7 @@ for (const work of (queue ?? []) as (RefreshWork & {
     }
   }
   if (!work.refresh_due && !work.in_flight) continue;
-  const outcome = await refreshWorkspace(
+  const outcome = await refreshWorkspaceSafely(
     work,
     {
       transition: async (w, action, data) => {
@@ -104,19 +108,22 @@ for (const work of (queue ?? []) as (RefreshWork & {
       },
       readGrant: async (version) => {
         if (
-          !/^projects\/harmony-conductor\/secrets\/harmony-figma-ws-[a-f0-9-]{36}-grant\/versions\/\d+$/.test(
-            version,
-          )
-        )
+          !/^projects\/harmony-conductor\/secrets\/harmony-figma-ws-[a-f0-9-]{36}-grant\/versions\/\d+$/
+            .test(
+              version,
+            )
+        ) {
           throw new Error("Invalid grant reference");
+        }
         const data = await call(version + ":access");
         return JSON.parse(
           Buffer.from(data.payload.data, "base64").toString(),
         ) as FigmaGrant;
       },
       refresh: async (grant) => {
-        if (grant.token_endpoint !== "https://api.figma.com/v1/oauth/token")
+        if (grant.token_endpoint !== "https://api.figma.com/v1/oauth/token") {
           throw new Error("Untrusted OAuth endpoint");
+        }
         const g = grant as FigmaGrant & {
           client_secret?: string;
           token_endpoint_auth_method?: string;
@@ -126,23 +133,22 @@ for (const work of (queue ?? []) as (RefreshWork & {
           method: "POST",
           headers: basic
             ? {
-                Authorization:
-                  "Basic " +
-                  Buffer.from(
-                    `${encodeURIComponent(grant.client_id)}:${encodeURIComponent(g.client_secret ?? "")}`,
-                  ).toString("base64"),
-              }
+              Authorization: "Basic " +
+                Buffer.from(
+                  `${encodeURIComponent(grant.client_id)}:${
+                    encodeURIComponent(g.client_secret ?? "")
+                  }`,
+                ).toString("base64"),
+            }
             : {},
           body: new URLSearchParams({
             grant_type: "refresh_token",
             refresh_token: grant.refresh_token,
             ...(!basic
               ? {
-                  client_id: grant.client_id,
-                  ...(g.client_secret
-                    ? { client_secret: g.client_secret }
-                    : {}),
-                }
+                client_id: grant.client_id,
+                ...(g.client_secret ? { client_secret: g.client_secret } : {}),
+              }
               : {}),
           }),
           signal: AbortSignal.timeout(20000),
@@ -151,7 +157,8 @@ for (const work of (queue ?? []) as (RefreshWork & {
         return r.json();
       },
       append: async (w, kind, value) => {
-        const base = `projects/harmony-conductor/secrets/harmony-figma-ws-${w.workspace_id}-${kind}`;
+        const base =
+          `projects/harmony-conductor/secrets/harmony-figma-ws-${w.workspace_id}-${kind}`;
         const data = await call(base + ":addVersion", {
           method: "POST",
           body: JSON.stringify({
@@ -163,8 +170,9 @@ for (const work of (queue ?? []) as (RefreshWork & {
         console.log(
           JSON.stringify({
             workspace_id: w.workspace_id,
-            phase:
-              kind === "grant" ? "stored-rotated-grant" : "stored-access-token",
+            phase: kind === "grant"
+              ? "stored-rotated-grant"
+              : "stored-access-token",
             version: `${base}/versions/${version}`,
             at: new Date().toISOString(),
           }),
