@@ -126,6 +126,41 @@ Figma path (planner: `src/tools/figma-composition.ts`):
 
 Then continue at step 4.
 
+### 3d. Reconcile a designer's edits (B-1204)
+
+**Trigger:** the poll trigger / marker `edited-in-tool` on an **active design brief** whose frame carries a Figma
+`design_artefact`: `pending_resolution = { command: 'edited-in-tool', detail: "I've made edits in Figma. <optional note>" }`,
+staged by the web's fourth verb (or `reshape_brief` with `kind: 'edited-in-tool'`). It is **not** a worded
+reshape: do not run the iterate path. Reconcile instead (`src/tools/figma-reconcile.ts`). Read-back is **REST only
+(`X-Figma-Token`), at explicit versions, with zero MCP reads**, and the file is never edited.
+
+1. **Baseline.** Read it from the active brief's `frame.design_artefact`: `file_key`, `version_id` and the ordered
+   `nodes[].id`. That pinned version is the "before".
+2. **Fresh version.** `chooseFreshVersion`: anchored on the file's **last-modified** time (not the press time:
+   an autosave taken before the press already holds the edit), bounded by `FRESHNESS_WAIT`. If none appears,
+   or last-modified is unavailable and nothing differs from the pinned version, **do not guess**: the result becomes a
+   **question item** telling the designer to save a version (File > Save to version history) and press the action again.
+3. **Read both snapshots** with `GET /v1/files/:key/nodes?ids=…&version=<id>` at the pinned and the fresh
+   version. A 404 is `version-not-found`, never "no change"; a 429 stops the read-back (no retry loop, no MCP
+   fallback) and says so on the brief.
+4. **Diff and interpret** (`diffSnapshots`, `interpret`). Geometry, style and order changes are plain change lines.
+   Text changes, added or removed frames and swapped instances are a change line **and** a question: method change,
+   or illustrative only? Repeats collapse into **one** question (seven rows edited the same way is one). Anything
+   unclassified is a question, never dropped.
+5. **Render previews at the fresh version and attach** (the compose rule of step 3c.5: every changed or kept frame
+   present at that version, every image non-null and downloadable, `version=<fresh>`, **never fall back to latest**).
+6. **Recompose the design brief in place** with `compose_brief`: `revision_cause: { source: 'refreshed-inputs', lines: [the reconciled changes] }`;
+   `iterate_feedback` = the designer's note **verbatim, only if one was given** (when both are passed `revision_cause`
+   wins and the note rides in its `lines`, per `skills/harmony-shared/brief-authoring.md` §Stating the cause of a
+   redraft rather than restating it); a **"What changed in Figma"** block; the question items among the decision
+   items; designer-changed elements marked **`human-in-tool`** in the provenance notes (`markHumanInTool`; your own
+   lines stay as they were). That recompose consumes the marker.
+7. **Accept pins the version whose previews are on the accepted brief** (`design_artefact.version_id`), never the latest
+   at accept time.
+8. **The writer refuses until B-1202's capability exists** (`assemblePendingArtefact` with `capabilityPresent: false`
+   returns the prerequisite message): do not persist a `design_artefact` or attach previews, and say why on the brief.
+   The B-1202 validator and the recompose write are B-1202's, not built here.
+
 ### 4. Iterate — elicit, don't guess (D2)
 
 When the human asks for **alternatives**, **ask them to describe the alternative**, then regenerate the

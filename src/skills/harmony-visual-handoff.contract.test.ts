@@ -16,6 +16,34 @@ describe('harmony-visual-handoff skill contract', () => {
       expect(REGISTERED.has(tool), `unknown tool mcp__harmony__${tool}`).toBe(true);
     }
   });
+  it("B-1204: reconcile a designer's edits — trigger, REST-only read-back, fresh-version anchor, collapse, recompose cause, accept pin, capability refusal", () => {
+    const body = skill.body;
+    const i = body.indexOf("### 3d. Reconcile a designer's edits (B-1204)");
+    expect(i, 'missing the reconcile section').toBeGreaterThan(-1);
+    const seg = body.slice(i, body.indexOf('### 4. Iterate', i));
+    expect(seg).toContain('edited-in-tool');
+    expect(seg).toMatch(/frame\.design_artefact/);
+    expect(seg).toMatch(/`file_key`, `version_id`/);
+    expect(seg).toMatch(/REST only/);
+    expect(seg).toMatch(/zero MCP reads/);
+    expect(seg).toMatch(/last-modified/);
+    expect(seg).toMatch(/not the press time/);
+    expect(seg).toMatch(/File > Save to version history/);
+    expect(seg).toMatch(/question item/);
+    expect(seg).toMatch(/version-not-found/);
+    expect(seg).toMatch(/never "no change"/);
+    expect(seg).toMatch(/seven rows edited the same way is one/);
+    expect(seg).toMatch(/never dropped/);
+    expect(seg).toMatch(/never fall back to latest/i);
+    expect(seg).toContain("revision_cause: { source: 'refreshed-inputs'");
+    expect(seg).toMatch(/`iterate_feedback` = the designer's note \*\*verbatim, only if one was given\*\*/);
+    expect(seg).toContain('What changed in Figma');
+    expect(seg).toContain('human-in-tool');
+    expect(seg).toMatch(/never the latest\s+at accept time/);
+    expect(seg).toMatch(/refuses until B-1202's capability exists/);
+    expect(seg).toContain('brief-authoring.md');
+    expect(seg).toMatch(/Stating the cause of a\s+redraft/);
+  });
   it('files the framed ux-ui decision through the gate machinery', () => {
     const tools = referencedHarmonyTools(skill.body);
     for (const t of ['query_knowledge', 'record_decision', 'reference_knowledge', 'compose_brief', 'resolve_brief']) {
