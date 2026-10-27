@@ -1,0 +1,364 @@
+{
+  "_fixture": "HAND-AUTHORED from Figma's documented REST response shapes (GET /v1/files/:key/nodes, /versions, /images, /files/:key). NOT live-captured.",
+  "nodes": {
+    "0:1": {
+      "document": {
+        "id": "0:1",
+        "name": "Options",
+        "type": "CANVAS",
+        "children": [
+          {
+            "id": "1:1",
+            "name": "B-1 \u00b7 Option A",
+            "type": "FRAME",
+            "absoluteBoundingBox": {
+              "x": 0,
+              "y": 0,
+              "width": 400,
+              "height": 600
+            },
+            "fills": [
+              {
+                "type": "SOLID",
+                "color": {
+                  "r": 1,
+                  "g": 1,
+                  "b": 1,
+                  "a": 1
+                }
+              }
+            ],
+            "cornerRadius": 8,
+            "children": [
+              {
+                "id": "3:1",
+                "name": "Title",
+                "type": "TEXT",
+                "characters": "Pick a plan",
+                "absoluteBoundingBox": {
+                  "x": 10,
+                  "y": 10,
+                  "width": 200,
+                  "height": 20
+                },
+                "style": {
+                  "fontSize": 14,
+                  "fontFamily": "Inter"
+                },
+                "fills": [
+                  {
+                    "type": "SOLID",
+                    "color": {
+                      "r": 1,
+                      "g": 1,
+                      "b": 1,
+                      "a": 1
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "3:2",
+                "name": "Primary button",
+                "type": "INSTANCE",
+                "componentId": "c:200",
+                "componentProperties": {
+                  "Label#1:0": {
+                    "type": "TEXT",
+                    "value": "Save"
+                  }
+                },
+                "absoluteBoundingBox": {
+                  "x": 10,
+                  "y": 50,
+                  "width": 100,
+                  "height": 32
+                },
+                "fills": [
+                  {
+                    "type": "SOLID",
+                    "color": {
+                      "r": 1,
+                      "g": 1,
+                      "b": 1,
+                      "a": 1
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "1:2",
+            "name": "B-1 \u00b7 Option B",
+            "type": "FRAME",
+            "absoluteBoundingBox": {
+              "x": 500,
+              "y": 0,
+              "width": 400,
+              "height": 600
+            },
+            "fills": [
+              {
+                "type": "SOLID",
+                "color": {
+                  "r": 1,
+                  "g": 1,
+                  "b": 1,
+                  "a": 1
+                }
+              }
+            ],
+            "cornerRadius": 8,
+            "children": [
+              {
+                "id": "2:1",
+                "name": "Row 1",
+                "type": "TEXT",
+                "characters": "Row 1 label",
+                "absoluteBoundingBox": {
+                  "x": 10,
+                  "y": 40,
+                  "width": 200,
+                  "height": 20
+                },
+                "style": {
+                  "fontSize": 14,
+                  "fontFamily": "Inter"
+                },
+                "fills": [
+                  {
+                    "type": "SOLID",
+                    "color": {
+                      "r": 1,
+                      "g": 1,
+                      "b": 1,
+                      "a": 1
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "2:2",
+                "name": "Row 2",
+                "type": "TEXT",
+                "characters": "Row 2 label",
+                "absoluteBoundingBox": {
+                  "x": 10,
+                  "y": 70,
+                  "width": 200,
+                  "height": 20
+                },
+                "style": {
+                  "fontSize": 14,
+                  "fontFamily": "Inter"
+                },
+                "fills": [
+                  {
+                    "type": "SOLID",
+                    "color": {
+                      "r": 1,
+                      "g": 1,
+                      "b": 1,
+                      "a": 1
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "2:3",
+                "name": "Row 3",
+                "type": "TEXT",
+                "characters": "Row 3 label",
+                "absoluteBoundingBox": {
+                  "x": 10,
+                  "y": 100,
+                  "width": 200,
+                  "height": 20
+                },
+                "style": {
+                  "fontSize": 14,
+                  "fontFamily": "Inter"
+                },
+                "fills": [
+                  {
+                    "type": "SOLID",
+                    "color": {
+                      "r": 1,
+                      "g": 1,
+                      "b": 1,
+                      "a": 1
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "2:4",
+                "name": "Row 4",
+                "type": "TEXT",
+                "characters": "Row 4 label",
+                "absoluteBoundingBox": {
+                  "x": 10,
+                  "y": 130,
+                  "width": 200,
+                  "height": 20
+                },
+                "style": {
+                  "fontSize": 14,
+                  "fontFamily": "Inter"
+                },
+                "fills": [
+                  {
+                    "type": "SOLID",
+                    "color": {
+                      "r": 1,
+                      "g": 1,
+                      "b": 1,
+                      "a": 1
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "2:5",
+                "name": "Row 5",
+                "type": "TEXT",
+                "characters": "Row 5 label",
+                "absoluteBoundingBox": {
+                  "x": 10,
+                  "y": 160,
+                  "width": 200,
+                  "height": 20
+                },
+                "style": {
+                  "fontSize": 14,
+                  "fontFamily": "Inter"
+                },
+                "fills": [
+                  {
+                    "type": "SOLID",
+                    "color": {
+                      "r": 1,
+                      "g": 1,
+                      "b": 1,
+                      "a": 1
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "2:6",
+                "name": "Row 6",
+                "type": "TEXT",
+                "characters": "Row 6 label",
+                "absoluteBoundingBox": {
+                  "x": 10,
+                  "y": 190,
+                  "width": 200,
+                  "height": 20
+                },
+                "style": {
+                  "fontSize": 14,
+                  "fontFamily": "Inter"
+                },
+                "fills": [
+                  {
+                    "type": "SOLID",
+                    "color": {
+                      "r": 1,
+                      "g": 1,
+                      "b": 1,
+                      "a": 1
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "2:7",
+                "name": "Row 7",
+                "type": "TEXT",
+                "characters": "Row 7 label",
+                "absoluteBoundingBox": {
+                  "x": 10,
+                  "y": 220,
+                  "width": 200,
+                  "height": 20
+                },
+                "style": {
+                  "fontSize": 14,
+                  "fontFamily": "Inter"
+                },
+                "fills": [
+                  {
+                    "type": "SOLID",
+                    "color": {
+                      "r": 1,
+                      "g": 1,
+                      "b": 1,
+                      "a": 1
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "1:3",
+            "name": "B-1 \u00b7 Option C",
+            "type": "FRAME",
+            "absoluteBoundingBox": {
+              "x": 1000,
+              "y": 0,
+              "width": 400,
+              "height": 600
+            },
+            "fills": [
+              {
+                "type": "SOLID",
+                "color": {
+                  "r": 1,
+                  "g": 1,
+                  "b": 1,
+                  "a": 1
+                }
+              }
+            ],
+            "cornerRadius": 8,
+            "children": [
+              {
+                "id": "4:1",
+                "name": "Title",
+                "type": "TEXT",
+                "characters": "Compare plans",
+                "absoluteBoundingBox": {
+                  "x": 10,
+                  "y": 10,
+                  "width": 200,
+                  "height": 20
+                },
+                "style": {
+                  "fontSize": 14,
+                  "fontFamily": "Inter"
+                },
+                "fills": [
+                  {
+                    "type": "SOLID",
+                    "color": {
+                      "r": 1,
+                      "g": 1,
+                      "b": 1,
+                      "a": 1
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "components": {},
+      "schemaVersion": 0,
+      "styles": {}
+    }
+  }
+}

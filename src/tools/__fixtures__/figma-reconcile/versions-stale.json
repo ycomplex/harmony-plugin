@@ -1,0 +1,12 @@
+{
+  "_fixture": "HAND-AUTHORED from Figma's documented REST response shapes (GET /v1/files/:key/nodes, /versions, /images, /files/:key). NOT live-captured.",
+  "versions": [
+    {
+      "id": "800",
+      "created_at": "2026-10-27T09:00:00Z",
+      "label": "Composed",
+      "description": null
+    }
+  ],
+  "pagination": {}
+}

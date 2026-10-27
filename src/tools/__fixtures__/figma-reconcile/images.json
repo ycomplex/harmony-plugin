@@ -1,0 +1,9 @@
+{
+  "_fixture": "HAND-AUTHORED from Figma's documented REST response shapes (GET /v1/files/:key/nodes, /versions, /images, /files/:key). NOT live-captured.",
+  "err": null,
+  "images": {
+    "1:1": "https://render.example/a.png",
+    "1:2": "https://render.example/b.png",
+    "1:3": null
+  }
+}
