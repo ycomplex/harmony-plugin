@@ -127,6 +127,15 @@ mcp__harmony__compose_brief({
 `frame.steps` and the `checklist_item` payload are the SAME list at the same granularity — the frame is
 what the human reads, the payload is what the accept materializes. Keep them in step.
 
+**B-1205 — read the accepted design into the plan.** When the ticket carries an accepted design
+(`field_values.gate_slots.design`, from `get_task`), read it with the contract in
+`src/tools/design-read.ts` (`readAcceptedDesign`, `checkDrift`, `planDesignRead`). Put
+`design_read: { version_id, screens, drift }` in the plan frame, add ONE checklist step per screen to
+`frame.steps` and to the `checklist_item` payload, and state the drift word on the plan brief
+(`describeDrift`'s one line). With no Figma token or version port available the word is `unchecked`:
+say "Drift check: unchecked" on the brief, never pass it silently. A ticket with no accepted design
+authors no `design_read` and nothing changes.
+
 **B-1073 — a fast-track-run ticket's plan-accept also authors one `label_add` payload item.** Check
 `environment.fast_track` (`get_project`'s `environment` block — the SAME field step 2 of B-1073
 added, sourced from `run_config.fast_track`). When it is `true` — this is the accept that, per this
@@ -233,6 +242,16 @@ substitute for checking first.
 Then, with the floor clear: create the isolated worktree (invoke `superpowers:using-git-worktrees`) and
 save `.harmony-task.json`
 exactly as in the Freeform flow.
+
+**B-1205 — building against an accepted design.** When the plan carries `design_read`:
+
+- The React/Tailwind the design tools generate is REFERENCE ONLY. Write the repo's own components, never
+  paste generated source. Resolve a designed component through Code Connect when the org has it, else
+  the workspace component map (`resolveComponent`); an unmapped component is built from the repo's
+  existing primitives.
+- Drift `changed` stops the build and names both versions (accepted and live), unless a plan step names
+  the difference (`assertBuildMayStart`). `unchecked` is stated on the plan brief and does not block.
+- Previews are ticket attachments, referenced by filename. Never fetch Figma image URLs.
 
 **Read the plan-accept-materialized checklist as the AUTHORITATIVE work list (B-797, closes specimen 6 —
 B-800's build silently dropped reshape-added plan steps because nothing materialized them):**

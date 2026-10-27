@@ -1259,6 +1259,13 @@ number the reader previously had to derive by reconciling ten context bullets ag
 Use `carried` (with `carried_to`) for a criterion this ack deliberately closes OUT of the ticket: accepting
 closes it permanently, and the human should see that as a row, not infer it from prose.
 
+**B-1205 — steps that check an accepted design screen.** When the ticket has an accepted design
+(`field_values.gate_slots.design`), then for each walk step that covers an accepted screen fill
+`design_node` from the recorded node: `{ node_id, name, caption, preview_attachment_id,
+preview_filename }`. Set `frame.design_comparison` to one line saying the previews sit beside the steps,
+and word the step "compare with the design above". A step with no matching screen gets no
+`design_node`. Name previews by filename only, never by URL.
+
 **Compose REFUSES, not merely warns, when the runbook is broken (B-1068):** a `walk` criterion with no
 `frame.steps` at all; a `step_ref` matching no declared `frame.steps[].ref`; a declared step whose `covers`
 names no filed criterion; a `walk` criterion naming no `step_ref`; or a step whose `action` or `expect` is
