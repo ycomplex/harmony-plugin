@@ -889,7 +889,8 @@ describe.skipIf(!CAPABLE)('setup-cluster.sh steps 18-26 — the remote conductor
     expect(findCall(g(world), 'secrets', 'get-iam-policy', 'HARMONY_API_TOKEN')).toBeDefined();
     expect(findCall(g(world), 'artifacts', 'repositories', 'get-iam-policy')).toBeDefined();
     expect(second.stdout).toContain('already holds roles/secretmanager.secretAccessor on secret HARMONY_API_TOKEN');
-  });
+  // Two complete shell runs spawn many Node CLI stubs; allow their real runtime on worker CPUs.
+  }, 15000);
 
   it('reads IAM policies as plain JSON (no --filter/--flatten) in the new steps', () => {
     const world = makeWorld();

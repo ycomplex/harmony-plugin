@@ -478,7 +478,17 @@ if [ -n "$WORKER_IMAGE_REF" ]; then
   B929_IMAGE_FLAG=(--image="$WORKER_IMAGE_REF")
   echo "cloud-worker-launch: worker image $WORKER_IMAGE_REF (deployment config worker_image=$_b929_worker_image)" >&2
 fi
+. "$(dirname "${BASH_SOURCE[0]}")/figma/launch-context.sh"
+figma_launch_context
+printf 'HARMONY_FIGMA_CONTEXT_B64: "%s"\n' "$FIGMA_CONTEXT_B64" >> "$EXEC_ENV_FILE"
+FIGMA_BINDINGS=(--remove-secrets=/secrets/figma/access-token,/secrets/figma/pat)
+if [ -n "$FIGMA_ACCESS_REF" ]; then
+  FIGMA_ACCESS_NAME="$(printf '%s' "$FIGMA_ACCESS_REF" | cut -d/ -f4)"
+  FIGMA_PAT_NAME="$(printf '%s' "$FIGMA_PAT_REF" | cut -d/ -f4)"
+  FIGMA_BINDINGS=(--update-secrets="/secrets/figma/access-token=$FIGMA_ACCESS_NAME:${FIGMA_ACCESS_REF##*/},/secrets/figma/pat=$FIGMA_PAT_NAME:${FIGMA_PAT_REF##*/}")
+fi
 gcloud run jobs update "$HARMONY_CLOUD_RUN_JOB" \
+  "${FIGMA_BINDINGS[@]}" \
   --region="$HARMONY_CLOUD_RUN_REGION" \
   --env-vars-file="$EXEC_ENV_FILE" \
   "${B929_IMAGE_FLAG[@]}" \

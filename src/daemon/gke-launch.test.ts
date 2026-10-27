@@ -68,7 +68,7 @@ writeFileSync(out, (process.env.STUB_CHANNEL_ENV || '') + 'GIT_TOKEN=${SECRET_VA
   // `harmony config get <key>` stub
   writeFileSync(
     join(plugin, 'dist/bin/harmony.js'),
-    `const k = process.argv[4]; if (k === 'worker_image' && process.env.STUB_WORKER_IMAGE) process.stdout.write(process.env.STUB_WORKER_IMAGE);\n`,
+    `if(process.argv[2] === "figma" && process.argv[3] === "context") { process.stdout.write(process.env.STUB_FIGMA_CONTEXT || '{"state":"disconnected"}'); process.exit(0); } const k = process.argv[4]; if (k === 'worker_image' && process.env.STUB_WORKER_IMAGE) process.stdout.write(process.env.STUB_WORKER_IMAGE);\n`,
   );
   const kubectl = readFileSync(STUB_KUBECTL, 'utf8');
   writeFileSync(join(bin, 'kubectl'), kubectl, { mode: 0o755 });

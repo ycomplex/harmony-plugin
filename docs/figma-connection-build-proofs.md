@@ -33,7 +33,13 @@ Do not test the current working workspace's refresh token. A single-use token mu
 twice. The planned implementation must prove durable claim, one refresh, full rotated-grant version
 stored before access-token publication, crash/ambiguous-response fail-closed behavior, and no automatic
 retry with the old token. Capture timestamps/version resource names and redacted status, never values.
-The worker does not yet contain a refresher: this proof must run against that implementation when ready.
+The implementation is `scripts/figma-refresh-runner.ts`, using `src/tools/figma-refresh.ts`.
+Build its dedicated image with `docker build -f container/figma/Dockerfile -t <PINNED_IMAGE> .`.
+Use the suspended CronJob template plus a one-off Job (`kubectl create job --from=cronjob/harmony-figma-refresh <DISPOSABLE_PROOF_JOB>`)
+only after its staging board operator, Workload Identity, disposable grant and slot resources are provisioned.
+Never unsuspend automatic schedules or import a live workspace grant for the proof. Safe job logs name
+claim, stored-rotated-grant version, stored-access-token version and metadata publication in order;
+success also requires the core's refresh-token-change validation. No values/hashes are logged.
 
 ## Operator-provisioned slots and permission proof
 

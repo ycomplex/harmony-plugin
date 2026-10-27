@@ -346,6 +346,15 @@ case "$MODE" in
     cd "$WORKDIR"
 
     # --- B-718: same-conduction resume discovery + best-effort --resume wiring (AC5). -----------
+    # B-1201: a connected workspace must authenticate from mounted access token only.
+    if [ -n "${HARMONY_FIGMA_CONTEXT_B64:-}" ]; then
+      node "$PLUGIN_DIR/dist/bin/harmony.js" figma install-worker --adapter "$AGENT_ID" --plugin-dir "$PLUGIN_DIR" || exit 1
+      if [ -f /secrets/figma/access-token ]; then
+        FIGMA_MCP_ACCESS_TOKEN="$(cat /secrets/figma/access-token)"
+        export FIGMA_MCP_ACCESS_TOKEN
+      fi
+    fi
+
     # Both launch profiles already mount/symlink the SAME {ticket}/{conduction_id}/projects
     # directory for every leg of ONE conduction (container/daemon-profile.example.json's `launch`
     # template; container/entrypoint.sh's cloud-profile symlink block), so a prior leg's session
