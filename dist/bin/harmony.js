@@ -46035,13 +46035,13 @@ import { createInterface } from "node:readline/promises";
 import { Writable } from "node:stream";
 import { randomUUID } from "node:crypto";
 import {
-  readFileSync as readFileSync5,
-  writeFileSync,
   chmodSync,
+  existsSync as existsSync3,
   mkdirSync,
+  readFileSync as readFileSync5,
   renameSync,
   rmSync,
-  existsSync as existsSync3
+  writeFileSync
 } from "node:fs";
 import { join as join5 } from "node:path";
 import { homedir as homedir3 } from "node:os";
@@ -54795,8 +54795,9 @@ var StreamableHTTPClientTransport = class {
 
 // src/cli/commands/figma.ts
 async function secretPrompt(prompt) {
-  if (!process.stdin.isTTY)
+  if (!process.stdin.isTTY) {
     throw new Error("Use an interactive terminal for credential entry");
+  }
   process.stderr.write(prompt);
   const output = new Writable({
     write(_chunk, _encoding, cb) {
@@ -54861,8 +54862,9 @@ ${url2.href}
     });
   }
   const saved = tokens;
-  if (!saved?.refresh_token || !saved.expires_in || !info)
+  if (!saved?.refresh_token || !saved.expires_in || !info) {
     throw new Error("Figma did not issue a complete expiring OAuth grant");
+  }
   return {
     ...saved,
     ...info,
@@ -54877,10 +54879,11 @@ function registerFigmaCommands(program3) {
   figma.command("budget").option("--reserve", "Reserve one actual MCP attempt").option("--throttled", "Record a 429").option("--retry-after <value>", "Retry-After header").option("--resume-at <iso>", "Operator-supplied resume time").option("--close", "Close this logical leg after its design work completes").action(
     (opts) => {
       const conduction = process.env.HARMONY_CONDUCTION_ID, leg = process.env.HARMONY_LEG;
-      if (!conduction || !/^[a-zA-Z0-9-]+$/.test(conduction) || !leg || !/^\d+$/.test(leg))
+      if (!conduction || !/^[a-zA-Z0-9-]+$/.test(conduction) || !leg || !/^\d+$/.test(leg)) {
         throw new Error(
           "Per-leg budget requires a conduction id and leg number"
         );
+      }
       const dir = join5(
         homedir3(),
         ".claude",
@@ -54893,8 +54896,9 @@ function registerFigmaCommands(program3) {
       mkdirSync(lock, { mode: 448 });
       try {
         const sourceLeg = existsSync3(active) ? readFileSync5(active, "utf8") : leg;
-        if (!/^\d+$/.test(sourceLeg))
+        if (!/^\d+$/.test(sourceLeg)) {
           throw new Error("Invalid persisted Figma budget identity");
+        }
         const file = join5(dir, `${sourceLeg}.json`);
         if (opts.close) {
           rmSync(active, { force: true });
@@ -54905,10 +54909,12 @@ function registerFigmaCommands(program3) {
         let state = existsSync3(file) ? JSON.parse(readFileSync5(file, "utf8")) : emptyBudget();
         const now = Date.now();
         let outcome = {};
-        if (opts.throttled)
+        if (opts.throttled) {
           state = recordThrottle(state, now, opts.retryAfter);
-        if (opts.resumeAt)
+        }
+        if (opts.resumeAt) {
           state = resumeBudget(state, Date.parse(opts.resumeAt), now);
+        }
         if (opts.reserve) {
           const result = reserveCall(state, now);
           state = result.state;
@@ -54948,25 +54954,58 @@ function registerFigmaCommands(program3) {
   figma.command("install-worker").requiredOption("--adapter <adapter>", "claude-code or codex").requiredOption("--plugin-dir <path>", "Plugin checkout").action(async (opts) => {
     try {
       if (!process.env.HARMONY_FIGMA_CONTEXT_B64) return;
-      const ctx = await getAuthenticatedContext();
-      const { data, error: error2 } = await ctx.client.rpc("figma_launch_context", {
-        p_project_id: ctx.projectId
-      });
-      if (error2 && error2.code !== "PGRST202" && error2.code !== "42883")
-        throw new Error("Figma preflight unavailable");
-      const meta = data ?? { state: "disconnected" };
       const frozen = JSON.parse(
         Buffer.from(
           process.env.HARMONY_FIGMA_CONTEXT_B64 ?? "",
           "base64"
         ).toString() || '{"state":"disconnected"}'
       );
+      if (frozen.state === "disconnected" || frozen.state === "reconnect") {
+        return;
+      }
+      const omitFigma = (context) => {
+        const path4 = process.env.HARMONY_FIGMA_WORKER_CONTEXT_FILE;
+        if (path4) {
+          writeFileSync(
+            path4,
+            Buffer.from(JSON.stringify(context)).toString("base64"),
+            { mode: 384 }
+          );
+        }
+      };
+      let meta;
+      try {
+        const ctx = await getAuthenticatedContext();
+        const { data, error: error2 } = await ctx.client.rpc("figma_launch_context", {
+          p_project_id: ctx.projectId
+        });
+        if (error2) throw error2;
+        meta = data ?? { state: "disconnected" };
+      } catch {
+        process.stderr.write(
+          "Figma preflight unavailable; continuing without Figma.\n"
+        );
+        omitFigma({ state: "disconnected", connections_enabled: false });
+        return;
+      }
+      if (meta.state === "disconnected" || meta.state === "reconnect" || Number.isFinite(Date.parse(meta.access_expires_at ?? "")) && Date.parse(meta.access_expires_at ?? "") <= Date.now()) {
+        process.stderr.write(
+          "Figma unavailable; Figma-dependent work requires reconnect.\n"
+        );
+        omitFigma(
+          meta.state === "disconnected" ? { state: "disconnected" } : {
+            state: "reconnect",
+            connections_enabled: meta.connections_enabled
+          }
+        );
+        return;
+      }
       assertFigmaReady(meta, Date.now());
-      if (meta.state !== "disconnected" && (meta.generation !== frozen.generation || meta.access_version !== frozen.access_version || meta.pat_version !== frozen.pat_version))
+      if (meta.generation !== frozen.generation || meta.access_version !== frozen.access_version || meta.pat_version !== frozen.pat_version) {
         throw new Error(
           "Figma connection changed since launch; rerun the leg"
         );
-      if (meta.state === "disconnected") return;
+      }
       const token = readMountedFigmaToken();
       if (opts.adapter === "codex") {
         const path4 = join5(
@@ -55000,18 +55039,21 @@ function registerFigmaCommands(program3) {
     try {
       const ctx = await getAuthenticatedContext();
       const { data: project, error: projectError } = await ctx.client.from("projects").select("workspace_id").eq("id", ctx.projectId).single();
-      if (projectError || !project)
+      if (projectError || !project) {
         throw new Error("Project workspace unavailable");
+      }
       const { data: membership } = await ctx.client.from("workspace_members").select("role").eq("workspace_id", project.workspace_id).eq("user_id", ctx.userId).single();
-      if (membership?.role !== "owner")
+      if (membership?.role !== "owner") {
         throw new Error("Workspace owner required");
+      }
       const { data: current, error: contextError } = await ctx.client.rpc(
         "figma_launch_context",
         { p_project_id: ctx.projectId }
       );
       if (contextError) throw new Error("Connection schema unavailable");
-      if (current?.connections_enabled !== true)
+      if (current?.connections_enabled !== true) {
         throw new Error("Figma connections are not enabled");
+      }
       let grant;
       try {
         grant = await authorizeFigma();
@@ -55040,7 +55082,7 @@ function registerFigmaCommands(program3) {
           arguments: {}
         });
         let identity2 = who.structuredContent;
-        if (!identity2)
+        if (!identity2) {
           for (const content of who.content) {
             if (content.type === "text" && content.text) {
               try {
@@ -55050,8 +55092,10 @@ function registerFigmaCommands(program3) {
               }
             }
           }
-        if (who.isError || !identity2?.handle || !Array.isArray(identity2.plans))
+        }
+        if (who.isError || !identity2?.handle || !Array.isArray(identity2.plans)) {
           throw new Error();
+        }
         const plans = identity2.plans.map(
           (p) => ({
             name: p.name,
@@ -55077,8 +55121,9 @@ function registerFigmaCommands(program3) {
       );
       if (await secretPrompt(
         "Confirm this plan owns the library file (yes): "
-      ) !== "yes")
+      ) !== "yes") {
         throw new Error("Library plan not confirmed");
+      }
       const input = {
         workspace_id: project.workspace_id,
         generation: current?.generation ?? 0,
@@ -55094,10 +55139,19 @@ function registerFigmaCommands(program3) {
           "figma-connect",
           { body }
         );
-        if (error2 || data?.error)
+        if (error2 || data?.error) {
+          let message = data?.error;
+          if (!message && error2 && "context" in error2 && error2.context instanceof Response) {
+            try {
+              message = (await error2.context.json()).error;
+            } catch {
+            }
+          }
+          if (typeof message === "string") throw new Error(message);
           throw new Error(
             "Figma validation/publication failed; previous connection remains active. Check identity/library/seat. Operator: provision workspace grant, PAT and access slots with gcloud secrets create and the conditioned secretVersionAdder binding."
           );
+        }
         return data;
       };
       const candidate = await invoke2({
@@ -55110,12 +55164,14 @@ function registerFigmaCommands(program3) {
 Library: ${fileKey}; seat: ${candidate.metadata.seat}; tier: ${candidate.metadata.tier}
 `
       );
-      if (candidate.lowBudget)
+      if (candidate.lowBudget) {
         process.stderr.write(
           "Warning: View/Collab or Starter has about 20 MCP calls/month.\n"
         );
-      if (await secretPrompt("Save this workspace connection (yes): ") !== "yes")
+      }
+      if (await secretPrompt("Save this workspace connection (yes): ") !== "yes") {
         throw new Error("Connection not saved");
+      }
       await invoke2({ ...input, confirm_low_budget: candidate.lowBudget });
       process.stdout.write(
         "Figma connected. Saved credentials cannot be retrieved.\n"

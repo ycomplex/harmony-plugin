@@ -1,5 +1,9 @@
-import { describe, it, expect, vi } from "vitest";
-import { refreshWorkspace, type RefreshPorts } from "./figma-refresh.js";
+import { describe, expect, it, vi } from "vitest";
+import {
+  type RefreshPorts,
+  refreshWorkspace,
+  refreshWorkspaceSafely,
+} from "./figma-refresh.js";
 
 const work = {
   workspace_id: "workspace",
@@ -76,13 +80,36 @@ describe("single refresh owner", () => {
     expect(await refreshWorkspace(work, ports, now)).toBe("skipped");
     expect(ports.refresh).not.toHaveBeenCalled();
   });
-  it("missing rotated refresh token fails closed", async () => {
-    const { ports } = setup();
-    vi.mocked(ports.refresh).mockResolvedValue({
-      access_token: "new",
-      expires_in: 3600,
-    });
-    expect(await refreshWorkspace(work, ports, now)).toBe("reconnect");
-    expect(ports.append).not.toHaveBeenCalled();
+  it.each(["old-refresh", undefined])(
+    "keeps a valid existing refresh token when response is %s",
+    async (refreshToken) => {
+      const { ports, events } = setup();
+      vi.mocked(ports.refresh).mockResolvedValue({
+        access_token: "new",
+        expires_in: 3600,
+        ...(refreshToken === undefined ? {} : { refresh_token: refreshToken }),
+      });
+      expect(await refreshWorkspace(work, ports, now)).toBe("ok");
+      expect(events).toEqual(["claim", "grant", "access", "publish"]);
+      expect(JSON.parse(vi.mocked(ports.append).mock.calls[0][2]).refresh_token)
+        .toBe("old-refresh");
+    },
+  );
+});
+
+it("a failed ambiguous health write does not prevent the next workspace from refreshing", async () => {
+  const first = setup();
+  const second = setup();
+  vi.mocked(first.ports.refresh).mockRejectedValue(new Error("timeout"));
+  vi.mocked(first.ports.transition).mockImplementation(async (_w, action) => {
+    if (action === "ambiguous") throw new Error("board unavailable");
+    return true;
   });
+  const outcomes = [];
+  for (const ports of [first.ports, second.ports]) {
+    outcomes.push(await refreshWorkspaceSafely(work, ports, now));
+  }
+  expect(outcomes).toEqual(["refresh-state-write-failed", "ok"]);
+  expect(first.ports.refresh).toHaveBeenCalledTimes(1);
+  expect(second.events).toEqual(["claim", "grant", "access", "publish"]);
 });

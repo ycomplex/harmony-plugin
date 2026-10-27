@@ -127,3 +127,12 @@ refresher. No unvalidated library can be saved in Settings.
 Feature-account maintenance disposition: **fold-into-existing: B-1308 (criterion 3)**. Original intents
 remain unpublished; B-1308 resolves the predecessor amendment and ordinal sequence. No rebase or live
 account publication is part of this release.
+
+Enablement corrections (founder send-back, 2026-10-27): the connect handler verifies the CLI
+exchange JWT's signature and claims directly, without adding an audience to auth-token's JWT;
+project-scoped callers are confined to their signed workspace and must still be live owners.
+A refresh response may rotate, retain or omit its refresh token: retain the existing token when
+omitted, always store the complete grant before publishing access, and never retry an ambiguous POST.
+Reconnect/expired contexts launch without Figma mounts; context lookup errors log and degrade to
+disconnected. Figma-dependent steps still stop with reconnect guidance. Malformed mount references
+remain a launch refusal. Worker installation also skips unavailable Figma rather than aborting unrelated work.
