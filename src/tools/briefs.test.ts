@@ -3,7 +3,8 @@ import { existsSync, readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { renderBrief, lintBrief, composeBrief, composeBriefTool, isMissingComposeBriefRevision, isMissingComposeBriefInitial, mergeBriefDoc, resetDocOnReasonChange, isMissingBriefHistorySubstrate, listBriefs, listBriefsTool, getBrief, getBriefTool, resolveBrief, resolveBriefTool, reshapeBrief, reshapeBriefTool, clearRevisionIterateFeedback, validateResolutionProvenance, PROVENANCE_AGENT_SYNTHESIZED, PROVENANCE_WEB_ONLY, fetchPendingResolution, fetchUnderwritingClaims, fetchPendingRemark, consumeAcceptRemark, SENTENCE_WORD_LIMIT, DEFAULT_TAIL, STALE_PATCH_TAIL, PROPOSED_ACS_HEADING, PROMISED_WRITES_HEADING, DE_SCOPE_HEADING, ENTRY_PROVENANCE_PREFIX, frameUnits, readBuildPr, readBuildPrReferences, FRAME_KIND_FOR_REASON, type BriefDoc, type BriefItem, type GateFrame, type CriterionRow } from './briefs.js';
+import { validateBriefFrame } from './brief-frame-schema.js';
+import { renderBrief, lintBrief, composeBrief, composeBriefTool, isMissingComposeBriefRevision, isMissingComposeBriefInitial, mergeBriefDoc, resetDocOnReasonChange, isMissingBriefHistorySubstrate, listBriefs, listBriefsTool, getBrief, getBriefTool, resolveBrief, resolveBriefTool, reshapeBrief, reshapeBriefTool, clearRevisionIterateFeedback, validateResolutionProvenance, PROVENANCE_AGENT_SYNTHESIZED, PROVENANCE_WEB_ONLY, fetchPendingResolution, fetchUnderwritingClaims, fetchPendingRemark, consumeAcceptRemark, SENTENCE_WORD_LIMIT, DEFAULT_TAIL, STALE_PATCH_TAIL, PROPOSED_ACS_HEADING, PROMISED_WRITES_HEADING, DE_SCOPE_HEADING, ENTRY_PROVENANCE_PREFIX, frameUnits, readBuildPr, readBuildPrReferences, FRAME_KIND_FOR_REASON, renderSlot, type BriefDoc, type BriefItem, type GateFrame, type CriterionRow } from './briefs.js';
 
 // Pass-through: the handlers delegate id resolution to resolveTaskId (like the sibling task tools); the
 // mock returns the input verbatim so the call-order assertions below stay valid for any id shape.
@@ -3346,6 +3347,38 @@ describe('B-876 gate frame', () => {
       expect(md).toContain('**Carried into build unproven:** nothing');
     });
 
+    it('B-1205 plan without design_read renders no Design read line; with it, one line', () => {
+      expect(render(planFrame())).not.toContain('Design read');
+      const md = render(planFrame({ design_read: { version_id: 'V1', screens: ['Login', 'Home'], drift: 'unchecked' } }));
+      expect(md.match(/\*\*Design read:\*\*/g)).toHaveLength(1);
+      expect(md).toContain('**Design read:** Login, Home — version V1 — drift: unchecked');
+      expect(md.indexOf('**Design read:**')).toBeLessThan(md.indexOf('**Plan:**'));
+    });
+
+    it('B-1205 plan frame with design_read passes the frame schema', () => {
+      expect(() => validateBriefFrame(planFrame({ design_read: { version_id: null, screens: [], drift: 'changed' } }), 'plan')).not.toThrow();
+      expect(() => validateBriefFrame(planFrame({ design_read: { version_id: null, screens: [], drift: 'maybe' } }), 'plan')).toThrow();
+    });
+
+    it('B-1205 verify slot projection carries design_node only when present, copied not shared', () => {
+      const node = { node_id: '1:1', name: 'Login', preview_attachment_id: 'a1', preview_filename: 'login.png' };
+      const doc = baseDoc({
+        frame: {
+          kind: 'verify', environment: 'staging', criteria: [],
+          steps: [
+            { ref: '1', action: 'A', expect: 'B', covers: ['ac-1'], design_node: node },
+            { ref: '2', action: 'C', expect: 'D', covers: ['ac-2'] },
+          ],
+          evidence_status: 'ok',
+        } as GateFrame,
+      });
+      const steps = (renderSlot(doc, 'verify') as { steps: Array<Record<string, unknown>> }).steps;
+      expect(steps[0].design_node).toEqual(node);
+      expect(steps[0].design_node).not.toBe(node);
+      expect(steps[1]).toEqual({ ref: '2', action: 'C', expect: 'D', covers: ['ac-2'] });
+      expect('design_node' in steps[1]).toBe(false);
+    });
+
     it('verify renders the criteria ledger as a table after Recommend', () => {
       const md = render(verifyFrame(2));
       expect(md.indexOf('**Recommend')).toBeLessThan(md.indexOf('**Verifying against'));
@@ -3823,6 +3856,33 @@ describe('B-876 gate frame', () => {
         expect(md).toContain('1. Click Record on a ticket with no active brief. — expect: A dialog titled "Record a walk" opens with three inputs. (covers: #ac-1, #ac-2)');
         expect(md).toContain('2. Submit the dialog with a summary and one evidence link. — expect: The ticket advances through every gate to Verified. (covers: #ac-3)');
         expect(md.indexOf('**Walk**')).toBeLessThan(md.indexOf('**Verifying against'));
+      });
+    });
+
+    describe('B-1205 design_node on verify steps', () => {
+      const verifyDoc = (steps: unknown[]) => baseDoc({
+        frame: {
+          kind: 'verify', environment: 'staging',
+          criteria: [{ ac_id: 'ac-1', text: 'Opening works', checked: false, disposition: 'walk', step_ref: '1' }],
+          steps, evidence_status: '✓ complete',
+        } as GateFrame,
+      });
+      const node = { node_id: '1:1', name: 'Login', caption: 'Sign in', preview_attachment_id: 'a1', preview_filename: 'login.png' };
+      const plain = { ref: '1', action: 'Open it.', expect: 'It opens.', covers: ['ac-1'] };
+
+      it('renders a step without design_node byte-identically to before', () => {
+        const md = renderBrief(verifyDoc([plain]), null, { reason: 'verification-ack-pending' });
+        expect(md).toContain('1. Open it. — expect: It opens. (covers: #ac-1)\n');
+        expect(md).not.toContain('Compare with the design above');
+      });
+      it('adds an indented filename-only line after a step with design_node', () => {
+        const md = renderBrief(verifyDoc([{ ...plain, design_node: node }]), null, { reason: 'verification-ack-pending' });
+        expect(md).toContain('1. Open it. — expect: It opens. (covers: #ac-1)\n   Compare with the design above: Login (login.png)');
+        expect(md).not.toMatch(/https?:\/\//);
+      });
+      it('lints a step carrying design_node', () => {
+        const doc = verifyDoc([{ ...plain, design_node: node }]);
+        expect(lintBrief(doc, renderBrief(doc), { reason: 'verification-ack-pending' }).errors).toEqual([]);
       });
     });
 
