@@ -51174,12 +51174,19 @@ function withRemarkRecorded(data, recorded) {
   const base2 = data && typeof data === "object" ? data : {};
   return { ...base2, remark_recorded: recorded };
 }
+var EDITED_IN_TOOL_SENTENCE = "I've made edits in Figma.";
+var isEditedInToolUnsupported = (msg) => !!msg && /iterate/i.test(msg) && /discuss/i.test(msg) && !/edited-in-tool/i.test(msg);
 var isReshapeRpcSchemaDrift = (msg) => !!msg && /(log_brief_decision_event|submit_brief_command)/.test(msg) && /(does not exist|could not find|schema cache|function)/i.test(msg);
 async function reshapeBrief(client, projectId, args) {
   if (!args.task_id) throw new Error("task_id is required");
   const provenance = validateResolutionProvenance(args.provenance);
-  const feedback = typeof args.feedback === "string" ? args.feedback.trim() : "";
-  if (!feedback) {
+  const kind = args.kind ?? "iterate";
+  if (kind !== "iterate" && kind !== "edited-in-tool") {
+    throw new Error(`kind must be 'iterate' or 'edited-in-tool', got '${String(kind)}'. Nothing was written.`);
+  }
+  const note = typeof args.feedback === "string" ? args.feedback.trim() : "";
+  const feedback = kind === "edited-in-tool" ? note ? `${EDITED_IN_TOOL_SENTENCE} ${note}` : EDITED_IN_TOOL_SENTENCE : note;
+  if (kind === "iterate" && !feedback) {
     throw new Error(
       "feedback is required to reshape a brief \u2014 a reshape sends the brief back for rework, and blank feedback tells the agent nothing about what to change. Nothing was written."
     );
@@ -51202,6 +51209,7 @@ async function reshapeBrief(client, projectId, args) {
     );
   }
   const brief = active;
+  const auditDetail = kind === "edited-in-tool" ? `Edit read-back requested (edited-in-tool): ${feedback}` : feedback;
   const legArgs = {
     p_task_id: taskId,
     p_brief_id: brief.id,
@@ -51209,7 +51217,7 @@ async function reshapeBrief(client, projectId, args) {
     p_reason: brief.reason,
     // Validated above — never a caller's raw string.
     p_provenance: provenance,
-    p_detail: feedback,
+    p_detail: auditDetail,
     p_source: "rpc-typed",
     p_conduction_id: getConductionId() ?? null,
     p_leg: getLeg() ?? null
@@ -51223,7 +51231,7 @@ async function reshapeBrief(client, projectId, args) {
         p_command: "iterate",
         p_reason: brief.reason,
         p_provenance: provenance,
-        p_detail: feedback
+        p_detail: auditDetail
       });
       if (retryErr) throw new Error(retryErr.message);
       console.error(
@@ -51239,10 +51247,15 @@ async function reshapeBrief(client, projectId, args) {
   }
   const { data, error: error2 } = await client.rpc("submit_brief_command", {
     _brief_id: brief.id,
-    _command: "iterate",
+    _command: kind,
     _detail: feedback
   });
   if (error2) {
+    if (kind === "edited-in-tool" && isEditedInToolUnsupported(error2.message)) {
+      throw new Error(
+        `edited-in-tool is not available on this database yet: submit_brief_command here supports only iterate/discuss, because the web migration for B-1204 has not been promoted. Nothing was staged \u2014 the brief is untouched and still awaiting the human (an audit entry for the attempt was recorded and is harmless). Underlying error: ${error2.message}`
+      );
+    }
     if (isReshapeRpcSchemaDrift(error2.message)) {
       throw new Error(
         `reshape is unavailable on this database: it predates the handoff RPC (submit_brief_command). The reshape did NOT land \u2014 the brief is untouched and still awaiting the human. A decision entry was already recorded and is now orphaned, which is harmless (it truthfully records that a reshape was attempted). Reshape from the browser, or promote the schema first. Underlying error: ${error2.message}`
@@ -51254,7 +51267,7 @@ async function reshapeBrief(client, projectId, args) {
   return {
     brief_id: brief.id,
     task_id: taskId,
-    command: "iterate",
+    command: kind,
     reason: brief.reason,
     ...base2,
     provenance
@@ -51298,18 +51311,19 @@ var resolveBriefTool = {
 };
 var reshapeBriefTool = {
   name: "reshape_brief",
-  description: "Send a task's ACTIVE brief BACK FOR REWORK with feedback \u2014 the terminal twin of the browser's reshape, and the SIBLING of resolve_brief (accept/defer). The brief stays active and its workflow_state is untouched; a {command:'iterate', detail:<feedback>} marker is written and the ball is handed to the agent, which consumes the marker on pickup and re-composes. Use this when the brief is wrong, thin, or aimed at the wrong thing \u2014 not resolve_brief, which only concludes. `feedback` is REQUIRED: it is the instruction the re-compose acts on, and blank/whitespace-only is REFUSED with nothing written. `provenance` is REQUIRED and validated exactly as on resolve_brief (B-734): 'human-in-session' | 'agent-synthesized' | 'agent-synthesized:<mode>'. 'human-in-browser' is the web client's alone and is REJECTED here, so an agent can never make its own reshape look like a human's \u2014 which is the whole point of recording it. A RELEASE or VERIFY brief CAN be reshaped: the accept-side floor does not apply, because sending work back is the opposite of pre-accepting it. Refuses, writing nothing, when the task has no active brief \u2014 distinguishing 'no brief has ever been composed' from 'the brief is already resolved'. On a database predating the underlying RPCs it fails with a clear unavailable-here error rather than an opaque one.",
+  description: "Send a task's ACTIVE brief BACK FOR REWORK with feedback \u2014 the terminal twin of the browser's reshape, and the SIBLING of resolve_brief (accept/defer). The brief stays active and its workflow_state is untouched; a {command:'iterate', detail:<feedback>} marker is written and the ball is handed to the agent, which consumes the marker on pickup and re-composes. Use this when the brief is wrong, thin, or aimed at the wrong thing \u2014 not resolve_brief, which only concludes. `feedback` is REQUIRED for the default kind: it is the instruction the re-compose acts on, and blank/whitespace-only is REFUSED with nothing written. B-1204: `kind` is optional, 'iterate' (default, the worded reshape above) | 'edited-in-tool' \u2014 the designer's \"I've made edits in Figma\": stages {command:'edited-in-tool', detail:\"I've made edits in Figma. <note>\"} so the conductor reads the Figma edits back and reconciles them into a recomposed design brief; `feedback` is then an OPTIONAL note, and on a database whose web migration is not promoted yet it fails with a clear not-available error, nothing staged. `provenance` is REQUIRED and validated exactly as on resolve_brief (B-734): 'human-in-session' | 'agent-synthesized' | 'agent-synthesized:<mode>'. 'human-in-browser' is the web client's alone and is REJECTED here, so an agent can never make its own reshape look like a human's \u2014 which is the whole point of recording it. A RELEASE or VERIFY brief CAN be reshaped: the accept-side floor does not apply, because sending work back is the opposite of pre-accepting it. Refuses, writing nothing, when the task has no active brief \u2014 distinguishing 'no brief has ever been composed' from 'the brief is already resolved'. On a database predating the underlying RPCs it fails with a clear unavailable-here error rather than an opaque one.",
   inputSchema: {
     type: "object",
     properties: {
       task_id: { type: "string", description: "The task whose ACTIVE brief to send back for rework \u2014 UUID, task number, or visual ID (e.g., B-43)" },
-      feedback: { type: "string", description: "REQUIRED. What is wrong and what to change \u2014 the instruction the re-compose acts on. Lands as the marker's `detail` and as the decision entry's detail. Blank/whitespace-only is refused and nothing is written." },
+      kind: { type: "string", enum: ["iterate", "edited-in-tool"], description: "Optional (B-1204), default 'iterate'. 'edited-in-tool' stages the designer's \"I've made edits in Figma\" marker for the Figma reconcile path; `feedback` is then an optional note." },
+      feedback: { type: "string", description: "REQUIRED unless kind is 'edited-in-tool' (then an optional note appended to the staged sentence). What is wrong and what to change \u2014 the instruction the re-compose acts on. Lands as the marker's `detail` and as the decision entry's detail. Blank/whitespace-only is refused and nothing is written." },
       provenance: {
         type: "string",
         description: "REQUIRED. Who decided to send it back: 'human-in-session' (the human said so in this session) | 'agent-synthesized' | 'agent-synthesized:<mode>' (conductor delegation mode). 'human-in-browser' is the web client's alone and is rejected here; any other value is rejected too."
       }
     },
-    required: ["task_id", "feedback", "provenance"]
+    required: ["task_id", "provenance"]
   }
 };
 

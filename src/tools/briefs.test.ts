@@ -4613,6 +4613,75 @@ describe('reshapeBrief (B-896)', () => {
     expect(client.rpcCalls[1].params._detail).toBe('redo the risk table');
   });
 
+  // ——— B-1204: kind 'edited-in-tool' ———————————————————————————————————————————————————————————
+  it("B-1204 default-kind regression: omitting kind is the worded reshape, byte for byte (iterate marker, feedback verbatim)", async () => {
+    const client = makeReshapeClient();
+    const result: any = await reshape(client);
+    expect(client.rpcCalls[0].params.p_command).toBe('iterate');
+    expect(client.rpcCalls[0].params.p_detail).toBe('the release brief omits the migration ordering');
+    expect(client.rpcCalls[1].params).toEqual({
+      _brief_id: 'brief-1', _command: 'iterate', _detail: 'the release brief omits the migration ordering',
+    });
+    expect(result.command).toBe('iterate');
+    const explicit = makeReshapeClient();
+    await reshape(explicit, { kind: 'iterate' });
+    expect(explicit.rpcCalls).toEqual(client.rpcCalls);
+  });
+
+  it("B-1204: kind 'iterate' still refuses blank feedback", async () => {
+    const client = makeReshapeClient();
+    await expect(reshape(client, { kind: 'iterate', feedback: '  ' })).rejects.toThrow(/feedback is required/);
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it("B-1204: edited-in-tool with no note stages the bare sentence, audit FIRST then marker, command edited-in-tool", async () => {
+    const client = makeReshapeClient({ active: { id: 'brief-9', reason: 'design-decision-pending' } });
+    const result: any = await reshape(client, { kind: 'edited-in-tool', feedback: undefined });
+    expect(client.rpcCalls.map((c: any) => c.name)).toEqual([LOG, SUBMIT]);
+    expect(client.rpcCalls[1].params).toEqual({ _brief_id: 'brief-9', _command: 'edited-in-tool', _detail: "I've made edits in Figma." });
+    expect(client.rpcCalls[0].params.p_detail).toMatch(/edit read-back requested/i);
+    expect(client.rpcCalls[0].params.p_detail).toContain("I've made edits in Figma.");
+    expect(client.rpcCalls[0].params.p_command).toBe('iterate');
+    expect(client.rpcCalls[0].params.p_provenance).toBe('human-in-session');
+    expect(result).toMatchObject({ brief_id: 'brief-9', command: 'edited-in-tool', reason: 'design-decision-pending' });
+  });
+
+  it("B-1204: edited-in-tool appends the trimmed note after the sentence", async () => {
+    const client = makeReshapeClient();
+    await reshape(client, { kind: 'edited-in-tool', feedback: '  swapped the header\n' });
+    expect(client.rpcCalls[1].params._detail).toBe("I've made edits in Figma. swapped the header");
+  });
+
+  it("B-1204: edited-in-tool still validates provenance (human-in-browser refused, nothing written)", async () => {
+    const client = makeReshapeClient();
+    await expect(reshape(client, { kind: 'edited-in-tool', provenance: 'human-in-browser' })).rejects.toThrow();
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it("B-1204: an unknown kind is refused with nothing written", async () => {
+    const client = makeReshapeClient();
+    await expect(reshape(client, { kind: 'discuss' })).rejects.toThrow(/kind must be/);
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it("B-1204 TOLERANCE: a database that predates the value fails with a clear not-available error, nothing staged", async () => {
+    const client = makeReshapeClient({ failOn: SUBMIT, failMessage: 'submit_brief_command supports only iterate/discuss' });
+    const err = await reshape(client, { kind: 'edited-in-tool' }).catch((e: Error) => e);
+    expect((err as Error).message).toMatch(/edited-in-tool is not available on this database yet/);
+    expect((err as Error).message).toMatch(/web migration/);
+    expect((err as Error).message).toMatch(/Nothing was staged/);
+  });
+
+  it("B-1204: the same unsupported message on the default kind is NOT rewritten (only edited-in-tool gets the tolerance error)", async () => {
+    const client = makeReshapeClient({ failOn: SUBMIT, failMessage: 'submit_brief_command supports only iterate/discuss' });
+    await expect(reshape(client)).rejects.toThrow('submit_brief_command supports only iterate/discuss');
+  });
+
+  it("B-1204: the tool schema advertises kind and no longer requires feedback", () => {
+    expect((reshapeBriefTool.inputSchema.properties as any).kind.enum).toEqual(['iterate', 'edited-in-tool']);
+    expect(reshapeBriefTool.description).toMatch(/edited-in-tool/);
+  });
+
   // ——— feedback is REQUIRED ———————————————————————————————————————————————————————————————————
   it.each([[''], ['   '], ['\n\t '], [undefined as any], [null as any]])(
     'REFUSES blank/absent feedback (%j) and writes NOTHING — neither RPC fires',
@@ -4740,7 +4809,7 @@ describe('reshapeBrief (B-896)', () => {
   // ——— the tool surface ————————————————————————————————————————————————————————————————————————
   it('advertises feedback and provenance as REQUIRED, under its own name', () => {
     expect(reshapeBriefTool.name).toBe('reshape_brief');
-    expect(reshapeBriefTool.inputSchema.required).toEqual(['task_id', 'feedback', 'provenance']);
+    expect(reshapeBriefTool.inputSchema.required).toEqual(['task_id', 'provenance']); // B-1204: feedback is optional for kind 'edited-in-tool' (still enforced in code for 'iterate')
     expect(reshapeBriefTool.description).toMatch(/RELEASE or VERIFY brief CAN be reshaped/);
   });
 

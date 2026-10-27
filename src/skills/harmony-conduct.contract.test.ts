@@ -399,6 +399,22 @@ describe('harmony-conduct skill contract', () => {
     expect(dcSeg).toMatch(/re-arm the watch/);
   });
 
+  it('B-1204 CONSUME CASE: §4c classifies edited-in-tool after discuss-requested, routes to the owning design gate reconcile path, and keeps it out of the reshape case', () => {
+    const body = skill.body;
+    const dr = body.indexOf('**`discuss-requested`');
+    const ei = body.indexOf('**`edited-in-tool`');
+    expect(ei, 'missing the edited-in-tool consume case').toBeGreaterThan(dr);
+    const seg = body.slice(ei, ei + 1200).toLowerCase();
+    expect(seg).toMatch(/command: 'edited-in-tool'/);
+    expect(seg).toMatch(/before the reshape fallback/);
+    expect(seg).toMatch(/owning design gate/);
+    expect(seg).toMatch(/reconcile/);
+    expect(seg).toMatch(/re-arms the watch/);
+    // the reshape case names the new value as NOT a reshape, and the watch description lists the trigger.
+    expect(body).toMatch(/`'edited-in-tool'` is NOT a reshape/);
+    expect(body).toMatch(/an `edited-in-tool` request \(B-1204\)/);
+  });
+
   it('B-693 ONE-SHOT: --one-shot exits at EVERY human pause without arming the watch — ONE guard at the sole spawn site, hard-floor pauses included; the ticket row is the worker exit contract', () => {
     const body = skill.body;
     // The flag is documented as ORTHOGONAL to the mode selector — not a fifth mode; identical gate

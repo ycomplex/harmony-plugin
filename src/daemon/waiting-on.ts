@@ -103,6 +103,8 @@ function strandedValue(row: StrandedWorkRow, code: 'answers' | 'reshape' | 'acce
     return a !== null || f !== null ? `${a ?? ''}|${f ?? ''}` : null;
   }
   if (code === 'reshape') {
+    // Any staged marker (iterate, discuss, edited-in-tool — B-1204) is stranded work; the value is the
+    // whole marker JSON, so the command is not inspected and a new command needs no case here.
     return row.pending_resolution !== null && row.pending_resolution !== undefined ? JSON.stringify(row.pending_resolution) : null;
   }
   return row.pending_acceptance_event_id ?? null;

@@ -50,6 +50,11 @@ describe('harmony-design-decide skill contract', () => {
     // N1: pin the actual phrase (was /generated.*surface|manipulable/ — "manipulable" alone kept this green):
     expect(skill.body.toLowerCase()).toMatch(/generated,?\s+manipulable\s+surface/);
   });
+  it("B-1204: an edited-in-tool marker on a design brief routes to the visual hand-off reconcile section, not a reshape", () => {
+    expect(skill.body).toContain("pending_resolution.command === 'edited-in-tool'");
+    expect(skill.body).toMatch(/not\*\* a worded reshape/);
+    expect(skill.body).toMatch(/harmony-visual-handoff\/SKILL\.md` →\s+\*\*Reconcile a designer's edits \(B-1204\)\*\*/);
+  });
   it('the product-design self-heal keys AC-filing idempotency on the CLARIFICATION brief, via the same filing-pass-record predicate as clarify (B-744)', () => {
     expect(skill.body).toContain('AC-FILING-PASS');
     expect(skill.body).toContain('filing-pass');

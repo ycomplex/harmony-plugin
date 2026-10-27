@@ -32485,6 +32485,9 @@ function detectChange(baseline, task) {
     if (pr.command === "discuss") {
       return withRemark({ trigger: "discuss-requested", workflow_state: state, pending_resolution: pr }, baseline, task);
     }
+    if (pr.command === "edited-in-tool") {
+      return withRemark({ trigger: "edited-in-tool", workflow_state: state, pending_resolution: pr }, baseline, task);
+    }
     return withRemark({ trigger: "pending_resolution", workflow_state: state, pending_resolution: pr }, baseline, task);
   }
   const ex = task.active_exchange ?? null;

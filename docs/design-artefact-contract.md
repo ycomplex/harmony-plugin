@@ -32,6 +32,15 @@ ledger; an older event cannot overwrite a newer accepted design. X is always the
 pin, even when latest-version lookup fails. Browser accepts use the same event
 consumer and never require the browser to hold a Figma token.
 
+Reconciling a designer's edits (B-1204) writes a pending revision the same way as any
+other: `reconcileDesign` (`src/tools/figma-reconcile.ts`) reads the baseline artefact and
+the fresh version over REST and renders previews through `prepareVersionedPreviews`; the
+skill uploads the bytes, `assemblePendingArtefact` builds a record that passes
+`DesignArtefactSchema` (`provenance_notes` serialized one line per note, designer edits
+marked `human-in-tool`), and recomposing the active design brief with it as
+`frame.design_artefact` is the write. The capability probe and attachment checks above run
+there; the reconcile module has no capability argument of its own.
+
 Both accepted and pending views resolve ordinary attachment access at read time.
 A removed preview keeps its filename and unavailable state. HTML is a forced
 attachment download, never an iframe. Brief history retains earlier manifests.
