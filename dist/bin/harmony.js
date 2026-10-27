@@ -3738,7 +3738,7 @@ function __addDisposableResource(env2, value, async) {
   return value;
 }
 function __disposeResources(env2) {
-  function fail2(e) {
+  function fail3(e) {
     env2.error = env2.hasError ? new _SuppressedError(e, env2.error, "An error was suppressed during disposal.") : e;
     env2.hasError = true;
   }
@@ -3750,12 +3750,12 @@ function __disposeResources(env2) {
         if (r.dispose) {
           var result = r.dispose.call(r.value);
           if (r.async) return s |= 2, Promise.resolve(result).then(next, function(e) {
-            fail2(e);
+            fail3(e);
             return next();
           });
         } else s |= 1;
       } catch (e) {
-        fail2(e);
+        fail3(e);
       }
     }
     if (s === 1) return env2.hasError ? Promise.reject(env2.error) : Promise.resolve();
@@ -7276,8 +7276,8 @@ var require_RealtimeChannel = __commonJS({
       }
       /** @internal */
       _notThisChannelEvent(event, ref) {
-        const { close, error: error2, leave, join: join16 } = constants_1.CHANNEL_EVENTS;
-        const events2 = [close, error2, leave, join16];
+        const { close, error: error2, leave, join: join17 } = constants_1.CHANNEL_EVENTS;
+        const events2 = [close, error2, leave, join17];
         return ref && events2.includes(event) && ref !== this.joinPush.ref;
       }
       /** @internal */
@@ -13694,12 +13694,12 @@ var require_utils = __commonJS({
         head: []
       };
     }
-    function mergeOptions(options, defaults2) {
+    function mergeOptions(options, defaults3) {
       options = options || {};
-      defaults2 = defaults2 || defaultOptions();
-      let ret = Object.assign({}, defaults2, options);
-      ret.chars = Object.assign({}, defaults2.chars, options.chars);
-      ret.style = Object.assign({}, defaults2.style, options.style);
+      defaults3 = defaults3 || defaultOptions();
+      let ret = Object.assign({}, defaults3, options);
+      ret.chars = Object.assign({}, defaults3.chars, options.chars);
+      ret.style = Object.assign({}, defaults3.style, options.style);
       return ret;
     }
     function wordWrap(maxLength, input) {
@@ -15538,11 +15538,11 @@ var require_codegen = __commonJS({
         const rhs = this.rhs === void 0 ? "" : ` = ${this.rhs}`;
         return `${varKind} ${this.name}${rhs};` + _n;
       }
-      optimizeNames(names, constants) {
+      optimizeNames(names, constants2) {
         if (!names[this.name.str])
           return;
         if (this.rhs)
-          this.rhs = optimizeExpr(this.rhs, names, constants);
+          this.rhs = optimizeExpr(this.rhs, names, constants2);
         return this;
       }
       get names() {
@@ -15559,10 +15559,10 @@ var require_codegen = __commonJS({
       render({ _n }) {
         return `${this.lhs} = ${this.rhs};` + _n;
       }
-      optimizeNames(names, constants) {
+      optimizeNames(names, constants2) {
         if (this.lhs instanceof code_1.Name && !names[this.lhs.str] && !this.sideEffects)
           return;
-        this.rhs = optimizeExpr(this.rhs, names, constants);
+        this.rhs = optimizeExpr(this.rhs, names, constants2);
         return this;
       }
       get names() {
@@ -15623,8 +15623,8 @@ var require_codegen = __commonJS({
       optimizeNodes() {
         return `${this.code}` ? this : void 0;
       }
-      optimizeNames(names, constants) {
-        this.code = optimizeExpr(this.code, names, constants);
+      optimizeNames(names, constants2) {
+        this.code = optimizeExpr(this.code, names, constants2);
         return this;
       }
       get names() {
@@ -15653,12 +15653,12 @@ var require_codegen = __commonJS({
         }
         return nodes.length > 0 ? this : void 0;
       }
-      optimizeNames(names, constants) {
+      optimizeNames(names, constants2) {
         const { nodes } = this;
         let i = nodes.length;
         while (i--) {
           const n = nodes[i];
-          if (n.optimizeNames(names, constants))
+          if (n.optimizeNames(names, constants2))
             continue;
           subtractNames(names, n.names);
           nodes.splice(i, 1);
@@ -15711,12 +15711,12 @@ var require_codegen = __commonJS({
           return void 0;
         return this;
       }
-      optimizeNames(names, constants) {
+      optimizeNames(names, constants2) {
         var _a2;
-        this.else = (_a2 = this.else) === null || _a2 === void 0 ? void 0 : _a2.optimizeNames(names, constants);
-        if (!(super.optimizeNames(names, constants) || this.else))
+        this.else = (_a2 = this.else) === null || _a2 === void 0 ? void 0 : _a2.optimizeNames(names, constants2);
+        if (!(super.optimizeNames(names, constants2) || this.else))
           return;
-        this.condition = optimizeExpr(this.condition, names, constants);
+        this.condition = optimizeExpr(this.condition, names, constants2);
         return this;
       }
       get names() {
@@ -15739,10 +15739,10 @@ var require_codegen = __commonJS({
       render(opts) {
         return `for(${this.iteration})` + super.render(opts);
       }
-      optimizeNames(names, constants) {
-        if (!super.optimizeNames(names, constants))
+      optimizeNames(names, constants2) {
+        if (!super.optimizeNames(names, constants2))
           return;
-        this.iteration = optimizeExpr(this.iteration, names, constants);
+        this.iteration = optimizeExpr(this.iteration, names, constants2);
         return this;
       }
       get names() {
@@ -15778,10 +15778,10 @@ var require_codegen = __commonJS({
       render(opts) {
         return `for(${this.varKind} ${this.name} ${this.loop} ${this.iterable})` + super.render(opts);
       }
-      optimizeNames(names, constants) {
-        if (!super.optimizeNames(names, constants))
+      optimizeNames(names, constants2) {
+        if (!super.optimizeNames(names, constants2))
           return;
-        this.iterable = optimizeExpr(this.iterable, names, constants);
+        this.iterable = optimizeExpr(this.iterable, names, constants2);
         return this;
       }
       get names() {
@@ -15823,11 +15823,11 @@ var require_codegen = __commonJS({
         (_b = this.finally) === null || _b === void 0 ? void 0 : _b.optimizeNodes();
         return this;
       }
-      optimizeNames(names, constants) {
+      optimizeNames(names, constants2) {
         var _a2, _b;
-        super.optimizeNames(names, constants);
-        (_a2 = this.catch) === null || _a2 === void 0 ? void 0 : _a2.optimizeNames(names, constants);
-        (_b = this.finally) === null || _b === void 0 ? void 0 : _b.optimizeNames(names, constants);
+        super.optimizeNames(names, constants2);
+        (_a2 = this.catch) === null || _a2 === void 0 ? void 0 : _a2.optimizeNames(names, constants2);
+        (_b = this.finally) === null || _b === void 0 ? void 0 : _b.optimizeNames(names, constants2);
         return this;
       }
       get names() {
@@ -16128,7 +16128,7 @@ var require_codegen = __commonJS({
     function addExprNames(names, from) {
       return from instanceof code_1._CodeOrName ? addNames(names, from.names) : names;
     }
-    function optimizeExpr(expr, names, constants) {
+    function optimizeExpr(expr, names, constants2) {
       if (expr instanceof code_1.Name)
         return replaceName(expr);
       if (!canOptimize(expr))
@@ -16143,14 +16143,14 @@ var require_codegen = __commonJS({
         return items;
       }, []));
       function replaceName(n) {
-        const c = constants[n.str];
+        const c = constants2[n.str];
         if (c === void 0 || names[n.str] !== 1)
           return n;
         delete names[n.str];
         return c;
       }
       function canOptimize(e) {
-        return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants[c.str] !== void 0);
+        return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants2[c.str] !== void 0);
       }
     }
     function subtractNames(names, from) {
@@ -29637,12 +29637,12 @@ var levelMapping = [
   "ansi16m"
 ];
 var styles2 = /* @__PURE__ */ Object.create(null);
-var applyOptions = (object4, options = {}) => {
+var applyOptions = (object5, options = {}) => {
   if (options.level && !(Number.isInteger(options.level) && options.level >= 0 && options.level <= 3)) {
     throw new Error("The `level` option should be an integer from 0 to 3");
   }
   const colorLevel = stdoutColor ? stdoutColor.level : 0;
-  object4.level = options.level === void 0 ? colorLevel : options.level;
+  object5.level = options.level === void 0 ? colorLevel : options.level;
 };
 var chalkFactory = (options) => {
   const chalk2 = (...strings2) => strings2.join(" ");
@@ -37667,10 +37667,10 @@ var fetchWithAuth = (supabaseKey, getAccessToken, customFetch) => {
 function ensureTrailingSlash(url2) {
   return url2.endsWith("/") ? url2 : url2 + "/";
 }
-function applySettingDefaults(options, defaults2) {
+function applySettingDefaults(options, defaults3) {
   var _DEFAULT_GLOBAL_OPTIO, _globalOptions$header;
   const { db: dbOptions, auth: authOptions, realtime: realtimeOptions, global: globalOptions } = options;
-  const { db: DEFAULT_DB_OPTIONS$1, auth: DEFAULT_AUTH_OPTIONS$1, realtime: DEFAULT_REALTIME_OPTIONS$1, global: DEFAULT_GLOBAL_OPTIONS$1 } = defaults2;
+  const { db: DEFAULT_DB_OPTIONS$1, auth: DEFAULT_AUTH_OPTIONS$1, realtime: DEFAULT_REALTIME_OPTIONS$1, global: DEFAULT_GLOBAL_OPTIONS$1 } = defaults3;
   const result = {
     db: _objectSpread23(_objectSpread23({}, DEFAULT_DB_OPTIONS$1), dbOptions),
     auth: _objectSpread23(_objectSpread23({}, DEFAULT_AUTH_OPTIONS$1), authOptions),
@@ -38251,10 +38251,10 @@ var util;
       return obj[e];
     });
   };
-  util2.objectKeys = typeof Object.keys === "function" ? (obj) => Object.keys(obj) : (object4) => {
+  util2.objectKeys = typeof Object.keys === "function" ? (obj) => Object.keys(obj) : (object5) => {
     const keys = [];
-    for (const key in object4) {
-      if (Object.prototype.hasOwnProperty.call(object4, key)) {
+    for (const key in object5) {
+      if (Object.prototype.hasOwnProperty.call(object5, key)) {
         keys.push(key);
       }
     }
@@ -46030,20 +46030,136 @@ function registerAuthCommands(program3) {
   });
 }
 
+// src/cli/figma-claude-grant.ts
+import { constants, closeSync, fstatSync, openSync, readSync } from "node:fs";
+var INVALID_CLAUDE_GRANT = "Cannot import this Figma sign-in: required credentials are missing, ambiguous or expired.";
+var fail = () => {
+  throw new Error(INVALID_CLAUDE_GRANT);
+};
+var object = (v2) => !!v2 && typeof v2 === "object" && !Array.isArray(v2);
+function readClaudeFigmaGrant(path4, now = Date.now()) {
+  let fd;
+  try {
+    fd = openSync(path4, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || (stat.mode & 63) !== 0 || stat.uid !== process.getuid?.() || stat.size > 1024 * 1024) return fail();
+    const bytes = Buffer.alloc(1024 * 1024 + 1);
+    let size = 0;
+    while (size < bytes.length) {
+      const count = readSync(fd, bytes, size, bytes.length - size, null);
+      if (count === 0) break;
+      size += count;
+    }
+    if (size > 1024 * 1024) return fail();
+    const parsed = JSON.parse(bytes.subarray(0, size).toString("utf8"));
+    if (!object(parsed) || !object(parsed.mcpOAuth)) return fail();
+    const entries = Object.values(parsed.mcpOAuth).filter((v2) => object(v2) && (v2.serverName === "figma" || v2.serverUrl === "https://mcp.figma.com/mcp"));
+    if (entries.length !== 1 || !object(entries[0])) return fail();
+    const e = entries[0];
+    if (e.serverName !== "figma" || e.serverUrl !== "https://mcp.figma.com/mcp" || e.scope !== "mcp:connect" || typeof e.expiresAt !== "number" || !Number.isFinite(e.expiresAt) || e.expiresAt <= now) return fail();
+    for (const key of ["accessToken", "refreshToken", "clientId", "clientSecret"]) {
+      if (typeof e[key] !== "string" || !e[key].trim()) return fail();
+    }
+    return {
+      access_token: e.accessToken,
+      refresh_token: e.refreshToken,
+      expires_at: e.expiresAt,
+      client_id: e.clientId,
+      client_secret: e.clientSecret,
+      token_endpoint: "https://api.figma.com/v1/oauth/token",
+      token_endpoint_auth_method: "client_secret_post"
+    };
+  } catch {
+    return fail();
+  } finally {
+    if (fd !== void 0) closeSync(fd);
+  }
+}
+
+// src/cli/figma-claude-sign-in.ts
+import { spawn } from "node:child_process";
+import { chmodSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join as join5 } from "node:path";
+import { randomUUID } from "node:crypto";
+var defaults = {
+  run: (args, interactive = false, signal) => new Promise((resolve8, reject) => {
+    const child = spawn("kubectl", args, { stdio: interactive ? "inherit" : "ignore", signal });
+    child.once("error", () => reject(new Error("Figma sign-in pod command failed.")));
+    child.once("exit", (code) => code === 0 ? resolve8() : reject(new Error("Figma sign-in pod command failed.")));
+  }),
+  temp: () => mkdtempSync(join5(tmpdir(), "harmony-figma-")),
+  chmod: (path4) => chmodSync(path4, 384),
+  remove: (path4) => rmSync(path4, { recursive: true, force: true }),
+  report: (line) => process.stderr.write(line + "\n")
+};
+async function withClaudeFigmaSignIn(consume, ports = defaults, version5 = process.env.HARMONY_FIGMA_CLAUDE_VERSION ?? "2.1.312") {
+  if (!/^\d+\.\d+\.\d+$/.test(version5)) throw new Error("Invalid Claude Code version.");
+  const dir = ports.temp();
+  const pod = "harmony-figma-" + randomUUID();
+  const base2 = ["--request-timeout=70s", "-n", "harmony-legs"];
+  const abort = new AbortController();
+  const interrupted = () => abort.abort();
+  process.once("SIGINT", interrupted);
+  process.once("SIGTERM", interrupted);
+  let podMayExist = false;
+  let cleanupFailed = false;
+  try {
+    podMayExist = true;
+    await ports.run([...base2, "run", pod, "--restart=Never", "--image=node:22-bookworm-slim", "--command", "--", "sleep", "3600"], false, abort.signal);
+    await ports.run([...base2, "wait", "--for=condition=Ready", "pod/" + pod, "--timeout=120s"], false, abort.signal);
+    const exec = [...base2, "exec", pod, "--"];
+    await ports.run([...exec, "npm", "install", "--global", "@anthropic-ai/claude-code@" + version5], false, abort.signal);
+    await ports.run([...exec, "claude", "mcp", "add", "--scope", "user", "--transport", "http", "figma", "https://mcp.figma.com/mcp"], false, abort.signal);
+    ports.report("Open the Figma sign-in link printed by Claude Code and approve the account you want Harmony to use.");
+    await ports.run([...base2, "exec", "-it", pod, "--", "claude", "mcp", "login", "figma", "--no-browser"], true, abort.signal);
+    const file = join5(dir, "credentials.json");
+    await ports.run([...base2, "cp", pod + ":/root/.claude/.credentials.json", file], false, abort.signal);
+    ports.chmod(file);
+    await ports.run([...base2, "delete", "pod", pod, "--ignore-not-found=true", "--wait=true", "--timeout=60s"], false);
+    podMayExist = false;
+    if (abort.signal.aborted) throw new Error("Setup cancelled.");
+    ports.report("Fresh Figma sign-in ready. The sign-in pod has been deleted.");
+    ports.report("Importing the private sign-in for this workspace\u2026");
+    return await consume(file, abort.signal);
+  } finally {
+    process.removeListener("SIGINT", interrupted);
+    process.removeListener("SIGTERM", interrupted);
+    if (podMayExist) {
+      try {
+        await ports.run([...base2, "delete", "pod", pod, "--ignore-not-found=true", "--wait=true", "--timeout=60s"]);
+      } catch {
+        cleanupFailed = true;
+      }
+    }
+    try {
+      ports.remove(dir);
+    } catch {
+      cleanupFailed = true;
+    }
+    if (cleanupFailed) {
+      ports.report("Temporary sign-in cleanup could not be completed.");
+      ports.report(`Remove pod ${pod} in harmony-legs and private directory ${dir} before reconnecting. Do not use this sign-in in Claude Code again.`);
+      throw new Error("Temporary sign-in cleanup could not be completed.");
+    }
+    ports.report("Temporary sign-in files removed.");
+  }
+}
+
 // src/cli/commands/figma.ts
 import { createInterface } from "node:readline/promises";
 import { Writable } from "node:stream";
-import { randomUUID } from "node:crypto";
+import { randomUUID as randomUUID2 } from "node:crypto";
 import {
-  chmodSync,
+  chmodSync as chmodSync2,
   existsSync as existsSync3,
   mkdirSync,
   readFileSync as readFileSync5,
   renameSync,
-  rmSync,
+  rmSync as rmSync2,
   writeFileSync
 } from "node:fs";
-import { join as join5 } from "node:path";
+import { join as join6 } from "node:path";
 import { homedir as homedir3 } from "node:os";
 
 // src/agents/design-tools/figma.ts
@@ -46286,19 +46402,19 @@ function floatSafeRemainder2(val, step) {
   const stepInt = Number.parseInt(step.toFixed(decCount).replace(".", ""));
   return valInt % stepInt / 10 ** decCount;
 }
-function defineLazy(object4, key, getter) {
+function defineLazy(object5, key, getter) {
   const set = false;
-  Object.defineProperty(object4, key, {
+  Object.defineProperty(object5, key, {
     get() {
       if (!set) {
         const value = getter();
-        object4[key] = value;
+        object5[key] = value;
         return value;
       }
       throw new Error("cached value already set");
     },
     set(v2) {
-      Object.defineProperty(object4, key, {
+      Object.defineProperty(object5, key, {
         value: v2
         // configurable: true,
       });
@@ -49662,7 +49778,7 @@ var ZodObject2 = /* @__PURE__ */ $constructor("ZodObject", (inst, def) => {
   inst.partial = (...args) => util_exports.partial(ZodOptional2, inst, args[0]);
   inst.required = (...args) => util_exports.required(ZodNonOptional, inst, args[0]);
 });
-function object(shape, params) {
+function object2(shape, params) {
   const def = {
     type: "object",
     get shape() {
@@ -50037,10 +50153,10 @@ var TaskCreationParamsSchema = looseObject({
    */
   pollInterval: number2().optional()
 });
-var TaskMetadataSchema = object({
+var TaskMetadataSchema = object2({
   ttl: number2().optional()
 });
-var RelatedTaskMetadataSchema = object({
+var RelatedTaskMetadataSchema = object2({
   taskId: string2()
 });
 var RequestMetaSchema = looseObject({
@@ -50053,7 +50169,7 @@ var RequestMetaSchema = looseObject({
    */
   [RELATED_TASK_META_KEY]: RelatedTaskMetadataSchema.optional()
 });
-var BaseRequestParamsSchema = object({
+var BaseRequestParamsSchema = object2({
   /**
    * See [General fields: `_meta`](/specification/draft/basic/index#meta) for notes on `_meta` usage.
    */
@@ -50071,18 +50187,18 @@ var TaskAugmentedRequestParamsSchema = BaseRequestParamsSchema.extend({
   task: TaskMetadataSchema.optional()
 });
 var isTaskAugmentedRequestParams = (value) => TaskAugmentedRequestParamsSchema.safeParse(value).success;
-var RequestSchema = object({
+var RequestSchema = object2({
   method: string2(),
   params: BaseRequestParamsSchema.loose().optional()
 });
-var NotificationsParamsSchema = object({
+var NotificationsParamsSchema = object2({
   /**
    * See [MCP specification](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/47339c03c143bb4ec01a26e721a1b8fe66634ebe/docs/specification/draft/basic/index.mdx#general-fields)
    * for notes on _meta usage.
    */
   _meta: RequestMetaSchema.optional()
 });
-var NotificationSchema = object({
+var NotificationSchema = object2({
   method: string2(),
   params: NotificationsParamsSchema.loose().optional()
 });
@@ -50094,18 +50210,18 @@ var ResultSchema = looseObject({
   _meta: RequestMetaSchema.optional()
 });
 var RequestIdSchema = union([string2(), number2().int()]);
-var JSONRPCRequestSchema = object({
+var JSONRPCRequestSchema = object2({
   jsonrpc: literal(JSONRPC_VERSION),
   id: RequestIdSchema,
   ...RequestSchema.shape
 }).strict();
 var isJSONRPCRequest = (value) => JSONRPCRequestSchema.safeParse(value).success;
-var JSONRPCNotificationSchema = object({
+var JSONRPCNotificationSchema = object2({
   jsonrpc: literal(JSONRPC_VERSION),
   ...NotificationSchema.shape
 }).strict();
 var isJSONRPCNotification = (value) => JSONRPCNotificationSchema.safeParse(value).success;
-var JSONRPCResultResponseSchema = object({
+var JSONRPCResultResponseSchema = object2({
   jsonrpc: literal(JSONRPC_VERSION),
   id: RequestIdSchema,
   result: ResultSchema
@@ -50122,10 +50238,10 @@ var ErrorCode;
   ErrorCode2[ErrorCode2["InternalError"] = -32603] = "InternalError";
   ErrorCode2[ErrorCode2["UrlElicitationRequired"] = -32042] = "UrlElicitationRequired";
 })(ErrorCode || (ErrorCode = {}));
-var JSONRPCErrorResponseSchema = object({
+var JSONRPCErrorResponseSchema = object2({
   jsonrpc: literal(JSONRPC_VERSION),
   id: RequestIdSchema.optional(),
-  error: object({
+  error: object2({
     /**
      * The error type that occurred.
      */
@@ -50165,7 +50281,7 @@ var CancelledNotificationSchema = NotificationSchema.extend({
   method: literal("notifications/cancelled"),
   params: CancelledNotificationParamsSchema
 });
-var IconSchema = object({
+var IconSchema = object2({
   /**
    * URL or data URI for the icon.
    */
@@ -50190,7 +50306,7 @@ var IconSchema = object({
    */
   theme: _enum(["light", "dark"]).optional()
 });
-var IconsSchema = object({
+var IconsSchema = object2({
   /**
    * Optional set of sized icons that the client can display in a user interface.
    *
@@ -50204,7 +50320,7 @@ var IconsSchema = object({
    */
   icons: array(IconSchema).optional()
 });
-var BaseMetadataSchema = object({
+var BaseMetadataSchema = object2({
   /** Intended for programmatic or logical use, but used as a display name in past specs or fallback */
   name: string2(),
   /**
@@ -50234,7 +50350,7 @@ var ImplementationSchema = BaseMetadataSchema.extend({
    */
   description: string2().optional()
 });
-var FormElicitationCapabilitySchema = intersection(object({
+var FormElicitationCapabilitySchema = intersection(object2({
   applyDefaults: boolean2().optional()
 }), record(string2(), unknown()));
 var ElicitationCapabilitySchema = preprocess((value) => {
@@ -50244,7 +50360,7 @@ var ElicitationCapabilitySchema = preprocess((value) => {
     }
   }
   return value;
-}, intersection(object({
+}, intersection(object2({
   form: FormElicitationCapabilitySchema.optional(),
   url: AssertObjectSchema.optional()
 }), record(string2(), unknown()).optional()));
@@ -50296,7 +50412,7 @@ var ServerTasksCapabilitySchema = looseObject({
     }).optional()
   }).optional()
 });
-var ClientCapabilitiesSchema = object({
+var ClientCapabilitiesSchema = object2({
   /**
    * Experimental, non-standard capabilities that the client supports.
    */
@@ -50304,7 +50420,7 @@ var ClientCapabilitiesSchema = object({
   /**
    * Present if the client supports sampling from an LLM.
    */
-  sampling: object({
+  sampling: object2({
     /**
      * Present if the client supports context inclusion via includeContext parameter.
      * If not declared, servers SHOULD only use `includeContext: "none"` (or omit it).
@@ -50322,7 +50438,7 @@ var ClientCapabilitiesSchema = object({
   /**
    * Present if the client supports listing roots.
    */
-  roots: object({
+  roots: object2({
     /**
      * Whether the client supports issuing notifications for changes to the roots list.
      */
@@ -50345,7 +50461,7 @@ var InitializeRequestSchema = RequestSchema.extend({
   method: literal("initialize"),
   params: InitializeRequestParamsSchema
 });
-var ServerCapabilitiesSchema = object({
+var ServerCapabilitiesSchema = object2({
   /**
    * Experimental, non-standard capabilities that the server supports.
    */
@@ -50361,7 +50477,7 @@ var ServerCapabilitiesSchema = object({
   /**
    * Present if the server offers any prompt templates.
    */
-  prompts: object({
+  prompts: object2({
     /**
      * Whether this server supports issuing notifications for changes to the prompt list.
      */
@@ -50370,7 +50486,7 @@ var ServerCapabilitiesSchema = object({
   /**
    * Present if the server offers any resources to read.
    */
-  resources: object({
+  resources: object2({
     /**
      * Whether this server supports clients subscribing to resource updates.
      */
@@ -50383,7 +50499,7 @@ var ServerCapabilitiesSchema = object({
   /**
    * Present if the server offers any tools to call.
    */
-  tools: object({
+  tools: object2({
     /**
      * Whether this server supports issuing notifications for changes to the tool list.
      */
@@ -50417,7 +50533,7 @@ var PingRequestSchema = RequestSchema.extend({
   method: literal("ping"),
   params: BaseRequestParamsSchema.optional()
 });
-var ProgressSchema = object({
+var ProgressSchema = object2({
   /**
    * The progress thus far. This should increase every time progress is made, even if the total is unknown.
    */
@@ -50431,7 +50547,7 @@ var ProgressSchema = object({
    */
   message: optional(string2())
 });
-var ProgressNotificationParamsSchema = object({
+var ProgressNotificationParamsSchema = object2({
   ...NotificationsParamsSchema.shape,
   ...ProgressSchema.shape,
   /**
@@ -50461,7 +50577,7 @@ var PaginatedResultSchema = ResultSchema.extend({
   nextCursor: CursorSchema.optional()
 });
 var TaskStatusSchema = _enum(["working", "input_required", "completed", "failed", "cancelled"]);
-var TaskSchema = object({
+var TaskSchema = object2({
   taskId: string2(),
   status: TaskStatusSchema,
   /**
@@ -50518,7 +50634,7 @@ var CancelTaskRequestSchema = RequestSchema.extend({
   })
 });
 var CancelTaskResultSchema = ResultSchema.merge(TaskSchema);
-var ResourceContentsSchema = object({
+var ResourceContentsSchema = object2({
   /**
    * The URI of this resource.
    */
@@ -50554,7 +50670,7 @@ var BlobResourceContentsSchema = ResourceContentsSchema.extend({
   blob: Base64Schema
 });
 var RoleSchema = _enum(["user", "assistant"]);
-var AnnotationsSchema = object({
+var AnnotationsSchema = object2({
   /**
    * Intended audience(s) for the resource.
    */
@@ -50568,7 +50684,7 @@ var AnnotationsSchema = object({
    */
   lastModified: iso_exports.datetime({ offset: true }).optional()
 });
-var ResourceSchema = object({
+var ResourceSchema = object2({
   ...BaseMetadataSchema.shape,
   ...IconsSchema.shape,
   /**
@@ -50595,7 +50711,7 @@ var ResourceSchema = object({
    */
   _meta: optional(looseObject({}))
 });
-var ResourceTemplateSchema = object({
+var ResourceTemplateSchema = object2({
   ...BaseMetadataSchema.shape,
   ...IconsSchema.shape,
   /**
@@ -50674,7 +50790,7 @@ var ResourceUpdatedNotificationSchema = NotificationSchema.extend({
   method: literal("notifications/resources/updated"),
   params: ResourceUpdatedNotificationParamsSchema
 });
-var PromptArgumentSchema = object({
+var PromptArgumentSchema = object2({
   /**
    * The name of the argument.
    */
@@ -50688,7 +50804,7 @@ var PromptArgumentSchema = object({
    */
   required: optional(boolean2())
 });
-var PromptSchema = object({
+var PromptSchema = object2({
   ...BaseMetadataSchema.shape,
   ...IconsSchema.shape,
   /**
@@ -50725,7 +50841,7 @@ var GetPromptRequestSchema = RequestSchema.extend({
   method: literal("prompts/get"),
   params: GetPromptRequestParamsSchema
 });
-var TextContentSchema = object({
+var TextContentSchema = object2({
   type: literal("text"),
   /**
    * The text content of the message.
@@ -50741,7 +50857,7 @@ var TextContentSchema = object({
    */
   _meta: record(string2(), unknown()).optional()
 });
-var ImageContentSchema = object({
+var ImageContentSchema = object2({
   type: literal("image"),
   /**
    * The base64-encoded image data.
@@ -50761,7 +50877,7 @@ var ImageContentSchema = object({
    */
   _meta: record(string2(), unknown()).optional()
 });
-var AudioContentSchema = object({
+var AudioContentSchema = object2({
   type: literal("audio"),
   /**
    * The base64-encoded audio data.
@@ -50781,7 +50897,7 @@ var AudioContentSchema = object({
    */
   _meta: record(string2(), unknown()).optional()
 });
-var ToolUseContentSchema = object({
+var ToolUseContentSchema = object2({
   type: literal("tool_use"),
   /**
    * The name of the tool to invoke.
@@ -50804,7 +50920,7 @@ var ToolUseContentSchema = object({
    */
   _meta: record(string2(), unknown()).optional()
 });
-var EmbeddedResourceSchema = object({
+var EmbeddedResourceSchema = object2({
   type: literal("resource"),
   resource: union([TextResourceContentsSchema, BlobResourceContentsSchema]),
   /**
@@ -50827,7 +50943,7 @@ var ContentBlockSchema = union([
   ResourceLinkSchema,
   EmbeddedResourceSchema
 ]);
-var PromptMessageSchema = object({
+var PromptMessageSchema = object2({
   role: RoleSchema,
   content: ContentBlockSchema
 });
@@ -50842,7 +50958,7 @@ var PromptListChangedNotificationSchema = NotificationSchema.extend({
   method: literal("notifications/prompts/list_changed"),
   params: NotificationsParamsSchema.optional()
 });
-var ToolAnnotationsSchema = object({
+var ToolAnnotationsSchema = object2({
   /**
    * A human-readable title for the tool.
    */
@@ -50881,7 +50997,7 @@ var ToolAnnotationsSchema = object({
    */
   openWorldHint: boolean2().optional()
 });
-var ToolExecutionSchema = object({
+var ToolExecutionSchema = object2({
   /**
    * Indicates the tool's preference for task-augmented execution.
    * - "required": Clients MUST invoke the tool as a task
@@ -50892,7 +51008,7 @@ var ToolExecutionSchema = object({
    */
   taskSupport: _enum(["required", "optional", "forbidden"]).optional()
 });
-var ToolSchema = object({
+var ToolSchema = object2({
   ...BaseMetadataSchema.shape,
   ...IconsSchema.shape,
   /**
@@ -50903,7 +51019,7 @@ var ToolSchema = object({
    * A JSON Schema 2020-12 object defining the expected parameters for the tool.
    * Must have type: 'object' at the root level per MCP spec.
    */
-  inputSchema: object({
+  inputSchema: object2({
     type: literal("object"),
     properties: record(string2(), AssertObjectSchema).optional(),
     required: array(string2()).optional()
@@ -50913,7 +51029,7 @@ var ToolSchema = object({
    * returned in the structuredContent field of a CallToolResult.
    * Must have type: 'object' at the root level per MCP spec.
    */
-  outputSchema: object({
+  outputSchema: object2({
     type: literal("object"),
     properties: record(string2(), AssertObjectSchema).optional(),
     required: array(string2()).optional()
@@ -50989,7 +51105,7 @@ var ToolListChangedNotificationSchema = NotificationSchema.extend({
   method: literal("notifications/tools/list_changed"),
   params: NotificationsParamsSchema.optional()
 });
-var ListChangedOptionsBaseSchema = object({
+var ListChangedOptionsBaseSchema = object2({
   /**
    * If true, the list will be refreshed automatically when a list changed notification is received.
    * The callback will be called with the updated list.
@@ -51038,13 +51154,13 @@ var LoggingMessageNotificationSchema = NotificationSchema.extend({
   method: literal("notifications/message"),
   params: LoggingMessageNotificationParamsSchema
 });
-var ModelHintSchema = object({
+var ModelHintSchema = object2({
   /**
    * A hint for a model name.
    */
   name: string2().optional()
 });
-var ModelPreferencesSchema = object({
+var ModelPreferencesSchema = object2({
   /**
    * Optional hints to use for model selection.
    */
@@ -51062,7 +51178,7 @@ var ModelPreferencesSchema = object({
    */
   intelligencePriority: number2().min(0).max(1).optional()
 });
-var ToolChoiceSchema = object({
+var ToolChoiceSchema = object2({
   /**
    * Controls when tools are used:
    * - "auto": Model decides whether to use tools (default)
@@ -51071,11 +51187,11 @@ var ToolChoiceSchema = object({
    */
   mode: _enum(["auto", "required", "none"]).optional()
 });
-var ToolResultContentSchema = object({
+var ToolResultContentSchema = object2({
   type: literal("tool_result"),
   toolUseId: string2().describe("The unique identifier for the corresponding tool call."),
   content: array(ContentBlockSchema).default([]),
-  structuredContent: object({}).loose().optional(),
+  structuredContent: object2({}).loose().optional(),
   isError: boolean2().optional(),
   /**
    * See [MCP specification](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/47339c03c143bb4ec01a26e721a1b8fe66634ebe/docs/specification/draft/basic/index.mdx#general-fields)
@@ -51091,7 +51207,7 @@ var SamplingMessageContentBlockSchema = discriminatedUnion("type", [
   ToolUseContentSchema,
   ToolResultContentSchema
 ]);
-var SamplingMessageSchema = object({
+var SamplingMessageSchema = object2({
   role: RoleSchema,
   content: union([SamplingMessageContentBlockSchema, array(SamplingMessageContentBlockSchema)]),
   /**
@@ -51191,13 +51307,13 @@ var CreateMessageResultWithToolsSchema = ResultSchema.extend({
    */
   content: union([SamplingMessageContentBlockSchema, array(SamplingMessageContentBlockSchema)])
 });
-var BooleanSchemaSchema = object({
+var BooleanSchemaSchema = object2({
   type: literal("boolean"),
   title: string2().optional(),
   description: string2().optional(),
   default: boolean2().optional()
 });
-var StringSchemaSchema = object({
+var StringSchemaSchema = object2({
   type: literal("string"),
   title: string2().optional(),
   description: string2().optional(),
@@ -51206,7 +51322,7 @@ var StringSchemaSchema = object({
   format: _enum(["email", "uri", "date", "date-time"]).optional(),
   default: string2().optional()
 });
-var NumberSchemaSchema = object({
+var NumberSchemaSchema = object2({
   type: _enum(["number", "integer"]),
   title: string2().optional(),
   description: string2().optional(),
@@ -51214,24 +51330,24 @@ var NumberSchemaSchema = object({
   maximum: number2().optional(),
   default: number2().optional()
 });
-var UntitledSingleSelectEnumSchemaSchema = object({
+var UntitledSingleSelectEnumSchemaSchema = object2({
   type: literal("string"),
   title: string2().optional(),
   description: string2().optional(),
   enum: array(string2()),
   default: string2().optional()
 });
-var TitledSingleSelectEnumSchemaSchema = object({
+var TitledSingleSelectEnumSchemaSchema = object2({
   type: literal("string"),
   title: string2().optional(),
   description: string2().optional(),
-  oneOf: array(object({
+  oneOf: array(object2({
     const: string2(),
     title: string2()
   })),
   default: string2().optional()
 });
-var LegacyTitledEnumSchemaSchema = object({
+var LegacyTitledEnumSchemaSchema = object2({
   type: literal("string"),
   title: string2().optional(),
   description: string2().optional(),
@@ -51240,26 +51356,26 @@ var LegacyTitledEnumSchemaSchema = object({
   default: string2().optional()
 });
 var SingleSelectEnumSchemaSchema = union([UntitledSingleSelectEnumSchemaSchema, TitledSingleSelectEnumSchemaSchema]);
-var UntitledMultiSelectEnumSchemaSchema = object({
+var UntitledMultiSelectEnumSchemaSchema = object2({
   type: literal("array"),
   title: string2().optional(),
   description: string2().optional(),
   minItems: number2().optional(),
   maxItems: number2().optional(),
-  items: object({
+  items: object2({
     type: literal("string"),
     enum: array(string2())
   }),
   default: array(string2()).optional()
 });
-var TitledMultiSelectEnumSchemaSchema = object({
+var TitledMultiSelectEnumSchemaSchema = object2({
   type: literal("array"),
   title: string2().optional(),
   description: string2().optional(),
   minItems: number2().optional(),
   maxItems: number2().optional(),
-  items: object({
-    anyOf: array(object({
+  items: object2({
+    anyOf: array(object2({
       const: string2(),
       title: string2()
     }))
@@ -51284,7 +51400,7 @@ var ElicitRequestFormParamsSchema = TaskAugmentedRequestParamsSchema.extend({
    * A restricted subset of JSON Schema.
    * Only top-level properties are allowed, without nesting.
    */
-  requestedSchema: object({
+  requestedSchema: object2({
     type: literal("object"),
     properties: record(string2(), PrimitiveSchemaDefinitionSchema),
     required: array(string2()).optional()
@@ -51340,14 +51456,14 @@ var ElicitResultSchema = ResultSchema.extend({
    */
   content: preprocess((val) => val === null ? void 0 : val, record(string2(), union([string2(), number2(), boolean2(), array(string2())])).optional())
 });
-var ResourceTemplateReferenceSchema = object({
+var ResourceTemplateReferenceSchema = object2({
   type: literal("ref/resource"),
   /**
    * The URI or URI template of the resource.
    */
   uri: string2()
 });
-var PromptReferenceSchema = object({
+var PromptReferenceSchema = object2({
   type: literal("ref/prompt"),
   /**
    * The name of the prompt or prompt template
@@ -51359,7 +51475,7 @@ var CompleteRequestParamsSchema = BaseRequestParamsSchema.extend({
   /**
    * The argument's information
    */
-  argument: object({
+  argument: object2({
     /**
      * The name of the argument
      */
@@ -51369,7 +51485,7 @@ var CompleteRequestParamsSchema = BaseRequestParamsSchema.extend({
      */
     value: string2()
   }),
-  context: object({
+  context: object2({
     /**
      * Previously-resolved variables in a URI template or prompt.
      */
@@ -51396,7 +51512,7 @@ var CompleteResultSchema = ResultSchema.extend({
     hasMore: optional(boolean2())
   })
 });
-var RootSchema = object({
+var RootSchema = object2({
   /**
    * The URI identifying the root. This *must* start with file:// for now.
    */
@@ -51614,13 +51730,13 @@ var OpenIdProviderMetadataSchema = looseObject({
   op_tos_uri: SafeUrlSchema.optional(),
   client_id_metadata_document_supported: boolean2().optional()
 });
-var OpenIdProviderDiscoveryMetadataSchema = object({
+var OpenIdProviderDiscoveryMetadataSchema = object2({
   ...OpenIdProviderMetadataSchema.shape,
   ...OAuthMetadataSchema.pick({
     code_challenge_methods_supported: true
   }).shape
 });
-var OAuthTokensSchema = object({
+var OAuthTokensSchema = object2({
   access_token: string2(),
   id_token: string2().optional(),
   // Optional for OAuth 2.1, but necessary in OpenID Connect
@@ -51629,13 +51745,13 @@ var OAuthTokensSchema = object({
   scope: string2().optional(),
   refresh_token: string2().optional()
 }).strip();
-var OAuthErrorResponseSchema = object({
+var OAuthErrorResponseSchema = object2({
   error: string2(),
   error_description: string2().optional(),
   error_uri: string2().optional()
 });
 var OptionalSafeUrlSchema = SafeUrlSchema.optional().or(literal("").transform(() => void 0));
-var OAuthClientMetadataSchema = object({
+var OAuthClientMetadataSchema = object2({
   redirect_uris: array(SafeUrlSchema),
   token_endpoint_auth_method: string2().optional(),
   grant_types: array(string2()).optional(),
@@ -51653,18 +51769,18 @@ var OAuthClientMetadataSchema = object({
   software_version: string2().optional(),
   software_statement: string2().optional()
 }).strip();
-var OAuthClientInformationSchema = object({
+var OAuthClientInformationSchema = object2({
   client_id: string2(),
   client_secret: string2().optional(),
   client_id_issued_at: number2().optional(),
   client_secret_expires_at: number2().optional()
 }).strip();
 var OAuthClientInformationFullSchema = OAuthClientMetadataSchema.merge(OAuthClientInformationSchema);
-var OAuthClientRegistrationErrorSchema = object({
+var OAuthClientRegistrationErrorSchema = object2({
   error: string2(),
   error_description: string2().optional()
 }).strip();
-var OAuthTokenRevocationRequestSchema = object({
+var OAuthTokenRevocationRequestSchema = object2({
   token: string2(),
   token_type_hint: string2().optional()
 }).strip();
@@ -54794,7 +54910,7 @@ var StreamableHTTPClientTransport = class {
 };
 
 // src/cli/commands/figma.ts
-async function secretPrompt(prompt) {
+async function secretPrompt(prompt, signal) {
   if (!process.stdin.isTTY) {
     throw new Error("Use an interactive terminal for credential entry");
   }
@@ -54806,14 +54922,14 @@ async function secretPrompt(prompt) {
   });
   const rl = createInterface({ input: process.stdin, output, terminal: true });
   try {
-    return (await rl.question("")).trim();
+    return (await rl.question("", { signal })).trim();
   } finally {
     rl.close();
     process.stderr.write("\n");
   }
 }
 async function authorizeFigma() {
-  const state = randomUUID();
+  const state = randomUUID2();
   let info;
   let tokens;
   let verifier = "";
@@ -54849,7 +54965,21 @@ ${url2.href}
     }
   };
   const serverUrl = "https://mcp.figma.com/mcp";
-  await auth(provider, { serverUrl, scope: "mcp:connect" });
+  const fetchFn = async (input, init) => {
+    const response = await fetch(input, init);
+    if (init?.method === "POST" && typeof init.body === "string") {
+      let body = {};
+      try {
+        body = JSON.parse(init.body);
+      } catch {
+      }
+      if (body.client_name === "Harmony workspace Figma" && response.status === 403) {
+        throw new Error("Figma has not approved this client. Use the Claude Code sign-in mode:\nharmony figma connect --claude-sign-in\nFallback: harmony figma connect --claude-credentials <private-file>");
+      }
+    }
+    return response;
+  };
+  await auth(provider, { serverUrl, scope: "mcp:connect", fetchFn });
   if (!tokens) {
     const code = parseFigmaRedirect(
       await secretPrompt("Paste the final redirect URL (hidden): "),
@@ -54858,7 +54988,8 @@ ${url2.href}
     await auth(provider, {
       serverUrl,
       scope: "mcp:connect",
-      authorizationCode: code
+      authorizationCode: code,
+      fetchFn
     });
   }
   const saved = tokens;
@@ -54872,7 +55003,11 @@ ${url2.href}
     token_endpoint: "https://api.figma.com/v1/oauth/token"
   };
 }
-function registerFigmaCommands(program3) {
+function registerFigmaCommands(program3, ports = {
+  prompt: secretPrompt,
+  readGrant: readClaudeFigmaGrant,
+  mint: withClaudeFigmaSignIn
+}) {
   const figma = program3.command("figma").description(
     "Workspace Figma connection (credentials are never retrievable)"
   );
@@ -54884,7 +55019,7 @@ function registerFigmaCommands(program3) {
           "Per-leg budget requires a conduction id and leg number"
         );
       }
-      const dir = join5(
+      const dir = join6(
         homedir3(),
         ".claude",
         "projects",
@@ -54892,16 +55027,16 @@ function registerFigmaCommands(program3) {
         conduction
       );
       mkdirSync(dir, { recursive: true, mode: 448 });
-      const active = join5(dir, "active"), lock = join5(dir, "lock");
+      const active = join6(dir, "active"), lock = join6(dir, "lock");
       mkdirSync(lock, { mode: 448 });
       try {
         const sourceLeg = existsSync3(active) ? readFileSync5(active, "utf8") : leg;
         if (!/^\d+$/.test(sourceLeg)) {
           throw new Error("Invalid persisted Figma budget identity");
         }
-        const file = join5(dir, `${sourceLeg}.json`);
+        const file = join6(dir, `${sourceLeg}.json`);
         if (opts.close) {
-          rmSync(active, { force: true });
+          rmSync2(active, { force: true });
           console.log("Figma logical leg budget closed; counters retained.");
           return;
         }
@@ -54926,11 +55061,11 @@ function registerFigmaCommands(program3) {
           JSON.stringify({ ...outcome, ...state, source_leg: sourceLeg })
         );
       } finally {
-        rmSync(lock, { recursive: true });
+        rmSync2(lock, { recursive: true });
       }
     }
   );
-  figma.command("context").action(async () => {
+  figma.command("context").alias("health").action(async () => {
     try {
       const ctx = await getAuthenticatedContext();
       const { data, error: error2 } = await ctx.client.rpc("figma_launch_context", {
@@ -55008,8 +55143,8 @@ function registerFigmaCommands(program3) {
       }
       const token = readMountedFigmaToken();
       if (opts.adapter === "codex") {
-        const path4 = join5(
-          process.env.CODEX_HOME ?? join5(homedir3(), ".codex"),
+        const path4 = join6(
+          process.env.CODEX_HOME ?? join6(homedir3(), ".codex"),
           "config.toml"
         );
         writeFileSync(
@@ -55017,13 +55152,13 @@ function registerFigmaCommands(program3) {
           readFileSync5(path4, "utf8") + renderFigmaMcp("codex"),
           { mode: 384 }
         );
-        chmodSync(path4, 384);
+        chmodSync2(path4, 384);
       } else if (opts.adapter === "claude-code") {
-        const path4 = join5(opts.pluginDir, ".mcp.json");
+        const path4 = join6(opts.pluginDir, ".mcp.json");
         const config2 = JSON.parse(readFileSync5(path4, "utf8"));
         config2.figma = JSON.parse(renderFigmaMcp("claude-code", token));
         writeFileSync(path4, JSON.stringify(config2), { mode: 384 });
-        chmodSync(path4, 384);
+        chmodSync2(path4, 384);
       } else throw new Error("Unknown Figma runtime adapter");
       process.stdout.write("Figma access-token-only runtime configured.\n");
     } catch {
@@ -55035,8 +55170,12 @@ function registerFigmaCommands(program3) {
   });
   figma.command("connect").description(
     "Authorize Figma in your browser and supply a REST PAT in a hidden prompt"
-  ).action(async () => {
+  ).option("--claude-credentials <file>", "Import a private isolated Claude Code credentials file").option("--claude-sign-in", "Make a fresh Figma sign-in in a throwaway pod").action(async (opts) => {
+    let saveAttempted = false;
+    let saved = false;
+    let imported = false;
     try {
+      if (opts.claudeCredentials && opts.claudeSignIn) throw new Error("Choose one Claude Code sign-in mode.");
       const ctx = await getAuthenticatedContext();
       const { data: project, error: projectError } = await ctx.client.from("projects").select("workspace_id").eq("id", ctx.projectId).single();
       if (projectError || !project) {
@@ -55054,132 +55193,168 @@ function registerFigmaCommands(program3) {
       if (current?.connections_enabled !== true) {
         throw new Error("Figma connections are not enabled");
       }
-      let grant;
-      try {
-        grant = await authorizeFigma();
-      } catch {
-        throw new Error(
-          "Figma OAuth authorization failed; retry harmony figma connect."
-        );
-      }
-      const identityClient = new Client({
-        name: "harmony-figma-connect",
-        version: "1"
-      });
-      try {
-        await identityClient.connect(
-          new StreamableHTTPClientTransport(
-            new URL("https://mcp.figma.com/mcp"),
-            {
-              requestInit: {
-                headers: { Authorization: `Bearer ${grant.access_token}` }
+      const connectWithGrant = async (grant, signal) => {
+        signal?.throwIfAborted();
+        const identityClient = new Client({
+          name: "harmony-figma-connect",
+          version: "1"
+        });
+        try {
+          await identityClient.connect(
+            new StreamableHTTPClientTransport(
+              new URL("https://mcp.figma.com/mcp"),
+              {
+                requestInit: {
+                  headers: { Authorization: `Bearer ${grant.access_token}` }
+                }
+              }
+            )
+          );
+          const who = await identityClient.callTool({
+            name: "whoami",
+            arguments: {}
+          });
+          let identity2 = who.structuredContent;
+          if (!identity2) {
+            for (const content of who.content) {
+              if (content.type === "text" && content.text) {
+                try {
+                  identity2 = JSON.parse(content.text);
+                  break;
+                } catch {
+                }
               }
             }
-          )
+          }
+          if (who.isError || !identity2?.handle || !Array.isArray(identity2.plans)) {
+            throw new Error();
+          }
+          const plans = identity2.plans.map(
+            (p) => ({
+              name: p.name,
+              seat: p.seat,
+              tier: p.tier
+            })
+          );
+          process.stderr.write(
+            `Verified Figma identity/plans: ${JSON.stringify({ handle: identity2.handle, plans })}
+`
+          );
+        } catch {
+          throw new Error(
+            "Figma whoami could not verify the candidate identity/plans"
+          );
+        } finally {
+          await identityClient.close();
+        }
+        const pat = await ports.prompt("REST personal access token (hidden): ", signal);
+        const fileKey = await ports.prompt("Library file key: ", signal);
+        const planName = await ports.prompt(
+          "Exact library-owning plan name shown by Figma: ",
+          signal
         );
-        const who = await identityClient.callTool({
-          name: "whoami",
-          arguments: {}
-        });
-        let identity2 = who.structuredContent;
-        if (!identity2) {
-          for (const content of who.content) {
-            if (content.type === "text" && content.text) {
+        if (await ports.prompt(
+          "Confirm this plan owns the library file (yes): ",
+          signal
+        ) !== "yes") {
+          throw new Error("Library plan not confirmed");
+        }
+        const input = {
+          workspace_id: project.workspace_id,
+          generation: current?.generation ?? 0,
+          grant,
+          pat,
+          library_file_key: fileKey,
+          plan_name: planName,
+          confirm_library_plan: true,
+          component_map: current?.component_map ?? {}
+        };
+        const invoke2 = async (body) => {
+          const { data, error: error2 } = await ctx.client.functions.invoke(
+            "figma-connect",
+            { body }
+          );
+          if (error2 || data?.error) {
+            let message = data?.error;
+            if (!message && error2 && "context" in error2 && error2.context instanceof Response) {
               try {
-                identity2 = JSON.parse(content.text);
-                break;
+                message = (await error2.context.json()).error;
               } catch {
               }
             }
+            if (typeof message === "string" && !imported) throw new Error(message);
+            throw new Error(
+              "Figma validation/publication failed; previous connection remains active. Check identity/library/seat. Operator: provision workspace grant, PAT and access slots with gcloud secrets create and the conditioned secretVersionAdder binding."
+            );
           }
-        }
-        if (who.isError || !identity2?.handle || !Array.isArray(identity2.plans)) {
-          throw new Error();
-        }
-        const plans = identity2.plans.map(
-          (p) => ({
-            name: p.name,
-            seat: p.seat,
-            tier: p.tier
-          })
-        );
+          return data;
+        };
+        signal?.throwIfAborted();
+        const candidate = await invoke2({
+          ...input,
+          validate_only: true,
+          confirm_low_budget: true
+        });
         process.stderr.write(
-          `Verified Figma identity/plans: ${JSON.stringify({ handle: identity2.handle, plans })}
-`
-        );
-      } catch {
-        throw new Error(
-          "Figma whoami could not verify the candidate identity/plans"
-        );
-      } finally {
-        await identityClient.close();
-      }
-      const pat = await secretPrompt("REST personal access token (hidden): ");
-      const fileKey = await secretPrompt("Library file key: ");
-      const planName = await secretPrompt(
-        "Exact library-owning plan name shown by Figma: "
-      );
-      if (await secretPrompt(
-        "Confirm this plan owns the library file (yes): "
-      ) !== "yes") {
-        throw new Error("Library plan not confirmed");
-      }
-      const input = {
-        workspace_id: project.workspace_id,
-        generation: current?.generation ?? 0,
-        grant,
-        pat,
-        library_file_key: fileKey,
-        plan_name: planName,
-        confirm_library_plan: true,
-        component_map: current?.component_map ?? {}
-      };
-      const invoke2 = async (body) => {
-        const { data, error: error2 } = await ctx.client.functions.invoke(
-          "figma-connect",
-          { body }
-        );
-        if (error2 || data?.error) {
-          let message = data?.error;
-          if (!message && error2 && "context" in error2 && error2.context instanceof Response) {
-            try {
-              message = (await error2.context.json()).error;
-            } catch {
-            }
-          }
-          if (typeof message === "string") throw new Error(message);
-          throw new Error(
-            "Figma validation/publication failed; previous connection remains active. Check identity/library/seat. Operator: provision workspace grant, PAT and access slots with gcloud secrets create and the conditioned secretVersionAdder binding."
-          );
-        }
-        return data;
-      };
-      const candidate = await invoke2({
-        ...input,
-        validate_only: true,
-        confirm_low_budget: true
-      });
-      process.stderr.write(
-        `Figma edits are made as @${candidate.metadata.handle}
+          `Figma edits will be made as @${candidate.metadata.handle}.
 Library: ${fileKey}; seat: ${candidate.metadata.seat}; tier: ${candidate.metadata.tier}
 `
-      );
-      if (candidate.lowBudget) {
-        process.stderr.write(
-          "Warning: View/Collab or Starter has about 20 MCP calls/month.\n"
         );
+        if (candidate.lowBudget) {
+          process.stderr.write(
+            "Warning: View/Collab or Starter has about 20 MCP calls/month.\n"
+          );
+        }
+        if (await ports.prompt("Save this workspace connection? Type yes: ", signal) !== "yes") {
+          throw new Error("Setup cancelled. No connection was saved.");
+        }
+        signal?.throwIfAborted();
+        saveAttempted = true;
+        await invoke2({ ...input, confirm_low_budget: candidate.lowBudget });
+        saved = true;
+        return candidate.metadata.handle;
+      };
+      if (opts.claudeSignIn) {
+        process.stderr.write("Connect Figma with a fresh Claude Code sign-in.\nYour everyday Claude Code login will not be used.\nIt runs in a throwaway pod that is deleted afterwards.\n");
+        if (await ports.prompt("Continue? Type yes: ") !== "yes") throw new Error("Setup cancelled. No connection was saved.");
+        imported = true;
+        const handle = await ports.mint(async (file, signal) => connectWithGrant(ports.readGrant(file), signal));
+        process.stdout.write(`Figma connection saved. Edits are made as @${handle}.
+`);
+        process.stdout.write("The workspace refresh job now owns this sign-in.\n");
+      } else if (opts.claudeCredentials) {
+        process.stderr.write("Use a fresh sign-in created only for this workspace.\nStop its Claude Code process before continuing.\n");
+        if (await ports.prompt("This is an isolated sign-in and no other process will refresh it. Type yes: ") !== "yes") throw new Error("Setup cancelled. No connection was saved.");
+        imported = true;
+        try {
+          const handle = await connectWithGrant(ports.readGrant(opts.claudeCredentials));
+          process.stdout.write(`Figma connection saved. Edits are made as @${handle}.
+`);
+        } finally {
+          process.stderr.write("After handoff, remove the imported file and its isolated config.\nDo not use this sign-in in Claude Code again.\n");
+        }
+        process.stdout.write("The workspace refresh job now owns this sign-in.\n");
+      } else {
+        let grant;
+        try {
+          grant = await authorizeFigma();
+        } catch (error2) {
+          if (error2 instanceof Error && error2.message.startsWith("Figma has not approved this client.")) throw error2;
+          throw new Error("Figma OAuth authorization failed; retry harmony figma connect.");
+        }
+        const handle = await connectWithGrant(grant);
+        process.stdout.write(`Figma connection saved. Edits are made as @${handle}.
+`);
       }
-      if (await secretPrompt("Save this workspace connection (yes): ") !== "yes") {
-        throw new Error("Connection not saved");
-      }
-      await invoke2({ ...input, confirm_low_budget: candidate.lowBudget });
-      process.stdout.write(
-        "Figma connected. Saved credentials cannot be retrieved.\n"
-      );
     } catch (error2) {
-      process.stderr.write(
-        (error2 instanceof Error ? error2.message : "Figma connect failed") + "\n"
-      );
+      let message = error2 instanceof Error ? error2.message : "Figma connect failed";
+      if (saveAttempted && !saved) {
+        message = "Could not confirm whether the connection was saved. Do not retry this import yet.\nCheck `harmony figma health` and the workspace connection before reconnecting.";
+      } else if (imported && !saved) {
+        if (message === INVALID_CLAUDE_GRANT) message += "\nNo connection was saved. Your existing connection is unchanged.\nCreate a fresh isolated sign-in and try again.";
+        else if (!message.startsWith("Setup cancelled") && !message.startsWith("Temporary sign-in cleanup")) message = "Figma sign-in validation failed. No connection was saved. Your existing connection is unchanged.\nCheck identity/library/seat and operator-provisioned slots; create a fresh isolated sign-in and try again.";
+      }
+      process.stderr.write(message + "\n");
       process.exitCode = 1;
     }
   });
@@ -55314,85 +55489,85 @@ async function observeDesignDrift(a3, token, request = fetch) {
 }
 
 // src/tools/brief-frame-schema.ts
-var object3 = (shape) => external_exports.object(shape).passthrough();
+var object4 = (shape) => external_exports.object(shape).passthrough();
 var strings = external_exports.array(external_exports.string());
 var track = external_exports.enum(["product-design", "technical-design", "ux-ui-design"]);
-var unproven = external_exports.array(object3({ item: external_exports.string(), reason: external_exports.string() }));
-var landing = object3({
+var unproven = external_exports.array(object4({ item: external_exports.string(), reason: external_exports.string() }));
+var landing = object4({
   repos: strings,
   pr_count: external_exports.number(),
   lands_in: external_exports.enum(["staging", "production", "both", "merged-main"]),
   atomicity: external_exports.enum(["single", "together", "ordered"]),
   ordering: external_exports.string().optional(),
   irreversible: strings,
-  prs: external_exports.array(object3({ repo: external_exports.string(), number: external_exports.number(), url: external_exports.string() })).optional()
+  prs: external_exports.array(object4({ repo: external_exports.string(), number: external_exports.number(), url: external_exports.string() })).optional()
 });
-var sketch = object3({
+var sketch = object4({
   file_link: external_exports.string(),
   pinned_version: external_exports.string(),
-  frames: external_exports.array(object3({ name: external_exports.string(), caption: external_exports.string() })),
+  frames: external_exports.array(object4({ name: external_exports.string(), caption: external_exports.string() })),
   preview_attachment_ids: strings,
   mcp_call_count: external_exports.number()
 });
 var floor = { floor_reviewed: strings.optional() };
 var briefFrameSchema = external_exports.discriminatedUnion("kind", [
-  object3({
+  object4({
     kind: external_exports.literal("clarify"),
     solving: external_exports.string(),
     in_scope: strings,
-    not_solving: external_exports.array(object3({ item: external_exports.string(), lands: external_exports.string() })),
+    not_solving: external_exports.array(object4({ item: external_exports.string(), lands: external_exports.string() })),
     sketch: sketch.optional(),
     ...floor
   }),
-  object3({
+  object4({
     kind: external_exports.literal("decompose"),
-    elements: external_exports.array(object3({ text: external_exports.string(), surface: external_exports.string().optional(), covers: external_exports.string().optional() })),
+    elements: external_exports.array(object4({ text: external_exports.string(), surface: external_exports.string().optional(), covers: external_exports.string().optional() })),
     coverage: external_exports.string(),
     existing_children_checked: external_exports.boolean(),
     ...floor
   }),
-  object3({
+  object4({
     kind: external_exports.literal("design"),
     track,
-    tracks: external_exports.array(object3({ track, status: external_exports.enum(["accepted", "this-brief", "pending", "not-required"]), note: external_exports.string().optional() })),
+    tracks: external_exports.array(object4({ track, status: external_exports.enum(["accepted", "this-brief", "pending", "not-required"]), note: external_exports.string().optional() })),
     reach: strings,
     not_reopened: strings.optional(),
-    derisk: object3({ run: strings, not_run: strings }).optional(),
+    derisk: object4({ run: strings, not_run: strings }).optional(),
     files_on_accept: strings.optional(),
     ...floor
   }),
-  object3({
+  object4({
     kind: external_exports.literal("plan"),
-    scope: object3({ repos: strings, surfaces: strings, has_migration: external_exports.boolean() }),
+    scope: object4({ repos: strings, surfaces: strings, has_migration: external_exports.boolean() }),
     steps: strings,
-    attestation: object3({ base_verified: external_exports.string(), derisked_by_running: external_exports.string().optional() }),
+    attestation: object4({ base_verified: external_exports.string(), derisked_by_running: external_exports.string().optional() }),
     carried_unproven: unproven,
     ac_coverage: external_exports.string(),
     landing: landing.optional(),
     design_delta: external_exports.string().optional(),
-    design_read: object3({ version_id: external_exports.string().nullable(), screens: strings, drift: external_exports.enum(["changed", "unchanged", "unchecked"]) }).optional(),
+    design_read: object4({ version_id: external_exports.string().nullable(), screens: strings, drift: external_exports.enum(["changed", "unchanged", "unchecked"]) }).optional(),
     ...floor
   }),
-  object3({
+  object4({
     kind: external_exports.literal("release"),
     act: landing,
     unproven,
-    settled_beyond_design: external_exports.array(object3({
+    settled_beyond_design: external_exports.array(object4({
       behaviour: external_exports.string().trim().min(1),
       ac: external_exports.string().trim().min(1),
       knowledge_entry_id: external_exports.string().trim().min(1)
     })).optional(),
-    evidence_status: object3({ proven_by_run: external_exports.number(), walk_at_verify: external_exports.number(), unproven: external_exports.number(), total: external_exports.number(), detail: external_exports.string().optional() }),
+    evidence_status: object4({ proven_by_run: external_exports.number(), walk_at_verify: external_exports.number(), unproven: external_exports.number(), total: external_exports.number(), detail: external_exports.string().optional() }),
     // These values are overwritten by compose; callers need not author them.
     risk_classes: strings.optional(),
     contradiction_signal: external_exports.unknown().optional(),
     pr_review_state: external_exports.string().optional(),
     ...floor
   }),
-  object3({
+  object4({
     kind: external_exports.literal("verify"),
     environment: external_exports.enum(["staging", "production", "merged-main", "local"]),
-    criteria: external_exports.array(object3({
+    criteria: external_exports.array(object4({
       ac_id: external_exports.string(),
       text: external_exports.string(),
       checked: external_exports.boolean(),
@@ -55402,12 +55577,12 @@ var briefFrameSchema = external_exports.discriminatedUnion("kind", [
       carried_to: external_exports.string().optional(),
       backed_by: external_exports.string().optional()
     })),
-    steps: external_exports.array(object3({
+    steps: external_exports.array(object4({
       ref: external_exports.string(),
       action: external_exports.string(),
       expect: external_exports.string(),
       covers: strings,
-      design_node: object3({
+      design_node: object4({
         node_id: external_exports.string(),
         name: external_exports.string(),
         caption: external_exports.string().optional(),
@@ -55418,7 +55593,7 @@ var briefFrameSchema = external_exports.discriminatedUnion("kind", [
     design_comparison: external_exports.string().optional(),
     exempt_reason: external_exports.string().optional(),
     evidence_status: external_exports.string(),
-    bounded_accept: object3({ open_ac_ids: strings, closes_when: external_exports.string() }).optional()
+    bounded_accept: object4({ open_ac_ids: strings, closes_when: external_exports.string() }).optional()
   })
 ]);
 function validateBriefFrame(frame, expectedKind) {
@@ -63439,7 +63614,7 @@ var twoStarNoDot = "(?:(?!(?:\\/|^)\\.).)*?";
 var filter = (pattern2, options = {}) => (p) => minimatch(p, pattern2, options);
 minimatch.filter = filter;
 var ext = (a3, b = {}) => Object.assign({}, a3, b);
-var defaults = (def) => {
+var defaults2 = (def) => {
   if (!def || typeof def !== "object" || !Object.keys(def).length) {
     return minimatch;
   }
@@ -63475,7 +63650,7 @@ var defaults = (def) => {
     GLOBSTAR
   });
 };
-minimatch.defaults = defaults;
+minimatch.defaults = defaults2;
 var braceExpand = (pattern2, options = {}) => {
   assertValidPattern(pattern2);
   if (options.nobrace || !/\{(?:(?!\{).)*\}/.test(pattern2)) {
@@ -64317,7 +64492,7 @@ async function syncProse(client, projectId, root, declarationPath = ".harmony/pr
 // src/cli/prose-init.ts
 var import_yaml2 = __toESM(require_dist2(), 1);
 import { existsSync as existsSync4, lstatSync, mkdirSync as mkdirSync2, unlinkSync, writeFileSync as writeFileSync2 } from "node:fs";
-import { dirname as dirname3, join as join6, resolve } from "node:path";
+import { dirname as dirname3, join as join7, resolve } from "node:path";
 var RELEASED_PROSE_CLI = "c72d5d36b876e684ca07f4f36e90418167843653";
 var optionsSchema = external_exports.object({
   repository: external_exports.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/, "Use GitHub owner/repo"),
@@ -64369,7 +64544,7 @@ function initProseSources(root, input) {
   for (const file of files) {
     const parts = file.path.split("/");
     for (let i = 1; i <= parts.length; i++) {
-      const path4 = join6(base2, ...parts.slice(0, i));
+      const path4 = join7(base2, ...parts.slice(0, i));
       try {
         const stat = lstatSync(path4);
         if (stat.isSymbolicLink()) throw new Error(`Refusing symlink: ${path4}`);
@@ -64384,7 +64559,7 @@ function initProseSources(root, input) {
   const written = [];
   try {
     for (const file of files) {
-      const target = join6(base2, file.path);
+      const target = join7(base2, file.path);
       mkdirSync2(dirname3(target), { recursive: true });
       writeFileSync2(target, file.content, { flag: "wx" });
       written.push(target);
@@ -64819,7 +64994,7 @@ import { readFileSync as readFileSync8 } from "node:fs";
 
 // src/tools/knowledge-repair.ts
 import { execFileSync as execFileSync3 } from "node:child_process";
-import { randomUUID as randomUUID2 } from "node:crypto";
+import { randomUUID as randomUUID3 } from "node:crypto";
 var previewSelectorsSchema = external_exports.object({
   tag: external_exports.string().trim().min(1).optional(),
   type: external_exports.string().trim().min(1).optional(),
@@ -64887,7 +65062,7 @@ async function previewMetadataRepair(client, projectId, options = {}) {
   const manifest = {
     version: 1,
     project_id: projectId,
-    manifest_id: randomUUID2(),
+    manifest_id: randomUUID3(),
     entries,
     counts: repairCounts(entries),
     preview: { selectors, complete: false, pages: 0 }
@@ -65061,15 +65236,15 @@ async function tagReleasedKnowledge(client, projectId, taskId, repo, pr) {
 }
 
 // src/cli/metadata-preview.ts
-import { linkSync, renameSync as renameSync2, rmSync as rmSync2, writeFileSync as writeFileSync4 } from "node:fs";
-import { randomUUID as randomUUID3 } from "node:crypto";
+import { linkSync, renameSync as renameSync2, rmSync as rmSync3, writeFileSync as writeFileSync4 } from "node:fs";
+import { randomUUID as randomUUID4 } from "node:crypto";
 async function previewMetadataRepairToFile(client, projectId, file, selectors = {}, progress = (line) => process.stderr.write(`${line}
 `)) {
   let published = false;
   const manifest = await previewMetadataRepair(client, projectId, {
     ...selectors,
     onCheckpoint(snapshot) {
-      const temporary = `${file}.${randomUUID3()}.tmp`;
+      const temporary = `${file}.${randomUUID4()}.tmp`;
       try {
         writeFileSync4(temporary, `${JSON.stringify(snapshot, null, 2)}
 `, { flag: "wx", mode: 384 });
@@ -65079,7 +65254,7 @@ async function previewMetadataRepairToFile(client, projectId, file, selectors = 
           published = true;
         }
       } finally {
-        rmSync2(temporary, { force: true });
+        rmSync3(temporary, { force: true });
       }
       progress(`Metadata preview: ${snapshot.counts.entries} entries, ${snapshot.preview.pages} pages \u2014 ${snapshot.preview.complete ? `complete (${snapshot.preview.stopped_by})` : "in progress"}; review file: ${file}`);
     }
@@ -65492,23 +65667,23 @@ async function getProjectConductionDefaults(client, projectId) {
   const row = data;
   return row?.conduction_defaults ?? {};
 }
-function fillRunConfigDefaults(callerRunConfig, defaults2) {
+function fillRunConfigDefaults(callerRunConfig, defaults3) {
   const merged = { ...callerRunConfig };
   let changed = false;
-  if (!("model" in merged) && defaults2.model !== void 0) {
-    merged.model = { ...callerRunConfig?.model, default: defaults2.model };
+  if (!("model" in merged) && defaults3.model !== void 0) {
+    merged.model = { ...callerRunConfig?.model, default: defaults3.model };
     changed = true;
   }
-  if (!("session_resume" in merged) && defaults2.session_resume !== void 0) {
-    merged.session_resume = defaults2.session_resume;
+  if (!("session_resume" in merged) && defaults3.session_resume !== void 0) {
+    merged.session_resume = defaults3.session_resume;
     changed = true;
   }
-  if (!("auto_approve_gates" in merged) && defaults2.auto_approve_gates !== void 0) {
-    merged.auto_approve_gates = [...defaults2.auto_approve_gates];
+  if (!("auto_approve_gates" in merged) && defaults3.auto_approve_gates !== void 0) {
+    merged.auto_approve_gates = [...defaults3.auto_approve_gates];
     changed = true;
   }
-  if (!("agent" in merged) && defaults2.agent && typeof defaults2.agent === "object" && typeof defaults2.agent.adapter === "string" && defaults2.agent.adapter.trim() !== "") {
-    merged.agent = { adapter: defaults2.agent.adapter };
+  if (!("agent" in merged) && defaults3.agent && typeof defaults3.agent === "object" && typeof defaults3.agent.adapter === "string" && defaults3.agent.adapter.trim() !== "") {
+    merged.agent = { adapter: defaults3.agent.adapter };
     changed = true;
   }
   return changed ? merged : callerRunConfig;
@@ -66548,8 +66723,8 @@ function registerConductCommand(program3) {
           }
           const flagRunConfig = Object.keys(runConfigInput).length > 0 ? RunConfigSchema.parse(runConfigInput) : void 0;
           const callerRunConfig = inheritedBase !== void 0 ? mergeRunConfig(inheritedBase, flagRunConfig) : flagRunConfig;
-          const defaults2 = await getProjectConductionDefaults(ctx.client, ctx.projectId);
-          const filledRunConfig = fillRunConfigDefaults(callerRunConfig, defaults2);
+          const defaults3 = await getProjectConductionDefaults(ctx.client, ctx.projectId);
+          const filledRunConfig = fillRunConfigDefaults(callerRunConfig, defaults3);
           await assertRunConfigRuntime(ctx.client, filledRunConfig);
           return await createConduction(ctx.client, {
             task_id: taskId,
@@ -66619,7 +66794,7 @@ function registerConfigCommands(program3) {
 
 // src/cli/commands/conductor-config.ts
 import { execFile } from "node:child_process";
-import { chmodSync as chmodSync4, existsSync as fsExistsSync3, mkdirSync as mkdirSync5, readFileSync as fsReadFileSync3, writeFileSync as writeFileSync8 } from "node:fs";
+import { chmodSync as chmodSync5, existsSync as fsExistsSync3, mkdirSync as mkdirSync5, readFileSync as fsReadFileSync3, writeFileSync as writeFileSync8 } from "node:fs";
 import { dirname as dirname7, resolve as resolve6 } from "node:path";
 
 // src/config/conductor-migrate.ts
@@ -66740,7 +66915,7 @@ function buildMigration(input) {
 
 // src/config/conductor-project-source.ts
 import { createHash as createHash3 } from "node:crypto";
-import { chmodSync as chmodSync2, mkdirSync as mkdirSync3, readFileSync as readFileSync10, renameSync as renameSync3, rmSync as rmSync3, writeFileSync as writeFileSync6 } from "node:fs";
+import { chmodSync as chmodSync3, mkdirSync as mkdirSync3, readFileSync as readFileSync10, renameSync as renameSync3, rmSync as rmSync4, writeFileSync as writeFileSync6 } from "node:fs";
 import { dirname as dirname4 } from "node:path";
 
 // src/config/github-app-token.ts
@@ -66864,10 +67039,10 @@ function writeSnapshot(path4, snap) {
   try {
     writeFileSync6(tmp, `${JSON.stringify(snap, null, 2)}
 `, { mode: 384 });
-    chmodSync2(tmp, 384);
+    chmodSync3(tmp, 384);
     renameSync3(tmp, path4);
   } catch (err) {
-    rmSync3(tmp, { force: true });
+    rmSync4(tmp, { force: true });
     throw err;
   }
 }
@@ -66924,7 +67099,7 @@ ${new ConductorConfigError(v2.issues).message}`);
 }
 
 // src/cli/commands/conductor-lifecycle.ts
-import { dirname as dirname6, join as join12 } from "node:path";
+import { dirname as dirname6, join as join13 } from "node:path";
 
 // src/daemon/conductor-board.ts
 var holderPrefix = (host, pid) => `${host}:${pid}:`;
@@ -66966,7 +67141,7 @@ function classifyLeases(rows, host, runningPid, freshMs, nowMs) {
 }
 
 // src/daemon/conductor-process.ts
-import { basename as basename3, isAbsolute as isAbsolute2, join as join7, resolve as resolve4 } from "node:path";
+import { basename as basename3, isAbsolute as isAbsolute2, join as join8, resolve as resolve4 } from "node:path";
 function parsePsOutput(text4) {
   const out = [];
   for (const line of text4.split("\n")) {
@@ -67034,7 +67209,7 @@ function daemonCandidates(procs) {
   return out;
 }
 function matchConductors(procs, opts) {
-  const want = resolve4(join7(opts.pluginDir, "dist", "bin", "daemon.js"));
+  const want = resolve4(join8(opts.pluginDir, "dist", "bin", "daemon.js"));
   const out = [];
   for (const c of daemonCandidates(procs)) {
     let script;
@@ -67055,7 +67230,7 @@ function needsCwd(procs) {
 }
 
 // src/daemon/supervisor-control.ts
-import { join as join8 } from "node:path";
+import { join as join9 } from "node:path";
 
 // src/daemon/supervisor.ts
 var LAUNCHD_SERVICE_NAME = "com.ycomplex.harmony-daemon";
@@ -67063,9 +67238,9 @@ var LAUNCHD_SERVICE_NAME = "com.ycomplex.harmony-daemon";
 // src/daemon/supervisor-control.ts
 var LAUNCHD_LABEL = LAUNCHD_SERVICE_NAME;
 var SYSTEMD_UNIT = "harmony-conductor.service";
-var agentPlistPath = (home) => join8(home, "Library", "LaunchAgents", `${LAUNCHD_LABEL}.plist`);
+var agentPlistPath = (home) => join9(home, "Library", "LaunchAgents", `${LAUNCHD_LABEL}.plist`);
 var daemonPlistPath = () => `/Library/LaunchDaemons/${LAUNCHD_LABEL}.plist`;
-var systemdUnitPath = (home) => join8(home, ".config", "systemd", "user", SYSTEMD_UNIT);
+var systemdUnitPath = (home) => join9(home, ".config", "systemd", "user", SYSTEMD_UNIT);
 var launchdTarget = (kind, uid) => kind === "launchd-agent" ? `gui/${uid}/${LAUNCHD_LABEL}` : `system/${LAUNCHD_LABEL}`;
 async function detectSupervisorState(deps) {
   if (deps.platform === "darwin") {
@@ -67117,7 +67292,7 @@ function fillTemplate(template, values) {
   });
 }
 var xmlEscape = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
-var launcherPath = (pluginDir) => join8(pluginDir, "container", "conductor-launch.sh");
+var launcherPath = (pluginDir) => join9(pluginDir, "container", "conductor-launch.sh");
 function renderLaunchdPlist(template, o) {
   const args = ["/bin/bash", launcherPath(o.pluginDir), ...o.launcherArgs];
   return fillTemplate(template, {
@@ -67172,10 +67347,10 @@ var Out = class {
 var EXIT = { ok: 0, failure: 1, usage: 2, inFlight: 3, notAdopted: 4 };
 
 // src/cli/commands/conductor-registry-cli.ts
-import { join as join11 } from "node:path";
+import { join as join12 } from "node:path";
 
 // src/cli/commands/conductor-preflight.ts
-import { basename as basename4, join as join10 } from "node:path";
+import { basename as basename4, join as join11 } from "node:path";
 
 // src/config/conductor-secrets.ts
 import { readFileSync as readFileSync11 } from "node:fs";
@@ -67257,7 +67432,7 @@ async function resolveConductorSecrets(deps) {
 
 // src/config/gcp-project.ts
 import { existsSync as fsExistsSync2, readFileSync as fsReadFileSync2 } from "node:fs";
-import { join as join9 } from "node:path";
+import { join as join10 } from "node:path";
 var GCP_PROJECT_UNSET = 'no GCP project is configured: set "gcp": { "project": "<gcp-project-id>" } in .harmony/conductor.json (or in ~/.harmony/conductor-host.json)';
 function resolveGcpProject(deps) {
   const exported = deps.env.CLOUDSDK_CORE_PROJECT;
@@ -67281,7 +67456,7 @@ function resolveGcpProject(deps) {
   }
   if (merged?.gcp?.project) return merged.gcp.project;
   try {
-    const local = join9(deps.cwd ?? process.cwd(), CONDUCTOR_PROJECT_PATH);
+    const local = join10(deps.cwd ?? process.cwd(), CONDUCTOR_PROJECT_PATH);
     if (exists(local)) {
       const v2 = validateProjectFileText(CONDUCTOR_PROJECT_PATH, read(local));
       if (v2.ok) return v2.value.gcp?.project;
@@ -67305,8 +67480,8 @@ async function sourceEnvFile(deps, file) {
 }
 async function loadSettings(deps, opts = {}) {
   const paths = resolveConductorPaths(deps.env);
-  const envPath = join10(paths.home, "conductor.env");
-  const legacyPath = join10(paths.home, "daemon.env");
+  const envPath = join11(paths.home, "conductor.env");
+  const legacyPath = join11(paths.home, "daemon.env");
   let envFile = null;
   const fileEnv = {};
   let envFileError;
@@ -67380,9 +67555,9 @@ async function authPluginFix(deps, env2) {
     if (r.code === 0) root = r.stdout.trim();
   } catch {
   }
-  if (!root || !deps.existsSync(join10(root, "bin", AUTH_PLUGIN))) return install;
+  if (!root || !deps.existsSync(join11(root, "bin", AUTH_PLUGIN))) return install;
   const ext2 = basename4(env2.SHELL ?? "") === "zsh" ? "zsh" : "bash";
-  return `${AUTH_PLUGIN} is installed at ${join10(root, "bin")} but is not on PATH (\`gcloud components install\` reports up to date and does not add it): run \`source ${join10(root, `path.${ext2}.inc`)}\` and add that line to your shell profile`;
+  return `${AUTH_PLUGIN} is installed at ${join11(root, "bin")} but is not on PATH (\`gcloud components install\` reports up to date and does not add it): run \`source ${join11(root, `path.${ext2}.inc`)}\` and add that line to your shell profile`;
 }
 function missingTokenReason(deps, s) {
   const hostFile = s.paths.hostFile;
@@ -67490,7 +67665,7 @@ var failedNames = (checks) => checks.filter((c) => !c.ok).map((c) => c.name);
 var REGISTRY_ABSENT = "registry not deployed on this project";
 function pluginVersion(deps, pluginDir) {
   try {
-    const v2 = JSON.parse(deps.readFileSync(join11(pluginDir, ".claude-plugin", "plugin.json"))).version;
+    const v2 = JSON.parse(deps.readFileSync(join12(pluginDir, ".claude-plugin", "plugin.json"))).version;
     return v2 || "unknown";
   } catch {
     return "unknown";
@@ -67586,7 +67761,7 @@ async function runKubeRestart(deps, opts, onLine) {
   const container = deps.env.HARMONY_CONDUCTOR_CONTAINER || KUBE_CONTAINER;
   const versionBefore = pluginVersion(deps, deps.env.HARMONY_PLUGIN_DIR || deps.cliPluginDir);
   const base2 = { remote_kube: true, action, plugin_version_before: versionBefore };
-  const fail2 = async (reason2, data2 = {}) => {
+  const fail3 = async (reason2, data2 = {}) => {
     out.err(reason2);
     const { line: line2, note: note2 } = await completeRequest(deps, void 0, requestId, "failed", reason2, { ...base2, ...data2 });
     out.line(line2);
@@ -67594,30 +67769,30 @@ async function runKubeRestart(deps, opts, onLine) {
   };
   out.line(`Remote conductor: ${action} request ${requestId} \u2014 patching deployment ${KUBE_DEPLOYMENT} in namespace ${KUBE_NAMESPACE} (no git pull, no local restart).`);
   const got = await kubectl(deps, target, ["get", deployment], ["-o", "json"]);
-  if (got.code === 127) return fail2("kubectl is not installed in this container; the Deployment was not changed");
-  if (got.code !== 0) return fail2(`could not read the Deployment: ${firstLine(got.stderr || got.stdout)}. The running conductor was left untouched.`);
+  if (got.code === 127) return fail3("kubectl is not installed in this container; the Deployment was not changed");
+  if (got.code !== 0) return fail3(`could not read the Deployment: ${firstLine(got.stderr || got.stdout)}. The running conductor was left untouched.`);
   let currentImage;
   try {
     const containers = JSON.parse(got.stdout).spec?.template?.spec?.containers ?? [];
     currentImage = (containers.find((c) => c.name === container) ?? (containers.length === 1 ? containers[0] : void 0))?.image;
   } catch {
   }
-  if (!currentImage) return fail2(`the Deployment has no container named "${container}" (set HARMONY_CONDUCTOR_CONTAINER); it was not changed`);
+  if (!currentImage) return fail3(`the Deployment has no container named "${container}" (set HARMONY_CONDUCTOR_CONTAINER); it was not changed`);
   out.line(`  current image: ${currentImage}`);
   let newImage = null;
   let versionAfter = versionBefore;
   if (action === "update") {
     const image = deps.env.HARMONY_CONDUCTOR_IMAGE;
     const channel = channelFromPosture(deps.env.HARMONY_PLUGIN_POSTURE);
-    if (!image) return fail2("HARMONY_CONDUCTOR_IMAGE is not set (the Artifact Registry path of the conductor image); the Deployment was not changed");
-    if (!channel) return fail2(`cannot tell the update channel: HARMONY_PLUGIN_POSTURE is ${deps.env.HARMONY_PLUGIN_POSTURE ? `"${deps.env.HARMONY_PLUGIN_POSTURE}"` : "not set"}; the Deployment was not changed`);
+    if (!image) return fail3("HARMONY_CONDUCTOR_IMAGE is not set (the Artifact Registry path of the conductor image); the Deployment was not changed");
+    if (!channel) return fail3(`cannot tell the update channel: HARMONY_PLUGIN_POSTURE is ${deps.env.HARMONY_PLUGIN_POSTURE ? `"${deps.env.HARMONY_PLUGIN_POSTURE}"` : "not set"}; the Deployment was not changed`);
     const tags = await deps.exec("gcloud", ["artifacts", "docker", "tags", "list", image, "--format=json"], { env: deps.env });
-    if (tags.code !== 0) return fail2(`could not list the image tags of ${image}: ${tags.code === 127 ? "gcloud is not installed" : firstLine(tags.stderr || tags.stdout)}. The Deployment was not changed.`);
+    if (tags.code !== 0) return fail3(`could not list the image tags of ${image}: ${tags.code === 127 ? "gcloud is not installed" : firstLine(tags.stderr || tags.stdout)}. The Deployment was not changed.`);
     let version5;
     try {
       version5 = newestVersionTag(tags.stdout, channel);
     } catch (err) {
-      return fail2(`${err instanceof Error ? err.message : String(err)}. The Deployment was not changed.`);
+      return fail3(`${err instanceof Error ? err.message : String(err)}. The Deployment was not changed.`);
     }
     newImage = `${image}:${version5}`;
     versionAfter = pluginVersionOfTag(version5);
@@ -67638,7 +67813,7 @@ async function runKubeRestart(deps, opts, onLine) {
     return out.result(EXIT.ok, { ...data, restarted: false, request: { id: requestId, result: "done", completion: note2 } });
   }
   const patch = newImage ? await kubectl(deps, target, ["set", "image", deployment, `${container}=${newImage}`]) : await kubectl(deps, target, ["rollout", "restart", deployment]);
-  if (patch.code !== 0) return fail2(`${newImage ? "kubectl set image" : "kubectl rollout restart"} failed: ${firstLine(patch.stderr || patch.stdout)}. The running conductor was left untouched.`, data);
+  if (patch.code !== 0) return fail3(`${newImage ? "kubectl set image" : "kubectl rollout restart"} failed: ${firstLine(patch.stderr || patch.stdout)}. The running conductor was left untouched.`, data);
   out.line(newImage ? `  set image ${container}=${newImage}` : "  rollout restart issued");
   out.line(`  waiting for the rollout (up to ${ROLLOUT_TIMEOUT})`);
   const status = await kubectl(deps, target, ["rollout", "status", deployment], [`--timeout=${ROLLOUT_TIMEOUT}`]);
@@ -67747,8 +67922,8 @@ async function runStopRemote(deps, opts = {}, onLine) {
 }
 
 // src/cli/commands/conductor-lifecycle-deps.ts
-import { spawn } from "node:child_process";
-import { chmodSync as chmodSync3, closeSync, existsSync as existsSync5, mkdirSync as mkdirSync4, openSync, readFileSync as readFileSync12, readlinkSync, rmSync as rmSync4, writeFileSync as writeFileSync7 } from "node:fs";
+import { spawn as spawn2 } from "node:child_process";
+import { chmodSync as chmodSync4, closeSync as closeSync2, existsSync as existsSync5, mkdirSync as mkdirSync4, openSync as openSync2, readFileSync as readFileSync12, readlinkSync, rmSync as rmSync5, writeFileSync as writeFileSync7 } from "node:fs";
 import { homedir as homedir4, hostname as hostname2, userInfo } from "node:os";
 import { dirname as dirname5, resolve as resolve5 } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
@@ -68177,7 +68352,7 @@ function defaultLifecycleDeps() {
       }
     };
     try {
-      const child = spawn(file, args, {
+      const child = spawn2(file, args, {
         stdio: opts.interactive ? "inherit" : ["ignore", "pipe", "pipe"],
         env: { ...process.env, ...opts.env ?? {} },
         cwd: opts.cwd
@@ -68230,9 +68405,9 @@ function defaultLifecycleDeps() {
     },
     spawnDetached: (file, args, o) => {
       mkdirSync4(dirname5(o.logPath), { recursive: true });
-      const fd = openSync(o.logPath, "a");
+      const fd = openSync2(o.logPath, "a");
       try {
-        const child = spawn(file, args, {
+        const child = spawn2(file, args, {
           detached: true,
           stdio: ["ignore", fd, fd],
           env: { ...process.env, ...o.env },
@@ -68242,19 +68417,19 @@ function defaultLifecycleDeps() {
         if (child.pid === void 0) throw new Error(`could not start ${file}`);
         return child.pid;
       } finally {
-        closeSync(fd);
+        closeSync2(fd);
       }
     },
     existsSync: existsSync5,
     readFileSync: (p) => readFileSync12(p, "utf8"),
     writeFileSync: (p, text4, mode) => {
       writeFileSync7(p, text4, { mode });
-      chmodSync3(p, mode);
+      chmodSync4(p, mode);
     },
     mkdirSync: (p) => {
       mkdirSync4(p, { recursive: true });
     },
-    rmSync: (p) => rmSync4(p, { force: true }),
+    rmSync: (p) => rmSync5(p, { force: true }),
     readBoard: async (env2) => {
       const token = env2.HARMONY_API_TOKEN;
       if (!token) throw new Error("HARMONY_API_TOKEN is not set");
@@ -68298,7 +68473,7 @@ function timingFromEnv(env2) {
     freshMs: n("HARMONY_SWITCH_FRESH_S", 120) * 1e3
   };
 }
-var logPathOf = (s) => join12(s.paths.home, "conductor.out.log");
+var logPathOf = (s) => join13(s.paths.home, "conductor.out.log");
 async function findConductors(deps, s) {
   const procs = await deps.listProcesses();
   const cwdByPid = /* @__PURE__ */ new Map();
@@ -68546,11 +68721,11 @@ async function runStart(deps, opts = {}, onLine) {
   try {
     deps.mkdirSync(dirname6(logPath));
     if (deps.platform === "darwin") {
-      const template = deps.readFileSync(join12(s.pluginDir, LAUNCHD_TEMPLATE));
+      const template = deps.readFileSync(join13(s.pluginDir, LAUNCHD_TEMPLATE));
       if (mode === "at-boot") {
         kind = "launchd-daemon";
         unitPath = daemonPlistPath();
-        const staged = join12(s.paths.home, "conductor-launchd.plist.staged");
+        const staged = join13(s.paths.home, "conductor-launchd.plist.staged");
         deps.writeFileSync(staged, renderLaunchdPlist(template, { ...renderOpts, userName: deps.username }), 420);
         cmds = installCommands(kind, deps.uid, { agentPlist: unitPath, staged });
         out.line(`Installing a LaunchDaemon (${unitPath}) that starts at boot as ${deps.username}; sudo will ask for your password once.`);
@@ -68563,7 +68738,7 @@ async function runStart(deps, opts = {}, onLine) {
         out.line(`Installed the LaunchAgent ${unitPath}.`);
       }
     } else {
-      const template = deps.readFileSync(join12(s.pluginDir, SYSTEMD_TEMPLATE));
+      const template = deps.readFileSync(join13(s.pluginDir, SYSTEMD_TEMPLATE));
       kind = "systemd-user";
       unitPath = systemdUnitPath(deps.home);
       deps.mkdirSync(dirname6(unitPath));
@@ -68578,7 +68753,7 @@ async function runStart(deps, opts = {}, onLine) {
   if (!await runSupervisorCommands(deps, cmds, out)) {
     return out.result(EXIT.failure, { error: out.errLines[0], started: false, supervisor: kind });
   }
-  if (mode === "at-boot") deps.rmSync(join12(s.paths.home, "conductor-launchd.plist.staged"));
+  if (mode === "at-boot") deps.rmSync(join13(s.paths.home, "conductor-launchd.plist.staged"));
   const deadline = deps.now() + 3e4;
   let started = [];
   while (deps.now() < deadline) {
@@ -68788,8 +68963,8 @@ async function restartLocal(deps, opts, onLine, ctx) {
       return out.result(EXIT.failure, { error: out.errLines[0], signalled: false, plugin_version_before: versionBefore });
     }
     versionAfter = pluginVersion(deps, s.pluginDir);
-    if (!deps.existsSync(join12(s.pluginDir, "dist", "bin", "daemon.js"))) {
-      out.err(`after the pull ${join12(s.pluginDir, "dist", "bin", "daemon.js")} does not exist \u2014 the channel branch carries no built bundle. The running conductor was left untouched.`);
+    if (!deps.existsSync(join13(s.pluginDir, "dist", "bin", "daemon.js"))) {
+      out.err(`after the pull ${join13(s.pluginDir, "dist", "bin", "daemon.js")} does not exist \u2014 the channel branch carries no built bundle. The running conductor was left untouched.`);
       return out.result(EXIT.failure, { error: out.errLines[0], signalled: false, plugin_version_before: versionBefore });
     }
     out.line(versionAfter === versionBefore ? `  plugin ${versionBefore} (already the channel's latest)` : `  plugin ${versionBefore} -> ${versionAfter}`);
@@ -68909,7 +69084,7 @@ function defaultCliDeps() {
     secretExists: gcloudSecretExists
   };
 }
-var fail = (message, extra = {}) => ({
+var fail2 = (message, extra = {}) => ({
   exitCode: 1,
   lines: [],
   errLines: [message],
@@ -68935,18 +69110,18 @@ async function runSync(deps) {
   const paths = resolveConductorPaths(deps.env);
   const { host, issues } = readHostFile(deps, paths.hostFile);
   if (issues.length) {
-    return fail(issues.map(formatConfigIssue).join("\n"), { issues });
+    return fail2(issues.map(formatConfigIssue).join("\n"), { issues });
   }
   let target;
   try {
     target = resolveConfigRepo({ hostFile: host, env: deps.env });
   } catch (err) {
-    if (err instanceof ConductorConfigError) return fail(err.message, { issues: err.issues });
+    if (err instanceof ConductorConfigError) return fail2(err.message, { issues: err.issues });
     throw err;
   }
   if (!target) {
     const issue2 = missingConfigRepoIssue();
-    return fail(formatConfigIssue(issue2), { issues: [issue2] });
+    return fail2(formatConfigIssue(issue2), { issues: [issue2] });
   }
   const tokenProvider = createGithubTokenProvider({
     env: deps.env,
@@ -68955,7 +69130,7 @@ async function runSync(deps) {
     appOverride: host?.github_app
   });
   if (!tokenProvider) {
-    return fail(
+    return fail2(
       `no GitHub credential: cannot read the project file. Fix: add github_app { app_id, installation_id, private_key_path } to ${paths.hostFile}, or export GH_TOKEN for a one-off sync`
     );
   }
@@ -69014,8 +69189,8 @@ async function runMigrate(deps, opts) {
     };
     migration = buildMigration({ legacyDeployment: legacy, env: deps.env, profileName: opts.profile, secretNames });
   } catch (err) {
-    if (err instanceof ConductorConfigError) return fail(`${err.message}`, { issues: err.issues });
-    return fail(err instanceof Error ? err.message : String(err));
+    if (err instanceof ConductorConfigError) return fail2(`${err.message}`, { issues: err.issues });
+    return fail2(err instanceof Error ? err.message : String(err));
   }
   const secretProject = migration.projectFile.gcp?.project;
   const secretChecks = [];
@@ -69046,25 +69221,25 @@ async function runMigrate(deps, opts) {
   const written = [];
   if (opts.write) {
     if (!outProject) {
-      return fail("--write needs --out-project <path> (there is no implicit default: the project file belongs in config_repo, not in the current directory)");
+      return fail2("--write needs --out-project <path> (there is no implicit default: the project file belongs in config_repo, not in the current directory)");
     }
     const targets = [outProject, outHost];
-    if (outProject === outHost) return fail("--out-project and --out-host name the same file");
+    if (outProject === outHost) return fail2("--out-project and --out-host name the same file");
     for (const t of targets) {
       if (t === resolve6(legacyPath)) {
-        return fail(`refusing to write ${t}: it is the legacy deployment config, which migrate never modifies`);
+        return fail2(`refusing to write ${t}: it is the legacy deployment config, which migrate never modifies`);
       }
     }
     const existing = targets.filter((t) => deps.existsSync(t));
     if (existing.length && !opts.force) {
-      return fail(`refusing to overwrite ${existing.join(", ")} (pass --force to replace it; nothing was written)`);
+      return fail2(`refusing to overwrite ${existing.join(", ")} (pass --force to replace it; nothing was written)`);
     }
     mkdirSync5(dirname7(outProject), { recursive: true });
     writeFileSync8(outProject, projectText, { mode: 420 });
     written.push(outProject);
     mkdirSync5(dirname7(outHost), { recursive: true });
     writeFileSync8(outHost, hostText, { mode: 384 });
-    chmodSync4(outHost, 384);
+    chmodSync5(outHost, 384);
     written.push(outHost);
   }
   const lines = [];
@@ -69297,7 +69472,7 @@ import { execFile as execFile2 } from "node:child_process";
 
 // src/daemon/conductor-logger.ts
 import { homedir as homedir5 } from "node:os";
-import { dirname as dirname8, join as join13 } from "node:path";
+import { dirname as dirname8, join as join14 } from "node:path";
 
 // src/daemon/log-shipper.ts
 var PERMISSION_RETRY_MS = 5 * 6e4;
@@ -69307,7 +69482,7 @@ var TOKEN_TTL_MS = 50 * 6e4;
 var ROTATE_BYTES = 10 * 1024 * 1024;
 var ROTATE_KEEP = 5;
 function resolveConductorLogPath(env2) {
-  return env2.HARMONY_CONDUCTOR_LOG || join13(env2.HARMONY_HOME || join13(homedir5(), ".harmony"), "logs", "conductor.log");
+  return env2.HARMONY_CONDUCTOR_LOG || join14(env2.HARMONY_HOME || join14(homedir5(), ".harmony"), "logs", "conductor.log");
 }
 
 // src/cli/commands/conductor-logs.ts
@@ -69591,7 +69766,7 @@ import { existsSync as existsSync7, mkdirSync as mkdirSync7, readFileSync as rea
 import {
   accessSync,
   constants as fsConstants,
-  chmodSync as chmodSync5,
+  chmodSync as chmodSync6,
   copyFileSync,
   existsSync as existsSync6,
   lstatSync as lstatSync2,
@@ -69605,7 +69780,7 @@ import {
   writeFileSync as writeFileSync9,
   appendFileSync
 } from "node:fs";
-import { join as join14, resolve as resolve7 } from "node:path";
+import { join as join15, resolve as resolve7 } from "node:path";
 
 // src/agents/hooks.ts
 var HARMONY_HOOKS = {
@@ -69718,13 +69893,13 @@ function collectInstructionSources(input) {
   const ws = resolve7(input.workspaceDir);
   const plugin = resolve7(input.pluginDir);
   const candidates = [
-    { label: "workspace/CLAUDE.md", path: join14(ws, "CLAUDE.md") },
-    { label: "plugin/CLAUDE.md", path: join14(plugin, "CLAUDE.md") },
-    { label: "web/CLAUDE.md", path: join14(ws, "web", "CLAUDE.md") }
+    { label: "workspace/CLAUDE.md", path: join15(ws, "CLAUDE.md") },
+    { label: "plugin/CLAUDE.md", path: join15(plugin, "CLAUDE.md") },
+    { label: "web/CLAUDE.md", path: join15(ws, "web", "CLAUDE.md") }
   ];
   for (const p of input.extraRepoPaths ?? []) {
     const abs = resolve7(p);
-    candidates.push({ label: `${abs.replace(/^\/+/, "")}/CLAUDE.md`, path: join14(abs, "CLAUDE.md") });
+    candidates.push({ label: `${abs.replace(/^\/+/, "")}/CLAUDE.md`, path: join15(abs, "CLAUDE.md") });
   }
   const seen = /* @__PURE__ */ new Set();
   const out = [];
@@ -69736,11 +69911,11 @@ function collectInstructionSources(input) {
   return out;
 }
 function collectSkillCapabilities(pluginDir) {
-  const root = join14(resolve7(pluginDir), "skills");
+  const root = join15(resolve7(pluginDir), "skills");
   if (!existsSync6(root)) return [];
   const out = [];
   for (const name of readdirSync(root).sort()) {
-    const file = join14(root, name, "SKILL.md");
+    const file = join15(root, name, "SKILL.md");
     if (!isFile(file)) continue;
     const value = capabilitiesFromSkillMd(readFileSync13(file, "utf8"));
     if (value === void 0) continue;
@@ -69757,21 +69932,21 @@ function codexOverlayFor(pluginDir) {
 ${rules}` : CODEX_WORKER_OVERLAY;
 }
 function excludeFromGit(workspaceDir, entries) {
-  const gitDir = join14(workspaceDir, ".git");
+  const gitDir = join15(workspaceDir, ".git");
   if (!existsSync6(gitDir)) return;
-  const infoDir = join14(gitDir, "info");
+  const infoDir = join15(gitDir, "info");
   mkdirSync6(infoDir, { recursive: true });
-  const excludePath = join14(infoDir, "exclude");
+  const excludePath = join15(infoDir, "exclude");
   const current = existsSync6(excludePath) ? readFileSync13(excludePath, "utf8") : "";
   const have = new Set(current.split("\n"));
   const missing3 = entries.filter((e) => !have.has(e));
   if (missing3.length) appendFileSync(excludePath, (current === "" || current.endsWith("\n") ? "" : "\n") + missing3.join("\n") + "\n");
 }
 function linkSkills(workspaceDir, pluginDir) {
-  const link = join14(workspaceDir, CODEX_SKILLS_LINK);
-  const target = join14(resolve7(pluginDir), "skills");
+  const link = join15(workspaceDir, CODEX_SKILLS_LINK);
+  const target = join15(resolve7(pluginDir), "skills");
   if (!existsSync6(target)) throw new Error(`skills directory not found at ${target}`);
-  mkdirSync6(join14(workspaceDir, ".agents"), { recursive: true });
+  mkdirSync6(join15(workspaceDir, ".agents"), { recursive: true });
   let st2;
   try {
     st2 = lstatSync2(link);
@@ -69790,11 +69965,11 @@ function installAuth(authFile, codexHome) {
   if (!isFile(authFile)) {
     throw new Error(`the Codex login-cache file is missing at ${authFile} (HARMONY_CODEX_AUTH_FILE) \u2014 mount it, see container/README.md "Codex credential runbook"`);
   }
-  const dest = join14(codexHome, CODEX_AUTH_FILE_NAME);
+  const dest = join15(codexHome, CODEX_AUTH_FILE_NAME);
   if (resolve7(authFile) !== resolve7(dest)) {
     copyFileSync(authFile, dest);
   }
-  chmodSync5(dest, 384);
+  chmodSync6(dest, 384);
   return dest;
 }
 var MissingHookScriptError = class extends Error {
@@ -69829,17 +70004,17 @@ function provisionCodex(input) {
   const agentsMd = renderCodexAgentsMd(sources, codexOverlayFor(input.pluginDir));
   const problems = verifyCodexAgentsMd(agentsMd, sources);
   if (problems.length) throw new Error(`AGENTS.md preflight failed: ${problems.join("; ")}`);
-  const agentsMdPath = join14(workspaceDir, "AGENTS.md");
+  const agentsMdPath = join15(workspaceDir, "AGENTS.md");
   if (existsSync6(agentsMdPath) && !readFileSync13(agentsMdPath, "utf8").startsWith(GENERATED_AGENTS_HEADER)) {
     throw new Error(`${agentsMdPath} exists and is not a generated file \u2014 refusing to overwrite a repository's own AGENTS.md`);
   }
   preflightHookScripts(resolve7(input.pluginDir));
   mkdirSync6(codexHome, { recursive: true });
   const config2 = renderCodexConfig(HARMONY_MCP_CONNECTION, { pluginRoot: resolve7(input.pluginDir) });
-  const configPath = join14(codexHome, config2.fileName);
+  const configPath = join15(codexHome, config2.fileName);
   writeFileSync9(configPath, config2.content, { mode: 420 });
   const hooks = renderCodexHooks(resolve7(input.pluginDir));
-  const hooksPath = join14(codexHome, hooks.fileName);
+  const hooksPath = join15(codexHome, hooks.fileName);
   writeFileSync9(hooksPath, hooks.content, { mode: 420 });
   writeFileSync9(agentsMdPath, agentsMd);
   const skillsLink = linkSkills(workspaceDir, input.pluginDir);
@@ -69858,7 +70033,7 @@ function provisionCodex(input) {
 
 // src/cli/commands/agent.ts
 import { homedir as homedir6 } from "node:os";
-import { join as join15 } from "node:path";
+import { join as join16 } from "node:path";
 function launchRunConfig() {
   try {
     return getRunConfig();
@@ -69940,7 +70115,7 @@ function registerAgentCommands(program3) {
       const r = provisionCodex({
         pluginDir: opts.pluginDir,
         workspaceDir: opts.workspace,
-        codexHome: opts.codexHome || process.env.CODEX_HOME || join15(homedir6(), ".codex"),
+        codexHome: opts.codexHome || process.env.CODEX_HOME || join16(homedir6(), ".codex"),
         authFile,
         extraRepoPaths: opts.extraRepo
       });
@@ -69992,7 +70167,7 @@ function registerAgentCommands(program3) {
     if (!id) process.exit(1);
     try {
       mkdirSync7(opts.dir, { recursive: true });
-      const target = join15(opts.dir, CODEX_THREAD_FILE_NAME);
+      const target = join16(opts.dir, CODEX_THREAD_FILE_NAME);
       const tmp = `${target}.tmp-${process.pid}`;
       writeFileSync10(tmp, `${JSON.stringify(buildCodexThreadRecord(id, opts.model))}
 `);

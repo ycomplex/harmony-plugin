@@ -1,4 +1,6 @@
 import { Command } from "commander";
+import { readClaudeFigmaGrant, INVALID_CLAUDE_GRANT } from "../figma-claude-grant.js";
+import { withClaudeFigmaSignIn } from "../figma-claude-sign-in.js";
 import { createInterface } from "node:readline/promises";
 import { Writable } from "node:stream";
 import { randomUUID } from "node:crypto";
@@ -40,7 +42,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 /** Keep tokens, redirect codes and PKCE secrets out of terminal echo/history and disk. */
-async function secretPrompt(prompt: string): Promise<string> {
+export async function secretPrompt(prompt: string, signal?: AbortSignal): Promise<string> {
   if (!process.stdin.isTTY) {
     throw new Error("Use an interactive terminal for credential entry");
   }
@@ -52,7 +54,7 @@ async function secretPrompt(prompt: string): Promise<string> {
   });
   const rl = createInterface({ input: process.stdin, output, terminal: true });
   try {
-    return (await rl.question("")).trim();
+    return (await rl.question("", { signal })).trim();
   } finally {
     rl.close();
     process.stderr.write("\n");
@@ -94,7 +96,19 @@ async function authorizeFigma(): Promise<Record<string, unknown>> {
     },
   };
   const serverUrl = "https://mcp.figma.com/mcp";
-  await auth(provider, { serverUrl, scope: "mcp:connect" });
+  // Inspect the actual registration response, never classify arbitrary OAuth 403s as registration.
+  const fetchFn: typeof fetch = async (input, init) => {
+    const response = await fetch(input, init);
+    if (init?.method === "POST" && typeof init.body === "string") {
+      let body: Record<string, unknown> = {};
+      try { body = JSON.parse(init.body); } catch { /* not registration JSON */ }
+      if (body.client_name === "Harmony workspace Figma" && response.status === 403) {
+        throw new Error("Figma has not approved this client. Use the Claude Code sign-in mode:\nharmony figma connect --claude-sign-in\nFallback: harmony figma connect --claude-credentials <private-file>");
+      }
+    }
+    return response;
+  };
+  await auth(provider, { serverUrl, scope: "mcp:connect", fetchFn });
   if (!tokens) {
     const code = parseFigmaRedirect(
       await secretPrompt("Paste the final redirect URL (hidden): "),
@@ -104,6 +118,7 @@ async function authorizeFigma(): Promise<Record<string, unknown>> {
       serverUrl,
       scope: "mcp:connect",
       authorizationCode: code,
+      fetchFn,
     });
   }
   const saved = tokens as OAuthTokens | undefined;
@@ -118,7 +133,9 @@ async function authorizeFigma(): Promise<Record<string, unknown>> {
   };
 }
 
-export function registerFigmaCommands(program: Command): void {
+export function registerFigmaCommands(program: Command, ports = {
+  prompt: secretPrompt, readGrant: readClaudeFigmaGrant, mint: withClaudeFigmaSignIn,
+}): void {
   const figma = program
     .command("figma")
     .description(
@@ -204,7 +221,7 @@ export function registerFigmaCommands(program: Command): void {
         }
       },
     );
-  figma.command("context").action(async () => {
+  figma.command("context").alias("health").action(async () => {
     try {
       const ctx = await getAuthenticatedContext();
       const { data, error } = await ctx.client.rpc("figma_launch_context", {
@@ -326,8 +343,14 @@ export function registerFigmaCommands(program: Command): void {
     .description(
       "Authorize Figma in your browser and supply a REST PAT in a hidden prompt",
     )
-    .action(async () => {
+    .option("--claude-credentials <file>", "Import a private isolated Claude Code credentials file")
+    .option("--claude-sign-in", "Make a fresh Figma sign-in in a throwaway pod")
+    .action(async (opts: { claudeCredentials?: string; claudeSignIn?: boolean }) => {
+      let saveAttempted = false;
+      let saved = false;
+      let imported = false;
       try {
+        if (opts.claudeCredentials && opts.claudeSignIn) throw new Error("Choose one Claude Code sign-in mode.");
         const ctx = await getAuthenticatedContext();
         const { data: project, error: projectError } = await ctx.client
           .from("projects")
@@ -354,151 +377,180 @@ export function registerFigmaCommands(program: Command): void {
         if (current?.connections_enabled !== true) {
           throw new Error("Figma connections are not enabled");
         }
-        let grant: Record<string, unknown>;
-        try {
-          grant = await authorizeFigma();
-        } catch {
-          throw new Error(
-            "Figma OAuth authorization failed; retry harmony figma connect.",
-          );
-        }
-        const identityClient = new Client({
-          name: "harmony-figma-connect",
-          version: "1",
-        });
-        try {
-          await identityClient.connect(
-            new StreamableHTTPClientTransport(
-              new URL("https://mcp.figma.com/mcp"),
-              {
-                requestInit: {
-                  headers: { Authorization: `Bearer ${grant.access_token}` },
-                },
-              },
-            ),
-          );
-          const who = await identityClient.callTool({
-            name: "whoami",
-            arguments: {},
+        const connectWithGrant = async (grant: Record<string, unknown>, signal?: AbortSignal) => {
+          signal?.throwIfAborted();
+          const identityClient = new Client({
+            name: "harmony-figma-connect",
+            version: "1",
           });
-          let identity = who.structuredContent as
-            | { handle?: string; plans?: unknown }
-            | undefined;
-          if (!identity) {
-            for (
-              const content of who.content as Array<{
-                type: string;
-                text?: string;
-              }>
-            ) {
-              if (content.type === "text" && content.text) {
-                try {
-                  identity = JSON.parse(content.text);
-                  break;
-                } catch {
-                  /* next block */
+          try {
+            await identityClient.connect(
+              new StreamableHTTPClientTransport(
+                new URL("https://mcp.figma.com/mcp"),
+                {
+                  requestInit: {
+                    headers: { Authorization: `Bearer ${grant.access_token}` },
+                  },
+                },
+              ),
+            );
+            const who = await identityClient.callTool({
+              name: "whoami",
+              arguments: {},
+            });
+            let identity = who.structuredContent as
+              | { handle?: string; plans?: unknown }
+              | undefined;
+            if (!identity) {
+              for (
+                const content of who.content as Array<{
+                  type: string;
+                  text?: string;
+                }>
+              ) {
+                if (content.type === "text" && content.text) {
+                  try {
+                    identity = JSON.parse(content.text);
+                    break;
+                  } catch {
+                    /* next block */
+                  }
                 }
               }
             }
-          }
-          if (
-            who.isError ||
-            !identity?.handle ||
-            !Array.isArray(identity.plans)
-          ) {
-            throw new Error();
-          }
-          const plans = identity.plans.map(
-            (p: { name?: string; seat?: string; tier?: string }) => ({
-              name: p.name,
-              seat: p.seat,
-              tier: p.tier,
-            }),
-          );
-          process.stderr.write(
-            `Verified Figma identity/plans: ${
-              JSON.stringify({ handle: identity.handle, plans })
-            }\n`,
-          );
-        } catch {
-          throw new Error(
-            "Figma whoami could not verify the candidate identity/plans",
-          );
-        } finally {
-          await identityClient.close();
-        }
-        const pat = await secretPrompt("REST personal access token (hidden): ");
-        const fileKey = await secretPrompt("Library file key: ");
-        const planName = await secretPrompt(
-          "Exact library-owning plan name shown by Figma: ",
-        );
-        if (
-          (await secretPrompt(
-            "Confirm this plan owns the library file (yes): ",
-          )) !== "yes"
-        ) {
-          throw new Error("Library plan not confirmed");
-        }
-        const input = {
-          workspace_id: project.workspace_id,
-          generation: current?.generation ?? 0,
-          grant,
-          pat,
-          library_file_key: fileKey,
-          plan_name: planName,
-          confirm_library_plan: true,
-          component_map: current?.component_map ?? {},
-        };
-        const invoke = async (body: Record<string, unknown>) => {
-          const { data, error } = await ctx.client.functions.invoke(
-            "figma-connect",
-            { body },
-          );
-          if (error || data?.error) {
-            let message = data?.error;
             if (
-              !message && error && "context" in error &&
-              error.context instanceof Response
+              who.isError ||
+              !identity?.handle ||
+              !Array.isArray(identity.plans)
             ) {
-              try {
-                message = (await error.context.json()).error;
-              } catch { /* use safe fallback */ }
+              throw new Error();
             }
-            if (typeof message === "string") throw new Error(message);
+            const plans = identity.plans.map(
+              (p: { name?: string; seat?: string; tier?: string }) => ({
+                name: p.name,
+                seat: p.seat,
+                tier: p.tier,
+              }),
+            );
+            process.stderr.write(
+              `Verified Figma identity/plans: ${
+                JSON.stringify({ handle: identity.handle, plans })
+              }\n`,
+            );
+          } catch {
             throw new Error(
-              "Figma validation/publication failed; previous connection remains active. Check identity/library/seat. Operator: provision workspace grant, PAT and access slots with gcloud secrets create and the conditioned secretVersionAdder binding.",
+              "Figma whoami could not verify the candidate identity/plans",
+            );
+          } finally {
+            await identityClient.close();
+          }
+          const pat = await ports.prompt("REST personal access token (hidden): ", signal);
+          const fileKey = await ports.prompt("Library file key: ", signal);
+          const planName = await ports.prompt(
+            "Exact library-owning plan name shown by Figma: ", signal,
+          );
+          if (
+            (await ports.prompt(
+              "Confirm this plan owns the library file (yes): ", signal,
+            )) !== "yes"
+          ) {
+            throw new Error("Library plan not confirmed");
+          }
+          const input = {
+            workspace_id: project.workspace_id,
+            generation: current?.generation ?? 0,
+            grant,
+            pat,
+            library_file_key: fileKey,
+            plan_name: planName,
+            confirm_library_plan: true,
+            component_map: current?.component_map ?? {},
+          };
+          const invoke = async (body: Record<string, unknown>) => {
+            const { data, error } = await ctx.client.functions.invoke(
+              "figma-connect",
+              { body },
+            );
+            if (error || data?.error) {
+              let message = data?.error;
+              if (
+                !message && error && "context" in error &&
+                error.context instanceof Response
+              ) {
+                try {
+                  message = (await error.context.json()).error;
+                } catch { /* use safe fallback */ }
+              }
+              if (typeof message === "string" && !imported) throw new Error(message);
+              throw new Error(
+                "Figma validation/publication failed; previous connection remains active. Check identity/library/seat. Operator: provision workspace grant, PAT and access slots with gcloud secrets create and the conditioned secretVersionAdder binding.",
+              );
+            }
+            return data;
+          };
+          signal?.throwIfAborted();
+          const candidate = await invoke({
+            ...input,
+            validate_only: true,
+            confirm_low_budget: true,
+          });
+          process.stderr.write(
+            `Figma edits will be made as @${candidate.metadata.handle}.\nLibrary: ${fileKey}; seat: ${candidate.metadata.seat}; tier: ${candidate.metadata.tier}\n`,
+          );
+          if (candidate.lowBudget) {
+            process.stderr.write(
+              "Warning: View/Collab or Starter has about 20 MCP calls/month.\n",
             );
           }
-          return data;
+          if (
+            (await ports.prompt("Save this workspace connection? Type yes: ", signal)) !==
+              "yes"
+          ) {
+            throw new Error("Setup cancelled. No connection was saved.");
+          }
+          signal?.throwIfAborted();
+          saveAttempted = true;
+          await invoke({ ...input, confirm_low_budget: candidate.lowBudget });
+          saved = true;
+          return candidate.metadata.handle as string;
         };
-        const candidate = await invoke({
-          ...input,
-          validate_only: true,
-          confirm_low_budget: true,
-        });
-        process.stderr.write(
-          `Figma edits are made as @${candidate.metadata.handle}\nLibrary: ${fileKey}; seat: ${candidate.metadata.seat}; tier: ${candidate.metadata.tier}\n`,
-        );
-        if (candidate.lowBudget) {
-          process.stderr.write(
-            "Warning: View/Collab or Starter has about 20 MCP calls/month.\n",
-          );
+        if (opts.claudeSignIn) {
+          process.stderr.write("Connect Figma with a fresh Claude Code sign-in.\nYour everyday Claude Code login will not be used.\nIt runs in a throwaway pod that is deleted afterwards.\n");
+          if (await ports.prompt("Continue? Type yes: ") !== "yes") throw new Error("Setup cancelled. No connection was saved.");
+          imported = true;
+          const handle = await ports.mint(async (file, signal) => connectWithGrant(ports.readGrant(file), signal));
+          process.stdout.write(`Figma connection saved. Edits are made as @${handle}.\n`);
+          process.stdout.write("The workspace refresh job now owns this sign-in.\n");
+        } else if (opts.claudeCredentials) {
+          process.stderr.write("Use a fresh sign-in created only for this workspace.\nStop its Claude Code process before continuing.\n");
+          if (await ports.prompt("This is an isolated sign-in and no other process will refresh it. Type yes: ") !== "yes") throw new Error("Setup cancelled. No connection was saved.");
+          imported = true;
+          try {
+            const handle = await connectWithGrant(ports.readGrant(opts.claudeCredentials));
+            process.stdout.write(`Figma connection saved. Edits are made as @${handle}.\n`);
+          }
+          finally { process.stderr.write("After handoff, remove the imported file and its isolated config.\nDo not use this sign-in in Claude Code again.\n"); }
+          process.stdout.write("The workspace refresh job now owns this sign-in.\n");
+        } else {
+          let grant: Record<string, unknown>;
+          try { grant = await authorizeFigma(); }
+          catch (error) {
+            if (error instanceof Error && error.message.startsWith("Figma has not approved this client.")) throw error;
+            // eslint-disable-next-line preserve-caught-error -- OAuth errors can embed credential-bearing response bodies.
+            throw new Error("Figma OAuth authorization failed; retry harmony figma connect.");
+          }
+          const handle = await connectWithGrant(grant);
+          process.stdout.write(`Figma connection saved. Edits are made as @${handle}.\n`);
         }
-        if (
-          (await secretPrompt("Save this workspace connection (yes): ")) !==
-            "yes"
-        ) {
-          throw new Error("Connection not saved");
-        }
-        await invoke({ ...input, confirm_low_budget: candidate.lowBudget });
-        process.stdout.write(
-          "Figma connected. Saved credentials cannot be retrieved.\n",
-        );
       } catch (error) {
-        process.stderr.write(
-          (error instanceof Error ? error.message : "Figma connect failed") +
-            "\n",
-        );
+        let message = error instanceof Error ? error.message : "Figma connect failed";
+        if (saveAttempted && !saved) {
+          message = "Could not confirm whether the connection was saved. Do not retry this import yet.\nCheck `harmony figma health` and the workspace connection before reconnecting.";
+        } else if (imported && !saved) {
+          if (message === INVALID_CLAUDE_GRANT) message += "\nNo connection was saved. Your existing connection is unchanged.\nCreate a fresh isolated sign-in and try again.";
+          else if (!message.startsWith("Setup cancelled") && !message.startsWith("Temporary sign-in cleanup")) message = "Figma sign-in validation failed. No connection was saved. Your existing connection is unchanged.\nCheck identity/library/seat and operator-provisioned slots; create a fresh isolated sign-in and try again.";
+        }
+        process.stderr.write(message + "\n");
         process.exitCode = 1;
       }
     });
