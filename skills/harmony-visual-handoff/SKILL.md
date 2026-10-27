@@ -74,6 +74,38 @@ For the irreducibly-generative residue only: hand off to **Figma** (the existing
 hand-off, gate-ui-conduct loop §4.2/§4.6) with the design-system context, and capture the returned link. (B-328
 did not validate this side — keep it a thin pass-through.)
 
+### 3c. Figma path (B-1203) — selected by the connection preflight
+
+Run the preflight (`src/tools/figma-connection.ts`, `resolveFigmaRoute`) before step 3a:
+
+- **unconnected → `html`:** step 3a, today's generated-HTML path, unchanged.
+- **connected → `figma`:** this step.
+- **failing → `stop`:** stop with the reconnect instruction. **Never silently fall back** to HTML.
+
+Dependencies, not assumptions: the connection reader, the **saved component map** and the shared rate limiter
+are **B-1201's**; the stored design-record shape is **B-1202's**. Until B-1201 lands the preflight resolves to
+`html`, so this step does not run.
+
+Figma path (planner: `src/tools/figma-composition.ts`):
+
+1. Keep the glanceable-vs-flow routing (step 2) unchanged.
+2. Read the **saved component map**; do no per-leg library search.
+3. Call `use_figma` **once** to build all option frames from **library instances** (not imported layers),
+   named `<ticket> · <option>`, the recommendation marked on exactly one frame, and provenance
+   (`real` / `invented` / `illustrative`) as frame notes. A second `use_figma` call only to fix.
+4. A flow is N frames in order with a caption each; the artefact records the order.
+5. MCP is used only for writing (`use_figma`). Render previews over REST `GET /v1/images`, **pinned to the
+   file version**, with the workspace token (not `get_screenshot`), download, and attach them. Render
+   immediately after composing; if the pinned version lacks the new frames, use the bounded
+   version-freshness fallback (`waitForVersionAfter`).
+6. Every MCP call passes through the shared limiter when present. Count MCP calls: **hard cap 6 per leg**
+   (typical 2-3). At the cap, stop composing options and say so on the brief. Record the call count
+   (`mcp_call_count`) on the brief.
+7. A Claude Design scaffold or any inception sketch is **reference only**: the recorded artefact is always
+   re-composed from library instances.
+
+Then continue at step 4.
+
 ### 4. Iterate — elicit, don't guess (D2)
 
 When the human asks for **alternatives**, **ask them to describe the alternative**, then regenerate the
