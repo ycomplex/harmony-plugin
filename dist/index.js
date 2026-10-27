@@ -48289,6 +48289,13 @@ var landing = object3({
   irreversible: strings,
   prs: external_exports.array(object3({ repo: external_exports.string(), number: external_exports.number(), url: external_exports.string() })).optional()
 });
+var sketch = object3({
+  file_link: external_exports.string(),
+  pinned_version: external_exports.string(),
+  frames: external_exports.array(object3({ name: external_exports.string(), caption: external_exports.string() })),
+  preview_attachment_ids: strings,
+  mcp_call_count: external_exports.number()
+});
 var floor = { floor_reviewed: strings.optional() };
 var briefFrameSchema = external_exports.discriminatedUnion("kind", [
   object3({
@@ -48296,6 +48303,7 @@ var briefFrameSchema = external_exports.discriminatedUnion("kind", [
     solving: external_exports.string(),
     in_scope: strings,
     not_solving: external_exports.array(object3({ item: external_exports.string(), lands: external_exports.string() })),
+    sketch: sketch.optional(),
     ...floor
   }),
   object3({
@@ -49763,6 +49771,15 @@ function renderSlot(doc, gate) {
       if (frame.in_scope !== void 0) out.in_scope = [...frame.in_scope];
       if (frame.not_solving !== void 0) {
         out.not_solving = frame.not_solving.map((e) => ({ item: e.item, lands: e.lands }));
+      }
+      if (frame.sketch !== void 0) {
+        out.sketch = {
+          file_link: frame.sketch.file_link,
+          pinned_version: frame.sketch.pinned_version,
+          frames: frame.sketch.frames.map((f) => ({ name: f.name, caption: f.caption })),
+          preview_attachment_ids: [...frame.sketch.preview_attachment_ids],
+          mcp_call_count: frame.sketch.mcp_call_count
+        };
       }
       return out;
     }

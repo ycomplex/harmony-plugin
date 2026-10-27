@@ -74,6 +74,58 @@ For the irreducibly-generative residue only: hand off to **Figma** (the existing
 hand-off, gate-ui-conduct loop §4.2/§4.6) with the design-system context, and capture the returned link. (B-328
 did not validate this side — keep it a thin pass-through.)
 
+### 3c. Figma path (B-1203) — selected by the connection preflight
+
+Run the preflight (`src/tools/figma-connection.ts`, `resolveFigmaRoute`) before step 3a:
+
+- **unconnected → `html`:** step 3a, today's generated-HTML path, unchanged.
+- **connected → `figma`:** this step.
+- **failing → `stop`:** stop with the reconnect instruction. **Never silently fall back** to HTML.
+
+Dependencies, not assumptions: the connection reader, the **saved component map** and the shared rate limiter
+are **B-1201's**; the stored record, `design_artefact` (schema_version 1), is **B-1202's**. Until B-1201 lands the preflight resolves to
+`html`, so this step does not run.
+
+Figma path (planner: `src/tools/figma-composition.ts`):
+
+1. Keep the glanceable-vs-flow routing (step 2) unchanged.
+2. Read the **saved component map**; do no per-leg library search.
+3. Call `use_figma` **once** to build all option frames from **library instances** (not imported layers),
+   named `<ticket> · <option>`, the recommendation marked on exactly one frame, and provenance
+   (`real` / `invented` / `illustrative`) as frame notes. A second `use_figma` call only to fix.
+4. A flow is N frames in order with a caption each; the order is kept in the planned `nodes` list.
+5. MCP is used only for writing (`use_figma`). Render previews over REST `GET /v1/images`, **pinned to the
+   file version**, with the workspace token (not `get_screenshot`), download, and attach them. Do not
+   render straight after composing. The newest version then is still the pre-compose one: Figma's
+   autosave created the next version **79 s** after a compose in the 2026-10-27 live proof, and a render
+   pinned to the earlier version returns HTTP 200 with `err: null` and **no image**, not an error. So:
+   wait for a version created after the compose (`waitForVersionAfter` with `FRESHNESS_WAIT`, 15 s × 12),
+   confirm every composed frame is present in `GET /v1/files/:key/nodes?ids=…&version=<id>` and every
+   image URL is non-null, then pin that version. If no version appears within the wait, or a frame is
+   missing, say so on the brief and attach no preview. Never attach a render you have not checked.
+6. Every MCP call passes through the shared limiter when present. Count MCP calls: **hard cap 6 per leg**
+   (typical 2-3). At the cap, stop composing options and say so on the brief. Record the call count
+   (`mcp_call_count`) on the brief.
+7. **The stored record is B-1202's `design_artefact` (schema_version 1), not yet persisted here.** Its fields
+   are `tool`, `composed_at`, `provenance_notes`, `mcp_call_count`, and an ordered `nodes` list of
+   `{ id, name, caption, preview_attachment_id, preview_filename }`; for Figma only, also `file_key`,
+   `file_url` and `version_id`. It holds **no signed URLs**. Until B-1202's capability exists, this path
+   attaches the checked previews and lists them on the brief, and does **not** persist a `design_artefact`.
+   Do not invent a frame field or a slot schema.
+8. **Throttled (HTTP 429): back off, never retry straight away** (`nextThrottleDelay`, `THROTTLE_BACKOFF`).
+   Wait the `Retry-After` the response names (capped), else bounded exponential backoff (2 s doubling,
+   at most 60 s, 5 attempts), then retry; a retry is never immediate. Each request actually issued counts
+   once against the step 6 cap; the waiting does not. When the backoff is used up and the call is still
+   throttled, do **not** fail the gate and do **not** fall back to the HTML path silently (a configured
+   connection that cannot be used stops, per the `stop` route). Instead file an elicitation round asking
+   the operator when it is safe to proceed, and resume on the answer:
+   `mcp__harmony__start_elicitation({ task_id, trigger: 'worker-question', gate: 'designing' })` then
+   `mcp__harmony__file_elicitation_round({ task_id, context_line: "Figma is throttling (429)...", questions: [...] })`.
+9. A Claude Design scaffold or any inception sketch is **reference only**: the recorded artefact is always
+   re-composed from library instances.
+
+Then continue at step 4.
+
 ### 4. Iterate — elicit, don't guess (D2)
 
 When the human asks for **alternatives**, **ask them to describe the alternative**, then regenerate the

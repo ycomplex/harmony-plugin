@@ -31145,6 +31145,13 @@ var landing = object({
   irreversible: strings,
   prs: external_exports.array(object({ repo: external_exports.string(), number: external_exports.number(), url: external_exports.string() })).optional()
 });
+var sketch = object({
+  file_link: external_exports.string(),
+  pinned_version: external_exports.string(),
+  frames: external_exports.array(object({ name: external_exports.string(), caption: external_exports.string() })),
+  preview_attachment_ids: strings,
+  mcp_call_count: external_exports.number()
+});
 var floor = { floor_reviewed: strings.optional() };
 var briefFrameSchema = external_exports.discriminatedUnion("kind", [
   object({
@@ -31152,6 +31159,7 @@ var briefFrameSchema = external_exports.discriminatedUnion("kind", [
     solving: external_exports.string(),
     in_scope: strings,
     not_solving: external_exports.array(object({ item: external_exports.string(), lands: external_exports.string() })),
+    sketch: sketch.optional(),
     ...floor
   }),
   object({
