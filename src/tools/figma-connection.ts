@@ -21,7 +21,14 @@ export type FigmaRoute = 'html' | 'figma' | 'stop';
 /** Default reader: no storage exists yet, so absent storage/tool => unconnected. B-1201 replaces this. */
 export const defaultFigmaConnectionReader: FigmaConnectionReader = {
   async read() {
-    return { state: 'unconnected' };
+    if(!process.env.HARMONY_FIGMA_CONTEXT_B64)return {state:'unconnected'};
+    try {
+      const meta=JSON.parse(Buffer.from(process.env.HARMONY_FIGMA_CONTEXT_B64,'base64').toString());
+      if(meta.state==='disconnected')return {state:'unconnected'};
+      const {assertFigmaReady,readMountedFigmaToken}=await import('../agents/design-tools/figma.js');
+      assertFigmaReady(meta,Date.now());readMountedFigmaToken();
+      return {state:'connected',fileKey:meta.library_file_key,componentMapId:String(meta.generation)};
+    } catch {return {state:'failing',reason:'Figma needs reconnection or the token-only mount is unavailable'};}
   },
 };
 
@@ -42,7 +49,7 @@ export function resolveFigmaRoute(conn: FigmaConnection): FigmaRoute {
 
 /** The reconnect instruction a 'stop' route puts on the brief / in the leg's report. */
 export function reconnectInstruction(conn: Extract<FigmaConnection, { state: 'failing' }>): string {
-  return `The Figma connection is configured but failing (${conn.reason}). Reconnect Figma in project settings, then re-run this gate. Not falling back to the generated-HTML path.`;
+  return `The Figma connection is configured but failing (${conn.reason}). Ask the workspace owner to run harmony figma connect, then re-run this gate. Not falling back to the generated-HTML path.`;
 }
 
 /** Convenience: preflight through a reader. */

@@ -1,8 +1,8 @@
 ---
 name: harmony-visual-handoff
 description: Run a UX/UI design decision through a generated, manipulable surface + an iterate loop (B-328). Triggers on "visual hand-off", "generate a mockup for this decision", "show me the UX options", and is delegated to by harmony-design-decide's --track ux-ui. Routes glanceable decisions to a parametric preview and flows to a walk-through + storyboard; reserves a design tool (Figma) for the irreducibly-generative visual residue. Files the framed decision back as a knowledge entry.
-capabilities: harmony-mcp read web write shell:open shell:mkdir
-allowed-tools: mcp__harmony__* Read Grep Glob WebSearch WebFetch Write Bash(open *) Bash(mkdir *)
+capabilities: harmony-mcp figma-mcp read web write shell:open shell:mkdir shell:node
+allowed-tools: mcp__harmony__* mcp__figma__* Read Grep Glob WebSearch WebFetch Write Bash(open *) Bash(mkdir *) Bash(node *)
 ---
 
 **Knowledge claims:** Author `claim` as one quotable sentence (at most 50 words) on every `record_decision` / `create_knowledge_entry` write, and on `update_knowledge_entry` when confirming or replacing a claim. A successor uses `claim` in `supersede_decision` or `new_claim` in `supersede_knowledge_entry`; retire-only calls have no successor claim. On every entry-producing `compose_brief`, author the exact approved sentence as `doc.claim`, separately from the recommendation. Use a sentence-shaped title; compatibility-derived proposals are unconfirmed, not authored statements.
@@ -77,6 +77,28 @@ did not validate this side — keep it a thin pass-through.)
 ### 3c. Figma path (B-1203) — selected by the connection preflight
 
 Run the preflight (`src/tools/figma-connection.ts`, `resolveFigmaRoute`) before step 3a:
+
+B-1201: run `node "${CLAUDE_PLUGIN_ROOT}/dist/bin/harmony.js" figma context` for the live connection. Missing schema means unconnected;
+other read errors stop. A connected worker must have passed `figma install-worker` with the
+exact generation and version refs and mounted access-token/PAT files. Use `library_components`
+from this saved context; `component_map` maps names to repository paths for build. Never call
+get_libraries/search_design_system per leg. Show “Figma edits are made as @handle” on every
+Figma-composed brief. Only an unconnected workspace uses HTML automatically.
+
+Before EVERY actual MCP attempt (including retries), run `node "${CLAUDE_PLUGIN_ROOT}/dist/bin/harmony.js" figma budget --reserve`.
+Call only if `allowed:true`; preserve its durable per-conduction/per-leg file across resumes.
+On 429 run `node "${CLAUDE_PLUGIN_ROOT}/dist/bin/harmony.js" figma budget --throttled --retry-after '<header>'` (omit absent header).
+Wait until retry_at; never retry immediately. A long Retry-After is honored in full, using waits
+of at most 60 seconds. `operator-question` means file a worker-question elicitation round asking
+the operator when safe to resume; resume only from their answer via `--resume-at <ISO>`.
+The used-call counter survives that answer; six-call-cap stops further composition for this leg.
+Report used count from the budget on the brief. No shared usage ledger exists: parallel legs
+share Pro Full 200/day 10/min, Organization Full 200/day 15/min, Enterprise Full 600/day 20/min.
+View/Collab or Starter is about 20/month. These are published limits, not aggregate usage telemetry.
+The active logical-leg pointer lives with persisted transcripts, so a throttle-answer worker inherits
+the same count even if its physical leg number changes. Include source_leg/retry_at in the elicitation;
+do not close that budget while awaiting the answer. After composition is complete and its count is
+recorded, run `node "${CLAUDE_PLUGIN_ROOT}/dist/bin/harmony.js" figma budget --close`; it retains counters but lets the next design leg start.
 
 - **unconnected → `html`:** step 3a, today's generated-HTML path, unchanged.
 - **connected → `figma`:** this step.

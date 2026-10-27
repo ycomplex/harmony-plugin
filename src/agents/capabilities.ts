@@ -15,7 +15,7 @@
 // Pure: no I/O.
 
 /** The fixed classes. Order here is documentation only — a skill's own order is what renders. */
-export const CAPABILITY_CLASSES = ['harmony-mcp', 'read', 'web', 'edit', 'write', 'shell'] as const;
+export const CAPABILITY_CLASSES = ['harmony-mcp', 'figma-mcp', 'read', 'web', 'edit', 'write', 'shell'] as const;
 export type FixedCapabilityClass = (typeof CAPABILITY_CLASSES)[number];
 
 /** `shell:<prefix>` — a shell scoped to one command prefix (Claude: `Bash(<prefix> *)`). */

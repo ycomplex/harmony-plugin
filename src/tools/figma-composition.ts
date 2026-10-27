@@ -129,7 +129,7 @@ export class CallBudget {
   record(): number { return this.used; }
 }
 
-/** Shared per-identity limiter port (B-1201: 10/min, 200/day). Absent => no limiting. */
+/** Per-leg limiter port. Parallel legs share Figma's published budget; no aggregate ledger exists. */
 export interface RateLimiter {
   acquire(): Promise<void>;
 }
@@ -186,7 +186,7 @@ export type ThrottleDelay = { retry: true; delayMs: number } | { retry: false; r
 
 /**
  * Pure: the wait before retrying a throttled call. `attempt` is the 1-based number of the throttled
- * attempt just made. Retry-After (seconds) wins when present and positive, capped at maxMs; otherwise
+ * attempt just made. Retry-After (seconds) wins when present and positive; otherwise
  * exponential baseMs * 2^(attempt-1), capped at maxMs. The delay is always at least 1 ms.
  */
 export function nextThrottleDelay(opts: {
@@ -204,5 +204,5 @@ export function nextThrottleDelay(opts: {
   const raw = ra !== undefined && Number.isFinite(ra) && ra > 0
     ? ra * 1000
     : baseMs * 2 ** Math.max(0, opts.attempt - 1);
-  return { retry: true, delayMs: Math.max(1, Math.min(maxMs, Math.ceil(raw))) };
+  return { retry: true, delayMs: Math.max(1, Math.ceil(ra !== undefined && Number.isFinite(ra) && ra > 0 ? raw : Math.min(maxMs,raw))) };
 }

@@ -52,6 +52,10 @@ export function renderLeg(e) {
     mounts.push({ name: 'codex-auth', mountPath: e.CODEX_DIR, readOnly: true });
     volumes.push({ name: 'codex-auth', secret: { secretName: e.CODEX_SECRET } });
   }
+  if (e.FIGMA_SECRET) {
+    mounts.push({ name: 'figma', mountPath: '/secrets/figma', readOnly: true });
+    volumes.push({ name: 'figma', secret: { secretName: e.FIGMA_SECRET, defaultMode: 0o444, items: [{key:'access-token',path:'access-token'},{key:'pat',path:'pat'}] } });
+  }
 
   // No fsGroup anywhere: it would walk the whole disk, including /var/lib/docker layer trees, and
   // rewrite permissions inside nested images. Ownership is set once, non-recursively, by the init container.

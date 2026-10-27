@@ -133,7 +133,7 @@ done
 CODEX_RM=""
 if [ "$CODEX_RUN" = "1" ]; then CODEX_RM=" \"$REMOTE_RUN/codex-auth.json\""; fi   # B-1076: the host copy of the login cache goes with the run
 cleanup() {
-  dh_ssh "rm -f \"$REMOTE_RUN/run.env\"$CODEX_RM; docker rm $CONTAINER" </dev/null >/dev/null 2>&1 || true
+  dh_ssh "rm -f \"$REMOTE_RUN/run.env\" \"$REMOTE_RUN/figma-access-token\" \"$REMOTE_RUN/figma-pat\"$CODEX_RM; docker rm $CONTAINER" </dev/null >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -146,6 +146,10 @@ if [ -n "$MODEL" ]; then
   MINT_MODEL_FLAG=(--model "$MODEL")
 fi
 node "$HARMONY_PLUGIN_DIR/scripts/mint-installation-token.mjs" --base "$HOME/.harmony-container.env" --out "$ENV_FILE" --conduction-id "$CONDUCTION_ID" ${MINT_MODEL_FLAG[@]+"${MINT_MODEL_FLAG[@]}"} --run-config "$RUN_CONFIG_JSON" --run-config-path /home/worker/.claude/run-config.json >&2
+. "$(dirname "${BASH_SOURCE[0]}")/figma/launch-context.sh"
+figma_launch_context
+printf 'HARMONY_FIGMA_CONTEXT_B64=%s\n' "$FIGMA_CONTEXT_B64" >> "$ENV_FILE"
+FIGMA_MOUNTS=""
 
 # 4. Create the host-side run directory (private to the SSH user), stamp the two files the host's
 #    idle script reads (.last-launch: "a launch happened now"; .engine-volumes/<ticket>: "this
@@ -155,6 +159,14 @@ CODEX_SESSIONS_MKDIR=""
 if [ "$CODEX_RUN" = "1" ]; then CODEX_SESSIONS_MKDIR="\"$REMOTE_RUN/codex-sessions\""; fi
 dh_ssh_setup /dev/null "umask 077; mkdir -p \"$REMOTE_RUN/projects\" \"$REMOTE_RUN/logs\" $CODEX_SESSIONS_MKDIR \"$DH_REMOTE_ROOT/.engine-volumes\" && chmod 700 \"$DH_REMOTE_ROOT\" \"$DH_REMOTE_ROOT/$TICKET\" \"$REMOTE_RUN\" && touch \"$DH_REMOTE_ROOT/.last-launch\" \"$DH_REMOTE_ROOT/.engine-volumes/$TICKET\""
 dh_ssh_setup "$ENV_FILE" "umask 077; cat > \"$REMOTE_RUN/run.env\""
+if [ -n "$FIGMA_ACCESS_REF" ]; then
+  FIGMA_TOKEN_DIR="$(mktemp -d)"
+  if ! figma_read_tokens "$FIGMA_TOKEN_DIR"; then rm -rf "$FIGMA_TOKEN_DIR"; exit 1; fi
+  dh_ssh_setup "$FIGMA_TOKEN_DIR/access-token" "umask 077; cat > \"$REMOTE_RUN/figma-access-token\"; chmod 444 \"$REMOTE_RUN/figma-access-token\""
+  dh_ssh_setup "$FIGMA_TOKEN_DIR/pat" "umask 077; cat > \"$REMOTE_RUN/figma-pat\"; chmod 444 \"$REMOTE_RUN/figma-pat\""
+  rm -rf "$FIGMA_TOKEN_DIR"
+  FIGMA_MOUNTS="-v \"$REMOTE_RUN/figma-access-token\":/secrets/figma/access-token:ro -v \"$REMOTE_RUN/figma-pat\":/secrets/figma/pat:ro"
+fi
 RUN_CONFIG_MOUNT=""
 RUN_CONFIG_CHOWN=""
 if [ -f "$RUN_CONFIG_FILE" ]; then
@@ -206,7 +218,7 @@ dh_ssh_setup /dev/null "docker run --rm --user 0 --entrypoint chown -v \"$REMOTE
 #    The prompt is one argument containing spaces — quoted for the remote shell (dh_quote).
 PROMPT_Q="$(dh_quote "/harmony-plugin:harmony-conduct $TICKET --one-shot")"
 set +e
-dh_ssh "docker run --privileged --name $CONTAINER -v $ENGINE_VOLUME:/var/lib/docker -v \"$REMOTE_RUN/projects\":/home/worker/.claude/projects -v \"$REMOTE_RUN/logs\":/home/worker/.claude/logs $RUN_CONFIG_MOUNT $CODEX_MOUNTS $FORCE_REFUSAL_ENV --env-file \"$REMOTE_RUN/run.env\" $IMAGE_Q headless $PROMPT_Q" </dev/null
+dh_ssh "docker run --privileged --name $CONTAINER -v $ENGINE_VOLUME:/var/lib/docker -v \"$REMOTE_RUN/projects\":/home/worker/.claude/projects -v \"$REMOTE_RUN/logs\":/home/worker/.claude/logs $RUN_CONFIG_MOUNT $CODEX_MOUNTS $FIGMA_MOUNTS $FORCE_REFUSAL_ENV --env-file \"$REMOTE_RUN/run.env\" $IMAGE_Q headless $PROMPT_Q" </dev/null
 WORKER_EXIT=$?
 set -e
 

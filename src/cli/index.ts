@@ -1,6 +1,7 @@
 import { createRequire } from 'node:module';
 import { Command } from 'commander';
 import { registerAuthCommands } from './commands/auth.js';
+import { registerFigmaCommands } from './commands/figma.js';
 
 const require = createRequire(import.meta.url);
 // Resolve at runtime from this plugin copy, in both src/cli and the bundled dist/bin CLI.
@@ -48,6 +49,7 @@ program
   .option('--json', 'Output results as JSON', false);
 
 registerAuthCommands(program);
+registerFigmaCommands(program);
 registerTaskCommands(program);
 registerQueryCommand(program);
 registerCommentCommands(program);

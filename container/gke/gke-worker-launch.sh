@@ -123,12 +123,21 @@ if [ "$CODEX_RUN" = "1" ] && ! "${KUBECTL[@]}" get secret "$HARMONY_GKE_CODEX_SE
   exit 1
 fi
 
+. "$HERE/../figma/launch-context.sh"
+figma_launch_context
+FIGMA_SECRET=""
+FIGMA_TOKEN_DIR=""
+if [ -n "$FIGMA_ACCESS_REF" ]; then
+  FIGMA_TOKEN_DIR="$(mktemp -d)"
+  figma_read_tokens "$FIGMA_TOKEN_DIR" || { rm -rf "$FIGMA_TOKEN_DIR"; exit 1; }
+fi
+
 # --- Mint (B-732), identical to the cloud launcher. ------------------------------------------------
 RUN_DIR="$HOME/.harmony-conductions/$TICKET/$CONDUCTION_ID"
 mkdir -p "$RUN_DIR"
 ENV_FILE="$RUN_DIR/run.env"
 LEG_ENV_FILE="$RUN_DIR/leg-secret.env"
-trap 'rm -f "$LEG_ENV_FILE"' EXIT
+trap 'rm -f "$LEG_ENV_FILE"; if [ -n "${FIGMA_TOKEN_DIR:-}" ]; then rm -rf "$FIGMA_TOKEN_DIR"; fi' EXIT
 MINT_MODEL_FLAG=()
 if [ -n "$MODEL" ]; then MINT_MODEL_FLAG=(--model "$MODEL"); fi
 node "$HARMONY_PLUGIN_DIR/scripts/mint-installation-token.mjs" --base "$HOME/.harmony-container.env" --out "$ENV_FILE" --conduction-id "$CONDUCTION_ID" --run-config "$RUN_CONFIG_JSON" ${MINT_MODEL_FLAG[@]+"${MINT_MODEL_FLAG[@]}"}
@@ -144,6 +153,7 @@ fi
   {
     echo "CONDUCTION_ID=$CONDUCTION_ID"
     echo "TICKET=$TICKET"
+    echo "HARMONY_FIGMA_CONTEXT_B64=$FIGMA_CONTEXT_B64"
     echo "GIT_TOKEN=$GIT_TOKEN"
     echo "HARMONY_TRANSCRIPT_MOUNT_ROOT=$TRANSCRIPT_MOUNT_ROOT"
     echo "HARMONY_CONDUCTION_ID=$CONDUCTION_ID"
@@ -169,6 +179,9 @@ if [ "${#JOB_NAME}" -gt 63 ] || [[ ! "$JOB_NAME" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9]
   exit 1
 fi
 LEG_SECRET="$JOB_NAME-env"
+if [ -n "$FIGMA_ACCESS_REF" ]; then
+  FIGMA_SECRET="$JOB_NAME-figma"
+fi
 
 # --- Ticket-disk storage class. setup-cluster.sh step 17 creates harmony-ticket-disk: Immediate binding,
 # pinned to the leg pool's zone, so the disk is created WHILE the node scales up. standard-rwo waits for
@@ -198,7 +211,7 @@ render() {  # $1 = what: pvc | job
   CONDUCTION_ID="$CONDUCTION_ID" IMAGE="$WORKER_IMAGE_REF" CPU="$HARMONY_GKE_CPU" MEM="$HARMONY_GKE_MEMORY" \
   DISK="$HARMONY_GKE_TICKET_DISK" SC="$HARMONY_GKE_STORAGE_CLASS" DEADLINE="$HARMONY_GKE_DEADLINE_S" \
   JOB_TTL_S="$HARMONY_GKE_JOB_TTL_S" \
-  BASE_SECRET="$HARMONY_GKE_BASE_SECRET" CODEX_RUN="$CODEX_RUN" CODEX_SECRET="$HARMONY_GKE_CODEX_SECRET" \
+  BASE_SECRET="$HARMONY_GKE_BASE_SECRET" FIGMA_SECRET="$FIGMA_SECRET" CODEX_RUN="$CODEX_RUN" CODEX_SECRET="$HARMONY_GKE_CODEX_SECRET" \
   CODEX_DIR="$CODEX_SECRET_MOUNT_DIR" TROOT="$TRANSCRIPT_MOUNT_ROOT" \
   TRANSCRIPT_BUCKET="$HARMONY_GKE_TRANSCRIPT_BUCKET" SERVICE_ACCOUNT="$HARMONY_GKE_SERVICE_ACCOUNT" \
   node "$HERE/gke-render-leg.mjs"
@@ -212,6 +225,15 @@ render pvc | "${KUBECTL[@]}" apply -f - >/dev/null
 # no value is ever on argv; it travels on a pipe.
 render job | "${KUBECTL[@]}" create -f - >/dev/null
 JOB_UID="$("${KUBECTL[@]}" get job "$JOB_NAME" -o jsonpath='{.metadata.uid}')"
+if [ -n "$FIGMA_SECRET" ]; then
+  if ! "${KUBECTL[@]}" create secret generic "$FIGMA_SECRET" --from-file="access-token=$FIGMA_TOKEN_DIR/access-token" --from-file="pat=$FIGMA_TOKEN_DIR/pat" --dry-run=client -o json \
+    | JOB_NAME="$JOB_NAME" JOB_UID="$JOB_UID" node -e 'let s="";process.stdin.on("data",c=>s+=c).on("end",()=>{const o=JSON.parse(s);o.metadata.ownerReferences=[{apiVersion:"batch/v1",kind:"Job",name:process.env.JOB_NAME,uid:process.env.JOB_UID}];process.stdout.write(JSON.stringify(o))})' \
+    | "${KUBECTL[@]}" create -f - >/dev/null; then
+    "${KUBECTL[@]}" delete job "$JOB_NAME" --ignore-not-found >/dev/null 2>&1 || true
+    exit 1
+  fi
+  rm -rf "$FIGMA_TOKEN_DIR"
+fi
 if ! "${KUBECTL[@]}" create secret generic "$LEG_SECRET" --from-env-file="$LEG_ENV_FILE" --dry-run=client -o json \
   | JOB_NAME="$JOB_NAME" JOB_UID="$JOB_UID" node -e '
       let s = ""; process.stdin.on("data", (d) => (s += d)); process.stdin.on("end", () => {

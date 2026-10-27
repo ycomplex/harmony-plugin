@@ -37716,7 +37716,7 @@ var HARMONY_MCP_CONNECTION = {
 };
 
 // src/agents/capabilities.ts
-var CAPABILITY_CLASSES = ["harmony-mcp", "read", "web", "edit", "write", "shell"];
+var CAPABILITY_CLASSES = ["harmony-mcp", "figma-mcp", "read", "web", "edit", "write", "shell"];
 var SHELL_PREFIX = "shell:";
 var FORBID_PREFIX = "forbid:";
 var HARMONY_MCP_FORBID_NS = "harmony-mcp:";
@@ -38019,6 +38019,7 @@ function renderClaudeMcp(connection) {
 }
 var CLAUDE_CLASS_TOOLS = {
   "harmony-mcp": ["mcp__harmony__*"],
+  "figma-mcp": ["mcp__figma__*"],
   read: ["Read", "Grep", "Glob"],
   web: ["WebSearch", "WebFetch"],
   edit: ["Edit"],

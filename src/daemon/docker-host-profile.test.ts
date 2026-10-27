@@ -229,6 +229,7 @@ function makeWorld(opts: WorldOptions = {}): World {
     '    [ -n "$v" ] || exit 1',
     '    printf \'%s\\n\' "$v" ;;',
     '  *"JSON.parse(s).agent"*) printf \'%s\' "${STUB_ADAPTER:-}" ;;', // B-1076: the launcher's adapter probe
+    '  *"figma context"*) printf \'%s\' \'{"state":"disconnected"}\'; exit 0 ;;',
     '  *mint-installation-token.mjs*)',
     '    echo "mint" >> "$STUB_LOGS/order.log"',
     '    out=""; prev=""',
@@ -412,7 +413,7 @@ describe.skipIf(!BASH_AVAILABLE)('docker-host-worker-launch.sh (EXECUTED against
     expect(result.status).toBe(0);
 
     // The worker really saw the minted env-file (copied aside by the stub at `docker run` time)…
-    expect(log(world, 'env-file-at-run')).toBe(`HARMONY_API_TOKEN=base\nGIT_TOKEN=${TOKEN}\n`);
+    expect(log(world, 'env-file-at-run').replace(/^HARMONY_FIGMA_CONTEXT_B64=.*\n/m, '')).toBe(`HARMONY_API_TOKEN=base\nGIT_TOKEN=${TOKEN}\n`);
     // …the run-config arrived byte-for-byte…
     expect(readFileSync(join(world.remoteRunDir, 'run-config.json'), 'utf8')).toBe(RUN_CONFIG_BODY);
     // …and the token appears in NO command line, local or remote, nor in this wrapper's own output.
@@ -1019,7 +1020,7 @@ describe.skipIf(!BASH_AVAILABLE)('docker-host-worker-launch.sh — the Codex ada
     for (const name of ['ssh-argv.log', 'ssh.log', 'docker.log', 'node.log', 'order.log', 'env-file-at-run']) {
       expect(log(world, name)).not.toContain(AUTH_SENTINEL);
     }
-    expect(log(world, 'env-file-at-run')).not.toContain('refresh_token');
+    expect(log(world, 'env-file-at-run').replace(/^HARMONY_FIGMA_CONTEXT_B64=.*\n/m, '')).not.toContain('refresh_token');
   });
 
   it('REFUSES to start — before waking the host — when the login-cache file is missing', () => {
