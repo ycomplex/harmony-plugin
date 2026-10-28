@@ -749,6 +749,16 @@ function renderFrame(frame: GateFrame): string[] {
       out.push('**Not solving:**');
       if (excluded.length) out.push(...excluded.map((e) => `- ${e.item} — ${e.lands}`));
       else out.push('- nothing is being excluded — the whole problem is in scope');
+      // B-1203 — name the Figma link beside the frame count. Absent sketch: not one byte added.
+      if (frame.sketch) {
+        const sk = frame.sketch;
+        const n = sk.frames.length;
+        out.push(
+          '',
+          `**Flow sketch:** ${n} ${n === 1 ? 'frame' : 'frames'} in Figma — ${sk.file_link} (version ${sk.pinned_version}, ${sk.mcp_call_count} MCP ${sk.mcp_call_count === 1 ? 'call' : 'calls'})`,
+        );
+        sk.frames.forEach((f) => out.push(`- ${f.name} — ${f.caption}`));
+      }
       break;
     }
     case 'decompose': {

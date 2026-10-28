@@ -55,11 +55,10 @@ describe('visual-handoff: the artefact write', () => {
     expect(figmaPath).toMatch(/`<ticket> · <option>`/);
     expect(figmaPath).toMatch(/provenance[\s\S]*real[\s\S]*invented[\s\S]*illustrative[\s\S]*frame notes/);
   });
-  it('renders over REST /v1/images pinned to the file version, with the bounded freshness fallback', () => {
+  it('renders over REST /v1/images pinned to the file version', () => {
     expect(figmaPath).toContain('GET /v1/images');
-    expect(figmaPath).toMatch(/pinned to the\s+file version/);
-    expect(figmaPath).toContain('waitForVersionAfter');
-    expect(figmaPath).toMatch(/not `get_screenshot`/);
+    expect(figmaPath).toMatch(/GET \/v1\/images\?ids=…&version=<that id>/);
+    expect(figmaPath).toMatch(/not\s+`get_screenshot`/);
   });
   it('records the MCP call count with a hard cap of 6 (typical 2-3), through the shared limiter', () => {
     expect(MCP_CALL_CAP).toBe(6);
@@ -118,6 +117,32 @@ describe('design-decide: product-track coverage check', () => {
     expect(designCheck).toMatch(/residual only/);
     expect(designCheck).toContain('Already answered, not re-asked');
     expect(designCheck).toMatch(/reused, never recomposed/);
+  });
+});
+
+describe('visual-handoff: composition pins its own previews (B-1203)', () => {
+  it('ends the compose script with a settle wait and figma.saveVersionHistoryAsync, in the same call', () => {
+    expect(figmaPath).toContain('figma.saveVersionHistoryAsync');
+    expect(figmaPath).toMatch(/settle\s+wait/);
+    expect(figmaPath).toMatch(/inside the same call\*\*\s*\(no extra MCP call\)/);
+  });
+  it('pins to the returned version id and does not wait on autosave', () => {
+    expect(figmaPath).toMatch(/Pin to that \*\*returned version\s+id\*\*/);
+    expect(figmaPath).toMatch(/version=<that id>/);
+    expect(figmaPath).toMatch(/autosave wait[\s\S]*is \*\*retired\*\*/);
+    expect(figmaPath).toMatch(/do\s+not wait on autosave/);
+  });
+  it('checks every frame present and every image non-null, else the honest no-preview note, never failing the gate', () => {
+    expect(figmaPath).toContain('checkPreviewSet');
+    expect(figmaPath).toMatch(/every planned frame is in the\s+saved version's `frameIds` and every image URL is non-null/);
+    expect(figmaPath).toContain('NO_PREVIEW_NOTE');
+    expect(figmaPath).toMatch(/never a\s+partial set/);
+    expect(figmaPath).toMatch(/do \*\*not\*\* fail the gate/);
+  });
+  it('applies to a clarify sketch and leaves the gating untouched', () => {
+    expect(figmaPath).toMatch(/same applies to a\s+clarify sketch: its `frame\.sketch` `pinned_version`/);
+    expect(figmaPath).toMatch(/unconnected\s*→\s*`html`[\s\S]*unchanged/);
+    expect(figmaPath).toMatch(/hard cap 6 per leg/);
   });
 });
 
