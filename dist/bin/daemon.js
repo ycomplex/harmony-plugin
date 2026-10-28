@@ -34185,6 +34185,15 @@ function renderFrame(frame) {
       out.push("**Not solving:**");
       if (excluded.length) out.push(...excluded.map((e) => `- ${e.item} \u2014 ${e.lands}`));
       else out.push("- nothing is being excluded \u2014 the whole problem is in scope");
+      if (frame.sketch) {
+        const sk = frame.sketch;
+        const n = sk.frames.length;
+        out.push(
+          "",
+          `**Flow sketch:** ${n} ${n === 1 ? "frame" : "frames"} in Figma \u2014 ${sk.file_link} (version ${sk.pinned_version}, ${sk.mcp_call_count} MCP ${sk.mcp_call_count === 1 ? "call" : "calls"})`
+        );
+        sk.frames.forEach((f) => out.push(`- ${f.name} \u2014 ${f.caption}`));
+      }
       break;
     }
     case "decompose": {

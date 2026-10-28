@@ -116,22 +116,27 @@ Figma path (planner: `src/tools/figma-composition.ts`):
    named `<ticket> · <option>`, the recommendation marked on exactly one frame, and provenance
    (`real` / `invented` / `illustrative`) as frame notes. A second `use_figma` call only to fix.
 4. A flow is N frames in order with a caption each; the order is kept in the planned `nodes` list.
-5. MCP is used only for writing (`use_figma`). Render previews over REST `GET /v1/images`, **pinned to the
-   file version**, with the workspace token (not `get_screenshot`), download, and attach them. Do not
-   render straight after composing. The newest version then is still the pre-compose one: Figma's
-   autosave created the next version **79 s** after a compose in the 2026-10-27 live proof, and a render
-   pinned to the earlier version returns HTTP 200 with `err: null` and **no image**, not an error. So:
-   wait for a version created after the compose (`waitForVersionAfter` with `FRESHNESS_WAIT`, 15 s × 12),
-   confirm every composed frame is present in `GET /v1/files/:key/nodes?ids=…&version=<id>` and every
-   image URL is non-null, then pin that version. If no version appears within the wait, or a frame is
-   missing, say so on the brief and attach no preview. Never attach a render you have not checked.
+5. MCP is used only for writing (`use_figma`). **Composition pins its own previews (B-1203).** The compose
+   script **ends by saving a Figma version on demand, inside the same call** (no extra MCP call): a short
+   settle wait, then `figma.saveVersionHistoryAsync("<ticket> previews")`, returning
+   `{ versionId, frameIds }` (`saveVersionTail` in the planner builds this tail). Pin to that **returned version
+   id**. Figma's autosave wait (`waitForVersionAfter` / `FRESHNESS_WAIT`) is **retired** for composition: do
+   not wait on autosave (on 2026-10-27 it took 79 s, and on B-1312 no version appeared in 3.5 minutes). Render
+   previews over REST `GET /v1/images?ids=…&version=<that id>` with the workspace token (not
+   `get_screenshot`), download, and attach them. A render pinned to a version that lacks a frame returns
+   HTTP 200 with `err: null` and **no image**, so check with `checkPreviewSet`: every planned frame is in the
+   saved version's `frameIds` and every image URL is non-null. If the saved version is missing a frame or an
+   image is null, say so on the brief with the honest note (`NO_PREVIEW_NOTE`), attach **no** preview (never a
+   partial set, never a render you have not checked) and do **not** fail the gate. The same applies to a
+   clarify sketch: its `frame.sketch` `pinned_version` is
+   the id the compose call returned.
 6. Every MCP call passes through the shared limiter when present. Count MCP calls: **hard cap 6 per leg**
    (typical 2-3). At the cap, stop composing options and say so on the brief. Record the call count
    (`mcp_call_count`) on the brief.
 7. **The stored record is B-1202's `design_artefact` (schema_version 1).** Its fields
    are `tool`, `composed_at`, `provenance_notes`, `mcp_call_count`, and an ordered `nodes` list of
    `{ id, name, caption, preview_attachment_id, preview_filename }`; for Figma only, also `file_key`,
-   `file_url` and `version_id`. It holds **no signed URLs**. Attach the checked previews, build it with
+   `file_url` and `version_id` (the saved version id from step 5). It holds **no signed URLs**. Attach the checked previews, build it with
    `assemblePendingArtefact` and recompose the design brief with it as `frame.design_artefact`
    (see [Durable design record](#durable-design-record-b-1202) and `docs/design-artefact-contract.md`);
    `compose_brief` refuses with the promote prerequisite on a board that lacks the capability, so report
@@ -366,7 +371,7 @@ Figma preparation: read the version from REST nodes, check every frame exists at
 explicit version, request PNGs with `version=<id>`, and download/check every result.
 `prepareVersionedPreviews` in `src/tools/design-artefact.ts` provides this bounded path
 (12 attempts, 10-second intervals, per-request timeouts). A 200 response with null
-images is a miss, not proof: autosave can lag composition. Stop with an actionable
+images is a miss, not proof (reconcile read-back only; composition pins its own saved version). Stop with an actionable
 failure if frames never appear; never substitute an unversioned/latest screenshot.
 Upload returned bytes through ordinary `attach_file` and construct the manifest.
 REST calls are outside the MCP budget; record the measured MCP call count separately.

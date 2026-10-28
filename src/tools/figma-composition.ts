@@ -107,6 +107,64 @@ export function planComposition(input: PlanInput): CompositionPlan {
   return { kind, frames, calls: [{ tool: 'use_figma', purpose: 'compose', frames }], unmapped: [...unmapped] };
 }
 
+/**
+ * On-demand version save: the TAIL of the single compose `use_figma` call (no extra MCP call). After a short
+ * settle wait the script runs `figma.saveVersionHistoryAsync(title)` and returns the saved version's id (and
+ * the created frame ids) in the call's result; previews are pinned to that id, never to Figma's autosave.
+ * Kept out of CompositionPlan so the recorded plan (a fixture) stays byte-identical.
+ */
+export const COMPOSE_SAVE_SETTLE_MS = 2_000;
+
+export interface SaveVersionTail {
+  /** Runs inside the same use_figma call as the compose; adds NO MCP call. */
+  inSameCall: true;
+  settleMs: number;
+  /** Names the ticket and 'previews'. */
+  title: string;
+  /** Script tail, appended to the compose script. */
+  script: string;
+  /** Contract: the call's result carries `versionId` (the saved version's id) and `frameIds` (created frame node ids). */
+  versionIdFrom: 'result.versionId';
+  frameIdsFrom: 'result.frameIds';
+}
+
+export function saveVersionTail(ticket: string, settleMs: number = COMPOSE_SAVE_SETTLE_MS): SaveVersionTail {
+  const title = `${ticket} previews`;
+  const script =
+    `await new Promise((r) => setTimeout(r, ${settleMs}));\n` +
+    `const saved = await figma.saveVersionHistoryAsync(${JSON.stringify(title)});\n` +
+    `return { versionId: saved && saved.id, frameIds: created.map((f) => f.id) };`;
+  return { inSameCall: true, settleMs, title, script, versionIdFrom: 'result.versionId', frameIdsFrom: 'result.frameIds' };
+}
+
+export const NO_PREVIEW_NOTE =
+  'No preview: the saved Figma version did not hold every composed frame with a rendered image, so no previews are attached.';
+
+export interface PreviewCheck {
+  complete: boolean;
+  missingFrames: string[];
+  nullImages: string[];
+  /** Present (the honest 'no preview' note) only when incomplete. */
+  note?: string;
+}
+
+/**
+ * Pure: is a rendered preview set complete? `plannedFrameIds` are the frames the plan made, `savedFrameIds` the
+ * frames the saved version's result lists, `images` the REST /v1/images `images` map (id -> url | null).
+ * A frame absent from the saved version, or whose image is missing/null/empty, makes the set incomplete.
+ */
+export function checkPreviewSet(opts: {
+  plannedFrameIds: string[];
+  savedFrameIds: string[];
+  images: Record<string, string | null | undefined>;
+}): PreviewCheck {
+  const saved = new Set(opts.savedFrameIds);
+  const missingFrames = opts.plannedFrameIds.filter((id) => !saved.has(id));
+  const nullImages = opts.plannedFrameIds.filter((id) => saved.has(id) && !opts.images[id]);
+  const complete = missingFrames.length === 0 && nullImages.length === 0 && opts.plannedFrameIds.length > 0;
+  return { complete, missingFrames, nullImages, ...(complete ? {} : { note: NO_PREVIEW_NOTE }) };
+}
+
 /** Hard cap on MCP calls per leg. */
 export class CallBudget {
   private used = 0;
@@ -147,7 +205,7 @@ export interface FigmaVersion {
 
 export type VersionWait = { ok: true; version: FigmaVersion } | { ok: false; message: string };
 
-/** Measured 2026-10-27: autosave created a version 79 s after a compose. 15 s x 12 = 3 minutes. */
+/** Retired for composition (B-1203 pins to an on-demand saved version); still used by the B-1204 reconcile read-back. Measured 2026-10-27: autosave created a version 79 s after a compose. 15 s x 12 = 3 minutes. */
 export const FRESHNESS_WAIT = { intervalMs: 15_000, maxAttempts: 12 } as const;
 
 /** Poll for a file version created after `afterIso`; bounded, with injected attempts/interval/sleep. */

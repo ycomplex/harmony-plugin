@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { renderSlot, type BriefDoc } from './briefs.js';
+import { renderBrief, renderEntry, renderSlot, type BriefDoc } from './briefs.js';
 import { validateBriefFrame } from './brief-frame-schema.js';
 
 const base = { kind: 'clarify' as const, solving: 's', in_scope: ['a'], not_solving: [{ item: 'x', lands: 'y' }] };
@@ -22,5 +22,20 @@ describe('clarify sketch record (B-1203)', () => {
     const slot = renderSlot(doc(base), 'clarify')!;
     expect(slot).toEqual({ solving: 's', in_scope: ['a'], not_solving: [{ item: 'x', lands: 'y' }] });
     expect('sketch' in slot).toBe(false);
+  });
+  it('names the Figma link beside the frame count in the brief text and the derived entry', () => {
+    const md = renderBrief(doc({ ...base, sketch }));
+    expect(md).toContain('**Flow sketch:** 2 frames in Figma — https://figma.com/design/abc (version 123, 3 MCP calls)');
+    expect(md).toContain('- B-1 · 1. Start — Pick\n- B-1 · 2. Done — Confirm');
+    const entry = renderEntry(doc({ ...base, sketch }));
+    expect(entry.split('**Flow sketch:**').length).toBe(2);
+  });
+  it('a frame without a sketch renders byte-identically (no sketch text)', () => {
+    const md = renderBrief(doc(base));
+    expect(md).not.toContain('Flow sketch');
+    expect(md).not.toContain('in Figma');
+    const withSketch = renderBrief(doc({ ...base, sketch }));
+    const block = withSketch.slice(withSketch.indexOf('\n\n**Flow sketch:**'), withSketch.indexOf('- B-1 · 2. Done — Confirm') + '- B-1 · 2. Done — Confirm'.length);
+    expect(withSketch.replace(block, '')).toBe(md);
   });
 });
