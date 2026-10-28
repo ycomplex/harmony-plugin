@@ -57,8 +57,8 @@ describe('visual-handoff: the artefact write', () => {
   });
   it('renders over REST /v1/images pinned to the file version', () => {
     expect(figmaPath).toContain('GET /v1/images');
-    expect(figmaPath).toMatch(/pinned to the\s+file version/);
-    expect(figmaPath).toMatch(/not `get_screenshot`/);
+    expect(figmaPath).toMatch(/GET \/v1\/images\?ids=…&version=<that id>/);
+    expect(figmaPath).toMatch(/not\s+`get_screenshot`/);
   });
   it('records the MCP call count with a hard cap of 6 (typical 2-3), through the shared limiter', () => {
     expect(MCP_CALL_CAP).toBe(6);
