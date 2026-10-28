@@ -15,8 +15,8 @@ beforeEach(()=>{
   vi.spyOn(process.stderr,"write").mockImplementation(((v:string)=>{out+=v;return true;}) as never);
   vi.spyOn(process.stdout,"write").mockImplementation(((v:string)=>{out+=v;return true;}) as never);
   mcp.connect.mockResolvedValue(undefined);mcp.close.mockResolvedValue(undefined);
-  mcp.callTool.mockResolvedValue({structuredContent:{handle:"design-seat",plans:[{name:"team",seat:"Full",tier:"Pro"}]}});
-  invoke.mockResolvedValue({data:{metadata:{handle:"design-seat",seat:"Full",tier:"Pro"},lowBudget:false}});
+  mcp.callTool.mockResolvedValue({structuredContent:{whoami:{handle:"Designer",plans:[{name:"Example team",seat:"Full",tier:"Pro"}]},instructions:"Example instructions"}});
+  invoke.mockResolvedValue({data:{metadata:{handle:"Designer",seat:"Full",tier:"Pro"},lowBudget:false}});
   vi.mocked(getAuthenticatedContext).mockResolvedValue({projectId:"project",userId:"user",client:{
     from:(table:string)=>({select:()=>({eq(){return this;},single:async()=>({data:table==="projects"?{workspace_id:"workspace"}:{role}})})}),
     rpc:async()=>({data:{connections_enabled:enabled,generation:7}}),functions:{invoke},
@@ -34,7 +34,7 @@ it("imports through existing validate-only and generation save, with no OAuth/re
   expect(p.readGrant).toHaveBeenCalledWith("/tmp/private");expect(auth).not.toHaveBeenCalled();
   expect(invoke).toHaveBeenCalledTimes(2);expect(invoke.mock.calls[0][1].body).toMatchObject({grant,generation:7,validate_only:true,confirm_library_plan:true});
   expect(invoke.mock.calls[1][1].body).not.toHaveProperty("validate_only");
-  expect(out).toContain("Figma edits will be made as @design-seat.");expect(out).toContain("After handoff, remove the imported file");expect(out).not.toContain("SYNTHETIC");
+  expect(out).toContain("Figma edits will be made as @Designer.");expect(out).toContain("After handoff, remove the imported file");expect(out).not.toContain("SYNTHETIC");
 });
 it("uses the pod route and founder's accepted intro",async()=>{
   const p=await run(["--claude-sign-in"]);expect(p.mint).toHaveBeenCalledOnce();expect(out).toContain("It runs in a throwaway pod that is deleted afterwards.");
@@ -47,7 +47,7 @@ it("validation failure preserves connection and redacts remote errors",async()=>
   expect(invoke).toHaveBeenCalledOnce();expect(out).toContain("Your existing connection is unchanged");expect(out).not.toContain("SYNTHETIC");
 });
 it("uncertain save is not retried or claimed unchanged",async()=>{
-  invoke.mockResolvedValueOnce({data:{metadata:{handle:"design-seat"}}}).mockRejectedValueOnce(new Error("SYNTHETIC-SECRET"));
+  invoke.mockResolvedValueOnce({data:{metadata:{handle:"Designer"}}}).mockRejectedValueOnce(new Error("SYNTHETIC-SECRET"));
   await run(["--claude-credentials","/tmp/private"]);expect(invoke).toHaveBeenCalledTimes(2);expect(out).toContain("Do not retry this import yet");expect(out).not.toContain("unchanged");expect(out).not.toContain("SYNTHETIC");
 });
 it("aborting at save confirmation cannot publish",async()=>{
@@ -56,7 +56,7 @@ it("aborting at save confirmation cannot publish",async()=>{
   await run(["--claude-sign-in"],p);expect(invoke).toHaveBeenCalledOnce();
 });
 it("low-budget validation still receives explicit save confirmation",async()=>{
-  invoke.mockResolvedValue({data:{metadata:{handle:"design-seat"},lowBudget:true}});const p=await run(["--claude-credentials","private"]);
+  invoke.mockResolvedValue({data:{metadata:{handle:"Designer"},lowBudget:true}});const p=await run(["--claude-credentials","private"]);
   expect(out).toContain("about 20 MCP calls/month");expect(p.prompt).toHaveBeenCalledWith("Save this workspace connection? Type yes: ",undefined);
   expect(invoke.mock.calls[1][1].body.confirm_low_budget).toBe(true);
 });
@@ -79,4 +79,25 @@ it("the recovery health command reads the existing credential-free context",asyn
 it("does not announce a completed setup when post-save cleanup fails",async()=>{
   const p=ports();p.mint=vi.fn(async cb=>{await cb("private",new AbortController().signal);throw new Error("Temporary sign-in cleanup could not be completed.");});
   await run(["--claude-sign-in"],p);expect(invoke).toHaveBeenCalledTimes(2);expect(out).toContain("cleanup could not be completed");expect(out).not.toContain("Figma connection saved.");expect(out).not.toContain("refresh job now owns");
+});
+
+it.each([true,false])("accepts flat whoami from structured=%s", async structured => {
+ const identity={handle:"Designer",plans:[{name:"Example team",seat:"Full",tier:"Pro"}]};
+ mcp.callTool.mockResolvedValue(structured?{structuredContent:identity}:{content:[{type:"text",text:JSON.stringify(identity)}]});
+ await run(["--claude-credentials","private"]);expect(invoke).toHaveBeenCalledTimes(2);
+});
+it("accepts nested whoami in a text block",async()=>{
+ mcp.callTool.mockResolvedValue({content:[{type:"text",text:JSON.stringify({whoami:{handle:"Designer",plans:[{name:"Example team",seat:"Full",tier:"Pro"}]},instructions:"Example instructions"})}]});
+ await run(["--claude-credentials","private"]);expect(invoke).toHaveBeenCalledTimes(2);
+});
+it("retains a safe identity failure beneath the import header",async()=>{
+ mcp.callTool.mockResolvedValue({structuredContent:{}});
+ await run(["--claude-credentials","private"]);
+ expect(out).toContain("Reason: Figma whoami could not verify the candidate identity/plans");
+ expect(out).toContain("Figma sign-in validation failed. No connection was saved. Your existing connection is unchanged.");
+});
+it("retains a safe handler reason for imported sign-ins",async()=>{
+ invoke.mockResolvedValue({data:{error:"REST and MCP must identify the same Figma handle"}});
+ await run(["--claude-credentials","private"]);
+ expect(out).toContain("Reason: REST and MCP must identify the same Figma handle");
 });

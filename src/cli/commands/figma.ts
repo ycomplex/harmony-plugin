@@ -1,3 +1,4 @@
+import { FigmaSetupError, redactFigmaMessage } from "../figma-errors.js";
 import { Command } from "commander";
 import { readClaudeFigmaGrant, INVALID_CLAUDE_GRANT } from "../figma-claude-grant.js";
 import { withClaudeFigmaSignIn } from "../figma-claude-sign-in.js";
@@ -399,7 +400,7 @@ export function registerFigmaCommands(program: Command, ports = {
               arguments: {},
             });
             let identity = who.structuredContent as
-              | { handle?: string; plans?: unknown }
+              | { whoami?: { handle?: string; plans?: unknown }; handle?: string; plans?: unknown }
               | undefined;
             if (!identity) {
               for (
@@ -418,6 +419,7 @@ export function registerFigmaCommands(program: Command, ports = {
                 }
               }
             }
+            identity = identity?.whoami ?? identity;
             if (
               who.isError ||
               !identity?.handle ||
@@ -438,7 +440,7 @@ export function registerFigmaCommands(program: Command, ports = {
               }\n`,
             );
           } catch {
-            throw new Error(
+            throw new FigmaSetupError(
               "Figma whoami could not verify the candidate identity/plans",
             );
           } finally {
@@ -454,7 +456,7 @@ export function registerFigmaCommands(program: Command, ports = {
               "Confirm this plan owns the library file (yes): ", signal,
             )) !== "yes"
           ) {
-            throw new Error("Library plan not confirmed");
+            throw new FigmaSetupError("Library plan not confirmed");
           }
           const input = {
             workspace_id: project.workspace_id,
@@ -481,8 +483,8 @@ export function registerFigmaCommands(program: Command, ports = {
                   message = (await error.context.json()).error;
                 } catch { /* use safe fallback */ }
               }
-              if (typeof message === "string" && !imported) throw new Error(message);
-              throw new Error(
+              if (typeof message === "string") throw new FigmaSetupError(redactFigmaMessage(message, [pat, ...Object.values(grant).filter((v): v is string => typeof v === "string")]));
+              throw new FigmaSetupError(
                 "Figma validation/publication failed; previous connection remains active. Check identity/library/seat. Operator: provision workspace grant, PAT and access slots with gcloud secrets create and the conditioned secretVersionAdder binding.",
               );
             }
@@ -506,7 +508,7 @@ export function registerFigmaCommands(program: Command, ports = {
             (await ports.prompt("Save this workspace connection? Type yes: ", signal)) !==
               "yes"
           ) {
-            throw new Error("Setup cancelled. No connection was saved.");
+            throw new FigmaSetupError("Setup cancelled. No connection was saved.");
           }
           signal?.throwIfAborted();
           saveAttempted = true;
@@ -516,14 +518,14 @@ export function registerFigmaCommands(program: Command, ports = {
         };
         if (opts.claudeSignIn) {
           process.stderr.write("Connect Figma with a fresh Claude Code sign-in.\nYour everyday Claude Code login will not be used.\nIt runs in a throwaway pod that is deleted afterwards.\n");
-          if (await ports.prompt("Continue? Type yes: ") !== "yes") throw new Error("Setup cancelled. No connection was saved.");
+          if (await ports.prompt("Continue? Type yes: ") !== "yes") throw new FigmaSetupError("Setup cancelled. No connection was saved.");
           imported = true;
           const handle = await ports.mint(async (file, signal) => connectWithGrant(ports.readGrant(file), signal));
           process.stdout.write(`Figma connection saved. Edits are made as @${handle}.\n`);
           process.stdout.write("The workspace refresh job now owns this sign-in.\n");
         } else if (opts.claudeCredentials) {
           process.stderr.write("Use a fresh sign-in created only for this workspace.\nStop its Claude Code process before continuing.\n");
-          if (await ports.prompt("This is an isolated sign-in and no other process will refresh it. Type yes: ") !== "yes") throw new Error("Setup cancelled. No connection was saved.");
+          if (await ports.prompt("This is an isolated sign-in and no other process will refresh it. Type yes: ") !== "yes") throw new FigmaSetupError("Setup cancelled. No connection was saved.");
           imported = true;
           try {
             const handle = await connectWithGrant(ports.readGrant(opts.claudeCredentials));
@@ -548,7 +550,7 @@ export function registerFigmaCommands(program: Command, ports = {
           message = "Could not confirm whether the connection was saved. Do not retry this import yet.\nCheck `harmony figma health` and the workspace connection before reconnecting.";
         } else if (imported && !saved) {
           if (message === INVALID_CLAUDE_GRANT) message += "\nNo connection was saved. Your existing connection is unchanged.\nCreate a fresh isolated sign-in and try again.";
-          else if (!message.startsWith("Setup cancelled") && !message.startsWith("Temporary sign-in cleanup")) message = "Figma sign-in validation failed. No connection was saved. Your existing connection is unchanged.\nCheck identity/library/seat and operator-provisioned slots; create a fresh isolated sign-in and try again.";
+          else if (!message.startsWith("Setup cancelled") && !message.startsWith("Temporary sign-in cleanup")) message = "Figma sign-in validation failed. No connection was saved. Your existing connection is unchanged.\nCheck identity/library/seat and operator-provisioned slots; create a fresh isolated sign-in and try again." + (error instanceof FigmaSetupError ? "\nReason: " + error.message : "");
         }
         process.stderr.write(message + "\n");
         process.exitCode = 1;
