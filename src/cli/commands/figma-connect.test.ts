@@ -101,3 +101,14 @@ it("retains a safe handler reason for imported sign-ins",async()=>{
  await run(["--claude-credentials","private"]);
  expect(out).toContain("Reason: REST and MCP must identify the same Figma handle");
 });
+it("retains the library confirmation reason",async()=>{
+ const p=ports();p.prompt.mockImplementation(async prompt=>prompt.startsWith("Confirm this plan")?"no":"yes");
+ await run(["--claude-credentials","private"],p);
+ expect(out).toContain("Reason: Library plan not confirmed");expect(invoke).not.toHaveBeenCalled();
+});
+it("retains our credential-free handler fallback without an upstream body",async()=>{
+ invoke.mockResolvedValue({error:{message:"SYNTHETIC-SECRET"}});
+ await run(["--claude-credentials","private"]);
+ expect(out).toContain("Reason: Figma validation/publication failed; previous connection remains active. Check identity/library/seat. Operator: provision workspace grant, PAT and access slots with gcloud secrets create and the conditioned secretVersionAdder binding.");
+ expect(out).not.toContain("SYNTHETIC");
+});
