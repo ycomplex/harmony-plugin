@@ -46030,6 +46030,15 @@ function registerAuthCommands(program3) {
   });
 }
 
+// src/cli/figma-errors.ts
+var FigmaSetupError = class extends Error {
+};
+function redactFigmaMessage(message, secrets = []) {
+  let safe = message;
+  for (const secret of secrets.filter(Boolean).sort((a3, b) => b.length - a3.length)) safe = safe.split(secret).join("[redacted]");
+  return safe.replace(/Bearer\s+[^\s,;]+/gi, "Bearer [redacted]").replace(/(access_token|refresh_token|client_secret|token|password)([\s"']*[:=][\s"']*)[^\s,;"'}]+/gi, "$1$2[redacted]").replace(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "[redacted]");
+}
+
 // src/cli/figma-claude-grant.ts
 import { constants, closeSync, fstatSync, openSync, readSync } from "node:fs";
 var INVALID_CLAUDE_GRANT = "Cannot import this Figma sign-in: required credentials are missing, ambiguous or expired.";
@@ -46085,8 +46094,8 @@ import { randomUUID } from "node:crypto";
 var defaults = {
   run: (args, interactive = false, signal) => new Promise((resolve8, reject) => {
     const child = spawn("kubectl", args, { stdio: interactive ? "inherit" : "ignore", signal });
-    child.once("error", () => reject(new Error("Figma sign-in pod command failed.")));
-    child.once("exit", (code) => code === 0 ? resolve8() : reject(new Error("Figma sign-in pod command failed.")));
+    child.once("error", () => reject(new FigmaSetupError("Figma sign-in pod command failed.")));
+    child.once("exit", (code) => code === 0 ? resolve8() : reject(new FigmaSetupError("Figma sign-in pod command failed.")));
   }),
   temp: () => mkdtempSync(join5(tmpdir(), "harmony-figma-")),
   chmod: (path4) => chmodSync(path4, 384),
@@ -46095,15 +46104,23 @@ var defaults = {
 };
 async function withClaudeFigmaSignIn(consume, ports = defaults, version5 = process.env.HARMONY_FIGMA_CLAUDE_VERSION ?? "2.1.312") {
   if (!/^\d+\.\d+\.\d+$/.test(version5)) throw new Error("Invalid Claude Code version.");
+  const base2 = ["--request-timeout=70s", "-n", "harmony-legs"];
+  try {
+    await ports.run(["--request-timeout=15s", "-n", "harmony-legs", "auth", "can-i", "create", "pods", "--quiet"]);
+  } catch {
+    throw new FigmaSetupError("kubectl could not reach the harmony cluster. Run `gcloud auth login`, then retry. No pod was created.");
+  }
   const dir = ports.temp();
   const pod = "harmony-figma-" + randomUUID();
-  const base2 = ["--request-timeout=70s", "-n", "harmony-legs"];
   const abort = new AbortController();
   const interrupted = () => abort.abort();
   process.once("SIGINT", interrupted);
   process.once("SIGTERM", interrupted);
   let podMayExist = false;
-  let cleanupFailed = false;
+  let signedIn = false;
+  let primary;
+  let failed = false;
+  let result;
   try {
     podMayExist = true;
     await ports.run([...base2, "run", pod, "--restart=Never", "--image=node:22-bookworm-slim", "--command", "--", "sleep", "3600"], false, abort.signal);
@@ -46113,37 +46130,49 @@ async function withClaudeFigmaSignIn(consume, ports = defaults, version5 = proce
     await ports.run([...exec, "claude", "mcp", "add", "--scope", "user", "--transport", "http", "figma", "https://mcp.figma.com/mcp"], false, abort.signal);
     ports.report("Open the Figma sign-in link printed by Claude Code and approve the account you want Harmony to use.");
     await ports.run([...base2, "exec", "-it", pod, "--", "claude", "mcp", "login", "figma", "--no-browser"], true, abort.signal);
+    signedIn = true;
     const file = join5(dir, "credentials.json");
     await ports.run([...base2, "cp", pod + ":/root/.claude/.credentials.json", file], false, abort.signal);
     ports.chmod(file);
     await ports.run([...base2, "delete", "pod", pod, "--ignore-not-found=true", "--wait=true", "--timeout=60s"], false);
     podMayExist = false;
-    if (abort.signal.aborted) throw new Error("Setup cancelled.");
+    if (abort.signal.aborted) throw new FigmaSetupError("Setup cancelled.");
     ports.report("Fresh Figma sign-in ready. The sign-in pod has been deleted.");
     ports.report("Importing the private sign-in for this workspace\u2026");
-    return await consume(file, abort.signal);
+    result = await consume(file, abort.signal);
+  } catch (error2) {
+    primary = error2;
+    failed = true;
   } finally {
     process.removeListener("SIGINT", interrupted);
     process.removeListener("SIGTERM", interrupted);
+    const leftovers = [];
     if (podMayExist) {
       try {
         await ports.run([...base2, "delete", "pod", pod, "--ignore-not-found=true", "--wait=true", "--timeout=60s"]);
       } catch {
-        cleanupFailed = true;
+        leftovers.push(`Remove pod ${pod} in harmony-legs before reconnecting.`);
       }
     }
     try {
       ports.remove(dir);
     } catch {
-      cleanupFailed = true;
+      leftovers.push(`Remove private directory ${dir} before reconnecting.`);
     }
-    if (cleanupFailed) {
-      ports.report("Temporary sign-in cleanup could not be completed.");
-      ports.report(`Remove pod ${pod} in harmony-legs and private directory ${dir} before reconnecting. Do not use this sign-in in Claude Code again.`);
-      throw new Error("Temporary sign-in cleanup could not be completed.");
+    if (leftovers.length) {
+      const cleanup = [
+        "Temporary sign-in cleanup could not be completed.",
+        ...leftovers,
+        ...signedIn ? ["Do not use this sign-in in Claude Code again."] : []
+      ].join("\n");
+      const reason = primary instanceof FigmaSetupError ? primary.message : failed ? "Figma sign-in failed." : void 0;
+      primary = new FigmaSetupError([...reason ? [reason] : [], cleanup].join("\n"));
+      failed = true;
     }
-    ports.report("Temporary sign-in files removed.");
+    if (!leftovers.length) ports.report("Temporary sign-in files removed.");
   }
+  if (failed) throw primary;
+  return result;
 }
 
 // src/cli/commands/figma.ts
@@ -52484,8 +52513,16 @@ async function getAuthenticatedContext(projectConfig) {
       if (err instanceof TokenExchangeError) {
         throw new Error(`HARMONY_API_TOKEN is set but was rejected (HTTP ${err.status}). Check that the token is valid and has not been revoked.`, { cause: err });
       }
-      const message = err instanceof Error ? err.message : String(err);
-      throw new Error(`Could not reach Harmony to validate HARMONY_API_TOKEN: ${message}`, { cause: err });
+      let host = "unknown host";
+      try {
+        host = new URL(harmonyEnv("HARMONY_SUPABASE_URL") ?? "https://eioxsunvhakmelhanmnn.supabase.co").host;
+      } catch {
+      }
+      const cause = err instanceof Error ? err.cause : void 0;
+      const detail = [cause?.code, cause?.message].filter((v2) => typeof v2 === "string").join(": ");
+      const message = redactFigmaMessage(err instanceof Error ? err.message : "Network request failed", [project.token]);
+      const safeDetail = redactFigmaMessage(detail, [project.token]);
+      throw new Error(`Could not reach Harmony to validate HARMONY_API_TOKEN: ${message} (host: ${host}${safeDetail ? "; cause: " + safeDetail : ""})`, { cause: err });
     }
     throw err;
   }
@@ -55226,6 +55263,7 @@ function registerFigmaCommands(program3, ports = {
               }
             }
           }
+          identity2 = identity2?.whoami ?? identity2;
           if (who.isError || !identity2?.handle || !Array.isArray(identity2.plans)) {
             throw new Error();
           }
@@ -55241,7 +55279,7 @@ function registerFigmaCommands(program3, ports = {
 `
           );
         } catch {
-          throw new Error(
+          throw new FigmaSetupError(
             "Figma whoami could not verify the candidate identity/plans"
           );
         } finally {
@@ -55257,7 +55295,7 @@ function registerFigmaCommands(program3, ports = {
           "Confirm this plan owns the library file (yes): ",
           signal
         ) !== "yes") {
-          throw new Error("Library plan not confirmed");
+          throw new FigmaSetupError("Library plan not confirmed");
         }
         const input = {
           workspace_id: project.workspace_id,
@@ -55282,8 +55320,8 @@ function registerFigmaCommands(program3, ports = {
               } catch {
               }
             }
-            if (typeof message === "string" && !imported) throw new Error(message);
-            throw new Error(
+            if (typeof message === "string") throw new FigmaSetupError(redactFigmaMessage(message, [pat, ...Object.values(grant).filter((v2) => typeof v2 === "string")]));
+            throw new FigmaSetupError(
               "Figma validation/publication failed; previous connection remains active. Check identity/library/seat. Operator: provision workspace grant, PAT and access slots with gcloud secrets create and the conditioned secretVersionAdder binding."
             );
           }
@@ -55306,7 +55344,7 @@ Library: ${fileKey}; seat: ${candidate.metadata.seat}; tier: ${candidate.metadat
           );
         }
         if (await ports.prompt("Save this workspace connection? Type yes: ", signal) !== "yes") {
-          throw new Error("Setup cancelled. No connection was saved.");
+          throw new FigmaSetupError("Setup cancelled. No connection was saved.");
         }
         signal?.throwIfAborted();
         saveAttempted = true;
@@ -55316,7 +55354,7 @@ Library: ${fileKey}; seat: ${candidate.metadata.seat}; tier: ${candidate.metadat
       };
       if (opts.claudeSignIn) {
         process.stderr.write("Connect Figma with a fresh Claude Code sign-in.\nYour everyday Claude Code login will not be used.\nIt runs in a throwaway pod that is deleted afterwards.\n");
-        if (await ports.prompt("Continue? Type yes: ") !== "yes") throw new Error("Setup cancelled. No connection was saved.");
+        if (await ports.prompt("Continue? Type yes: ") !== "yes") throw new FigmaSetupError("Setup cancelled. No connection was saved.");
         imported = true;
         const handle = await ports.mint(async (file, signal) => connectWithGrant(ports.readGrant(file), signal));
         process.stdout.write(`Figma connection saved. Edits are made as @${handle}.
@@ -55324,7 +55362,7 @@ Library: ${fileKey}; seat: ${candidate.metadata.seat}; tier: ${candidate.metadat
         process.stdout.write("The workspace refresh job now owns this sign-in.\n");
       } else if (opts.claudeCredentials) {
         process.stderr.write("Use a fresh sign-in created only for this workspace.\nStop its Claude Code process before continuing.\n");
-        if (await ports.prompt("This is an isolated sign-in and no other process will refresh it. Type yes: ") !== "yes") throw new Error("Setup cancelled. No connection was saved.");
+        if (await ports.prompt("This is an isolated sign-in and no other process will refresh it. Type yes: ") !== "yes") throw new FigmaSetupError("Setup cancelled. No connection was saved.");
         imported = true;
         try {
           const handle = await connectWithGrant(ports.readGrant(opts.claudeCredentials));
@@ -55352,7 +55390,7 @@ Library: ${fileKey}; seat: ${candidate.metadata.seat}; tier: ${candidate.metadat
         message = "Could not confirm whether the connection was saved. Do not retry this import yet.\nCheck `harmony figma health` and the workspace connection before reconnecting.";
       } else if (imported && !saved) {
         if (message === INVALID_CLAUDE_GRANT) message += "\nNo connection was saved. Your existing connection is unchanged.\nCreate a fresh isolated sign-in and try again.";
-        else if (!message.startsWith("Setup cancelled") && !message.startsWith("Temporary sign-in cleanup")) message = "Figma sign-in validation failed. No connection was saved. Your existing connection is unchanged.\nCheck identity/library/seat and operator-provisioned slots; create a fresh isolated sign-in and try again.";
+        else if (!message.startsWith("Setup cancelled") && !message.startsWith("Temporary sign-in cleanup")) message = "Figma sign-in validation failed. No connection was saved. Your existing connection is unchanged.\nCheck identity/library/seat and operator-provisioned slots; create a fresh isolated sign-in and try again." + (error2 instanceof FigmaSetupError ? "\nReason: " + error2.message : "");
       }
       process.stderr.write(message + "\n");
       process.exitCode = 1;

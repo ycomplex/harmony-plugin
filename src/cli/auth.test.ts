@@ -126,3 +126,11 @@ describe('getAuthenticatedContext() — B-1070 HARMONY_API_TOKEN fallback', () =
     await expect(getAuthenticatedContext()).rejects.toThrow('No active project. Run `harmony login` to add one.');
   });
 });
+
+it.each(["ENOTFOUND","ECONNRESET","UND_ERR_CONNECT_TIMEOUT","CERT_HAS_EXPIRED"])("shows %s and host without credentials",async code=>{
+ vi.stubEnv("HARMONY_API_TOKEN","sensitive-token");vi.stubEnv("HARMONY_SUPABASE_URL","https://example.invalid");
+ vi.stubGlobal("fetch",vi.fn().mockRejectedValue(new Error("fetch failed",{cause:{code,message:"network failure sensitive-token Bearer hidden"}})));
+ let message="";try{await getAuthenticatedContext();}catch(e){message=(e as Error).message;}
+ expect(message).toBe(`Could not reach Harmony to validate HARMONY_API_TOKEN: fetch failed (host: example.invalid; cause: ${code}: network failure [redacted] Bearer [redacted])`);
+ expect(message).not.toContain("sensitive-token");expect(message).not.toContain("hidden");
+});

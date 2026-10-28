@@ -23240,6 +23240,13 @@ function parseOwnerRepoSlug(url) {
   return `${match[1]}/${match[2]}`;
 }
 
+// src/cli/figma-errors.ts
+function redactFigmaMessage(message, secrets = []) {
+  let safe = message;
+  for (const secret of secrets.filter(Boolean).sort((a, b) => b.length - a.length)) safe = safe.split(secret).join("[redacted]");
+  return safe.replace(/Bearer\s+[^\s,;]+/gi, "Bearer [redacted]").replace(/(access_token|refresh_token|client_secret|token|password)([\s"']*[:=][\s"']*)[^\s,;"'}]+/gi, "$1$2[redacted]").replace(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "[redacted]");
+}
+
 // src/auth.ts
 var SUPABASE_URL = harmonyEnv("HARMONY_SUPABASE_URL") ?? "https://eioxsunvhakmelhanmnn.supabase.co";
 var SUPABASE_ANON_KEY = harmonyEnv("HARMONY_SUPABASE_ANON_KEY") ?? "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpb3hzdW52aGFrbWVsaGFubW5uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2NDY3NjksImV4cCI6MjA5MDIyMjc2OX0.SdbpfqRhcB21qWs6XnD6Lsj6AGX2b6tOGV3pg2iJjsw";
@@ -31629,8 +31636,16 @@ async function getAuthenticatedContext(projectConfig) {
       if (err instanceof TokenExchangeError) {
         throw new Error(`HARMONY_API_TOKEN is set but was rejected (HTTP ${err.status}). Check that the token is valid and has not been revoked.`, { cause: err });
       }
-      const message = err instanceof Error ? err.message : String(err);
-      throw new Error(`Could not reach Harmony to validate HARMONY_API_TOKEN: ${message}`, { cause: err });
+      let host = "unknown host";
+      try {
+        host = new URL(harmonyEnv("HARMONY_SUPABASE_URL") ?? "https://eioxsunvhakmelhanmnn.supabase.co").host;
+      } catch {
+      }
+      const cause = err instanceof Error ? err.cause : void 0;
+      const detail = [cause?.code, cause?.message].filter((v) => typeof v === "string").join(": ");
+      const message = redactFigmaMessage(err instanceof Error ? err.message : "Network request failed", [project.token]);
+      const safeDetail = redactFigmaMessage(detail, [project.token]);
+      throw new Error(`Could not reach Harmony to validate HARMONY_API_TOKEN: ${message} (host: ${host}${safeDetail ? "; cause: " + safeDetail : ""})`, { cause: err });
     }
     throw err;
   }
