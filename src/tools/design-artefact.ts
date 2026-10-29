@@ -5,16 +5,25 @@ const uuid = z.string().uuid();
 const NodeSchema = z.object({ id: z.string().min(1), name: z.string().min(1), caption: z.string(), preview_attachment_id: uuid, preview_filename: z.string().min(1) }).strict();
 const base = { schema_version: z.literal(1), composed_at: z.string().datetime(), provenance_notes: z.string(), mcp_call_count: z.number().int().nonnegative() };
 export const DesignArtefactSchema = z.discriminatedUnion('tool', [
-  z.object({ ...base, tool: z.literal('figma'), file_key: z.string().regex(/^[a-zA-Z0-9]+$/), file_url: z.string().url().refine(s => { const u = new URL(s); return u.protocol === 'https:' && u.hostname === 'www.figma.com'; }), version_id: z.string().min(1), nodes: z.array(NodeSchema).min(1) }).strict(),
+  z.object({ ...base, tool: z.literal('figma'), file_key: z.string().regex(/^[a-zA-Z0-9]+$/), file_url: z.string().url().refine(s => { const u = new URL(s); return u.protocol === 'https:' && u.hostname === 'www.figma.com'; }), version_id: z.string().min(1).optional(), nodes: z.array(NodeSchema).min(1) }).strict(),
   z.object({ ...base, tool: z.literal('html'), surface_attachment_id: uuid, surface_filename: z.string().min(1), nodes: z.array(NodeSchema).max(0).optional() }).strict(),
 ]);
 export type DesignArtefact = z.infer<typeof DesignArtefactSchema>;
 export interface DesignDrift { status: 'unchanged' | 'changed' | 'unchecked'; checked_at: string; latest_version_id?: string; }
 export function designAttachmentIds(a: DesignArtefact): string[] { return a.tool === 'html' ? [a.surface_attachment_id] : a.nodes.map(n => n.preview_attachment_id); }
+/** B-1203: a versionless figma record needs the board's web to report `version_optional: true`. */
+export class VersionOptionalUnsupportedError extends Error {
+  readonly code = 'version-optional-unsupported';
+  constructor() {
+    super("This board's web has not been promoted with the version-optional design capability (design_artefact_capability must report version_optional: true); a Figma design record without a version_id cannot be stored here yet.");
+    this.name = 'VersionOptionalUnsupportedError';
+  }
+}
 export async function validateDesignAttachments(client: SupabaseClient, taskId: string, raw: unknown): Promise<DesignArtefact> {
   const a = DesignArtefactSchema.parse(raw);
   const { data: capability, error: capError } = await client.rpc('design_artefact_capability');
   if (capError || capability?.schema_version !== 1) throw new Error('Design artefacts require the B-1202 web migration on this board; promote web before composing artefacts.');
+  if (a.tool === 'figma' && !a.version_id && capability?.version_optional !== true) throw new VersionOptionalUnsupportedError();
   const ids = [...new Set(designAttachmentIds(a))];
   const { data, error } = await client.from('attachments').select('id, filename, content_type').eq('task_id', taskId).eq('status', 'finalized').in('id', ids);
   if (error) throw new Error(error.message);
@@ -27,12 +36,12 @@ export async function validateDesignAttachments(client: SupabaseClient, taskId: 
 }
 export function renderDesignArtefact(a: DesignArtefact): string[] {
   if (a.tool === 'html') return [`**Design preview:** ${a.surface_filename} (ticket attachment ${a.surface_attachment_id}; download and open locally)`];
-  return [`**Design previews:** [Open Figma file — version ${a.version_id}](${a.file_url})`, ...a.nodes.map(n => `- ${n.name}: ${n.caption} — ${n.preview_filename} (ticket attachment ${n.preview_attachment_id})`)];
+  return [`**Design previews:** [Open Figma file${a.version_id ? ` — version ${a.version_id}` : ''}](${a.file_url})`, ...a.nodes.map(n => `- ${n.name}: ${n.caption} — ${n.preview_filename} (ticket attachment ${n.preview_attachment_id})`)];
 }
 /** Credential injection is optional; no credential storage or secret access belongs here. */
 export async function observeDesignDrift(a: DesignArtefact, token: string | undefined, request: typeof fetch = fetch): Promise<DesignDrift> {
   const checked_at = new Date().toISOString();
-  if (a.tool !== 'figma' || !token) return { status: 'unchecked', checked_at };
+  if (a.tool !== 'figma' || !a.version_id || !token) return { status: 'unchecked', checked_at };
   try {
     const r = await request(`https://api.figma.com/v1/files/${a.file_key}/nodes?ids=${encodeURIComponent(a.nodes.map(n => n.id).join(","))}`, { headers: { 'X-Figma-Token': token }, signal: AbortSignal.timeout(10000) });
     if (!r.ok) throw new Error('lookup failed');
