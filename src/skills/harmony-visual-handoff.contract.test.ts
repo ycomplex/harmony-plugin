@@ -109,6 +109,8 @@ describe('harmony-visual-handoff skill contract', () => {
   // paths (the permanent state for every pre-B-977 ticket).
   it('B-997: authors an entity_link payload item at compose, instead of an inline link_ticket_entities call', () => {
     expect(skill.body).toMatch(/write_kind:\s*"entity_link"/);
+    // B-1317: the item carries the kind, so a name shared with a concept is never ambiguous.
+    expect(skill.body).toMatch(/write_kind:\s*"entity_link"[^}]*kind:\s*"feature"/);
     expect(skill.body).not.toMatch(/mcp__harmony__link_ticket_entities\(/);
     expect(referencedHarmonyTools(skill.body)).not.toContain('link_ticket_entities');
     expect(referencedHarmonyTools(skill.body)).toContain('consume_pending_acceptance_event');

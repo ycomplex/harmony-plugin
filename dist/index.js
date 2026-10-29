@@ -44646,6 +44646,14 @@ function validateTitle(title, cap = 200) {
 }
 
 // src/tools/entity-selector.ts
+var AmbiguousEntitySelectionError = class extends Error {
+  constructor(candidates) {
+    super(`Ambiguous entity name; select entity_id or kind. Candidates: ${JSON.stringify(candidates)}`);
+    this.candidates = candidates;
+    this.name = "AmbiguousEntitySelectionError";
+  }
+  candidates;
+};
 async function selectEntity(client, workspaceId, projectId, selector) {
   const name = selector.name === void 0 ? void 0 : normalizeHtmlEntities(selector.name).trim();
   if (name === "" || selector.entity_id === "") throw new Error("Entity identity/name must not be blank");
@@ -44669,7 +44677,7 @@ async function selectEntity(client, workspaceId, projectId, selector) {
   }
   if (selector.kind) candidates = candidates.filter((entity) => entity.kind === selector.kind);
   candidates = [...new Map(candidates.map((entity) => [entity.id, entity])).values()];
-  if (candidates.length > 1) throw new Error(`Ambiguous entity name; select entity_id or kind. Candidates: ${JSON.stringify(candidates)}`);
+  if (candidates.length > 1) throw new AmbiguousEntitySelectionError(candidates);
   if (selector.entity_id && !candidates.length) throw new Error("Entity identity is unavailable in this project, retired, or conflicts with the supplied name/kind");
   return candidates[0] ?? null;
 }
@@ -53847,8 +53855,48 @@ var WriteKindSubstrateAbsentError = class extends Error {
   }
   writeKind;
 };
-async function applyAcceptanceEventPayload(client, event) {
+var AmbiguousEntityLinkError = class extends Error {
+  constructor(ref, entityName, candidates) {
+    super(
+      `entity_link item '${ref}' is ambiguous: the name '${entityName}' matches ${candidates.length} entities \u2014 ` + candidates.map((c) => `${c.name} (kind ${c.kind || "unknown"}, id ${c.id})`).join("; ") + `. Nothing was written. Next: answer which entity was meant (re-run consume_pending_acceptance_event with entity_overrides { "${ref}": "<entity id>" }), or send the design brief back so it recomposes with a kind.`
+    );
+    this.ref = ref;
+    this.entityName = entityName;
+    this.candidates = candidates;
+    this.name = "AmbiguousEntityLinkError";
+  }
+  ref;
+  entityName;
+  candidates;
+};
+async function preflightEntityLinks(client, event, items, opts) {
+  const resolved = /* @__PURE__ */ new Map();
+  for (const item of items) {
+    if (item.write_kind !== "entity_link" || !item.ref) continue;
+    const entityId = opts.entity_overrides?.[item.ref] ?? item.entity_id;
+    const name = item.entity_name?.trim();
+    if (!name && !entityId) continue;
+    const { data: taskRow, error: taskErr } = await client.from("tasks").select("project_id").eq("id", event.task_id).maybeSingle();
+    if (taskErr) throw new Error(taskErr.message);
+    const projectId = taskRow?.project_id;
+    if (!projectId) throw new Error(`entity_link item '${item.ref}' \u2014 task ${event.task_id} has no project_id, cannot resolve the entity`);
+    const workspaceId = await getWorkspaceId(client, projectId);
+    const kind = item.kind ?? item.entity_kind;
+    try {
+      const selected = await selectEntity(client, workspaceId, projectId, { entity_id: entityId, name, kind });
+      resolved.set(item.ref, { projectId, workspaceId, selected });
+    } catch (err) {
+      if (err instanceof AmbiguousEntitySelectionError) {
+        throw new AmbiguousEntityLinkError(item.ref, name ?? "", err.candidates.map((c) => ({ id: c.id, name: c.name, kind: c.kind })));
+      }
+      throw err;
+    }
+  }
+  return resolved;
+}
+async function applyAcceptanceEventPayload(client, event, opts = {}) {
   const items = itemsOf(event.payload);
+  const resolvedLinks = await preflightEntityLinks(client, event, items, opts);
   const order = [
     "child_ticket",
     "checklist_item",
@@ -54006,16 +54054,13 @@ async function applyAcceptanceEventPayload(client, event) {
         }
         result = data;
       } else if (item.write_kind === "entity_link") {
+        const overrideId = opts.entity_overrides?.[item.ref];
         const name = item.entity_name?.trim();
-        if (!name && !item.entity_id) throw new Error(`entity_link item '${item.ref}' needs entity_id or entity_name`);
-        const { data: taskRow, error: taskErr } = await client.from("tasks").select("project_id").eq("id", event.task_id).maybeSingle();
-        if (taskErr) throw new Error(taskErr.message);
-        const projectId = taskRow?.project_id;
-        if (!projectId) throw new Error(`entity_link item '${item.ref}' \u2014 task ${event.task_id} has no project_id, cannot resolve the entity`);
-        const workspaceId = await getWorkspaceId(client, projectId);
+        if (!name && !item.entity_id && !overrideId) throw new Error(`entity_link item '${item.ref}' needs entity_id or entity_name`);
+        const link = resolvedLinks.get(item.ref);
+        if (!link) throw new Error(`entity_link item '${item.ref}' was not resolved by the pre-flight`);
         const kind = item.kind ?? item.entity_kind;
-        const selected = await selectEntity(client, workspaceId, projectId, { entity_id: item.entity_id, name, kind });
-        const entityId = selected?.id ?? await resolveOrCreateEntity(client, workspaceId, projectId, name, kind ?? "feature");
+        const entityId = link.selected?.id ?? await resolveOrCreateEntity(client, link.workspaceId, link.projectId, name, kind ?? "feature");
         const { data, error: error2 } = await client.rpc("consume_entity_link_write", {
           _event_id: event.id,
           _external_ref: item.ref,
@@ -54092,7 +54137,41 @@ async function consumeAcceptanceEvent(client, eventId) {
   if (retryError) throw new Error(retryError.message);
   return { ...retryData, retried_from_event_id: eventId };
 }
-async function consumePendingAcceptanceEvent(client, projectId, taskId) {
+var AMBIGUITY_ROUND_PREFIX = "Entity link is ambiguous";
+async function fileAmbiguityRound(client, projectId, event, err, userId) {
+  if (!userId) {
+    return new Error(`${err.message} The question round could not be filed: no user id was available to open the exchange, so the human has not been asked \u2014 ask them which entity was meant and re-run with entity_overrides.`);
+  }
+  try {
+    const exchange = await startElicitation(client, projectId, userId, {
+      task_id: event.task_id,
+      trigger: "worker-question",
+      gate: event.pending_activity ?? void 0
+    });
+    const last = Array.isArray(exchange.rounds) ? exchange.rounds[exchange.rounds.length - 1] : void 0;
+    const alreadyAsked = !!last && (last.context_line ?? "").startsWith(AMBIGUITY_ROUND_PREFIX) && Object.keys(last.answers ?? {}).length === 0;
+    if (!alreadyAsked) {
+      const list = err.candidates.map((c) => `- ${c.name} (kind ${c.kind || "unknown"}, id ${c.id})`).join("\n");
+      await fileElicitationRound(client, projectId, {
+        exchange_id: exchange.id,
+        context_line: `${AMBIGUITY_ROUND_PREFIX}: accepting this brief would link '${err.entityName}' (item ${err.ref}), which matches more than one entity. Nothing was applied; the acceptance is still pending.`,
+        questions: [{
+          id: "q1",
+          stakes: "load-bearing",
+          kind: "open",
+          text: `Which entity did you mean? Answer with its id.
+${list}`,
+          why: `The next leg re-applies the pending acceptance with entity_overrides { "${err.ref}": "<id you pick>" }.`
+        }]
+      });
+    }
+    return new Error(`${err.message} A "which entity did you mean?" round was filed on the ticket (worker-question); the acceptance event stays pending until it is answered.`);
+  } catch (fileErr) {
+    const why = fileErr instanceof Error ? fileErr.message : String(fileErr);
+    return new Error(`${err.message} The question round could not be filed (${why}), so the human has not been asked \u2014 the acceptance event stays pending.`);
+  }
+}
+async function consumePendingAcceptanceEvent(client, projectId, taskId, opts = {}) {
   const probe = await probeAcceptanceEventSubstrate(client);
   if (probe === "absent") return { status: "substrate-absent" };
   const event = await getPendingAcceptanceEvent(client, projectId, taskId);
@@ -54101,7 +54180,13 @@ async function consumePendingAcceptanceEvent(client, projectId, taskId) {
   if (classifyPayload(event.payload) === "unrecognized") {
     return { status: "payload-unrecognized", event_id: event.id, reason: event.reason, items: rawItemsOf(event.payload) };
   }
-  const applyResult = await applyAcceptanceEventPayload(client, event);
+  let applyResult;
+  try {
+    applyResult = await applyAcceptanceEventPayload(client, event, { entity_overrides: opts.entity_overrides });
+  } catch (err) {
+    if (err instanceof AmbiguousEntityLinkError) throw await fileAmbiguityRound(client, projectId, event, err, opts.userId);
+    throw err;
+  }
   if (applyResult.substrate_absent_for) {
     return { status: "payload-unrecognized", event_id: event.id, reason: event.reason, items: rawItemsOf(event.payload) };
   }
@@ -54129,18 +54214,19 @@ async function consumePendingAcceptanceEvent(client, projectId, taskId) {
 }
 var consumePendingAcceptanceEventTool = {
   name: "consume_pending_acceptance_event",
-  description: 'B-797 leg-start-consume: check for and execute an outstanding accepted-brief payload (proposed ACs, decompose children + AC transfers, plan-step checklist, design AC refinements, B-688 decision-only label proposals, B-843 knowledge-entry content + per-gate supersede, B-867 the gate\'s durable ticket section, B-941 supersede-decision retires, B-997 confirmed feature-entity name(s) + entity edges) BEFORE any gate routing/floor check runs. Call this FIRST, on every leg pickup \u2014 mirrors the B-747 leg-start check. Feature-detects the substrate (never by plugin version): on an older DB without the B-797 tables/RPCs returns { status: "substrate-absent" } and changes nothing (today\'s synchronous behavior is exactly preserved). { status: "none" } = no outstanding event. { status: "consumed" } = every promised write landed (idempotently \u2014 a retry after a partial failure only applies what is still missing) and the deferred workflow-state advance committed; `workflow_state` is the ticket\'s new state; `by_write_kind` breaks `applied` down per write_kind (e.g. how many NEW acceptance_criterion writes this call itself filed). B-888: the consumed result ALSO carries `reason` and `brief_id`, surfaced directly from the pending event row (no second `list_activity` round-trip needed) \u2014 when `reason === "clarification-draft"` this consume IS the clarification\'s AC-filing pass, and the caller (harmony-conduct \xA71c) MUST write the `AC-FILING-PASS brief_id=<brief_id> filed=<by_write_kind.acceptance_criterion ?? 0>` marker right here \u2014 its absence is what let the design gate\'s \xA72b self-heal conclude filing never ran and re-file the same acceptance criteria a second time. { status: "payload-unrecognized", event_id, reason, items } = EITHER the event\'s snapshotted payload is not (yet) in the structured shape this tool applies, OR (B-688/B-383) a recognized write_kind\'s own RPC is not yet deployed on this DB (a pre-migration window) \u2014 both degrade to the SAME status/ shape and the SAME caller handling; do not try to distinguish them. `items` (B-816) is the VERBATIM snapshotted raw items the human already accepted \u2014 the owning gate\'s materialization MUST render these items (title/content per item) as a confirm-or-adjust ask, never re-read them via `get_task` / `get_pending_acceptance_event`, and never fall back to an open "what did you accept?" re-dictation question; only residue genuinely absent from `items` is a legitimate open question. Route to the OWNING GATE SKILL\'s existing materialization (e.g. the design-decide B-744 self-heal for clarify ACs, decompose\'s own B-646 existing-child detection), confirm the work is done, THEN call `consume_acceptance_event({ event_id })` directly to commit the deferred advance. NEVER treat "payload-unrecognized" as "nothing to do" \u2014 that would commit a hollow advance under a new name. Throws (does NOT swallow) if a recognized payload write fails \u2014 the event stays visibly pending; do not catch-and-continue.',
+  description: 'B-797 leg-start-consume: check for and execute an outstanding accepted-brief payload (proposed ACs, decompose children + AC transfers, plan-step checklist, design AC refinements, B-688 decision-only label proposals, B-843 knowledge-entry content + per-gate supersede, B-867 the gate\'s durable ticket section, B-941 supersede-decision retires, B-997 confirmed feature-entity name(s) + entity edges) BEFORE any gate routing/floor check runs. Call this FIRST, on every leg pickup \u2014 mirrors the B-747 leg-start check. Feature-detects the substrate (never by plugin version): on an older DB without the B-797 tables/RPCs returns { status: "substrate-absent" } and changes nothing (today\'s synchronous behavior is exactly preserved). { status: "none" } = no outstanding event. { status: "consumed" } = every promised write landed (idempotently \u2014 a retry after a partial failure only applies what is still missing) and the deferred workflow-state advance committed; `workflow_state` is the ticket\'s new state; `by_write_kind` breaks `applied` down per write_kind (e.g. how many NEW acceptance_criterion writes this call itself filed). B-888: the consumed result ALSO carries `reason` and `brief_id`, surfaced directly from the pending event row (no second `list_activity` round-trip needed) \u2014 when `reason === "clarification-draft"` this consume IS the clarification\'s AC-filing pass, and the caller (harmony-conduct \xA71c) MUST write the `AC-FILING-PASS brief_id=<brief_id> filed=<by_write_kind.acceptance_criterion ?? 0>` marker right here \u2014 its absence is what let the design gate\'s \xA72b self-heal conclude filing never ran and re-file the same acceptance criteria a second time. { status: "payload-unrecognized", event_id, reason, items } = EITHER the event\'s snapshotted payload is not (yet) in the structured shape this tool applies, OR (B-688/B-383) a recognized write_kind\'s own RPC is not yet deployed on this DB (a pre-migration window) \u2014 both degrade to the SAME status/ shape and the SAME caller handling; do not try to distinguish them. `items` (B-816) is the VERBATIM snapshotted raw items the human already accepted \u2014 the owning gate\'s materialization MUST render these items (title/content per item) as a confirm-or-adjust ask, never re-read them via `get_task` / `get_pending_acceptance_event`, and never fall back to an open "what did you accept?" re-dictation question; only residue genuinely absent from `items` is a legitimate open question. Route to the OWNING GATE SKILL\'s existing materialization (e.g. the design-decide B-744 self-heal for clarify ACs, decompose\'s own B-646 existing-child detection), confirm the work is done, THEN call `consume_acceptance_event({ event_id })` directly to commit the deferred advance. NEVER treat "payload-unrecognized" as "nothing to do" \u2014 that would commit a hollow advance under a new name. Throws (does NOT swallow) if a recognized payload write fails \u2014 the event stays visibly pending; do not catch-and-continue. B-1317: every entity_link name is resolved BEFORE any write; an ambiguous name (e.g. a concept and a feature) throws with nothing applied, files a "which entity did you mean?" worker-question round, and leaves the event pending \u2014 once answered, call again with `entity_overrides` ({ <item ref>: <entity id> }).',
   inputSchema: {
     type: "object",
     properties: {
-      task_id: { type: "string", description: "Task identifier \u2014 UUID, task number (e.g., 43), or visual ID (e.g., B-43)" }
+      task_id: { type: "string", description: "Task identifier \u2014 UUID, task number (e.g., 43), or visual ID (e.g., B-43)" },
+      entity_overrides: { type: "object", additionalProperties: { type: "string" }, description: `Optional map of entity_link item ref -> entity id, the answer to a "which entity did you mean?" round; applied as that item's entity_id.` }
     },
     required: ["task_id"]
   }
 };
-async function consumePendingAcceptanceEventToolHandler(client, projectId, args) {
+async function consumePendingAcceptanceEventToolHandler(client, projectId, args, userId) {
   if (!args.task_id) throw new Error("task_id is required");
-  return consumePendingAcceptanceEvent(client, projectId, args.task_id);
+  return consumePendingAcceptanceEvent(client, projectId, args.task_id, { userId, entity_overrides: args.entity_overrides });
 }
 var consumeAcceptanceEventTool = {
   name: "consume_acceptance_event",
@@ -56291,7 +56377,7 @@ async function composeAndAccept(client, projectId, userId, taskId, args) {
     provenance: RESOLVE_BRIEF_PROVENANCE_RECORDED
   });
   if (PAYLOAD_CARRYING_REASONS.has(args.reason)) {
-    const consumed = await consumePendingAcceptanceEvent(client, projectId, taskId);
+    const consumed = await consumePendingAcceptanceEvent(client, projectId, taskId, { userId });
     if (consumed.status !== "consumed" && consumed.status !== "none" && consumed.status !== "substrate-absent") {
       throw new Error(
         `recorded walk: ${args.reason} accept deferred a payload this core could not apply cleanly (status: ${consumed.status}) \u2014 a human must resume this gate by hand, e.g. via consume_pending_acceptance_event / the owning gate skill's self-heal route.`
@@ -57068,7 +57154,7 @@ async function handleToolCall(name, args, client, projectId, userId) {
         result = await consumeAcceptRemark(client, projectId, args, userId);
         break;
       case "consume_pending_acceptance_event":
-        result = await consumePendingAcceptanceEventToolHandler(client, projectId, args);
+        result = await consumePendingAcceptanceEventToolHandler(client, projectId, args, userId);
         break;
       case "consume_acceptance_event":
         result = await consumeAcceptanceEventToolHandler(client, args);

@@ -43373,6 +43373,14 @@ function validateTitle(title, cap = 200) {
 }
 
 // src/tools/entity-selector.ts
+var AmbiguousEntitySelectionError = class extends Error {
+  constructor(candidates) {
+    super(`Ambiguous entity name; select entity_id or kind. Candidates: ${JSON.stringify(candidates)}`);
+    this.candidates = candidates;
+    this.name = "AmbiguousEntitySelectionError";
+  }
+  candidates;
+};
 async function selectEntity(client, workspaceId, projectId, selector) {
   const name = selector.name === void 0 ? void 0 : normalizeHtmlEntities(selector.name).trim();
   if (name === "" || selector.entity_id === "") throw new Error("Entity identity/name must not be blank");
@@ -43396,7 +43404,7 @@ async function selectEntity(client, workspaceId, projectId, selector) {
   }
   if (selector.kind) candidates = candidates.filter((entity) => entity.kind === selector.kind);
   candidates = [...new Map(candidates.map((entity) => [entity.id, entity])).values()];
-  if (candidates.length > 1) throw new Error(`Ambiguous entity name; select entity_id or kind. Candidates: ${JSON.stringify(candidates)}`);
+  if (candidates.length > 1) throw new AmbiguousEntitySelectionError(candidates);
   if (selector.entity_id && !candidates.length) throw new Error("Entity identity is unavailable in this project, retired, or conflicts with the supplied name/kind");
   return candidates[0] ?? null;
 }
@@ -58313,13 +58321,118 @@ function withRemarkRecorded(data, recorded) {
 
 // src/elicitation/engine.ts
 var MAX_QUESTIONS_PER_ROUND = 5;
+function validateRound(questions) {
+  const errors = [];
+  if (!Array.isArray(questions) || questions.length === 0) {
+    errors.push("a round needs at least one question");
+    return errors;
+  }
+  if (questions.length > MAX_QUESTIONS_PER_ROUND) {
+    errors.push(
+      `a round carries at most ${MAX_QUESTIONS_PER_ROUND} questions (got ${questions.length}) \u2014 split the residual across rounds instead of interrogating in bulk`
+    );
+  }
+  const seen = /* @__PURE__ */ new Set();
+  for (const q2 of questions) {
+    const label = q2.id?.trim() ? `question "${q2.id}"` : "a question";
+    if (!q2.id?.trim()) {
+      errors.push("every question needs an id (the answer keys on it)");
+    } else if (seen.has(q2.id)) {
+      errors.push(`duplicate question id "${q2.id}" \u2014 answers key on the id, so ids must be round-unique`);
+    } else {
+      seen.add(q2.id);
+    }
+    if (!q2.text?.trim()) {
+      errors.push(`${label} has no text`);
+    }
+    if (q2.stakes === "load-bearing" && q2.kind === "validate") {
+      errors.push(
+        `${label} is load-bearing but kind='validate' \u2014 load-bearing questions MUST be kind='open' (open question first, candidate withheld; a one-click confirm on a load-bearing residual is the rubber-stamp this engine exists to prevent)`
+      );
+    }
+    if (q2.kind === "validate" && !q2.statement?.trim()) {
+      errors.push(`${label} is kind='validate' but has no statement \u2014 there is nothing for the human to confirm or correct`);
+    }
+  }
+  return errors;
+}
+var ENUMERATED_OPTIONS_PATTERN = /\(\d+\)|\([a-zA-Z]\)|(?:^|\s)\d+[.)]\s|(?:^|\s)[a-zA-Z][.)]\s/g;
+function looksEnumerated(text4) {
+  if (!text4) return false;
+  const matches = text4.match(ENUMERATED_OPTIONS_PATTERN);
+  return !!matches && matches.length >= 2;
+}
+function warnRound(questions) {
+  const warnings = [];
+  if (!Array.isArray(questions)) return warnings;
+  for (const q2 of questions) {
+    if (q2.kind !== "open") continue;
+    if (!looksEnumerated(q2.why)) continue;
+    if (looksEnumerated(q2.text)) continue;
+    const label = q2.id?.trim() ? `question "${q2.id}"` : "a question";
+    warnings.push(
+      `${label}'s why field looks like it enumerates options (e.g. "(1)\u2026(2)\u2026") but text does not \u2014 options a worker prepares should live in text, where they're unmissable (a why expander can go unread); consider moving the enumerated options into text.`
+    );
+  }
+  return warnings;
+}
+function nextRoundNumber(rounds) {
+  return currentRoundNumber(rounds) + 1;
+}
 function currentRoundNumber(rounds) {
   if (!Array.isArray(rounds) || rounds.length === 0) return 0;
   const last = rounds[rounds.length - 1];
   return typeof last?.n === "number" ? last.n : rounds.length;
 }
+function appendRound(rounds, round) {
+  return [...Array.isArray(rounds) ? rounds : [], round];
+}
+function echoPriorAnswers(rounds, priorAnswers, answeredAt) {
+  const errors = [];
+  if (!Array.isArray(rounds) || rounds.length === 0) {
+    return { rounds: null, errors: ["no round has been filed \u2014 there is nothing to echo answers onto"] };
+  }
+  const entries = Object.entries(priorAnswers ?? {});
+  if (entries.length === 0) {
+    return { rounds: null, errors: ["prior_answers is empty \u2014 omit it instead of passing an empty object"] };
+  }
+  const last = rounds[rounds.length - 1];
+  const byId = new Map(last.questions.map((q2) => [q2.id, q2]));
+  for (const [qid, answer] of entries) {
+    const q2 = byId.get(qid);
+    if (!q2) {
+      errors.push(`question "${qid}" is not in the last filed round (round ${last.n}) \u2014 only the open round can be echoed`);
+      continue;
+    }
+    if (last.answers?.[qid]) {
+      errors.push(`question "${qid}" already has an answer \u2014 a submitted answer is the human's own words and is never overwritten`);
+      continue;
+    }
+    const verb = answer?.verb;
+    if (q2.kind === "validate" && verb !== "confirm" && verb !== "correct" && verb !== "skip") {
+      errors.push(`question "${qid}" is kind='validate' \u2014 its echoed verb must be confirm, correct, or skip (got '${verb}')`);
+    }
+    if (q2.kind === "open" && verb !== "answer" && verb !== "skip") {
+      errors.push(`question "${qid}" is kind='open' \u2014 its echoed verb must be answer or skip (got '${verb}')`);
+    }
+    if ((verb === "correct" || verb === "answer") && !answer.text?.trim()) {
+      errors.push(`question "${qid}" echoes verb='${verb}' but has no text \u2014 there is no answer to record`);
+    }
+  }
+  if (errors.length > 0) return { rounds: null, errors };
+  const echoed = {
+    ...last,
+    answers: {
+      ...last.answers,
+      ...Object.fromEntries(entries.map(([qid, a3]) => [qid, { ...a3, via: "terminal" }]))
+    },
+    ...answeredAt && !last.answered_at ? { answered_at: answeredAt } : {}
+  };
+  return { rounds: [...rounds.slice(0, -1), echoed], errors: [] };
+}
 
 // src/tools/elicitation.ts
+var EXCHANGE_COLS = "id, task_id, trigger, gate, brief_id, status, rounds, answers_submitted_at, force_quit_requested_at, created_by, created_at, updated_at";
 var TRIGGER_OWNERS = {
   "pre-draft-clarify": "clarify",
   "discuss": "any-gate",
@@ -58329,6 +58442,95 @@ var TRIGGER_OWNERS = {
 };
 var VALID_TRIGGERS = Object.keys(TRIGGER_OWNERS);
 var CLARIFY_OWNED_TRIGGERS = VALID_TRIGGERS.filter((t) => TRIGGER_OWNERS[t] === "clarify");
+var isMissingPendingResolutionColumn = (msg) => !!msg && /pending_resolution/.test(msg) && /(does not exist|could not find|schema cache|column)/i.test(msg);
+async function findActiveExchange(client, taskId) {
+  const { data, error: error2 } = await client.from("elicitation_exchanges").select(EXCHANGE_COLS).eq("task_id", taskId).eq("status", "active").maybeSingle();
+  if (error2) throw new Error(error2.message);
+  return data ?? null;
+}
+async function resolveExchange(client, projectId, args) {
+  if (args.exchange_id) {
+    const { data, error: error2 } = await client.from("elicitation_exchanges").select(EXCHANGE_COLS).eq("id", args.exchange_id).maybeSingle();
+    if (error2) throw new Error(error2.message);
+    if (!data) throw new Error(`elicitation exchange ${args.exchange_id} not found`);
+    return data;
+  }
+  if (!args.task_id) throw new Error("either exchange_id or task_id is required");
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const active = await findActiveExchange(client, taskId);
+  if (!active) throw new Error(`no active elicitation exchange for task ${args.task_id}`);
+  return active;
+}
+async function startElicitation(client, projectId, userId, args) {
+  if (!args.task_id) throw new Error("task_id is required");
+  if (!args.trigger || !VALID_TRIGGERS.includes(args.trigger)) {
+    throw new Error(`trigger must be one of: ${VALID_TRIGGERS.join(", ")}`);
+  }
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const existing = await findActiveExchange(client, taskId);
+  if (existing) return existing;
+  const { data, error: error2 } = await client.from("elicitation_exchanges").insert({
+    task_id: taskId,
+    trigger: args.trigger,
+    gate: args.gate ?? null,
+    brief_id: args.brief_id ?? null,
+    created_by: userId
+  }).select(EXCHANGE_COLS).single();
+  if (error2) throw new Error(error2.message);
+  return data;
+}
+async function fileElicitationRound(client, projectId, args) {
+  if (!args.context_line?.trim()) throw new Error("context_line is required \u2014 one plain-prose line framing the round");
+  const violations = validateRound(args.questions ?? []);
+  if (violations.length > 0) {
+    throw new Error(`Round failed the elicitation lints:
+- ${violations.join("\n- ")}`);
+  }
+  const exchange = await resolveExchange(client, projectId, args);
+  if (exchange.status !== "active") {
+    if (exchange.status === "abandoned") {
+      return { noop: true, cause: "exchange-cancelled", exchange };
+    }
+    throw new Error(`exchange ${exchange.id} is '${exchange.status}' \u2014 rounds can only be filed on an active exchange`);
+  }
+  let rounds = Array.isArray(exchange.rounds) ? exchange.rounds : [];
+  if (args.prior_answers) {
+    const echoed = echoPriorAnswers(rounds, args.prior_answers, (/* @__PURE__ */ new Date()).toISOString());
+    if (echoed.errors.length > 0) {
+      throw new Error(`prior_answers failed the echo guards:
+- ${echoed.errors.join("\n- ")}`);
+    }
+    rounds = echoed.rounds;
+  }
+  const n = nextRoundNumber(rounds);
+  if (exchange.brief_id != null && n === 1) {
+    const { error: clearErr } = await client.from("briefs").update({ pending_resolution: null }).eq("id", exchange.brief_id);
+    if (clearErr && !isMissingPendingResolutionColumn(clearErr.message)) {
+      throw new Error(clearErr.message);
+    }
+  }
+  const round = {
+    n,
+    context_line: args.context_line.trim(),
+    questions: args.questions,
+    answers: {},
+    // House idiom (milestones.ts shipped_at / knowledge.ts valid_to): timestamps are stamped
+    // client-side; the row's updated_at trigger carries the authoritative DB clock for the write.
+    filed_at: (/* @__PURE__ */ new Date()).toISOString()
+  };
+  const { data, error: error2 } = await client.from("elicitation_exchanges").update({ rounds: appendRound(rounds, round), answers_submitted_at: null }).eq("id", exchange.id).select(EXCHANGE_COLS).single();
+  if (error2) throw new Error(error2.message);
+  const { error: taskErr } = await client.from("tasks").update({
+    awaiting_human_input: true,
+    awaiting_human_reason: "elicitation-round",
+    // `gate` rides along (B-462) so surfaces can group/label the round by the lifecycle gate the
+    // exchange serves without re-fetching the exchange (the Queue card's gate pill reads it).
+    awaiting_human_ref: { kind: "elicitation", exchange_id: exchange.id, round: n, gate: exchange.gate ?? null }
+  }).eq("id", exchange.task_id);
+  if (taskErr) throw new Error(taskErr.message);
+  const warnings = warnRound(round.questions);
+  return { ...data, warnings };
+}
 var fileElicitationRoundTool = {
   name: "file_elicitation_round",
   description: `File one round of questions on an active elicitation exchange and hand the ball to the human (sets awaiting_human_input with reason 'elicitation-round'; never touches workflow_state). Lints enforced before any write: at most ${MAX_QUESTIONS_PER_ROUND} questions per round; a load-bearing question MUST be kind='open' (open question first, candidate withheld \u2014 load-bearing must never render as a one-click confirm); kind='validate' requires a statement to confirm/correct. One plain-prose context_line frames the round. Filing also CONSUMES any prior answers marker (clears answers_submitted_at) \u2014 read the previous round's answers via get_elicitation before filing the next. For a brief-attached ('discuss') exchange, filing ROUND 1 also clears the attached brief's pending_resolution discuss marker (B-461 \u2014 the filing IS the consume). On success, the returned row carries a non-blocking warnings: string[] field (B-785) \u2014 e.g. an OPEN question whose why reads like it enumerates concrete options while text does not, steering enumerated options into text where they're unmissable; never throws, never blocks the filing. If the exchange was mechanically cancelled ('abandoned'), returns the typed no-op { noop: true, cause: 'exchange-cancelled', exchange } instead of throwing \u2014 the CALLING AGENT must then archive any claims it minted in that same turn (claims are minted before conclude; the mint\u2192conclude window can race a cancel).`,
@@ -58939,8 +59141,48 @@ var WriteKindSubstrateAbsentError = class extends Error {
   }
   writeKind;
 };
-async function applyAcceptanceEventPayload(client, event) {
+var AmbiguousEntityLinkError = class extends Error {
+  constructor(ref, entityName, candidates) {
+    super(
+      `entity_link item '${ref}' is ambiguous: the name '${entityName}' matches ${candidates.length} entities \u2014 ` + candidates.map((c) => `${c.name} (kind ${c.kind || "unknown"}, id ${c.id})`).join("; ") + `. Nothing was written. Next: answer which entity was meant (re-run consume_pending_acceptance_event with entity_overrides { "${ref}": "<entity id>" }), or send the design brief back so it recomposes with a kind.`
+    );
+    this.ref = ref;
+    this.entityName = entityName;
+    this.candidates = candidates;
+    this.name = "AmbiguousEntityLinkError";
+  }
+  ref;
+  entityName;
+  candidates;
+};
+async function preflightEntityLinks(client, event, items, opts) {
+  const resolved = /* @__PURE__ */ new Map();
+  for (const item of items) {
+    if (item.write_kind !== "entity_link" || !item.ref) continue;
+    const entityId = opts.entity_overrides?.[item.ref] ?? item.entity_id;
+    const name = item.entity_name?.trim();
+    if (!name && !entityId) continue;
+    const { data: taskRow, error: taskErr } = await client.from("tasks").select("project_id").eq("id", event.task_id).maybeSingle();
+    if (taskErr) throw new Error(taskErr.message);
+    const projectId = taskRow?.project_id;
+    if (!projectId) throw new Error(`entity_link item '${item.ref}' \u2014 task ${event.task_id} has no project_id, cannot resolve the entity`);
+    const workspaceId = await getWorkspaceId(client, projectId);
+    const kind = item.kind ?? item.entity_kind;
+    try {
+      const selected = await selectEntity(client, workspaceId, projectId, { entity_id: entityId, name, kind });
+      resolved.set(item.ref, { projectId, workspaceId, selected });
+    } catch (err) {
+      if (err instanceof AmbiguousEntitySelectionError) {
+        throw new AmbiguousEntityLinkError(item.ref, name ?? "", err.candidates.map((c) => ({ id: c.id, name: c.name, kind: c.kind })));
+      }
+      throw err;
+    }
+  }
+  return resolved;
+}
+async function applyAcceptanceEventPayload(client, event, opts = {}) {
   const items = itemsOf(event.payload);
+  const resolvedLinks = await preflightEntityLinks(client, event, items, opts);
   const order = [
     "child_ticket",
     "checklist_item",
@@ -59098,16 +59340,13 @@ async function applyAcceptanceEventPayload(client, event) {
         }
         result = data;
       } else if (item.write_kind === "entity_link") {
+        const overrideId = opts.entity_overrides?.[item.ref];
         const name = item.entity_name?.trim();
-        if (!name && !item.entity_id) throw new Error(`entity_link item '${item.ref}' needs entity_id or entity_name`);
-        const { data: taskRow, error: taskErr } = await client.from("tasks").select("project_id").eq("id", event.task_id).maybeSingle();
-        if (taskErr) throw new Error(taskErr.message);
-        const projectId = taskRow?.project_id;
-        if (!projectId) throw new Error(`entity_link item '${item.ref}' \u2014 task ${event.task_id} has no project_id, cannot resolve the entity`);
-        const workspaceId = await getWorkspaceId(client, projectId);
+        if (!name && !item.entity_id && !overrideId) throw new Error(`entity_link item '${item.ref}' needs entity_id or entity_name`);
+        const link = resolvedLinks.get(item.ref);
+        if (!link) throw new Error(`entity_link item '${item.ref}' was not resolved by the pre-flight`);
         const kind = item.kind ?? item.entity_kind;
-        const selected = await selectEntity(client, workspaceId, projectId, { entity_id: item.entity_id, name, kind });
-        const entityId = selected?.id ?? await resolveOrCreateEntity(client, workspaceId, projectId, name, kind ?? "feature");
+        const entityId = link.selected?.id ?? await resolveOrCreateEntity(client, link.workspaceId, link.projectId, name, kind ?? "feature");
         const { data, error: error2 } = await client.rpc("consume_entity_link_write", {
           _event_id: event.id,
           _external_ref: item.ref,
@@ -59184,7 +59423,41 @@ async function consumeAcceptanceEvent(client, eventId) {
   if (retryError) throw new Error(retryError.message);
   return { ...retryData, retried_from_event_id: eventId };
 }
-async function consumePendingAcceptanceEvent(client, projectId, taskId) {
+var AMBIGUITY_ROUND_PREFIX = "Entity link is ambiguous";
+async function fileAmbiguityRound(client, projectId, event, err, userId) {
+  if (!userId) {
+    return new Error(`${err.message} The question round could not be filed: no user id was available to open the exchange, so the human has not been asked \u2014 ask them which entity was meant and re-run with entity_overrides.`);
+  }
+  try {
+    const exchange = await startElicitation(client, projectId, userId, {
+      task_id: event.task_id,
+      trigger: "worker-question",
+      gate: event.pending_activity ?? void 0
+    });
+    const last = Array.isArray(exchange.rounds) ? exchange.rounds[exchange.rounds.length - 1] : void 0;
+    const alreadyAsked = !!last && (last.context_line ?? "").startsWith(AMBIGUITY_ROUND_PREFIX) && Object.keys(last.answers ?? {}).length === 0;
+    if (!alreadyAsked) {
+      const list = err.candidates.map((c) => `- ${c.name} (kind ${c.kind || "unknown"}, id ${c.id})`).join("\n");
+      await fileElicitationRound(client, projectId, {
+        exchange_id: exchange.id,
+        context_line: `${AMBIGUITY_ROUND_PREFIX}: accepting this brief would link '${err.entityName}' (item ${err.ref}), which matches more than one entity. Nothing was applied; the acceptance is still pending.`,
+        questions: [{
+          id: "q1",
+          stakes: "load-bearing",
+          kind: "open",
+          text: `Which entity did you mean? Answer with its id.
+${list}`,
+          why: `The next leg re-applies the pending acceptance with entity_overrides { "${err.ref}": "<id you pick>" }.`
+        }]
+      });
+    }
+    return new Error(`${err.message} A "which entity did you mean?" round was filed on the ticket (worker-question); the acceptance event stays pending until it is answered.`);
+  } catch (fileErr) {
+    const why = fileErr instanceof Error ? fileErr.message : String(fileErr);
+    return new Error(`${err.message} The question round could not be filed (${why}), so the human has not been asked \u2014 the acceptance event stays pending.`);
+  }
+}
+async function consumePendingAcceptanceEvent(client, projectId, taskId, opts = {}) {
   const probe = await probeAcceptanceEventSubstrate(client);
   if (probe === "absent") return { status: "substrate-absent" };
   const event = await getPendingAcceptanceEvent(client, projectId, taskId);
@@ -59193,7 +59466,13 @@ async function consumePendingAcceptanceEvent(client, projectId, taskId) {
   if (classifyPayload(event.payload) === "unrecognized") {
     return { status: "payload-unrecognized", event_id: event.id, reason: event.reason, items: rawItemsOf(event.payload) };
   }
-  const applyResult = await applyAcceptanceEventPayload(client, event);
+  let applyResult;
+  try {
+    applyResult = await applyAcceptanceEventPayload(client, event, { entity_overrides: opts.entity_overrides });
+  } catch (err) {
+    if (err instanceof AmbiguousEntityLinkError) throw await fileAmbiguityRound(client, projectId, event, err, opts.userId);
+    throw err;
+  }
   if (applyResult.substrate_absent_for) {
     return { status: "payload-unrecognized", event_id: event.id, reason: event.reason, items: rawItemsOf(event.payload) };
   }
@@ -71661,7 +71940,7 @@ async function composeAndAccept(client, projectId, userId, taskId, args) {
     provenance: RESOLVE_BRIEF_PROVENANCE_RECORDED
   });
   if (PAYLOAD_CARRYING_REASONS.has(args.reason)) {
-    const consumed = await consumePendingAcceptanceEvent(client, projectId, taskId);
+    const consumed = await consumePendingAcceptanceEvent(client, projectId, taskId, { userId });
     if (consumed.status !== "consumed" && consumed.status !== "none" && consumed.status !== "substrate-absent") {
       throw new Error(
         `recorded walk: ${args.reason} accept deferred a payload this core could not apply cleanly (status: ${consumed.status}) \u2014 a human must resume this gate by hand, e.g. via consume_pending_acceptance_event / the owning gate skill's self-heal route.`
