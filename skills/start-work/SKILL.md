@@ -134,7 +134,12 @@ what the human reads, the payload is what the accept materializes. Keep them in 
 `frame.steps` and to the `checklist_item` payload, and state the drift word on the plan brief
 (`describeDrift`'s one line). With no Figma token or version port available the word is `unchecked`:
 say "Drift check: unchecked" on the brief, never pass it silently. A ticket with no accepted design
-authors no `design_read` and nothing changes.
+authors no `design_read` and nothing changes. **B-1203:** before reading drift, run
+`harmony design fingerprint compare --task <ticket> --by plan` (exit 0 on every expected state; one JSON line). It
+re-reads the accepted frames over REST, compares them with the fingerprint the design accept stored at
+`field_values.design_fingerprint` and writes `drift` there; re-read the task, then `checkDrift` sources drift from the
+fingerprint when the accepted design has no `version_id` or the ticket carries one (a record with a
+`version_id` and no fingerprint keeps the version path). A missing, `not-taken` or `not-checked` fingerprint is `unchecked`.
 
 **B-1073 — a fast-track-run ticket's plan-accept also authors one `label_add` payload item.** Check
 `environment.fast_track` (`get_project`'s `environment` block — the SAME field step 2 of B-1073
@@ -249,7 +254,9 @@ exactly as in the Freeform flow.
   paste generated source. Resolve a designed component through Code Connect when the org has it, else
   the workspace component map (`resolveComponent`); an unmapped component is built from the repo's
   existing primitives.
-- Drift `changed` stops the build and names both versions (accepted and live), unless a plan step names
+- Before building, run `harmony design fingerprint compare --task <ticket> --by build`, re-read the task and
+  `checkDrift` again (B-1203). Drift `changed` stops the build and names both versions (accepted and live; for a
+  fingerprint, the changed frames), unless a plan step names
   the difference (`assertBuildMayStart`). `unchecked` is stated on the plan brief and does not block.
 - Previews are ticket attachments, referenced by filename. Never fetch Figma image URLs.
 

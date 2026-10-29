@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { DesignArtefactSchema, observeDesignDrift, prepareVersionedPreviews, validateDesignAttachments, renderDesignArtefact } from './design-artefact.js';
+import { DesignArtefactSchema, observeDesignDrift, prepareVersionedPreviews, validateDesignAttachments, renderDesignArtefact, VersionOptionalUnsupportedError } from './design-artefact.js';
 import { renderSlot, withDerivedGateSlot, type BriefDoc } from './briefs.js';
 const artefact = { schema_version: 1 as const, tool: 'figma' as const, file_key: 'Abc123', file_url: 'https://www.figma.com/design/Abc123', version_id: 'X', composed_at: '2026-10-27T12:00:00Z', provenance_notes: 'versioned REST render', mcp_call_count: 0, nodes: [{ id: '1:2', name: 'Overview', caption: 'Overview caption', preview_attachment_id: '10000000-0000-4000-8000-000000000001', preview_filename: 'overview.png' }] };
 const reply = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
@@ -27,6 +27,32 @@ describe('design artefacts', () => {
     await expect(validateDesignAttachments(client as never, 'task', artefact)).resolves.toEqual(artefact);
     client.rpc.mockResolvedValue({ data: null });
     await expect(validateDesignAttachments(client as never, 'task', artefact)).rejects.toThrow('promote web');
+  });
+  it('B-1203: version_id is optional; a versionless record needs version_optional===true', async () => {
+    const { version_id: _v, ...versionless } = artefact; void _v;
+    expect(DesignArtefactSchema.safeParse(versionless).success).toBe(true);
+    expect(DesignArtefactSchema.safeParse({ ...versionless, extra: 1 }).success).toBe(false);
+    expect(DesignArtefactSchema.safeParse({ ...versionless, version_id: '' }).success).toBe(false);
+    expect(renderDesignArtefact(versionless as never)[0]).toBe('**Design previews:** [Open Figma file](https://www.figma.com/design/Abc123)');
+    expect(renderDesignArtefact(artefact)[0]).toContain('version X');
+    const inQuery = vi.fn().mockResolvedValue({ data: [{ id: artefact.nodes[0].preview_attachment_id, filename: 'overview.png', content_type: 'image/png' }] });
+    const chain = { select: () => chain, eq: () => chain, in: inQuery };
+    const client = { rpc: vi.fn().mockResolvedValue({ data: { schema_version: 1 } }), from: () => chain };
+    await expect(validateDesignAttachments(client as never, 'task', versionless)).rejects.toBeInstanceOf(VersionOptionalUnsupportedError);
+    await expect(validateDesignAttachments(client as never, 'task', versionless)).rejects.toThrow('not been promoted');
+    client.rpc.mockResolvedValue({ data: { schema_version: 1, version_optional: false } });
+    await expect(validateDesignAttachments(client as never, 'task', versionless)).rejects.toBeInstanceOf(VersionOptionalUnsupportedError);
+    client.rpc.mockResolvedValue({ data: { schema_version: 1, version_optional: true } });
+    await expect(validateDesignAttachments(client as never, 'task', versionless)).resolves.toEqual(versionless);
+    // a record WITH a version_id never needs the capability flag
+    client.rpc.mockResolvedValue({ data: { schema_version: 1 } });
+    await expect(validateDesignAttachments(client as never, 'task', artefact)).resolves.toEqual(artefact);
+  });
+  it('B-1203: drift on a versionless record is unchecked and makes no request', async () => {
+    const { version_id: _v, ...versionless } = artefact; void _v;
+    const fetcher = vi.fn();
+    expect(await observeDesignDrift(versionless as never, 'token', fetcher)).toMatchObject({ status: 'unchecked' });
+    expect(fetcher).not.toHaveBeenCalled();
   });
   it('keeps X authoritative for changed, failed and missing-credential drift reads', async () => {
     const fetcher = vi.fn().mockResolvedValue(reply({ version: 'Y' }));

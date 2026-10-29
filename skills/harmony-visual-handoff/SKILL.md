@@ -116,31 +116,35 @@ Figma path (planner: `src/tools/figma-composition.ts`):
    named `<ticket> · <option>`, the recommendation marked on exactly one frame, and provenance
    (`real` / `invented` / `illustrative`) as frame notes. A second `use_figma` call only to fix.
 4. A flow is N frames in order with a caption each; the order is kept in the planned `nodes` list.
-5. MCP is used only for writing (`use_figma`). **Composition pins its own previews (B-1203).** The compose
-   script **ends by saving a Figma version on demand, inside the same call** (no extra MCP call): a short
-   settle wait, then `figma.saveVersionHistoryAsync("<ticket> previews")`, returning
-   `{ versionId, frameIds }` (`saveVersionTail` in the planner builds this tail). Pin to that **returned version
-   id**. Figma's autosave wait (`waitForVersionAfter` / `FRESHNESS_WAIT`) is **retired** for composition: do
-   not wait on autosave (on 2026-10-27 it took 79 s, and on B-1312 no version appeared in 3.5 minutes). Render
-   previews over REST `GET /v1/images?ids=…&version=<that id>` with the workspace token (not
-   `get_screenshot`), download, and attach them. A render pinned to a version that lacks a frame returns
-   HTTP 200 with `err: null` and **no image**, so check with `checkPreviewSet`: every planned frame is in the
-   saved version's `frameIds` and every image URL is non-null. If the saved version is missing a frame or an
-   image is null, say so on the brief with the honest note (`NO_PREVIEW_NOTE`), attach **no** preview (never a
-   partial set, never a render you have not checked) and do **not** fail the gate. The same applies to a
-   clarify sketch: its `frame.sketch` `pinned_version` is
-   the id the compose call returned.
+5. MCP is used only for writing (`use_figma`). **Previews render from the LIVE file (B-1203).** The compose
+   script returns `{ frameIds }` (the created frame node ids) and **saves no version**: Figma's `use_figma`
+   refuses `figma.saveVersionHistoryAsync` and no REST endpoint creates a version, so the compose script has no
+   save tail and composition never waits on autosave (`waitForVersionAfter` / `FRESHNESS_WAIT` are not used
+   here; on 2026-10-27 autosave took 79 s, and on B-1312 no version appeared in 3.5 minutes). Render previews
+   over REST `GET /v1/images?ids=…&format=png` with **no `version` parameter** and the workspace token (not
+   `get_screenshot`), download, and attach them. Check with `checkPreviewSet`: every planned frame is in the
+   compose call's returned `frameIds` and every image URL is non-null. If a frame is missing or an image is
+   null, say so on the brief with the honest note (`NO_PREVIEW_NOTE`), attach **no** preview (never a
+   partial set, never a render you have not checked) and do **not** fail the gate. A clarify sketch
+   composes the same way; no version exists, so its `frame.sketch.pinned_version` (still a required string)
+   records the literal `live`.
 6. Every MCP call passes through the shared limiter when present. Count MCP calls: **hard cap 6 per leg**
    (typical 2-3). At the cap, stop composing options and say so on the brief. Record the call count
    (`mcp_call_count`) on the brief.
 7. **The stored record is B-1202's `design_artefact` (schema_version 1).** Its fields
    are `tool`, `composed_at`, `provenance_notes`, `mcp_call_count`, and an ordered `nodes` list of
-   `{ id, name, caption, preview_attachment_id, preview_filename }`; for Figma only, also `file_key`,
-   `file_url` and `version_id` (the saved version id from step 5). It holds **no signed URLs**. Attach the checked previews, build it with
-   `assemblePendingArtefact` and recompose the design brief with it as `frame.design_artefact`
-   (see [Durable design record](#durable-design-record-b-1202) and `docs/design-artefact-contract.md`);
-   `compose_brief` refuses with the promote prerequisite on a board that lacks the capability, so report
-   that rather than working around it. Do not invent a frame field or a slot schema.
+   `{ id, name, caption, preview_attachment_id, preview_filename }`; for Figma only, also `file_key` and
+   `file_url`, and `version_id` **only when you hold a real saved version id** (it is optional since B-1203; a
+   live-file composition has none). It holds **no signed URLs**. Attach the checked previews, build it with
+   `assemblePendingArtefact` (omit `versionId`) and recompose the design brief with it as `frame.design_artefact`
+   (see [Durable design record](#durable-design-record-b-1202) and `docs/design-artefact-contract.md`).
+   **A versionless record is written ONLY when the board reports `version_optional: true`** from
+   `design_artefact_capability`; `compose_brief` refuses otherwise (`VersionOptionalUnsupportedError`, "web has
+   not been promoted with the version-optional capability"). When it refuses, do not work around it and do not
+   fail the gate: attach the live-file previews to the ticket and **say plainly on the brief that no design
+   record was stored** because the board's web lacks the capability (never a silent miss). Tell the operator who
+   wants to edit in Figma to save a version first, under the exact name `suggestedVersionName(<ticket>, <brief iteration>)`,
+   `Before · <ticket> · round <brief iteration>` (U+00B7 middle dots). Do not invent a frame field or a slot schema.
 8. **Throttled (HTTP 429): back off, never retry straight away** (`nextThrottleDelay`, `THROTTLE_BACKOFF`).
    Wait the `Retry-After` the response names (capped), else bounded exponential backoff (2 s doubling,
    at most 60 s, 5 attempts), then retry; a retry is never immediate. Each request actually issued counts
@@ -164,8 +168,12 @@ reshape: do not run the iterate path. Reconcile instead (`src/tools/figma-reconc
 (`X-Figma-Token`), at explicit versions, with zero MCP reads**, and the file is never edited.
 
 1. **Baseline.** Read it from the active brief's `frame.design_artefact`: `file_key`, `version_id` and the ordered
-   `nodes[].id`. That pinned version is the "before". Anything but a Figma artefact is a typed refusal
-   (`baseline-not-figma`): say so on the brief.
+   `nodes[].id`. A pinned version is the "before". **A record without a `version_id` (B-1203)** has no pinned
+   "before": its baseline is the version the operator saved by hand under the exact name
+   `suggestedVersionName(ticket, brief iteration)` (`Before · <ticket> · round <brief iteration>`); pass `ticket` and
+   `briefIteration` to `reconcileDesign`, which lists versions over REST, finds the one whose `label` **exactly**
+   equals that name (`findVersionByLabel`; newest wins) and diffs it against the **live** file. Anything but a
+   Figma artefact is a typed refusal (`baseline-not-figma`): say so on the brief.
 2. **Call `reconcileDesign`** with that baseline, the `containerId` (the page or section whose children are the
    frames; the artefact stores frame ids, not their parent) and the Figma token. It chooses the fresh version
    (`chooseFreshVersion`: anchored on the file's **last-modified** time, not the press time, since an autosave
@@ -174,6 +182,12 @@ reshape: do not run the iterate path. Reconcile instead (`src/tools/figma-reconc
    `prepareVersionedPreviews`; if that settles on a different version it re-diffs there, so the change lines
    match the previews. If no saved version appears (`save-a-version`), **do not guess**: the result becomes a
    **question item** telling the designer to save a version (File > Save to version history) and press the action again.
+   **Versionless record, no such version (`named-version-missing`):** say on the brief, exactly,
+   `I can't see a version named "<name>".` plus the instruction to save one under that name (File > Save to version
+   history) and press the action again. The result also carries a `fallback`: each live frame rendered over REST
+   and compared by bytes with its stored preview. Report a difference only as **"possible change — please
+   confirm"**, never as a verified edit, and **never as "no changes"** when the baseline is unknown (a matching
+   render does not verify the baseline either). A versionless success has `versionId: null`; assemble without it.
 3. **Failures are typed, never "no change".** `version-not-found` is a 404, never "no change"; `rate-limited` carries
    the retry-after and stops the read-back (no retry loop, no MCP fallback); `frames-missing` means the autosave
    never captured every frame. Say which on the brief and attach nothing.
@@ -194,7 +208,10 @@ reshape: do not run the iterate path. Reconcile instead (`src/tools/figma-reconc
    redraft rather than restating it); a **"What changed in Figma"** block; the question items among the decision
    items. That recompose consumes the marker.
 7. **Accept pins the version whose previews are on the accepted brief** (`design_artefact.version_id`), never the latest
-   at accept time. B-1202's accept path records drift; do not reimplement it.
+   at accept time. B-1202's accept path records drift; do not reimplement it. A versionless record has no pin: its
+   drift is the content fingerprint taken by the leg that consumes the design accept
+   (`harmony design fingerprint take`, stored at `field_values.design_fingerprint`; see the design-decide skill),
+   compared later by the plan and build gates (`harmony design fingerprint compare`).
 
 ### 4. Iterate — elicit, don't guess (D2)
 
@@ -354,7 +371,7 @@ A design frame may carry `design_artefact` with this version-1 contract:
   "tool": "figma",
   "file_key": "FILEKEY",
   "file_url": "https://www.figma.com/design/FILEKEY",
-  "version_id": "VERSION",
+  "version_id": "VERSION (optional, B-1203: omit for a live-file composition)",
   "nodes": [{"id":"1:2","name":"Screen","caption":"What to review","preview_attachment_id":"UUID","preview_filename":"screen.png"}],
   "composed_at": "2026-10-27T12:00:00Z",
   "provenance_notes": "Rendered with explicit version=VERSION; frames present and downloads checked",
@@ -373,8 +390,10 @@ Figma preparation: read the version from REST nodes, check every frame exists at
 explicit version, request PNGs with `version=<id>`, and download/check every result.
 `prepareVersionedPreviews` in `src/tools/design-artefact.ts` provides this bounded path
 (12 attempts, 10-second intervals, per-request timeouts). A 200 response with null
-images is a miss, not proof (reconcile read-back only; composition pins its own saved version). Stop with an actionable
-failure if frames never appear; never substitute an unversioned/latest screenshot.
+images is a miss, not proof. That versioned path serves only the reconcile read-back of a record that carries a
+`version_id`; **composition renders from the live file** (step 3c.5) and stores no version unless the board
+reports `version_optional: true` for a versionless record. Stop with an actionable
+failure if frames never appear on the versioned path; never substitute a latest screenshot there.
 Upload returned bytes through ordinary `attach_file` and construct the manifest.
 REST calls are outside the MCP budget; record the measured MCP call count separately.
 

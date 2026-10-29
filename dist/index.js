@@ -48291,16 +48291,24 @@ var DesignArtefactSchema = external_exports.discriminatedUnion("tool", [
   external_exports.object({ ...base, tool: external_exports.literal("figma"), file_key: external_exports.string().regex(/^[a-zA-Z0-9]+$/), file_url: external_exports.string().url().refine((s) => {
     const u = new URL(s);
     return u.protocol === "https:" && u.hostname === "www.figma.com";
-  }), version_id: external_exports.string().min(1), nodes: external_exports.array(NodeSchema).min(1) }).strict(),
+  }), version_id: external_exports.string().min(1).optional(), nodes: external_exports.array(NodeSchema).min(1) }).strict(),
   external_exports.object({ ...base, tool: external_exports.literal("html"), surface_attachment_id: uuid3, surface_filename: external_exports.string().min(1), nodes: external_exports.array(NodeSchema).max(0).optional() }).strict()
 ]);
 function designAttachmentIds(a) {
   return a.tool === "html" ? [a.surface_attachment_id] : a.nodes.map((n) => n.preview_attachment_id);
 }
+var VersionOptionalUnsupportedError = class extends Error {
+  code = "version-optional-unsupported";
+  constructor() {
+    super("This board's web has not been promoted with the version-optional design capability (design_artefact_capability must report version_optional: true); a Figma design record without a version_id cannot be stored here yet.");
+    this.name = "VersionOptionalUnsupportedError";
+  }
+};
 async function validateDesignAttachments(client, taskId, raw) {
   const a = DesignArtefactSchema.parse(raw);
   const { data: capability, error: capError } = await client.rpc("design_artefact_capability");
   if (capError || capability?.schema_version !== 1) throw new Error("Design artefacts require the B-1202 web migration on this board; promote web before composing artefacts.");
+  if (a.tool === "figma" && !a.version_id && capability?.version_optional !== true) throw new VersionOptionalUnsupportedError();
   const ids2 = [...new Set(designAttachmentIds(a))];
   const { data, error: error2 } = await client.from("attachments").select("id, filename, content_type").eq("task_id", taskId).eq("status", "finalized").in("id", ids2);
   if (error2) throw new Error(error2.message);
@@ -48313,11 +48321,11 @@ async function validateDesignAttachments(client, taskId, raw) {
 }
 function renderDesignArtefact(a) {
   if (a.tool === "html") return [`**Design preview:** ${a.surface_filename} (ticket attachment ${a.surface_attachment_id}; download and open locally)`];
-  return [`**Design previews:** [Open Figma file \u2014 version ${a.version_id}](${a.file_url})`, ...a.nodes.map((n) => `- ${n.name}: ${n.caption} \u2014 ${n.preview_filename} (ticket attachment ${n.preview_attachment_id})`)];
+  return [`**Design previews:** [Open Figma file${a.version_id ? ` \u2014 version ${a.version_id}` : ""}](${a.file_url})`, ...a.nodes.map((n) => `- ${n.name}: ${n.caption} \u2014 ${n.preview_filename} (ticket attachment ${n.preview_attachment_id})`)];
 }
 async function observeDesignDrift(a, token, request = fetch) {
   const checked_at = (/* @__PURE__ */ new Date()).toISOString();
-  if (a.tool !== "figma" || !token) return { status: "unchecked", checked_at };
+  if (a.tool !== "figma" || !a.version_id || !token) return { status: "unchecked", checked_at };
   try {
     const r = await request(`https://api.figma.com/v1/files/${a.file_key}/nodes?ids=${encodeURIComponent(a.nodes.map((n) => n.id).join(","))}`, { headers: { "X-Figma-Token": token }, signal: AbortSignal.timeout(1e4) });
     if (!r.ok) throw new Error("lookup failed");

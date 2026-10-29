@@ -13,6 +13,8 @@
 // pending revision by recomposing the design brief with `frame.design_artefact`; compose_brief's
 // validateDesignAttachments probes `design_artefact_capability` and checks the attachments (B-1202).
 import { DesignArtefactSchema, prepareVersionedPreviews, type DesignArtefact } from './design-artefact.js';
+import { createHash } from 'node:crypto';
+import { suggestedVersionName } from './suggested-version-name.js';
 import {
   FRESHNESS_WAIT,
   waitForVersionAfter,
@@ -70,6 +72,10 @@ export interface FigmaRestClient {
   listVersions(): Promise<FigmaVersion[]>;
   getNodesAtVersion(ids: string[], versionId: string, opts?: { depth?: number }): Promise<FigmaNodesResponse>;
   renderImagesAtVersion(ids: string[], versionId: string): Promise<ImageUrls>;
+  /** B-1203: the LIVE file (no version parameter). */
+  getNodesLive(ids: string[], opts?: { depth?: number }): Promise<FigmaNodesResponse>;
+  /** B-1203: render from the LIVE file (GET /v1/images with no version). */
+  renderImagesLive(ids: string[]): Promise<ImageUrls>;
   /** Download rendered images. null bytes = the URL was null, the download was not 2xx, or the body was empty. */
   downloadImages(urls: ImageUrls): Promise<Record<string, { bytes: Uint8Array | null }>>;
 }
@@ -116,8 +122,16 @@ export function createFigmaRestClient(opts: {
       return { lastModified: str(body.lastModified), version: str(body.version), name: str(body.name) };
     },
     async listVersions() {
-      const body = (await get(`/v1/files/${key}/versions`, false)) as { versions?: Array<{ id: string; created_at: string }> };
-      return (body.versions ?? []).map((v) => ({ id: v.id, created_at: v.created_at }));
+      const body = (await get(`/v1/files/${key}/versions`, false)) as { versions?: Array<{ id: string; created_at: string; label?: string | null }> };
+      return (body.versions ?? []).map((v) => ({ id: v.id, created_at: v.created_at, label: typeof v.label === 'string' ? v.label : null }));
+    },
+    async getNodesLive(ids, o) {
+      const depth = o?.depth !== undefined ? `&depth=${o.depth}` : '';
+      return (await get(`/v1/files/${key}/nodes?ids=${encodeURIComponent(ids.join(','))}${depth}`, false)) as FigmaNodesResponse;
+    },
+    async renderImagesLive(ids) {
+      const body = (await get(`/v1/images/${key}?ids=${encodeURIComponent(ids.join(','))}&format=png`, false)) as { err?: unknown; images?: ImageUrls };
+      return body.images ?? {};
     },
     async getNodesAtVersion(ids, versionId, o) {
       const depth = o?.depth !== undefined ? `&depth=${o.depth}` : '';
@@ -190,6 +204,19 @@ export async function chooseFreshVersion(opts: {
   const newest = [...versions].sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))[0];
   if (newest && newest.id !== opts.pinnedVersionId) return { ok: true, version: newest, via: 'newest-differs-from-pinned' };
   return { ok: false, becomesQuestion: true, message: SAVE_VERSION_QUESTION };
+}
+
+// ——— (b2) find the operator's named version (B-1203) ——————————————————————————————————————————
+
+/** Pure: the version whose `label` EXACTLY equals `label` (no trimming, no case folding); the newest wins if several. */
+export function findVersionByLabel(versions: FigmaVersion[], label: string): FigmaVersion | null {
+  const hits = versions.filter((v) => v.label === label);
+  hits.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+  return hits[0] ?? null;
+}
+
+export function namedVersionMissingText(name: string): string {
+  return `I can't see a version named "${name}". In Figma choose File > Save to version history, save one under exactly that name, then press "I've made edits in Figma" again.`;
 }
 
 // ——— (c) snapshot + diff ————————————————————————————————————————————————————————————————————
@@ -472,7 +499,8 @@ export type AssembleResult =
 export function assemblePendingArtefact(input: {
   fileKey: string;
   fileUrl: string;
-  versionId: string;
+  /** Omit for a live-file (versionless) record; the caller then relies on the board's version_optional capability. */
+  versionId?: string;
   /** Ordered frames to preview, with the caption the brief shows. */
   frames: Array<{ id: string; name: string; caption: string }>;
   /** getNodesAtVersion(...).nodes — null (or missing) for an id absent at that version. */
@@ -493,14 +521,14 @@ export function assemblePendingArtefact(input: {
   if (missingFrames.length) {
     return {
       ok: false, code: 'frame-missing', ids: missingFrames,
-      message: `Frame(s) ${missingFrames.join(', ')} do not exist at version ${input.versionId}; not substituting a later version.`,
+      message: `Frame(s) ${missingFrames.join(', ')} do not exist ${input.versionId ? `at version ${input.versionId}` : 'in the live file'}; not substituting a later version.`,
     };
   }
   const badImages = ids.filter((id) => !input.images[id]?.bytes || input.images[id]!.bytes!.length === 0);
   if (badImages.length) {
     return {
       ok: false, code: 'image-missing', ids: badImages,
-      message: `No downloadable preview for frame(s) ${badImages.join(', ')} at version ${input.versionId} (a 200 with a null image is a failure); not substituting a later version.`,
+      message: `No downloadable preview for frame(s) ${badImages.join(', ')} ${input.versionId ? `at version ${input.versionId}` : 'in the live file'} (a 200 with a null image is a failure); not substituting a later version.`,
     };
   }
   const noAttachment = ids.filter((id) => !input.attachments[id]);
@@ -515,7 +543,7 @@ export function assemblePendingArtefact(input: {
     mcp_call_count: input.mcpCallCount ?? 0,
     file_key: input.fileKey,
     file_url: input.fileUrl,
-    version_id: input.versionId,
+    ...(input.versionId ? { version_id: input.versionId } : {}),
     nodes: input.frames.map((f) => ({
       id: f.id, name: f.name, caption: f.caption,
       preview_attachment_id: input.attachments[f.id]!.attachment_id,
@@ -537,7 +565,7 @@ export interface ReconcileFrame { id: string; name: string; caption: string }
 export type ReconcileRefusalCode =
   | 'baseline-not-figma' | 'baseline-invalid' | 'save-a-version' | 'version-not-found' | 'file-not-found'
   | 'rate-limited' | 'unauthorized' | 'http-error' | 'container-missing' | 'no-frames'
-  | 'frames-missing' | 'previews-failed' | 'frames-changed';
+  | 'frames-missing' | 'previews-failed' | 'frames-changed' | 'named-version-missing' | 'ticket-required';
 
 export type ReconcileResult =
   | {
@@ -545,8 +573,10 @@ export type ReconcileResult =
       fileKey: string;
       fileUrl: string;
       /** The version the previews were rendered at and the changes were diffed at: the pin. */
-      versionId: string;
+      versionId: string | null;
       baselineVersionId: string;
+      /** 'version-id': the record's own pinned version. 'named-version': the operator-saved version found by exact name. */
+      baselineVia: 'version-id' | 'named-version';
       changes: Change[];
       lines: string[];
       questions: ReconcileQuestion[];
@@ -557,7 +587,26 @@ export type ReconcileResult =
       /** The time to pass as `composedAt` to assemblePendingArtefact. */
       composedAt: string;
     }
-  | { ok: false; code: ReconcileRefusalCode; message: string; becomesQuestion?: true; retryAfterSeconds?: number | null };
+  | { ok: false; code: ReconcileRefusalCode; message: string; becomesQuestion?: true; retryAfterSeconds?: number | null;
+      /** named-version-missing only: the exact name the operator was asked to save, and the best-effort comparison. */
+      suggestedName?: string; fallback?: ReconcileFallback };
+
+export type FallbackFrameStatus = 'possible-change' | 'matches-stored-preview' | 'no-stored-preview' | 'frame-missing-live' | 'render-failed';
+
+/**
+ * The baseline is unknown, so NOTHING here is a verified edit and NOTHING here says "no changes". Each live
+ * frame is rendered over REST and its bytes hashed against the stored preview image.
+ */
+export interface ReconcileFallback {
+  verified: false;
+  ok: boolean;
+  frames: Array<{ id: string; name: string; status: FallbackFrameStatus }>;
+  lines: string[];
+  /** ok:false only: why the comparison could not run. */
+  message?: string;
+}
+
+const sha256 = (b: Uint8Array): string => createHash('sha256').update(b).digest('hex');
 
 export type PrepareFn = typeof prepareVersionedPreviews;
 
@@ -577,7 +626,12 @@ export async function reconcileDesign(opts: {
   token: string;
   /** Injected for tests; used to build the REST client when `client` is not given. */
   fetch?: FetchLike;
-  client?: Pick<FigmaRestClient, 'fileMeta' | 'listVersions' | 'getNodesAtVersion'>;
+  client?: Pick<FigmaRestClient, 'fileMeta' | 'listVersions' | 'getNodesAtVersion'> & Partial<Pick<FigmaRestClient, 'getNodesLive' | 'renderImagesLive' | 'downloadImages'>>;
+  /** B-1203, versionless records: the ticket id and the brief's iteration, which name the version the operator was asked to save. */
+  ticket?: string;
+  briefIteration?: number;
+  /** B-1203, fallback only: the stored preview image bytes by frame id (the caller downloads the attachments). */
+  storedPreviews?: Record<string, Uint8Array | undefined>;
   sleep?: (ms: number) => Promise<void>;
   prepare?: PrepareFn;
   now?: () => Date;
@@ -606,14 +660,29 @@ export async function reconcileDesign(opts: {
   const snapshotAt = async (versionId: string): Promise<Snapshot> =>
     buildSnapshot(await client.getNodesAtVersion([opts.containerId], versionId), opts.containerId, versionId);
 
+  const pinnedVersionId = baseline.version_id;
+  if (!pinnedVersionId) {
+    if (!opts.ticket || !Number.isInteger(opts.briefIteration) || (opts.briefIteration as number) < 1) {
+      return fail('ticket-required', 'This design record has no pinned version, so I need the ticket id and the brief iteration to know which saved version to look for.');
+    }
+    try {
+      return await reconcileFromNamedVersion({
+        baseline, client, containerId: opts.containerId, name: suggestedVersionName(opts.ticket, opts.briefIteration as number),
+        storedPreviews: opts.storedPreviews ?? {}, now, fail,
+      });
+    } catch (e) {
+      return typed(e);
+    }
+  }
+
   try {
-    const fresh = await chooseFreshVersion({ client, pinnedVersionId: baseline.version_id, sleep: opts.sleep });
+    const fresh = await chooseFreshVersion({ client, pinnedVersionId, sleep: opts.sleep });
     if (!fresh.ok) return fail('save-a-version', fresh.message, { becomesQuestion: true });
 
     let baseSnap: Snapshot;
     let freshSnap: Snapshot;
     try {
-      baseSnap = await snapshotAt(baseline.version_id);
+      baseSnap = await snapshotAt(pinnedVersionId);
       freshSnap = await snapshotAt(fresh.version.id);
     } catch (e) {
       if (e instanceof Error && e.message.startsWith('buildSnapshot: container')) return fail('container-missing', e.message);
@@ -650,7 +719,8 @@ export async function reconcileDesign(opts: {
       fileKey: baseline.file_key,
       fileUrl: baseline.file_url,
       versionId: prepared.version_id,
-      baselineVersionId: baseline.version_id,
+      baselineVersionId: pinnedVersionId,
+      baselineVia: 'version-id',
       changes, lines, questions,
       changedElementIds: changedElementIds(changes),
       frames,
@@ -660,4 +730,113 @@ export async function reconcileDesign(opts: {
   } catch (e) {
     return typed(e);
   }
+}
+
+// ——— (f) records without a version_id: diff against the operator's named version (B-1203) ————————
+
+type LiveClient = NonNullable<Parameters<typeof reconcileDesign>[0]['client']>;
+
+async function reconcileFromNamedVersion(a: {
+  baseline: Extract<DesignArtefact, { tool: 'figma' }>;
+  client: LiveClient;
+  containerId: string;
+  name: string;
+  storedPreviews: Record<string, Uint8Array | undefined>;
+  now: () => Date;
+  fail: (code: ReconcileRefusalCode, message: string, extra?: { becomesQuestion?: true; retryAfterSeconds?: number | null }) => ReconcileResult;
+}): Promise<ReconcileResult> {
+  const { baseline, client, name } = a;
+  if (!client.getNodesLive || !client.renderImagesLive || !client.downloadImages) {
+    return a.fail('previews-failed', 'The Figma client cannot read the live file.');
+  }
+  const live = async (): Promise<Snapshot | ReconcileResult> => {
+    try {
+      return buildSnapshot(await client.getNodesLive!([a.containerId]), a.containerId, 'live');
+    } catch (e) {
+      if (e instanceof Error && e.message.startsWith('buildSnapshot: container')) return a.fail('container-missing', e.message);
+      throw e;
+    }
+  };
+  const isResult = (x: Snapshot | ReconcileResult): x is ReconcileResult => 'ok' in x;
+
+  const named = findVersionByLabel(await client.listVersions(), name);
+
+  if (!named) {
+    let fallback: ReconcileFallback;
+    try {
+      const snap = await live();
+      if (isResult(snap)) throw new Error(snap.ok ? 'live read failed' : snap.message);
+      const dl = await client.downloadImages(await client.renderImagesLive(snap.frames.map((f) => f.id)));
+      fallback = compareWithStoredPreviews(baseline, snap, dl, a.storedPreviews);
+    } catch (e) {
+      fallback = { verified: false, ok: false, frames: [], lines: [], message: `The fallback comparison with the stored previews could not run (${e instanceof FigmaRestError ? e.code : 'read failed'}). I have no verified baseline and cannot say whether anything changed.` };
+    }
+    return { ok: false, code: 'named-version-missing', message: namedVersionMissingText(name), becomesQuestion: true, suggestedName: name, fallback };
+  }
+
+  const liveSnap = await live();
+  if (isResult(liveSnap)) return liveSnap;
+  if (liveSnap.frames.length === 0) return a.fail('no-frames', `No frames found under ${a.containerId} in the live file; nothing to preview.`);
+  const downloaded = await client.downloadImages(await client.renderImagesLive(liveSnap.frames.map((f) => f.id)));
+
+  const baseSnap = buildSnapshot(await client.getNodesAtVersion([a.containerId], named.id), a.containerId, named.id);
+  const bad = liveSnap.frames.filter((f) => !downloaded[f.id]?.bytes).map((f) => f.id);
+  if (bad.length) {
+    return a.fail('previews-failed', `No downloadable live preview for frame(s) ${bad.join(', ')} (a 200 with a null image is a failure); nothing was attached.`);
+  }
+  const changes = diffSnapshots(baseSnap, liveSnap);
+  const { lines, questions } = interpret(changes);
+  const baselineCaption = new Map(baseline.nodes.map((n) => [n.id, n.caption]));
+  const frames = liveSnap.frames.map((f) => ({ id: f.id, name: f.name, caption: baselineCaption.get(f.id) ?? ADDED_FRAME_CAPTION }));
+  return {
+    ok: true,
+    fileKey: baseline.file_key,
+    fileUrl: baseline.file_url,
+    versionId: null,
+    baselineVersionId: named.id,
+    baselineVia: 'named-version',
+    changes, lines, questions,
+    changedElementIds: changedElementIds(changes),
+    frames,
+    previews: frames.map((f) => ({ id: f.id, bytes: downloaded[f.id]!.bytes! })),
+    composedAt: a.now().toISOString(),
+  };
+}
+
+/** Pure. The baseline is unknown: report differences as 'possible change', NEVER as verified and NEVER as 'no changes'. */
+export function compareWithStoredPreviews(
+  baseline: Extract<DesignArtefact, { tool: 'figma' }>,
+  liveSnap: Snapshot,
+  downloaded: Record<string, { bytes: Uint8Array | null } | undefined>,
+  stored: Record<string, Uint8Array | undefined>,
+): ReconcileFallback {
+  const frames: ReconcileFallback['frames'] = [];
+  const lines: string[] = [];
+  const liveById = new Map(liveSnap.frames.map((f) => [f.id, f]));
+  for (const n of baseline.nodes) {
+    const lf = liveById.get(n.id);
+    if (!lf) {
+      frames.push({ id: n.id, name: n.name, status: 'frame-missing-live' });
+      lines.push(`Possible change — please confirm: "${n.name}" is no longer in the live file.`);
+      continue;
+    }
+    const bytes = downloaded[n.id]?.bytes ?? null;
+    const was = stored[n.id];
+    if (!bytes) { frames.push({ id: n.id, name: lf.name, status: 'render-failed' }); lines.push(`I could not render "${lf.name}" from the live file, so I cannot compare it.`); continue; }
+    if (!was || was.length === 0) { frames.push({ id: n.id, name: lf.name, status: 'no-stored-preview' }); lines.push(`I have no stored preview image for "${lf.name}" to compare with.`); continue; }
+    if (sha256(bytes) !== sha256(was)) {
+      frames.push({ id: n.id, name: lf.name, status: 'possible-change' });
+      lines.push(`Possible change — please confirm: "${lf.name}" renders differently from its stored preview.`);
+    } else {
+      frames.push({ id: n.id, name: lf.name, status: 'matches-stored-preview' });
+      lines.push(`"${lf.name}" renders the same as its stored preview. This does not verify the baseline.`);
+    }
+  }
+  const known = new Set(baseline.nodes.map((n) => n.id));
+  for (const f of liveSnap.frames) {
+    if (known.has(f.id)) continue;
+    frames.push({ id: f.id, name: f.name, status: 'possible-change' });
+    lines.push(`Possible change — please confirm: "${f.name}" is in the live file but not in the stored design.`);
+  }
+  return { verified: false, ok: true, frames, lines };
 }
