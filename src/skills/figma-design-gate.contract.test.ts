@@ -204,3 +204,32 @@ describe('every referenced tool is real', () => {
     }
   });
 });
+
+describe('B-1320 adopt a designer\'s frames', () => {
+  it('visual-handoff 3c opens with the adopt block, before the numbered list', () => {
+    const adopt = figmaPath.indexOf('**Adopt first (B-1320).**');
+    expect(adopt).toBeGreaterThan(0);
+    expect(adopt).toBeLessThan(figmaPath.indexOf('\n1. Keep the glanceable-vs-flow routing'));
+    const block = figmaPath.slice(adopt, figmaPath.indexOf('Figma path (planner:'));
+    expect(block).toContain('design adopt-check --task <ticket>');
+    expect(block).toMatch(/compose \*\*no options\*\*/);
+    expect(block).toContain('Adopt these\nframes as drawn?');
+    expect(block).toMatch(/`human-in-tool`, `mcp_call_count` 0/);
+    expect(block).toMatch(/adopted \/ off-library \/ not covering the decision/);
+    expect(block).toMatch(/`not-checked` frame is never adopted/);
+    expect(block).toMatch(/Never modify the designer's frames or pages/);
+  });
+  it('item 9 separates the scaffold (reference) from the designer\'s frames (adopted)', () => {
+    expect(figmaPath).toMatch(/9\. A Claude Design scaffold or an inception sketch is \*\*reference only\*\*[\s\S]*designer's own library-built Figma frames are \*\*adopted\*\*/);
+  });
+  it('keeps the saved-component-map step and the section anchors', () => {
+    expect(figmaPath).toContain('2. Read the **saved component map**; do no per-leg library search.');
+    expect(handoff).toContain('### 3c. Figma path (B-1203) — selected by the connection preflight');
+    expect(handoff).toContain('### 4. Iterate');
+  });
+  it('clarify stands the flow-sketch item down when a designer\'s design is linked', () => {
+    expect(clarifyItem).toContain('design adopt-check --task <ticket> --links-only');
+    expect(clarifyItem).toMatch(/does not exist when a designer's\s+design is already attached/);
+    expect(clarifyItem).toMatch(/as if the preflight\s+resolved to `html` for this item/);
+  });
+});

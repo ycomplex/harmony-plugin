@@ -63,8 +63,17 @@ export interface FigmaFileMeta {
 /** One entry of GET /v1/images: node id -> render URL, or null when the frame is absent at that version. */
 export type ImageUrls = Record<string, string | null>;
 
+/** One entry of the `components` map Figma returns beside a node: componentId -> its key and origin (B-1320). */
+export interface FigmaComponentMeta {
+  key?: string;
+  name?: string;
+  /** true when the component lives in another (library) file; false = a local component of this file. */
+  remote?: boolean;
+  componentSetId?: string;
+}
+
 export interface FigmaNodesResponse {
-  nodes: Record<string, { document: FigmaNode } | null>;
+  nodes: Record<string, { document: FigmaNode; components?: Record<string, FigmaComponentMeta> } | null>;
 }
 
 export interface FigmaRestClient {

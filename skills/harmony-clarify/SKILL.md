@@ -187,7 +187,10 @@ does not exist: clarify behaves exactly as before. A **yes** composes the sketch
 `harmony-visual-handoff`'s Figma path BEFORE the clarification brief composes, and records it as
 `doc.frame.sketch` (`file_link`, `pinned_version`, ordered `frames[{ name, caption }]`,
 `preview_attachment_ids`, `mcp_call_count`) so it lands on the clarify slot. A sketch is a clarification aid,
-not a design decision.
+not a design decision. The item does not exist when a designer's
+design is already attached: when `node "${CLAUDE_PLUGIN_ROOT}/dist/bin/harmony.js" design adopt-check --task <ticket> --links-only`
+reports a readable Figma frame link on the ticket (description or comments), clarify behaves as if the preflight
+resolved to `html` for this item, and may mention the attached design as context.
 
 **Phase-split detection (B-518).** While assessing the scope boundaries, check whether the ticket
 **bundles a now-phase and a later-phase of product intent** — two asks at different priority horizons

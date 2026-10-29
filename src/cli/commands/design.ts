@@ -16,6 +16,13 @@ import {
   type FingerprintFetch, type FrameDigest, type NotTakenReason,
 } from '../../tools/design-fingerprint.js';
 
+import { listComments } from '../../tools/comments.js';
+import {
+  findFigmaLinks, classifyFrames, createComponentLookup, DEFAULT_LOOKUP_CAP,
+  type FigmaLink, type FrameVerdict, type LookupComponentFile, type ReadNodes, type Sleep,
+} from '../../tools/figma-adopt.js';
+import { createFigmaRestClient, FigmaRestError, type FigmaNodesResponse } from '../../tools/figma-reconcile.js';
+
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v);
 
@@ -107,6 +114,53 @@ export async function fingerprintCompare(taskRef: string, by: string, deps: Fing
   return { command: 'compare', status: 'changed', changed_frame_ids: changed, wrote: true };
 }
 
+// B-1320 — `harmony design adopt-check --task <id> [--links-only]`. READ-ONLY: finds the Figma frame links on the
+// ticket (description + comments), reads the frames live over REST and says which are library-built and so can be
+// adopted as drawn. Writes nothing to the board and nothing to Figma. Exit 0 on every expected state.
+export interface AdoptCheckDeps {
+  /** The ticket's description and every comment's text. */
+  readTexts(taskRef: string): Promise<string[]>;
+  /** The workspace library file key, or null when Figma is not connected (or the context is unreadable). */
+  readLibraryFileKey(): Promise<string | null>;
+  token: string | undefined;
+  readNodes: ReadNodes;
+  lookupComponentFile: LookupComponentFile;
+  sleep?: Sleep;
+  cap?: number;
+}
+
+export async function adoptCheck(taskRef: string, opts: { linksOnly?: boolean }, deps: AdoptCheckDeps): Promise<Obj> {
+  const cap = deps.cap ?? DEFAULT_LOOKUP_CAP;
+  const links = findFigmaLinks(await deps.readTexts(taskRef));
+  const plain = (l: FigmaLink) => ({ fileKey: l.fileKey, nodeId: l.nodeId, url: l.url });
+  if (links.length === 0) return { command: 'adopt-check', status: 'no-links', links: [], frames: [], lookups_used: 0, lookup_cap: cap };
+  if (!deps.token) return { command: 'adopt-check', status: 'no-token', links: links.map(plain), frames: [], lookups_used: 0, lookup_cap: cap };
+
+  if (opts.linksOnly) {
+    const out: Obj[] = [];
+    for (const l of links) {
+      if (!l.nodeId) { out.push({ ...plain(l), readable: false, reason: 'the link names no frame' }); continue; }
+      try {
+        const res = await deps.readNodes(l.fileKey, [l.nodeId]);
+        out.push(res.nodes?.[l.nodeId]?.document ? { ...plain(l), readable: true } : { ...plain(l), readable: false, reason: 'the node is absent from the file' });
+      } catch (err) {
+        out.push({ ...plain(l), readable: false, reason: err instanceof FigmaRestError ? `Figma returned ${err.status}` : 'Figma was unreachable' });
+      }
+    }
+    return { command: 'adopt-check', status: 'ok', links_only: true, links: out, frames: [], lookups_used: 0, lookup_cap: cap };
+  }
+
+  const libraryFileKey = await deps.readLibraryFileKey();
+  if (!libraryFileKey) return { command: 'adopt-check', status: 'not-connected', links: links.map(plain), frames: [], lookups_used: 0, lookup_cap: cap };
+  const r = await classifyFrames({
+    links, libraryFileKey, readNodes: deps.readNodes, lookupComponentFile: deps.lookupComponentFile, cap, sleep: deps.sleep,
+  });
+  return {
+    command: 'adopt-check', status: 'ok', links: links.map(plain), frames: r.frames as FrameVerdict[],
+    lookups_used: r.lookupsUsed, lookup_cap: r.lookupCap,
+  };
+}
+
 export function registerDesignCommands(program: Command): void {
   const design = program.command('design').description('Accepted-design helpers (B-1203)');
   const fp = design.command('fingerprint').description('Content fingerprint of the accepted Figma design');
@@ -141,4 +195,38 @@ export function registerDesignCommands(program: Command): void {
     .requiredOption('--task <id>', 'Task ID (UUID, number, or B-123)')
     .requiredOption('--by <gate>', 'Who is checking: plan, build, ...')
     .action(async (opts: { task: string; by: string }) => run((t, d) => fingerprintCompare(t, opts.by, d), opts.task));
+
+  design.command('adopt-check')
+    .description('Read-only: find the designer\'s Figma frame links on the ticket and say which are library-built (adoptable as drawn)')
+    .requiredOption('--task <id>', 'Task ID (UUID, number, or B-123)')
+    .option('--links-only', 'Only report the links and whether each names a readable frame (no library check)')
+    .action(async (opts: { task: string; linksOnly?: boolean }) => {
+      try {
+        const ctx = await getAuthenticatedContext();
+        const token = readFigmaToken();
+        const nodeFetch = (url: string, init?: { method?: string; headers?: Record<string, string> }) => fetch(url, { ...init, signal: AbortSignal.timeout(15_000) });
+        const deps: AdoptCheckDeps = {
+          token,
+          readTexts: async (ref) => {
+            const t = (await getTask(ctx.client, ctx.projectId, { task_id: ref })) as { description?: string | null };
+            const comments = (await listComments(ctx.client, ctx.projectId, { task_id: ref })) as Array<{ content?: string | null }> | null;
+            return [t.description ?? '', ...(comments ?? []).map((c) => c.content ?? '')];
+          },
+          readLibraryFileKey: async () => {
+            try {
+              const { data, error } = await ctx.client.rpc('figma_launch_context', { p_project_id: ctx.projectId });
+              if (error || !isObj(data) || data.state === 'disconnected') return null;
+              return typeof data.library_file_key === 'string' && data.library_file_key ? data.library_file_key : null;
+            } catch { return null; }
+          },
+          readNodes: async (fileKey, ids): Promise<FigmaNodesResponse> =>
+            createFigmaRestClient({ token: token ?? '', fetch: nodeFetch as never, fileKey }).getNodesLive(ids),
+          lookupComponentFile: createComponentLookup({ token: token ?? '', fetch: nodeFetch as never }),
+        };
+        console.log(JSON.stringify(await adoptCheck(opts.task, { linksOnly: opts.linksOnly }, deps)));
+      } catch (err) {
+        console.log(JSON.stringify({ status: 'error', error: err instanceof Error ? err.message : String(err) }));
+        process.exit(1);
+      }
+    });
 }

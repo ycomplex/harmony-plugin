@@ -72854,6 +72854,339 @@ function compareFingerprint(stored, fresh) {
   return { status: changed ? "changed" : "unchanged", changed_frame_ids, added_frame_ids, removed_frame_ids, reordered };
 }
 
+// src/tools/figma-composition.ts
+var THROTTLE_BACKOFF = { baseMs: 2e3, maxMs: 6e4, maxAttempts: 5 };
+function nextThrottleDelay(opts) {
+  const baseMs = Math.max(1, opts.baseMs ?? THROTTLE_BACKOFF.baseMs);
+  const maxMs = Math.max(1, opts.maxMs ?? THROTTLE_BACKOFF.maxMs);
+  const maxAttempts = opts.maxAttempts ?? THROTTLE_BACKOFF.maxAttempts;
+  if (opts.attempt >= maxAttempts) return { retry: false, reason: "backoff-exhausted" };
+  const ra = opts.retryAfterSeconds;
+  const raw = ra !== void 0 && Number.isFinite(ra) && ra > 0 ? ra * 1e3 : baseMs * 2 ** Math.max(0, opts.attempt - 1);
+  return { retry: true, delayMs: Math.max(1, Math.ceil(ra !== void 0 && Number.isFinite(ra) && ra > 0 ? raw : Math.min(maxMs, raw))) };
+}
+
+// src/tools/figma-reconcile.ts
+var FigmaRestError = class extends Error {
+  constructor(code, message, status, retryAfterSeconds = null) {
+    super(message);
+    this.code = code;
+    this.status = status;
+    this.retryAfterSeconds = retryAfterSeconds;
+    this.name = "FigmaRestError";
+  }
+  code;
+  status;
+  retryAfterSeconds;
+};
+var FIGMA_API_BASE = "https://api.figma.com";
+function createFigmaRestClient(opts) {
+  const base2 = (opts.baseUrl ?? FIGMA_API_BASE).replace(/\/+$/, "");
+  const key = encodeURIComponent(opts.fileKey);
+  async function get2(path4, versioned) {
+    const res = await opts.fetch(`${base2}${path4}`, { method: "GET", headers: { "X-Figma-Token": opts.token } });
+    if (res.ok) return res.json();
+    if (res.status === 404) {
+      throw versioned ? new FigmaRestError("version-not-found", `Figma returned 404 for ${path4.split("?")[0]} at the requested version: the version (or file) does not exist. This is NOT "no change".`, 404) : new FigmaRestError("file-not-found", `Figma returned 404 for ${path4.split("?")[0]}: the file was not found or the token cannot see it.`, 404);
+    }
+    if (res.status === 429) {
+      const raw = res.headers.get("retry-after");
+      const secs = raw !== null && raw.trim() !== "" && Number.isFinite(Number(raw)) ? Number(raw) : null;
+      throw new FigmaRestError(
+        "rate-limited",
+        `Figma rate-limited the read-back (429${secs !== null ? `, retry after ${secs}s` : ""}). Not retrying and not falling back to another transport; press the action again later.`,
+        429,
+        secs
+      );
+    }
+    if (res.status === 401 || res.status === 403) {
+      throw new FigmaRestError("unauthorized", `Figma refused the token (${res.status}); reconnect Figma in project settings.`, res.status);
+    }
+    throw new FigmaRestError("http-error", `Figma returned HTTP ${res.status} for ${path4.split("?")[0]}.`, res.status);
+  }
+  return {
+    async fileMeta() {
+      const body = await get2(`/v1/files/${key}?depth=1`, false);
+      const str3 = (v2) => typeof v2 === "string" && v2 ? v2 : null;
+      return { lastModified: str3(body.lastModified), version: str3(body.version), name: str3(body.name) };
+    },
+    async listVersions() {
+      const body = await get2(`/v1/files/${key}/versions`, false);
+      return (body.versions ?? []).map((v2) => ({ id: v2.id, created_at: v2.created_at, label: typeof v2.label === "string" ? v2.label : null }));
+    },
+    async getNodesLive(ids, o) {
+      const depth = o?.depth !== void 0 ? `&depth=${o.depth}` : "";
+      return await get2(`/v1/files/${key}/nodes?ids=${encodeURIComponent(ids.join(","))}${depth}`, false);
+    },
+    async renderImagesLive(ids) {
+      const body = await get2(`/v1/images/${key}?ids=${encodeURIComponent(ids.join(","))}&format=png`, false);
+      return body.images ?? {};
+    },
+    async getNodesAtVersion(ids, versionId, o) {
+      const depth = o?.depth !== void 0 ? `&depth=${o.depth}` : "";
+      return await get2(
+        `/v1/files/${key}/nodes?ids=${encodeURIComponent(ids.join(","))}&version=${encodeURIComponent(versionId)}${depth}`,
+        true
+      );
+    },
+    async renderImagesAtVersion(ids, versionId) {
+      const body = await get2(
+        `/v1/images/${key}?ids=${encodeURIComponent(ids.join(","))}&version=${encodeURIComponent(versionId)}&format=png`,
+        true
+      );
+      return body.images ?? {};
+    },
+    async downloadImages(urls) {
+      const out = {};
+      for (const [id, url2] of Object.entries(urls)) {
+        if (!url2) {
+          out[id] = { bytes: null };
+          continue;
+        }
+        const res = await opts.fetch(url2, { method: "GET" });
+        if (!res.ok) {
+          out[id] = { bytes: null };
+          continue;
+        }
+        const bytes = new Uint8Array(await res.arrayBuffer());
+        out[id] = { bytes: bytes.length > 0 ? bytes : null };
+      }
+      return out;
+    }
+  };
+}
+
+// src/tools/figma-adopt.ts
+var LINK_RE = /https?:\/\/(?:www\.)?figma\.com\/(design|file)\/([A-Za-z0-9]+)(?:\/branch\/([A-Za-z0-9]+))?[^\s<>"'`)\]]*/gi;
+function parseNodeId(url2) {
+  const m = /[?&]node-id=([^&#\s]+)/i.exec(url2);
+  if (!m) return null;
+  let raw = m[1];
+  try {
+    raw = decodeURIComponent(raw);
+  } catch {
+    return null;
+  }
+  const id = raw.replace(/-/g, ":");
+  return /^\d+:\d+$/.test(id) ? id : null;
+}
+function findFigmaLinks(texts) {
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const text4 of texts) {
+    for (const m of (text4 ?? "").matchAll(LINK_RE)) {
+      const url2 = m[0].replace(/[.,;:!]+$/, "");
+      const fileKey = m[3] ?? m[2];
+      const nodeId = parseNodeId(url2);
+      const k = `${fileKey}|${nodeId ?? ""}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push({ fileKey, nodeId, url: url2 });
+    }
+  }
+  return out;
+}
+function collectInstances(frame) {
+  const out = [];
+  const walk = (n) => {
+    if (n.type === "INSTANCE") out.push({ nodeId: n.id, name: n.name ?? n.id, componentId: n.componentId ?? null });
+    for (const c of n.children ?? []) walk(c);
+  };
+  walk(frame);
+  return out;
+}
+var realSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function withBackoff(call3, sleep) {
+  let requests = 0;
+  for (let attempt = 1; ; attempt++) {
+    requests++;
+    try {
+      return { ok: true, value: await call3(), requests };
+    } catch (err) {
+      if (!(err instanceof FigmaRestError) || err.code !== "rate-limited") return { ok: false, kind: "error", error: err, requests };
+      const next = nextThrottleDelay({ attempt, retryAfterSeconds: err.retryAfterSeconds ?? void 0 });
+      if (!next.retry) return { ok: false, kind: "backoff-exhausted", error: err, requests };
+      await sleep(next.delayMs);
+    }
+  }
+}
+var DEFAULT_LOOKUP_CAP = 40;
+function createComponentLookup(opts) {
+  const base2 = (opts.baseUrl ?? FIGMA_API_BASE).replace(/\/+$/, "");
+  return async (key) => {
+    const path4 = `/v1/components/${encodeURIComponent(key)}`;
+    const res = await opts.fetch(`${base2}${path4}`, { method: "GET", headers: { "X-Figma-Token": opts.token } });
+    if (res.ok) {
+      const body = await res.json();
+      const fk = body?.meta?.file_key;
+      if (typeof fk !== "string" || !fk) throw new FigmaRestError("http-error", "Figma returned no file_key for the component.", res.status);
+      return { fileKey: fk };
+    }
+    if (res.status === 429) {
+      const raw = res.headers.get("retry-after");
+      const secs = raw !== null && raw.trim() !== "" && Number.isFinite(Number(raw)) ? Number(raw) : null;
+      throw new FigmaRestError("rate-limited", "Figma rate-limited the component lookup (429).", 429, secs);
+    }
+    if (res.status === 404) throw new FigmaRestError("file-not-found", "Figma has no published component for that key (404).", 404);
+    if (res.status === 401 || res.status === 403) throw new FigmaRestError("unauthorized", `Figma refused the token (${res.status}).`, res.status);
+    throw new FigmaRestError("http-error", `Figma returned HTTP ${res.status} for ${path4}.`, res.status);
+  };
+}
+async function checkLibraryMembership(opts) {
+  const cap = opts.cap ?? DEFAULT_LOOKUP_CAP;
+  const sleep = opts.sleep ?? realSleep;
+  const cache = /* @__PURE__ */ new Map();
+  let used = 0;
+  let halted = null;
+  async function resolveKey(key) {
+    const hit = cache.get(key);
+    if (hit) return { result: hit, requests: 0 };
+    if (halted) return { result: { kind: "unresolved", reason: halted }, requests: 0 };
+    if (used >= cap) return { result: { kind: "unresolved", reason: `the lookup cap of ${cap} was reached` }, requests: 0 };
+    const a3 = await withBackoff(() => opts.lookupComponentFile(key), sleep);
+    used += a3.requests;
+    let result;
+    if (a3.ok) result = { kind: "file", fileKey: a3.value.fileKey };
+    else if (a3.kind === "backoff-exhausted") {
+      halted = "Figma kept rate-limiting the component lookups";
+      result = { kind: "unresolved", reason: halted };
+    } else {
+      const msg = a3.error instanceof Error ? a3.error.message : String(a3.error);
+      result = { kind: "unresolved", reason: `the component lookup failed (${msg})` };
+    }
+    if (result.kind === "file" || a3.ok === false && a3.kind === "error" && a3.error instanceof FigmaRestError && a3.error.status === 404) cache.set(key, result);
+    return { result, requests: a3.requests };
+  }
+  const out = [];
+  for (const f2 of opts.frames) {
+    const base2 = { frameId: f2.id, instances: f2.instances.length };
+    let lookups = 0;
+    if (f2.instances.length === 0) {
+      out.push({ ...base2, verdict: "off-library", reason: "it holds no library component instances", lookups });
+      continue;
+    }
+    let offReason = null;
+    const keys = [];
+    for (const inst of f2.instances) {
+      const meta = inst.componentId ? f2.components[inst.componentId] : void 0;
+      if (!inst.componentId || !meta) {
+        offReason = `"${inst.name}" is not a published component (no entry in the file's component map)`;
+        break;
+      }
+      if (meta.remote === false) {
+        offReason = `"${inst.name}" is a local component of the designer's file, not a library component`;
+        break;
+      }
+      if (!meta.key) {
+        offReason = `"${inst.name}" has no component key`;
+        break;
+      }
+      keys.push({ key: meta.key, name: meta.name ?? inst.name });
+    }
+    if (offReason) {
+      out.push({ ...base2, verdict: "off-library", reason: `Off-library: ${offReason}`, lookups });
+      continue;
+    }
+    let unresolved = null;
+    let wrongFile = null;
+    for (const { key, name } of [...new Map(keys.map((k) => [k.key, k])).values()]) {
+      const r = await resolveKey(key);
+      lookups += r.requests;
+      if (r.result.kind === "unresolved") {
+        unresolved ??= r.result.reason;
+        continue;
+      }
+      if (r.result.fileKey !== opts.libraryFileKey) {
+        wrongFile = `"${name}" comes from another file (${r.result.fileKey}), not the workspace library`;
+        break;
+      }
+    }
+    if (wrongFile) out.push({ ...base2, verdict: "off-library", reason: `Off-library: ${wrongFile}`, lookups });
+    else if (unresolved) out.push({ ...base2, verdict: "not-checked", reason: `Not checked: ${unresolved}; not adopting on partial evidence`, lookups });
+    else out.push({ ...base2, verdict: "library", reason: `Every one of its ${f2.instances.length} component instance(s) comes from the workspace library`, lookups });
+  }
+  return { frames: out, lookupsUsed: used, lookupCap: cap };
+}
+var FRAME_TYPES = /* @__PURE__ */ new Set(["FRAME", "COMPONENT", "COMPONENT_SET", "SECTION", "INSTANCE"]);
+function readFailure(a3) {
+  const e = a3.error;
+  if (a3.kind === "backoff-exhausted") return { verdict: "not-checked", reason: "Not checked: Figma kept rate-limiting the read" };
+  if (e instanceof FigmaRestError) {
+    if (e.code === "unauthorized") return { verdict: "unreadable", reason: `Unreadable: Figma refused the token for this file (${e.status})` };
+    if (e.code === "file-not-found" || e.code === "version-not-found") return { verdict: "unreadable", reason: "Unreadable: the file was not found or the token cannot see it (404)" };
+    return { verdict: "not-checked", reason: `Not checked: ${e.message}` };
+  }
+  return { verdict: "not-checked", reason: `Not checked: ${e instanceof Error ? e.message : String(e)}` };
+}
+async function classifyFrames(opts) {
+  const sleep = opts.sleep ?? realSleep;
+  const slots = [];
+  const fail3 = (fileKey, id, verdict, reason) => ({ kind: "verdict", v: { id, name: null, fileKey, verdict, reason, instances: 0, lookups: 0 } });
+  const idsByFile = /* @__PURE__ */ new Map();
+  for (const l of opts.links) if (l.nodeId) idsByFile.set(l.fileKey, [.../* @__PURE__ */ new Set([...idsByFile.get(l.fileKey) ?? [], l.nodeId])]);
+  const reads = /* @__PURE__ */ new Map();
+  for (const [fileKey, ids] of idsByFile) reads.set(fileKey, await withBackoff(() => opts.readNodes(fileKey, ids), sleep));
+  for (const l of opts.links) {
+    if (!l.nodeId) {
+      slots.push(fail3(l.fileKey, null, "unreadable", "Unreadable: the link names no frame (no node-id), so no frame is guessed"));
+      continue;
+    }
+    const read = reads.get(l.fileKey);
+    if (!read.ok) {
+      const f2 = readFailure(read);
+      slots.push(fail3(l.fileKey, l.nodeId, f2.verdict, f2.reason));
+      continue;
+    }
+    const entry = read.value.nodes?.[l.nodeId];
+    if (!entry?.document) {
+      slots.push(fail3(l.fileKey, l.nodeId, "unreadable", "Unreadable: the node is absent from the file (deleted, or the link is stale)"));
+      continue;
+    }
+    const doc = entry.document;
+    const components = entry.components ?? {};
+    if (doc.type === "CANVAS") {
+      const frames2 = (doc.children ?? []).filter((c) => c.type === "FRAME");
+      if (frames2.length === 0) slots.push(fail3(l.fileKey, l.nodeId, "unreadable", "Unreadable: the page holds no top-level frames"));
+      for (const c of frames2) slots.push({ kind: "frame", fileKey: l.fileKey, node: c, components });
+    } else if (doc.type !== void 0 && FRAME_TYPES.has(doc.type)) {
+      slots.push({ kind: "frame", fileKey: l.fileKey, node: doc, components });
+    } else {
+      slots.push(fail3(l.fileKey, l.nodeId, "unreadable", `Unreadable: the node is a ${doc.type ?? "unknown node"}, not a frame`));
+    }
+  }
+  const seen = /* @__PURE__ */ new Set();
+  const unique = slots.filter((s) => {
+    if (s.kind !== "frame") return true;
+    const k = `${s.fileKey}|${s.node.id}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+  const toCheck = unique.filter((s) => s.kind === "frame");
+  const membership = await checkLibraryMembership({
+    frames: toCheck.map((s) => ({ id: `${s.fileKey}|${s.node.id}`, instances: collectInstances(s.node), components: s.components })),
+    libraryFileKey: opts.libraryFileKey,
+    lookupComponentFile: opts.lookupComponentFile,
+    cap: opts.cap,
+    sleep
+  });
+  const byKey = new Map(membership.frames.map((m) => [m.frameId, m]));
+  const frames = unique.map((s) => {
+    if (s.kind === "verdict") return s.v;
+    const m = byKey.get(`${s.fileKey}|${s.node.id}`);
+    return {
+      id: s.node.id,
+      name: s.node.name ?? s.node.id,
+      fileKey: s.fileKey,
+      verdict: m.verdict === "library" ? "adopted" : m.verdict,
+      reason: m.reason,
+      instances: m.instances,
+      lookups: m.lookups
+    };
+  });
+  return { frames, lookupsUsed: membership.lookupsUsed, lookupCap: membership.lookupCap };
+}
+
 // src/cli/commands/design.ts
 var isObj3 = (v2) => typeof v2 === "object" && v2 !== null && !Array.isArray(v2);
 var FIGMA_PAT_FILE = "/secrets/figma/pat";
@@ -72930,6 +73263,47 @@ async function fingerprintCompare(taskRef, by, deps) {
   await write({ status: "changed", checked_at, checked_by: by, changed_frame_ids: changed });
   return { command: "compare", status: "changed", changed_frame_ids: changed, wrote: true };
 }
+async function adoptCheck(taskRef, opts, deps) {
+  const cap = deps.cap ?? DEFAULT_LOOKUP_CAP;
+  const links = findFigmaLinks(await deps.readTexts(taskRef));
+  const plain = (l) => ({ fileKey: l.fileKey, nodeId: l.nodeId, url: l.url });
+  if (links.length === 0) return { command: "adopt-check", status: "no-links", links: [], frames: [], lookups_used: 0, lookup_cap: cap };
+  if (!deps.token) return { command: "adopt-check", status: "no-token", links: links.map(plain), frames: [], lookups_used: 0, lookup_cap: cap };
+  if (opts.linksOnly) {
+    const out = [];
+    for (const l of links) {
+      if (!l.nodeId) {
+        out.push({ ...plain(l), readable: false, reason: "the link names no frame" });
+        continue;
+      }
+      try {
+        const res = await deps.readNodes(l.fileKey, [l.nodeId]);
+        out.push(res.nodes?.[l.nodeId]?.document ? { ...plain(l), readable: true } : { ...plain(l), readable: false, reason: "the node is absent from the file" });
+      } catch (err) {
+        out.push({ ...plain(l), readable: false, reason: err instanceof FigmaRestError ? `Figma returned ${err.status}` : "Figma was unreachable" });
+      }
+    }
+    return { command: "adopt-check", status: "ok", links_only: true, links: out, frames: [], lookups_used: 0, lookup_cap: cap };
+  }
+  const libraryFileKey = await deps.readLibraryFileKey();
+  if (!libraryFileKey) return { command: "adopt-check", status: "not-connected", links: links.map(plain), frames: [], lookups_used: 0, lookup_cap: cap };
+  const r = await classifyFrames({
+    links,
+    libraryFileKey,
+    readNodes: deps.readNodes,
+    lookupComponentFile: deps.lookupComponentFile,
+    cap,
+    sleep: deps.sleep
+  });
+  return {
+    command: "adopt-check",
+    status: "ok",
+    links: links.map(plain),
+    frames: r.frames,
+    lookups_used: r.lookupsUsed,
+    lookup_cap: r.lookupCap
+  };
+}
 function registerDesignCommands(program3) {
   const design = program3.command("design").description("Accepted-design helpers (B-1203)");
   const fp = design.command("fingerprint").description("Content fingerprint of the accepted Figma design");
@@ -72954,6 +73328,36 @@ function registerDesignCommands(program3) {
   }
   fp.command("take").description("Take and store the fingerprint of the ticket's accepted Figma design (run right after the design accept)").requiredOption("--task <id>", "Task ID (UUID, number, or B-123)").action(async (opts) => run((t, d) => fingerprintTake(t, d), opts.task));
   fp.command("compare").description("Compare the live design with the stored fingerprint and record the drift verdict").requiredOption("--task <id>", "Task ID (UUID, number, or B-123)").requiredOption("--by <gate>", "Who is checking: plan, build, ...").action(async (opts) => run((t, d) => fingerprintCompare(t, opts.by, d), opts.task));
+  design.command("adopt-check").description("Read-only: find the designer's Figma frame links on the ticket and say which are library-built (adoptable as drawn)").requiredOption("--task <id>", "Task ID (UUID, number, or B-123)").option("--links-only", "Only report the links and whether each names a readable frame (no library check)").action(async (opts) => {
+    try {
+      const ctx = await getAuthenticatedContext();
+      const token = readFigmaToken();
+      const nodeFetch = (url2, init) => fetch(url2, { ...init, signal: AbortSignal.timeout(15e3) });
+      const deps = {
+        token,
+        readTexts: async (ref) => {
+          const t = await getTask(ctx.client, ctx.projectId, { task_id: ref });
+          const comments = await listComments(ctx.client, ctx.projectId, { task_id: ref });
+          return [t.description ?? "", ...(comments ?? []).map((c) => c.content ?? "")];
+        },
+        readLibraryFileKey: async () => {
+          try {
+            const { data, error: error2 } = await ctx.client.rpc("figma_launch_context", { p_project_id: ctx.projectId });
+            if (error2 || !isObj3(data) || data.state === "disconnected") return null;
+            return typeof data.library_file_key === "string" && data.library_file_key ? data.library_file_key : null;
+          } catch {
+            return null;
+          }
+        },
+        readNodes: async (fileKey, ids) => createFigmaRestClient({ token: token ?? "", fetch: nodeFetch, fileKey }).getNodesLive(ids),
+        lookupComponentFile: createComponentLookup({ token: token ?? "", fetch: nodeFetch })
+      };
+      console.log(JSON.stringify(await adoptCheck(opts.task, { linksOnly: opts.linksOnly }, deps)));
+    } catch (err) {
+      console.log(JSON.stringify({ status: "error", error: err instanceof Error ? err.message : String(err) }));
+      process.exit(1);
+    }
+  });
 }
 
 // src/cli/index.ts
