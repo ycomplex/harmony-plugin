@@ -1,4 +1,5 @@
-import { selectEntity } from './entity-selector.js';
+import { selectEntity, AmbiguousEntitySelectionError, type SelectedEntity } from './entity-selector.js';
+import { startElicitation, fileElicitationRound } from './elicitation.js';
 import { metadataCapable, type KnowledgeScope } from './knowledge-metadata.js';
 // B-797 (extended by B-904) — the conductor's consume path for an accepted gate brief's deferred payload.
 // Accept becomes a consumed EVENT for the agent-owned-payload reasons — clarification-draft,
@@ -381,6 +382,70 @@ class WriteKindSubstrateAbsentError extends Error {
   }
 }
 
+/** B-1317 — an `entity_link` item names an entity that matches more than one entity (e.g. a concept and a
+ *  feature both called "Knowledge"). Thrown by the read-only pre-flight BEFORE any write lands, so the
+ *  event stays cleanly pending and nothing is half-applied. */
+export class AmbiguousEntityLinkError extends Error {
+  constructor(
+    public readonly ref: string,
+    public readonly entityName: string,
+    public readonly candidates: Array<{ id: string; name: string; kind: string }>,
+  ) {
+    super(
+      `entity_link item '${ref}' is ambiguous: the name '${entityName}' matches ${candidates.length} entities — ` +
+      candidates.map((c) => `${c.name} (kind ${c.kind || 'unknown'}, id ${c.id})`).join('; ') +
+      `. Nothing was written. Next: answer which entity was meant (re-run consume_pending_acceptance_event with ` +
+      `entity_overrides { "${ref}": "<entity id>" }), or send the design brief back so it recomposes with a kind.`,
+    );
+    this.name = 'AmbiguousEntityLinkError';
+  }
+}
+
+export interface ApplyPayloadOptions {
+  /** item ref -> entity id: treated as `entity_id` for that `entity_link` item (the answer to an
+   *  ambiguity round). */
+  entity_overrides?: Record<string, string>;
+}
+
+interface ResolvedEntityLink { projectId: string; workspaceId: string; selected: SelectedEntity | null }
+
+/** Read-only pre-flight: resolve every entity_link item BEFORE the first write, so an ambiguous name
+ *  fails with nothing applied. Creates no entities. The result is reused by the dispatch. */
+async function preflightEntityLinks(
+  client: SupabaseClient,
+  event: PendingAcceptanceEvent,
+  items: AcceptanceEventPayloadItem[],
+  opts: ApplyPayloadOptions,
+): Promise<Map<string, ResolvedEntityLink>> {
+  const resolved = new Map<string, ResolvedEntityLink>();
+  for (const item of items) {
+    if (item.write_kind !== 'entity_link' || !item.ref) continue;
+    const entityId = opts.entity_overrides?.[item.ref] ?? item.entity_id;
+    const name = item.entity_name?.trim();
+    if (!name && !entityId) continue; // the dispatch raises its existing 'needs entity_id or entity_name'
+    const { data: taskRow, error: taskErr } = await client
+      .from('tasks')
+      .select('project_id')
+      .eq('id', event.task_id)
+      .maybeSingle();
+    if (taskErr) throw new Error(taskErr.message);
+    const projectId = (taskRow as { project_id?: string } | null)?.project_id;
+    if (!projectId) throw new Error(`entity_link item '${item.ref}' — task ${event.task_id} has no project_id, cannot resolve the entity`);
+    const workspaceId = await getWorkspaceId(client, projectId);
+    const kind = item.kind ?? item.entity_kind;
+    try {
+      const selected = await selectEntity(client, workspaceId, projectId, { entity_id: entityId, name, kind });
+      resolved.set(item.ref, { projectId, workspaceId, selected });
+    } catch (err) {
+      if (err instanceof AmbiguousEntitySelectionError) {
+        throw new AmbiguousEntityLinkError(item.ref, name ?? '', err.candidates.map((c) => ({ id: c.id, name: c.name, kind: c.kind })));
+      }
+      throw err;
+    }
+  }
+  return resolved;
+}
+
 /** Execute every promised write for one event's payload, via the per-write-kind SECURITY DEFINER RPCs.
  *  ORDER MATTERS: child_ticket writes land BEFORE ac_transfer writes (a transfer resolves its destination
  *  child through the SAME event's already-landed child_ticket ledger row — the DB RPC raises loudly if
@@ -397,8 +462,11 @@ class WriteKindSubstrateAbsentError extends Error {
 export async function applyAcceptanceEventPayload(
   client: SupabaseClient,
   event: PendingAcceptanceEvent,
+  opts: ApplyPayloadOptions = {},
 ): Promise<ApplyPayloadResult> {
   const items = itemsOf(event.payload);
+  // B-1317: resolve every entity_link BEFORE the first write (an ambiguous name must not leave a partial apply).
+  const resolvedLinks = await preflightEntityLinks(client, event, items, opts);
   const order: AcceptanceEventPayloadItem['write_kind'][] = [
     'child_ticket', 'checklist_item', 'acceptance_criterion', 'ac_transfer',
     // B-867 sits HERE — after every concrete materialization, before the entry promotion. Same reasoning
@@ -582,20 +650,13 @@ export async function applyAcceptanceEventPayload(
         // carries the EXISTING B-993 normalize/repair-at-touch logic, which a duplicate SQL-side
         // resolver would either have to reimplement or silently diverge from. `consume_entity_link_write`
         // takes only an ALREADY-RESOLVED entity_id and does the ledgered edge upserts.
+        const overrideId = opts.entity_overrides?.[item.ref];
         const name = item.entity_name?.trim();
-        if (!name && !item.entity_id) throw new Error(`entity_link item '${item.ref}' needs entity_id or entity_name`);
-        const { data: taskRow, error: taskErr } = await client
-          .from('tasks')
-          .select('project_id')
-          .eq('id', event.task_id)
-          .maybeSingle();
-        if (taskErr) throw new Error(taskErr.message);
-        const projectId = (taskRow as { project_id?: string } | null)?.project_id;
-        if (!projectId) throw new Error(`entity_link item '${item.ref}' — task ${event.task_id} has no project_id, cannot resolve the entity`);
-        const workspaceId = await getWorkspaceId(client, projectId);
+        if (!name && !item.entity_id && !overrideId) throw new Error(`entity_link item '${item.ref}' needs entity_id or entity_name`);
+        const link = resolvedLinks.get(item.ref);
+        if (!link) throw new Error(`entity_link item '${item.ref}' was not resolved by the pre-flight`);
         const kind = item.kind ?? item.entity_kind;
-        const selected = await selectEntity(client, workspaceId, projectId, { entity_id: item.entity_id, name, kind });
-        const entityId = selected?.id ?? await resolveOrCreateEntity(client, workspaceId, projectId, name!, kind ?? 'feature');
+        const entityId = link.selected?.id ?? await resolveOrCreateEntity(client, link.workspaceId, link.projectId, name!, kind ?? 'feature');
         const { data, error } = await client.rpc('consume_entity_link_write', {
           _event_id: event.id, _external_ref: item.ref, _entity_id: entityId, _decision_id: item.decision_id ?? null,
         });
@@ -770,6 +831,54 @@ export interface ConsumePendingAcceptanceResult {
   brief_id?: string;
 }
 
+export interface ConsumePendingOptions {
+  /** The acting user — needed to file the "which entity did you mean?" round on an ambiguous entity_link. */
+  userId?: string;
+  /** item ref -> entity id: the answer to that round; applied as `entity_id` for the item. */
+  entity_overrides?: Record<string, string>;
+}
+
+const AMBIGUITY_ROUND_PREFIX = 'Entity link is ambiguous';
+
+/** B-1317 — an ambiguous entity_link leaves the event pending (nothing was written). File an answerable
+ *  worker-question round so the ticket's awaiting state shows it, and return the error to throw. Never
+ *  swallows: the returned error always says whether the round was filed. */
+async function fileAmbiguityRound(
+  client: SupabaseClient,
+  projectId: string,
+  event: PendingAcceptanceEvent,
+  err: AmbiguousEntityLinkError,
+  userId: string | undefined,
+): Promise<Error> {
+  if (!userId) {
+    return new Error(`${err.message} The question round could not be filed: no user id was available to open the exchange, so the human has not been asked — ask them which entity was meant and re-run with entity_overrides.`);
+  }
+  try {
+    const exchange = await startElicitation(client, projectId, userId, {
+      task_id: event.task_id, trigger: 'worker-question', gate: event.pending_activity ?? undefined,
+    }) as { id: string; rounds?: Array<{ context_line?: string; answers?: Record<string, unknown> }> };
+    const last = Array.isArray(exchange.rounds) ? exchange.rounds[exchange.rounds.length - 1] : undefined;
+    const alreadyAsked = !!last && (last.context_line ?? '').startsWith(AMBIGUITY_ROUND_PREFIX)
+      && Object.keys(last.answers ?? {}).length === 0;
+    if (!alreadyAsked) {
+      const list = err.candidates.map((c) => `- ${c.name} (kind ${c.kind || 'unknown'}, id ${c.id})`).join('\n');
+      await fileElicitationRound(client, projectId, {
+        exchange_id: exchange.id,
+        context_line: `${AMBIGUITY_ROUND_PREFIX}: accepting this brief would link '${err.entityName}' (item ${err.ref}), which matches more than one entity. Nothing was applied; the acceptance is still pending.`,
+        questions: [{
+          id: 'q1', stakes: 'load-bearing', kind: 'open',
+          text: `Which entity did you mean? Answer with its id.\n${list}`,
+          why: `The next leg re-applies the pending acceptance with entity_overrides { "${err.ref}": "<id you pick>" }.`,
+        }],
+      });
+    }
+    return new Error(`${err.message} A "which entity did you mean?" round was filed on the ticket (worker-question); the acceptance event stays pending until it is answered.`);
+  } catch (fileErr) {
+    const why = fileErr instanceof Error ? fileErr.message : String(fileErr);
+    return new Error(`${err.message} The question round could not be filed (${why}), so the human has not been asked — the acceptance event stays pending.`);
+  }
+}
+
 /**
  * The leg-start-consume entry point (checklist #8) — shaped like the existing B-747 leg-start check:
  * runs BEFORE gate routing/floors. Feature-detects the substrate FIRST (PROBE 3); when absent, degrades
@@ -789,6 +898,7 @@ export async function consumePendingAcceptanceEvent(
   client: SupabaseClient,
   projectId: string,
   taskId: string,
+  opts: ConsumePendingOptions = {},
 ): Promise<ConsumePendingAcceptanceResult> {
   const probe = await probeAcceptanceEventSubstrate(client);
   if (probe === 'absent') return { status: 'substrate-absent' };
@@ -805,7 +915,13 @@ export async function consumePendingAcceptanceEvent(
     return { status: 'payload-unrecognized', event_id: event.id, reason: event.reason, items: rawItemsOf(event.payload) };
   }
 
-  const applyResult = await applyAcceptanceEventPayload(client, event);
+  let applyResult: ApplyPayloadResult;
+  try {
+    applyResult = await applyAcceptanceEventPayload(client, event, { entity_overrides: opts.entity_overrides });
+  } catch (err) {
+    if (err instanceof AmbiguousEntityLinkError) throw await fileAmbiguityRound(client, projectId, event, err, opts.userId);
+    throw err;
+  }
 
   // B-688/B-383 — a write-kind's RPC substrate isn't deployed yet on this DB. Degrade EXACTLY like the
   // unrecognized-payload safety valve above: never call consume_acceptance_event, leave the event
@@ -886,11 +1002,14 @@ export const consumePendingAcceptanceEventTool = {
     '`consume_acceptance_event({ event_id })` directly to commit the deferred advance. NEVER treat ' +
     '"payload-unrecognized" as "nothing to do" — that would commit a hollow advance under a new name. ' +
     'Throws (does NOT swallow) if a recognized payload write fails — the event stays visibly pending; ' +
-    'do not catch-and-continue.',
+    'do not catch-and-continue. B-1317: every entity_link name is resolved BEFORE any write; an ambiguous name ' +
+    '(e.g. a concept and a feature) throws with nothing applied, files a "which entity did you mean?" worker-question ' +
+    'round, and leaves the event pending — once answered, call again with `entity_overrides` ({ <item ref>: <entity id> }).',
   inputSchema: {
     type: 'object' as const,
     properties: {
       task_id: { type: 'string', description: 'Task identifier — UUID, task number (e.g., 43), or visual ID (e.g., B-43)' },
+      entity_overrides: { type: 'object', additionalProperties: { type: 'string' }, description: 'Optional map of entity_link item ref -> entity id, the answer to a "which entity did you mean?" round; applied as that item\'s entity_id.' },
     },
     required: ['task_id'],
   },
@@ -899,10 +1018,11 @@ export const consumePendingAcceptanceEventTool = {
 export async function consumePendingAcceptanceEventToolHandler(
   client: SupabaseClient,
   projectId: string,
-  args: { task_id: string },
+  args: { task_id: string; entity_overrides?: Record<string, string> },
+  userId?: string,
 ): Promise<ConsumePendingAcceptanceResult> {
   if (!args.task_id) throw new Error('task_id is required');
-  return consumePendingAcceptanceEvent(client, projectId, args.task_id);
+  return consumePendingAcceptanceEvent(client, projectId, args.task_id, { userId, entity_overrides: args.entity_overrides });
 }
 
 export const consumeAcceptanceEventTool = {

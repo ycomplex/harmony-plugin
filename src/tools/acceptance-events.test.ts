@@ -1,5 +1,5 @@
 // Identity selection has dedicated selector/integration coverage; retain legacy writer fixture queues.
-vi.mock('./entity-selector.js', () => ({ selectEntity: vi.fn(async () => null) }));
+vi.mock('./entity-selector.js', async importOriginal => ({ ...await importOriginal<typeof import('./entity-selector.js')>(), selectEntity: vi.fn(async () => null) }));
 // Original-contract fixtures keep optional name storage absent; knowledge-names tests exercise the boundary.
 vi.mock('./knowledge-names.js', async importOriginal => ({ ...await importOriginal<typeof import('./knowledge-names.js')>(), readKnowledgeNames: async () => ({available:false,matches:[],entries:[],identities:[]}), withRetiredWording: async (_c:unknown,_p:unknown,entries:unknown[])=>entries }));
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -18,6 +18,13 @@ import {
   type AcceptanceEventPayloadItem,
 } from './acceptance-events.js';
 import { manageAcceptanceCriteria } from './acceptance-criteria.js';
+import { selectEntity, AmbiguousEntitySelectionError } from './entity-selector.js';
+import { startElicitation, fileElicitationRound } from './elicitation.js';
+import { AmbiguousEntityLinkError } from './acceptance-events.js';
+vi.mock('./elicitation.js', () => ({
+  startElicitation: vi.fn(async () => ({ id: 'exchange-1', rounds: [] })),
+  fileElicitationRound: vi.fn(async () => ({})),
+}));
 
 // Pass-through, mirroring briefs.test.ts's convention.
 vi.mock('./resolve-task-id.js', () => ({
@@ -1730,5 +1737,120 @@ describe('B-1034 AC D — before/after reproduction of the accept-time double-wr
     expect(result.applied).toBe(1);
     const totalRowsFiledForThisOneAc = result.applied!;
     expect(totalRowsFiledForThisOneAc).toBe(1); // was 2 before the fix, above
+  });
+});
+
+// B-1317 — a name shared by a concept and a feature must never half-apply an accept.
+describe('entity_link kind disambiguation (B-1317)', () => {
+  const CONCEPT = { id: 'concept-98692224', name: 'Knowledge', kind: 'concept', project_id: PROJECT_ID };
+  const FEATURE = { id: 'feature-ec33dcfb', name: 'Knowledge', kind: 'feature', project_id: PROJECT_ID };
+  const WRITE_RPCS = ['consume_gate_slot_write', 'consume_knowledge_entry_write', 'consume_entity_link_write'];
+
+  /** Fake selector over the two same-named entities: honours entity_id and kind, throws on ambiguity. */
+  function installSelector() {
+    vi.mocked(selectEntity).mockImplementation(async (_c, _w, _p, sel) => {
+      let c = [CONCEPT, FEATURE].filter((e) => !sel.name || e.name === sel.name);
+      if (sel.entity_id) c = c.filter((e) => e.id === sel.entity_id);
+      if (sel.kind) c = c.filter((e) => e.kind === sel.kind);
+      if (c.length > 1) throw new AmbiguousEntitySelectionError(c);
+      return c[0] ?? null;
+    });
+  }
+  const baseFrom = () => ({
+    tasks: [{ data: { project_id: 'proj-1' } }, { data: { project_id: 'proj-1' } }, { data: { project_id: 'proj-1' } }],
+    projects: [{ data: { workspace_id: 'ws-1' } }, { data: { workspace_id: 'ws-1' } }],
+  });
+  const mixedItems = (over: Partial<AcceptanceEventPayloadItem> = {}) => [
+    gateSlotItem('slot-1'), knowledgeEntryItem('entry-1'), entityLinkItem('entity-knowledge', 'Knowledge', over),
+  ];
+  const noWrites = (client: any) =>
+    expect(client.rpcCalls.filter((c: { name: string }) => WRITE_RPCS.includes(c.name) || c.name.startsWith('consume_'))).toEqual([]);
+
+  beforeEach(() => { vi.clearAllMocks(); installSelector(); });
+
+  it('an item with kind "feature" links the FEATURE id in one step and never the concept', async () => {
+    const client = makeClient({ fromResponses: baseFrom(), rpcResponses: { consume_entity_link_write: [{ data: { applied: true } }] } });
+    const result = await applyAcceptanceEventPayload(client, makeEvent([entityLinkItem('entity-knowledge', 'Knowledge', { kind: 'feature' })]));
+    expect(result.applied).toBe(1);
+    const calls = client.rpcCalls.filter((c: { name: string }) => c.name === 'consume_entity_link_write');
+    expect(calls).toHaveLength(1);
+    expect((calls[0].args as any)._entity_id).toBe(FEATURE.id);
+    expect(JSON.stringify(client.rpcCalls)).not.toContain(CONCEPT.id);
+  });
+
+  it('the same item name-only is rejected with AmbiguousEntityLinkError BEFORE any write, naming both candidates', async () => {
+    const client = makeClient({ fromResponses: baseFrom() });
+    const err = await applyAcceptanceEventPayload(client, makeEvent(mixedItems())).catch((e) => e);
+    expect(err).toBeInstanceOf(AmbiguousEntityLinkError);
+    expect(err.ref).toBe('entity-knowledge');
+    expect(err.candidates).toEqual([
+      { id: CONCEPT.id, name: 'Knowledge', kind: 'concept' }, { id: FEATURE.id, name: 'Knowledge', kind: 'feature' },
+    ]);
+    for (const c of [CONCEPT, FEATURE]) expect(err.message).toContain(`kind ${c.kind}, id ${c.id}`);
+    expect(err.message).toMatch(/recomposes with a kind/);
+    expect(client.rpc).not.toHaveBeenCalled();
+    noWrites(client);
+  });
+
+  const pendingFrom = (event: PendingAcceptanceEvent) => ({
+    pending_acceptance_events: [{ data: [], error: null }, { data: event }],
+    ...baseFrom(),
+    tasks: [{ data: { pending_acceptance_event_id: 'event-1' } }, { data: { project_id: 'proj-1' } }, { data: { project_id: 'proj-1' } }],
+  });
+
+  it('consumePendingAcceptanceEvent leaves the event pending, files an answerable worker-question round and throws mentioning it', async () => {
+    const event = makeEvent(mixedItems());
+    const client = makeClient({ fromResponses: pendingFrom(event) });
+    const err = await consumePendingAcceptanceEvent(client, PROJECT_ID, 'task-1', { userId: 'user-1' }).catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toMatch(/round was filed/);
+    expect(client.rpcCalls.map((c: { name: string }) => c.name)).not.toContain('consume_acceptance_event');
+    noWrites(client);
+    expect(startElicitation).toHaveBeenCalledWith(client, PROJECT_ID, 'user-1', expect.objectContaining({ task_id: 'task-1', trigger: 'worker-question' }));
+    expect(fileElicitationRound).toHaveBeenCalledTimes(1);
+    const filed = vi.mocked(fileElicitationRound).mock.calls[0][2];
+    expect(filed.exchange_id).toBe('exchange-1');
+    expect(filed.questions).toHaveLength(1);
+    expect(filed.questions[0]).toMatchObject({ kind: 'open', stakes: 'load-bearing' });
+    expect(filed.questions[0].text).toMatch(/which entity did you mean/i);
+    for (const c of [CONCEPT, FEATURE]) {
+      expect(filed.questions[0].text).toContain(c.id);
+      expect(filed.questions[0].text).toContain(`kind ${c.kind}`);
+    }
+  });
+
+  it('when no user id is available the thrown error says the round could not be filed (and nothing is swallowed)', async () => {
+    const client = makeClient({ fromResponses: pendingFrom(makeEvent(mixedItems())) });
+    await expect(consumePendingAcceptanceEvent(client, PROJECT_ID, 'task-1')).rejects.toThrow(/round could not be filed: no user id/);
+    expect(startElicitation).not.toHaveBeenCalled();
+    noWrites(client);
+  });
+
+  it('when filing the round fails the thrown error says so and carries the cause', async () => {
+    vi.mocked(startElicitation).mockRejectedValueOnce(new Error('rls denied'));
+    const client = makeClient({ fromResponses: pendingFrom(makeEvent(mixedItems())) });
+    await expect(consumePendingAcceptanceEvent(client, PROJECT_ID, 'task-1', { userId: 'user-1' }))
+      .rejects.toThrow(/round could not be filed \(rls denied\)/);
+  });
+
+  it('answer-then-consume: re-running with entity_overrides applies the whole payload, links the feature and consumes the event', async () => {
+    const event = makeEvent(mixedItems());
+    const client = makeClient({
+      fromResponses: pendingFrom(event),
+      rpcResponses: {
+        consume_gate_slot_write: [{ data: { applied: true } }],
+        consume_knowledge_entry_write: [{ data: { applied: true } }],
+        consume_entity_link_write: [{ data: { applied: true } }],
+        consume_acceptance_event: [{ data: { event_id: 'event-1', task_id: 'task-1', status: 'consumed', workflow_state: 'Designed', idempotent: false } }],
+      },
+    });
+    const result = await consumePendingAcceptanceEvent(client, PROJECT_ID, 'task-1', {
+      userId: 'user-1', entity_overrides: { 'entity-knowledge': FEATURE.id },
+    });
+    expect(result.status).toBe('consumed');
+    const link = client.rpcCalls.find((c: { name: string }) => c.name === 'consume_entity_link_write');
+    expect((link.args as any)._entity_id).toBe(FEATURE.id);
+    expect(client.rpcCalls.map((c: { name: string }) => c.name)).toContain('consume_acceptance_event');
+    expect(startElicitation).not.toHaveBeenCalled();
   });
 });
