@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  type LibraryPorts,
   type RefreshPorts,
+  refreshPass,
   refreshWorkspace,
   refreshWorkspaceSafely,
 } from "./figma-refresh.js";
@@ -112,4 +114,127 @@ it("a failed ambiguous health write does not prevent the next workspace from ref
   expect(outcomes).toEqual(["refresh-state-write-failed", "ok"]);
   expect(first.ports.refresh).toHaveBeenCalledTimes(1);
   expect(second.events).toEqual(["claim", "grant", "access", "publish"]);
+});
+
+describe("library step (B-1321)", () => {
+  const comp = (name: string, key: string, set?: string, frame = "24") => ({
+    key,
+    name,
+    containing_frame: {
+      name: set ?? frame,
+      pageName: "P",
+      ...(set ? { containingStateGroup: { name: set } } : {}),
+    },
+  });
+  function libSetup(components: unknown = [
+    comp("V", "k1", "Button"),
+    comp("V", "k2", "Tag"),
+    comp("Star", "s1", undefined, "16"),
+    comp("Star", "s2", undefined, "48"),
+  ]) {
+    const calls: Array<[string, Record<string, unknown>]> = [];
+    const logs: Record<string, unknown>[] = [];
+    const library: LibraryPorts = {
+      fetchComponents: vi.fn(async () => {
+        if (components instanceof Error) throw components;
+        return components as never;
+      }),
+      transition: vi.fn(async (_w, action, data) => {
+        calls.push([action, data]);
+        return true;
+      }),
+      log: (e) => logs.push(e),
+    };
+    return { library, calls, logs };
+  }
+  const due = { ...work, library_refresh_requested: false, refresh_due: true };
+
+  it("publishes version 2 with the ambiguous candidates", async () => {
+    const { library, calls } = libSetup();
+    const t = setup();
+    expect(await refreshPass({ ...due, library_map_version: 1 }, library, t.ports, now))
+      .toBe("ok");
+    expect(calls).toHaveLength(1);
+    expect(calls[0][0]).toBe("library");
+    expect(calls[0][1]).toMatchObject({
+      library_components: { "Button :: V": "k1", "Tag :: V": "k2" },
+      library_ambiguous: {
+        Star: [
+          { key: "s1", frame: "16", page: "P" },
+          { key: "s2", frame: "48", page: "P" },
+        ],
+      },
+      library_map_version: 2,
+    });
+  });
+
+  it("a LibraryMapError records library_failed, publishes no map, and the token refresh still runs", async () => {
+    const { library, calls, logs } = libSetup([
+      comp("V", "k1", "Button"),
+      comp("V", "k2", "Button"),
+    ]);
+    const t = setup();
+    expect(await refreshPass({ ...due, library_refresh_requested: true }, library, t.ports, now))
+      .toBe("ok");
+    expect(calls.map((c) => c[0])).toEqual(["library_failed"]);
+    expect(String(calls[0][1].error)).toContain("Button :: V");
+    expect(logs[0]).toMatchObject({ result: "library-refresh-failed" });
+    expect(t.events).toEqual(["claim", "grant", "access", "publish"]);
+  });
+
+  it("a REST failure behaves the same with a fixed message", async () => {
+    const { library, calls } = libSetup(new Error("403 https://api.figma.com secret-token"));
+    const t = setup();
+    expect(await refreshPass({ ...due, library_refresh_requested: true }, library, t.ports, now))
+      .toBe("ok");
+    expect(calls).toEqual([["library_failed", { error: "Library refresh failed" }]]);
+    expect(t.events).toEqual(["claim", "grant", "access", "publish"]);
+  });
+
+  it("a failing publish transition is reported as library_failed and the token refresh runs", async () => {
+    const { library, calls } = libSetup();
+    vi.mocked(library.transition).mockImplementation(async (_w, action, data) => {
+      calls.push([action, data]);
+      if (action === "library") throw new Error("write failed");
+      return true;
+    });
+    const t = setup();
+    await refreshPass({ ...due, library_refresh_requested: true }, library, t.ports, now);
+    expect(calls.map((c) => c[0])).toEqual(["library", "library_failed"]);
+    expect(t.events).toEqual(["claim", "grant", "access", "publish"]);
+  });
+
+  it("a failure of the library_failed write itself does not stop the token refresh", async () => {
+    const { library, logs } = libSetup(new Error("boom"));
+    vi.mocked(library.transition).mockRejectedValue(new Error("board down"));
+    const t = setup();
+    expect(await refreshPass({ ...due, library_refresh_requested: true }, library, t.ports, now))
+      .toBe("ok");
+    expect(logs.map((l) => l.result)).toContain("library-failure-write-failed");
+    expect(t.events).toEqual(["claim", "grant", "access", "publish"]);
+  });
+
+  it("version 2 without the flag does no library work; version 1 or absent does", async () => {
+    for (const [v, expected] of [[2, 0], [1, 1], [undefined, 1], [null, 1]] as const) {
+      const { library } = libSetup();
+      await refreshPass(
+        { ...due, library_map_version: v, library_refresh_requested: false },
+        library,
+        setup().ports,
+        now,
+      );
+      expect(library.fetchComponents).toHaveBeenCalledTimes(expected);
+    }
+  });
+
+  it("an in-flight item does no library work", async () => {
+    const { library } = libSetup();
+    await refreshPass(
+      { ...due, in_flight: true, library_refresh_requested: true, library_map_version: 1 },
+      library,
+      setup().ports,
+      now,
+    );
+    expect(library.fetchComponents).not.toHaveBeenCalled();
+  });
 });
