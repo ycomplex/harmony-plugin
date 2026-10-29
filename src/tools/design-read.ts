@@ -2,7 +2,7 @@
  * B-1205 — read the accepted design off a ticket, check it for drift, and plan the build against it.
  *
  * Pure: no I/O of its own. The accepted design lives at `field_values.gate_slots.design` (B-1202's record
- * contract). The Figma version lookup sits behind `DesignVersionPort`; an absent or failing port yields
+ * contract), its fields under that slot's `content` (B-1327). The Figma version lookup sits behind `DesignVersionPort`; an absent or failing port yields
  * `unchecked`, never a silent pass. Generated React/Tailwind from the design tools is reference only, so
  * nothing in this module carries source code through.
  */
@@ -45,16 +45,28 @@ type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v);
 const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v : null);
 
-/** Find the artefact in either `slot.design_artefact` or the slot itself. */
+/**
+ * The object that carries the accepted design's fields. An accepted design is stored by gate-slots.ts as
+ * `{ content: { design_artefact, drift, accepted_at, source_brief_id }, ratified_at, ratified_by }` (B-1327), so
+ * `slot.content` is read first. The two shapes this reader used to know stay as fallbacks, in this order:
+ * `slot.design_artefact`, then the slot itself carrying a bare `nodes` list.
+ */
+function designHolder(slot: Obj): Obj {
+  return isObj(slot.content) && (isObj(slot.content.design_artefact) || Array.isArray(slot.content.nodes)) ? slot.content : slot;
+}
+
+/** Find the artefact: `content.design_artefact` (the stored shape), else `slot.design_artefact`, else the holder itself. */
 function findArtefact(slot: Obj): Obj | null {
-  if (isObj(slot.design_artefact)) return slot.design_artefact;
-  if (Array.isArray(slot.nodes)) return slot;
+  const holder = designHolder(slot);
+  if (isObj(holder.design_artefact)) return holder.design_artefact;
+  if (Array.isArray(holder.nodes)) return holder;
   return null;
 }
 
 /** The drift observation recorded at acceptance: a bare word, or an object carrying one. */
 function readAcceptedDrift(slot: Obj, artefact: Obj): DriftWord | null {
-  for (const src of [slot.drift, slot.acceptance_drift, slot.drift_observation, artefact.drift]) {
+  const holder = designHolder(slot);
+  for (const src of [holder.drift, holder.acceptance_drift, holder.drift_observation, slot.drift, slot.acceptance_drift, slot.drift_observation, artefact.drift]) {
     const word = isObj(src) ? (src.observation ?? src.drift ?? src.status) : src;
     if (word === 'changed' || word === 'unchanged' || word === 'unchecked') return word;
   }
@@ -100,7 +112,7 @@ export function readAcceptedDesign(fieldValues: unknown): AcceptedDesign {
       status: 'present', tool,
       versionId: str(artefact.version_id), fileKey: str(artefact.file_key), fileUrl: str(artefact.file_url),
       screens, skippedNodes,
-      sourceBriefId: str(slot.source_brief_id) ?? str(artefact.source_brief_id),
+      sourceBriefId: str(designHolder(slot).source_brief_id) ?? str(slot.source_brief_id) ?? str(artefact.source_brief_id),
       acceptedDrift: readAcceptedDrift(slot, artefact),
       fingerprint: readFingerprint(fieldValues),
     };

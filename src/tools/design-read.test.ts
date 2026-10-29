@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { DesignArtefactSchema } from './design-artefact.js';
 import {
   readAcceptedDesign, checkDrift, describeDrift, assertBuildMayStart, resolveComponent, planDesignRead,
@@ -44,6 +46,53 @@ describe('readAcceptedDesign', () => {
     if (d.status !== 'present') throw new Error('expected present');
     expect(d.screens.map((s) => s.name)).toEqual(['B', 'A']);
     expect(d.skippedNodes).toBe(3);
+  });
+});
+
+// B-1327: a design slot copied from B-1312's real field_values (gate_slots.design). The writer (gate-slots.ts)
+// stores everything under `content`; ratified_at and ratified_by sit at the top of the slot.
+const realSlot = (): Record<string, unknown> => JSON.parse(readFileSync(fileURLToPath(new URL('./__fixtures__/design-slot.b1312-2026-10-28.json', import.meta.url)), 'utf8'));
+const realFieldValues = () => ({ implements_entities: ['Knowledge'], gate_slots: { design: realSlot() } });
+
+describe('B-1327: readAcceptedDesign on the real stored slot shape', () => {
+  it('finds the accepted design under slot.content.design_artefact', () => {
+    const d = readAcceptedDesign(realFieldValues());
+    expect(d).toMatchObject({
+      status: 'present', tool: 'figma', versionId: '2415453148397313316', fileKey: 'cE0x2i7UkD7X73p8WwnCzy',
+      fileUrl: 'https://www.figma.com/design/cE0x2i7UkD7X73p8WwnCzy', skippedNodes: 0,
+    });
+    if (d.status !== 'present') throw new Error('expected present');
+    expect(d.screens.map((s) => s.nodeId)).toEqual(['10:74', '10:143', '10:188']);
+    expect(d.screens[0]).toMatchObject({ name: 'B-1312 · 1. Decisions tab', previewFilename: 'B-1312-design-10-74-v2415453148397313316.png' });
+  });
+  it('reads the accept-time drift word and source brief from content', () => {
+    expect(readAcceptedDesign(realFieldValues())).toMatchObject({
+      acceptedDrift: 'unchecked', sourceBriefId: '5a3c02f3-c865-4ee4-bfb7-53dcb9fa58ea',
+    });
+  });
+  it('plans one checklist step per real screen', () => {
+    const plan = planDesignRead(realFieldValues(), { drift: 'unchecked', source: 'version', acceptedVersionId: null, liveVersionId: null, note: 'n' } as never);
+    expect(plan?.design_read.screens).toEqual(['B-1312 · 1. Decisions tab', 'B-1312 · 2. Terms tab', 'B-1312 · 3. Feature accounts tab']);
+    expect(plan?.checklist).toHaveLength(3);
+  });
+  it('an html design stored under content is still present with no screens', () => {
+    const slot = realSlot() as { content: { design_artefact: Record<string, unknown> } };
+    slot.content.design_artefact = { tool: 'html', schema_version: 1, composed_at: 'x', provenance_notes: '', mcp_call_count: 0, surface_attachment_id: 'a', surface_filename: 's.html' };
+    expect(readAcceptedDesign({ gate_slots: { design: slot } })).toMatchObject({ status: 'present', tool: 'html', screens: [] });
+  });
+  it('a content that holds no design is absent, and so is a content that is not an object', () => {
+    const slot = realSlot() as { content: Record<string, unknown> };
+    delete slot.content.design_artefact;
+    expect(readAcceptedDesign({ gate_slots: { design: slot } })).toEqual({ status: 'absent' });
+    expect(readAcceptedDesign({ gate_slots: { design: { content: 'x' } } })).toEqual({ status: 'absent' });
+  });
+  it('the content shape wins over a stale top-level shape on the same slot', () => {
+    const slot = { ...realSlot(), design_artefact: artefact({ file_key: 'OLD' }) };
+    expect(readAcceptedDesign({ gate_slots: { design: slot } })).toMatchObject({ fileKey: 'cE0x2i7UkD7X73p8WwnCzy' });
+  });
+  it('the two older shapes still read', () => {
+    expect(readAcceptedDesign(nested())).toMatchObject({ status: 'present', fileKey: 'FK', sourceBriefId: 'br-1', acceptedDrift: 'unchanged' });
+    expect(readAcceptedDesign(flat())).toMatchObject({ status: 'present', fileKey: 'FK' });
   });
 });
 
