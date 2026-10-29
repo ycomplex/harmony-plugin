@@ -4,8 +4,9 @@ import { fileURLToPath } from 'node:url';
 import {
   createFigmaRestClient, FigmaRestError, chooseFreshVersion, buildSnapshot, diffSnapshots, interpret,
   changedElementIds, markHumanInTool, assemblePendingArtefact, serializeProvenanceNotes, reconcileDesign, SAVE_VERSION_QUESTION,
-  NO_PROVENANCE_NOTES, ADDED_FRAME_CAPTION, type FetchLike, type FigmaNodesResponse, type PrepareFn,
+  NO_PROVENANCE_NOTES, ADDED_FRAME_CAPTION, findVersionByLabel, namedVersionMissingText, type FetchLike, type FigmaNodesResponse, type PrepareFn,
 } from './figma-reconcile.js';
+import { suggestedVersionName } from './suggested-version-name.js';
 import { FRESHNESS_WAIT, type ProvenanceNote } from './figma-composition.js';
 import { DesignArtefactSchema, type DesignArtefact } from './design-artefact.js';
 
@@ -475,6 +476,140 @@ describe('reconcileDesign (hand-authored fixtures, fake client, fake prepare)', 
     };
     await reconcileDesign({ ...common, fetch, prepare: prepareFor('900') });
     for (const u of urls.filter((x) => x.includes('/nodes'))) expect(u).toMatch(/version=\d+/);
+  });
+});
+
+describe('B-1203: records without a version_id (exact-name baseline)', () => {
+  const live = JSON.parse(readFileSync(fileURLToPath(new URL('./__fixtures__/figma-versions.live-2026-10-29.json', import.meta.url)), 'utf8')) as {
+    versions: Array<{ id: string; label: string | null; created_at: string }>;
+  };
+  const PNG = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+  const OTHER = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 11]);
+
+  it('findVersionByLabel matches the exact label only, against the real versions list', () => {
+    expect(findVersionByLabel(live.versions, 'B-1203 modal compose')?.id).toBe('2415717572357645397');
+    expect(findVersionByLabel(live.versions, 'Pre edits')?.id).toBe('2415717245370479070');
+    expect(findVersionByLabel(live.versions, 'pre edits')).toBeNull();
+    expect(findVersionByLabel(live.versions, 'Pre edits ')).toBeNull();
+    expect(findVersionByLabel(live.versions, 'Before · B-1203 · round 1')).toBeNull();
+    expect(findVersionByLabel(live.versions, '')).toBeNull();
+  });
+  it('findVersionByLabel: the newest wins when several share the name; the suggested name is matched with its middle dots', () => {
+    const name = suggestedVersionName('B-1203', 1);
+    const vs = [
+      { id: 'old', label: name, created_at: '2026-10-29T09:00:00Z' },
+      { id: 'new', label: name, created_at: '2026-10-29T10:00:00Z' },
+      { id: 'dots', label: 'Before . B-1203 . round 1', created_at: '2026-10-29T11:00:00Z' },
+    ];
+    expect(findVersionByLabel(vs, name)?.id).toBe('new');
+  });
+  it('the client keeps the label and reads the live file with no version parameter', async () => {
+    const calls: string[] = [];
+    const fetch: FetchLike = async (url) => { calls.push(url); return res(200, url.includes('/versions') ? { versions: live.versions } : { nodes: {}, images: {} }); };
+    const c = createFigmaRestClient({ token: 't', fetch, fileKey: 'KEY' });
+    expect((await c.listVersions()).find((v) => v.id === '2415453148397313316')?.label).toBe('manual edits');
+    await c.getNodesLive(['1:1']); await c.renderImagesLive(['1:1']);
+    expect(calls.slice(1)).toEqual([
+      'https://api.figma.com/v1/files/KEY/nodes?ids=1%3A1',
+      'https://api.figma.com/v1/images/KEY?ids=1%3A1&format=png',
+    ]);
+  });
+
+  const nodeId = (n: string) => n;
+  const baseline: DesignArtefact = {
+    schema_version: 1, tool: 'figma', composed_at: '2026-10-27T09:00:00.000Z', provenance_notes: 'real | 1:1 | -', mcp_call_count: 1,
+    file_key: 'KEY', file_url: 'https://www.figma.com/design/KEY/x',
+    nodes: [
+      { id: '1:1', name: 'B-1 · Option A', caption: 'Caption A', preview_attachment_id: A1, preview_filename: 'a.png' },
+      { id: '1:2', name: 'B-1 · Option B', caption: 'Caption B', preview_attachment_id: A2, preview_filename: 'b.png' },
+      { id: '1:3', name: 'B-1 · Option C', caption: 'Caption C', preview_attachment_id: A2, preview_filename: 'c.png' },
+    ],
+  };
+  const NAME = suggestedVersionName('B-1', 2);
+  const mk = (versions: Array<{ id: string; label: string | null; created_at: string }>, liveFixture: string, bytes: Record<string, Uint8Array | null> = {}) => {
+    const getNodesAtVersion = vi.fn(async (_ids: string[], v: string) => fx<FigmaNodesResponse>(v === 'NV' ? 'base' : 'frame-added'));
+    const renderImagesLive = vi.fn(async (ids: string[]) => Object.fromEntries(ids.map((i) => [i, `https://img/${i}`])));
+    return {
+      getNodesAtVersion, renderImagesLive,
+      client: {
+        fileMeta: async () => ({ lastModified: null, version: null, name: null }),
+        listVersions: async () => versions.map((v) => ({ ...v })),
+        getNodesAtVersion,
+        getNodesLive: vi.fn(async () => fx<FigmaNodesResponse>(liveFixture)),
+        renderImagesLive,
+        downloadImages: vi.fn(async (urls: Record<string, string | null>) => Object.fromEntries(Object.keys(urls).map((i) => [nodeId(i), { bytes: i in bytes ? bytes[i] : PNG }]))),
+      },
+    };
+  };
+  const common = { baseline, containerId: '0:1', token: 't', ticket: 'B-1', briefIteration: 2, now: () => new Date('2026-10-29T10:00:00Z') };
+  const named = [{ id: 'NV', label: NAME, created_at: '2026-10-29T09:00:00Z' }, { id: 'autosave', label: null, created_at: '2026-10-29T09:30:00Z' }];
+
+  it('finds the named version, diffs it against the live file, and records a versionless pin', async () => {
+    const { client } = mk(named, 'text-changed-7');
+    const r = await reconcileDesign({ ...common, client });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.baselineVia).toBe('named-version');
+    expect(r.baselineVersionId).toBe('NV');
+    expect(r.versionId).toBeNull();
+    expect(r.changes.some((c) => c.kind === 'text-changed')).toBe(true);
+    expect(client.getNodesAtVersion.mock.calls.map((c) => c[1])).toEqual(['NV']);
+    expect(r.previews.map((p) => p.id)).toEqual(['1:1', '1:2', '1:3']);
+    const a = assemblePendingArtefact({
+      fileKey: r.fileKey, fileUrl: r.fileUrl, frames: r.frames, nodesAtVersion: Object.fromEntries(fx<FigmaNodesResponse>('base').nodes['0:1']!.document.children!.map((c) => [c.id, { document: c }])),
+      images: Object.fromEntries(r.previews.map((p) => [p.id, { bytes: p.bytes }])),
+      attachments: { '1:1': { attachment_id: A1, filename: 'a.png' }, '1:2': { attachment_id: A2, filename: 'b.png' }, '1:3': { attachment_id: A2, filename: 'c.png' } },
+      composedAt: r.composedAt, provenanceNotes: [],
+    });
+    expect(a.ok).toBe(true);
+    if (a.ok) expect('version_id' in a.artefact).toBe(false);
+  });
+
+  it('no such version: a typed result with the exact sentence, and a fallback that never says no changes', async () => {
+    const { client } = mk([{ id: 'x', label: 'Pre edits', created_at: '2026-10-29T09:00:00Z' }, { id: 'y', label: null, created_at: '2026-10-29T09:30:00Z' }], 'text-changed-7', { '1:2': OTHER });
+    const stored = { '1:1': PNG, '1:2': PNG };
+    const r = await reconcileDesign({ ...common, client, storedPreviews: stored });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.code).toBe('named-version-missing');
+    expect(r.becomesQuestion).toBe(true);
+    expect(r.suggestedName).toBe('Before · B-1 · round 2');
+    expect(r.message.startsWith('I can\'t see a version named "Before · B-1 · round 2".')).toBe(true);
+    expect(r.message).toBe(namedVersionMissingText(NAME));
+    expect(r.message).toContain('press "I\'ve made edits in Figma" again');
+    expect(r.fallback?.verified).toBe(false);
+    expect(r.fallback?.frames).toEqual([
+      { id: '1:1', name: 'B-1 · Option A', status: 'matches-stored-preview' },
+      { id: '1:2', name: 'B-1 · Option B', status: 'possible-change' },
+      { id: '1:3', name: 'B-1 · Option C', status: 'no-stored-preview' },
+    ]);
+    const text = [r.message, ...(r.fallback?.lines ?? [])].join('\n');
+    expect(text).toContain('Possible change — please confirm: "B-1 · Option B"');
+    expect(text).not.toMatch(/no changes/i);
+  });
+
+  it('a failing fallback still returns the missing-version result, stating that nothing is verified', async () => {
+    const { client } = mk([], 'base');
+    client.getNodesLive = vi.fn(async () => { throw new FigmaRestError('rate-limited', 'slow down', 429, 5); });
+    const r = await reconcileDesign({ ...common, client });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.code).toBe('named-version-missing');
+    expect(r.fallback).toMatchObject({ verified: false, ok: false });
+    expect(r.fallback?.message).toMatch(/cannot say whether anything changed/);
+  });
+
+  it('needs the ticket and brief iteration to know the name', async () => {
+    const { client } = mk(named, 'base');
+    const r = await reconcileDesign({ ...common, ticket: undefined, client });
+    expect(r).toMatchObject({ ok: false, code: 'ticket-required' });
+  });
+
+  it('a record WITH a version_id keeps the version path (no live read, no name lookup)', async () => {
+    const client = { ...mk(named, 'base').client };
+    const r = await reconcileDesign({ ...common, baseline: { ...baseline, version_id: '800' } as DesignArtefact, client, sleep: async () => {}, prepare: (async () => { throw new Error('not reached'); }) as PrepareFn });
+    expect(client.getNodesLive).not.toHaveBeenCalled();
+    expect(r.ok === false && r.code).not.toBe('named-version-missing');
   });
 });
 

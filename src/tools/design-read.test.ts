@@ -169,3 +169,59 @@ describe('contract with B-1202\'s accepted design record', () => {
     expect(readAcceptedDesign({ gate_slots: { design: { design_artefact: html } } })).toMatchObject({ status: 'present', tool: 'html', screens: [] });
   });
 });
+
+describe('B-1203: drift from the content fingerprint', () => {
+  const versionless = () => { const { version_id: _v, ...rest } = artefact(); void _v; return rest; };
+  const withFp = (fp: unknown, a: Record<string, unknown> = artefact()) => ({ ...nested(a as never), design_fingerprint: fp });
+  const taken = { schema_version: 1, status: 'taken', digest: 'd', frames: [] };
+  const never = port(async () => { throw new Error('the version port must not be called'); });
+
+  it('reads the fingerprint off the ticket', () => {
+    expect(readAcceptedDesign(withFp({ ...taken, drift: { status: 'changed', checked_by: 'plan', changed_frame_ids: ['1:1', 7] } }))).toMatchObject({
+      fingerprint: { status: 'taken', drift: { status: 'changed', checkedBy: 'plan', changedFrameIds: ['1:1'] } },
+    });
+    expect(readAcceptedDesign(nested())).toMatchObject({ fingerprint: null });
+    expect(readAcceptedDesign(withFp('junk'))).toMatchObject({ fingerprint: null });
+  });
+
+  it('changed stops the build (even with a version_id present), unless a plan step names the difference', async () => {
+    const d = readAcceptedDesign(withFp({ ...taken, drift: { status: 'changed', changed_frame_ids: ['1:2'] } }));
+    const r = await checkDrift(d, never);
+    expect(r).toMatchObject({ drift: 'changed', source: 'fingerprint', changedFrameIds: ['1:2'] });
+    expect(describeDrift(r)).toContain('changed');
+    const stop = assertBuildMayStart(r, []);
+    expect(stop.allowed).toBe(false);
+    if (!stop.allowed) expect(stop.reason).toContain('1:2');
+    expect(assertBuildMayStart(r, ['header moved'])).toEqual({ allowed: true });
+  });
+
+  it('unchanged is allowed', async () => {
+    const r = await checkDrift(readAcceptedDesign(withFp({ ...taken, drift: { status: 'unchanged' } }, versionless())));
+    expect(r).toMatchObject({ drift: 'unchanged', source: 'fingerprint' });
+    expect(assertBuildMayStart(r, [])).toEqual({ allowed: true });
+  });
+
+  it.each([
+    ['no fingerprint on a versionless design', nested(versionless() as never), /no design fingerprint/],
+    ['not-taken', withFp({ status: 'not-taken', reason: 'no-token' }), /not taken \(no-token\)/],
+    ['malformed', withFp({ status: 'weird' }), /malformed/],
+    ['taken, never compared', withFp(taken), /not been compared/],
+    ['drift not-checked', withFp({ ...taken, drift: { status: 'not-checked', reason: 'rate-limited' } }), /rate-limited/],
+  ])('unchecked and not blocking: %s', async (_n, fv, note) => {
+    const r = await checkDrift(readAcceptedDesign(fv), never);
+    expect(r.drift).toBe('unchecked');
+    expect(r.note).toMatch(note);
+    expect(assertBuildMayStart(r, [])).toEqual({ allowed: true });
+  });
+
+  it('a record WITH a version_id and no fingerprint keeps the version path', async () => {
+    expect(await checkDrift(present(), port(async () => 'V2'))).toMatchObject({ drift: 'changed', liveVersionId: 'V2' });
+    expect((await checkDrift(present(), port(async () => 'V2'))).source).toBeUndefined();
+  });
+
+  it('the plan read carries the fingerprint drift word', async () => {
+    const fv = withFp({ ...taken, drift: { status: 'changed' } }, versionless());
+    const p = planDesignRead(fv, await checkDrift(readAcceptedDesign(fv)))!;
+    expect(p.design_read).toMatchObject({ version_id: null, drift: 'changed' });
+  });
+});

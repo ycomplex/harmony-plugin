@@ -29,7 +29,17 @@ export type AcceptedDesign =
       skippedNodes: number;
       sourceBriefId: string | null;
       acceptedDrift: DriftWord | null;
+      /** B-1203: the content fingerprint stored on the ticket (`field_values.design_fingerprint`), or null. */
+      fingerprint: FingerprintView | null;
     };
+
+/** What the plan/build gates read of `field_values.design_fingerprint`; tolerant of anything malformed. */
+export interface FingerprintView {
+  /** 'taken' | 'not-taken'; 'unknown' when the record is malformed. */
+  status: 'taken' | 'not-taken' | 'unknown';
+  reason: string | null;
+  drift: { status: 'changed' | 'unchanged' | 'not-checked'; checkedBy: string | null; changedFrameIds: string[]; reason: string | null } | null;
+}
 
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -49,6 +59,21 @@ function readAcceptedDrift(slot: Obj, artefact: Obj): DriftWord | null {
     if (word === 'changed' || word === 'unchanged' || word === 'unchecked') return word;
   }
   return null;
+}
+
+function readFingerprint(fieldValues: Obj): FingerprintView | null {
+  const fp = fieldValues.design_fingerprint;
+  if (!isObj(fp)) return null;
+  const status = fp.status === 'taken' || fp.status === 'not-taken' ? fp.status : 'unknown';
+  const d = fp.drift;
+  const ds = isObj(d) ? d.status : null;
+  const drift: FingerprintView['drift'] = isObj(d) && (ds === 'changed' || ds === 'unchanged' || ds === 'not-checked')
+    ? {
+        status: ds, checkedBy: str(d.checked_by), reason: str(d.reason),
+        changedFrameIds: Array.isArray(d.changed_frame_ids) ? d.changed_frame_ids.filter((x): x is string => typeof x === 'string') : [],
+      }
+    : null;
+  return { status, reason: str(fp.reason), drift };
 }
 
 export function readAcceptedDesign(fieldValues: unknown): AcceptedDesign {
@@ -77,6 +102,7 @@ export function readAcceptedDesign(fieldValues: unknown): AcceptedDesign {
       screens, skippedNodes,
       sourceBriefId: str(slot.source_brief_id) ?? str(artefact.source_brief_id),
       acceptedDrift: readAcceptedDrift(slot, artefact),
+      fingerprint: readFingerprint(fieldValues),
     };
   } catch {
     return { status: 'absent' };
@@ -93,6 +119,23 @@ export interface DriftResult {
   acceptedVersionId: string | null;
   liveVersionId: string | null;
   note: string;
+  /** B-1203: present only when the answer came from the content fingerprint. */
+  source?: 'fingerprint';
+  changedFrameIds?: string[];
+}
+
+/** B-1203: drift from the stored fingerprint. Used when the accepted figma design has no version_id, or the ticket carries a fingerprint. */
+function fingerprintDrift(design: Extract<AcceptedDesign, { status: 'present' }>): DriftResult {
+  const fp = design.fingerprint;
+  const mk = (drift: DriftWord, note: string, changedFrameIds?: string[]): DriftResult => ({
+    drift, acceptedVersionId: design.versionId, liveVersionId: null, note, source: 'fingerprint', ...(changedFrameIds ? { changedFrameIds } : {}),
+  });
+  if (!fp) return mk('unchecked', 'no design fingerprint was stored for this ticket');
+  if (fp.status === 'not-taken') return mk('unchecked', `the design fingerprint was not taken${fp.reason ? ` (${fp.reason})` : ''}`);
+  if (fp.status !== 'taken') return mk('unchecked', 'the stored design fingerprint is malformed');
+  if (!fp.drift || fp.drift.status === 'not-checked') return mk('unchecked', `the design fingerprint has not been compared${fp.drift?.reason ? ` (${fp.drift.reason})` : ''}`);
+  if (fp.drift.status === 'changed') return mk('changed', `the design content differs from the accepted fingerprint${fp.drift.changedFrameIds.length ? ` (frames ${fp.drift.changedFrameIds.join(', ')})` : ''}`, fp.drift.changedFrameIds);
+  return mk('unchanged', 'the design content matches the accepted fingerprint');
 }
 
 export async function checkDrift(
@@ -103,6 +146,7 @@ export async function checkDrift(
   const unchecked = (note: string): DriftResult => ({ drift: 'unchecked', acceptedVersionId: accepted, liveVersionId: null, note });
   if (design.status !== 'present') return unchecked('no accepted design');
   if (design.tool === 'html') return unchecked('html design has no Figma version; nothing to compare');
+  if (design.tool === 'figma' && (design.fingerprint || !design.versionId)) return fingerprintDrift(design);
   if (!design.fileKey || !accepted) return unchecked('accepted design records no Figma file key or version');
   if (!port) return unchecked('no Figma token available');
   let live: string | null;
@@ -120,6 +164,7 @@ export async function checkDrift(
 }
 
 export function describeDrift(r: DriftResult): string {
+  if (r.source === 'fingerprint') return `Drift check: ${r.drift} (${r.note}).`;
   if (r.drift === 'changed') return `Drift check: changed (accepted version ${r.acceptedVersionId ?? 'unknown'}, live version ${r.liveVersionId ?? 'unknown'}).`;
   if (r.drift === 'unchanged') return `Drift check: unchanged (version ${r.acceptedVersionId ?? 'unknown'}).`;
   return `Drift check: unchecked (${r.note}).`;
@@ -131,6 +176,12 @@ export function assertBuildMayStart(
 ): { allowed: true } | { allowed: false; reason: string } {
   if (r.drift !== 'changed') return { allowed: true };
   if (namedDifferences.some((d) => d.trim())) return { allowed: true };
+  if (r.source === 'fingerprint') {
+    return {
+      allowed: false,
+      reason: `The design changed since acceptance (${r.note}). Name the difference in a plan step, or re-accept the design, before building.`,
+    };
+  }
   return {
     allowed: false,
     reason: `The design changed since acceptance (accepted version ${r.acceptedVersionId ?? 'unknown'}, live version ${r.liveVersionId ?? 'unknown'}). Name the difference in a plan step, or re-accept the design, before building.`,

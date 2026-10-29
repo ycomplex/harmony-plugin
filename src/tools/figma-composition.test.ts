@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { planComposition, CallBudget, limited, waitForVersionAfter, nextThrottleDelay, THROTTLE_BACKOFF, MCP_CALL_CAP, saveVersionTail, checkPreviewSet, NO_PREVIEW_NOTE } from './figma-composition.js';
+import { planComposition, CallBudget, limited, waitForVersionAfter, nextThrottleDelay, THROTTLE_BACKOFF, MCP_CALL_CAP, checkPreviewSet, NO_PREVIEW_NOTE } from './figma-composition.js';
 
 // SYNTHETIC fixtures. The real recorded use_figma fixture from the 2026-10-27 live proof is in
 // __fixtures__/figma-composition.live-2026-10-27.json, exercised by figma-composition.recorded.test.ts.
@@ -102,43 +102,34 @@ describe('nextThrottleDelay (429 backoff)', () => {
   });
 });
 
-describe('on-demand version save tail (B-1203)', () => {
+describe('composition cost (B-1203)', () => {
   const componentMap = { Card: 'k' };
   const options = [{ name: 'A', recommended: true, components: ['Card'], provenance: [] }];
-  it('adds no MCP call: the plan is still one compose call', () => {
+  it('adds no MCP call and no save tail: the plan is still one compose call', () => {
     const plan = planComposition({ ticket: 'B-9', options, componentMap });
     expect(plan.calls).toHaveLength(1);
     expect(plan.calls.filter((c) => c.purpose === 'compose')).toHaveLength(1);
     expect(MCP_CALL_CAP).toBe(6);
   });
-  it('is the tail of the same call: settle wait, then saveVersionHistoryAsync, returning the version id', () => {
-    const t = saveVersionTail('B-9');
-    expect(t.inSameCall).toBe(true);
-    expect(t.title).toBe('B-9 previews');
-    expect(t.versionIdFrom).toBe('result.versionId');
-    expect(t.script.indexOf('setTimeout')).toBeGreaterThanOrEqual(0);
-    expect(t.script.indexOf('setTimeout')).toBeLessThan(t.script.indexOf('figma.saveVersionHistoryAsync("B-9 previews")'));
-    expect(t.script).toContain('versionId: saved');
-  });
 });
 
 describe('checkPreviewSet', () => {
-  it('complete when every frame is saved and every image non-null', () => {
-    const r = checkPreviewSet({ plannedFrameIds: ['1:1', '1:2'], savedFrameIds: ['1:1', '1:2'], images: { '1:1': 'u1', '1:2': 'u2' } });
+  it('complete when every frame was composed and every image non-null', () => {
+    const r = checkPreviewSet({ plannedFrameIds: ['1:1', '1:2'], composedFrameIds: ['1:1', '1:2'], images: { '1:1': 'u1', '1:2': 'u2' } });
     expect(r).toEqual({ complete: true, missingFrames: [], nullImages: [] });
   });
-  it('reports a frame missing from the saved version with the honest note', () => {
-    const r = checkPreviewSet({ plannedFrameIds: ['1:1', '1:2'], savedFrameIds: ['1:1'], images: { '1:1': 'u1' } });
+  it('reports a frame not returned by the compose call with the honest note', () => {
+    const r = checkPreviewSet({ plannedFrameIds: ['1:1', '1:2'], composedFrameIds: ['1:1'], images: { '1:1': 'u1' } });
     expect(r.complete).toBe(false);
     expect(r.missingFrames).toEqual(['1:2']);
     expect(r.note).toBe(NO_PREVIEW_NOTE);
   });
   it('reports null or absent images', () => {
-    const r = checkPreviewSet({ plannedFrameIds: ['1:1', '1:2'], savedFrameIds: ['1:1', '1:2'], images: { '1:1': null } });
+    const r = checkPreviewSet({ plannedFrameIds: ['1:1', '1:2'], composedFrameIds: ['1:1', '1:2'], images: { '1:1': null } });
     expect(r.complete).toBe(false);
     expect(r.nullImages).toEqual(['1:1', '1:2']);
   });
   it('an empty plan is never complete', () => {
-    expect(checkPreviewSet({ plannedFrameIds: [], savedFrameIds: [], images: {} }).complete).toBe(false);
+    expect(checkPreviewSet({ plannedFrameIds: [], composedFrameIds: [], images: {} }).complete).toBe(false);
   });
 });

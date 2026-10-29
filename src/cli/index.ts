@@ -39,6 +39,7 @@ import { registerDoctorCommands } from './commands/doctor.js';
 import { registerRecordCommand } from './commands/record.js';
 import { registerFasttrackCommands } from './commands/fasttrack.js';
 import { registerConductionsCommands } from './commands/conductions.js';
+import { registerDesignCommands } from './commands/design.js';
 
 const program = new Command();
 
@@ -51,6 +52,7 @@ program
 registerAuthCommands(program);
 registerFigmaCommands(program);
 registerTaskCommands(program);
+registerDesignCommands(program);
 registerQueryCommand(program);
 registerCommentCommands(program);
 registerProjectCommands(program);

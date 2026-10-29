@@ -1,0 +1,32 @@
+{
+ "file_key": "cE0x2i7UkD7X73p8WwnCzy",
+ "captured": "2026-10-29",
+ "note": "GET /v1/files/:key/versions with user fields stripped; the saved name is in label",
+ "versions": [
+  {
+   "id": "2415717572357645397",
+   "label": "B-1203 modal compose",
+   "created_at": "2026-10-29T09:37:54Z"
+  },
+  {
+   "id": "2415717245370479070",
+   "label": "Pre edits",
+   "created_at": "2026-10-29T09:28:40Z"
+  },
+  {
+   "id": "2415453148397313316",
+   "label": "manual edits",
+   "created_at": "2026-10-28T16:39:41Z"
+  },
+  {
+   "id": "2415454457302330774",
+   "label": "manual save",
+   "created_at": "2026-10-28T16:26:53Z"
+  },
+  {
+   "id": "2415427665275421733",
+   "label": null,
+   "created_at": "2026-10-28T15:09:46Z"
+  }
+ ]
+}
