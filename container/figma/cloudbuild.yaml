@@ -1,0 +1,150 @@
+# B-1337: publishes the Figma refresh image (container/figma/Dockerfile) and repins its channel's CronJob to it.
+#
+# Before this file the hourly refresh CronJobs (harmony-figma-refresh on staging, harmony-figma-refresh-prod on prod,
+# namespace harmony-conductor) ran a hand-built image pinned by digest that nothing rebuilt, so a merged runner fix
+# (B-1321's library-map version 2, for one) never reached the job. The digest pin stays; this build moves it.
+#
+# Run it from a Cloud Build trigger on the plugin's `staging` branch (with _CHANNEL=staging) and one on `prod` (with
+# _CHANNEL=prod). The founder creates both triggers (docs/figma-connection-rollout.md, step 7). It is a SEPARATE file
+# from container/cloudbuild.yaml and container/conductor/cloudbuild.yaml on purpose: those images are untouched, and
+# only this build holds the narrow repin grant (container/figma/refresh-repin-rbac.yaml). The Dockerfile builds the
+# runner from source with npm ci, so this build does not need the branch's dist/; it reads the version from
+# .claude-plugin/plugin.json and refuses main's inert 0.0.0-dev (a main checkout is neither channel).
+#
+# Tags: <_IMAGE>:<plugin version>-<_CHANNEL> and <_IMAGE>:<_CHANNEL> (channel-qualified, as in B-1269). The CronJob is
+# pinned to the DIGEST of the version tag, never to a moving tag.
+#
+# ORDER IS THE GUARANTEE: the image is built as `candidate`; the smoke (container/figma/smoke.sh) runs against it
+# before anything is pushed; the version tag is pushed, then the channel tag last; only after both pushes does the
+# repin step move this channel's CronJob, and it reads the image back. A failing smoke leaves the registry and the
+# CronJob exactly as they were. A failed repin leaves the tags published and the CronJob on its last good digest: the
+# build fails loudly, and re-running it (or the founder's grant) finishes the move.
+
+substitutions:
+  # The founder confirms the real repository from the live CronJob image (docs/figma-connection-rollout.md, step 7)
+  # and overrides _IMAGE on the trigger if it differs.
+  _IMAGE: us-central1-docker.pkg.dev/harmony-conductor/harmony-workers/harmony-figma-refresh
+  _CHANNEL: staging
+  _CLUSTER: harmony-legs
+  _ZONE: us-central1-a
+  _NAMESPACE: harmony-conductor
+
+steps:
+  - id: read-version
+    name: node:22-bookworm-slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        case '${_CHANNEL}' in
+          staging) cronjob=harmony-figma-refresh ;;
+          prod) cronjob=harmony-figma-refresh-prod ;;
+          *) echo "_CHANNEL must be staging or prod, got '${_CHANNEL}'" >&2; exit 1 ;;
+        esac
+        version="$$(node -e "console.log(require('./.claude-plugin/plugin.json').version)")"
+        if [ -z "$$version" ] || [ "$$version" = "0.0.0-dev" ]; then
+          echo "plugin version is '$$version': build the refresh image from the staging or prod branch, not main" >&2
+          exit 1
+        fi
+        printf '%s\n' "$$version" > /workspace/plugin_version.txt
+        printf '%s\n' "$$cronjob" > /workspace/cronjob_name.txt
+        echo "Building refresh image version $$version for channel ${_CHANNEL} (CronJob $$cronjob)"
+
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        docker build \
+          -f container/figma/Dockerfile \
+          --build-arg PLUGIN_VERSION="$(cat /workspace/plugin_version.txt)" \
+          --build-arg SOURCE_COMMIT='${COMMIT_SHA}' \
+          -t '${_IMAGE}:candidate' .
+
+  # The publish gate. Nothing has been pushed yet.
+  - id: smoke
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        bash container/figma/smoke.sh '${_IMAGE}:candidate' "$(cat /workspace/plugin_version.txt)"
+
+  - id: push-version
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        docker tag '${_IMAGE}:candidate' "${_IMAGE}:$(cat /workspace/plugin_version.txt)-${_CHANNEL}"
+        docker push "${_IMAGE}:$(cat /workspace/plugin_version.txt)-${_CHANNEL}"
+
+  # The channel tag moves LAST of the pushes, only after the smoke passed and the version tag is in the registry.
+  - id: push-channel
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        docker tag '${_IMAGE}:candidate' '${_IMAGE}:${_CHANNEL}'
+        docker push '${_IMAGE}:${_CHANNEL}'
+
+  # The digest the registry assigned to the pushed version tag: the only reference the CronJob is ever pinned to.
+  - id: resolve-digest
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        tag="${_IMAGE}:$(cat /workspace/plugin_version.txt)-${_CHANNEL}"
+        pinned=""
+        for d in $$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$$tag"); do
+          case "$$d" in '${_IMAGE}'@sha256:*) pinned="$$d"; break ;; esac
+        done
+        if ! [[ "$$pinned" =~ ^.+@sha256:[0-9a-f]{64}$$ ]] || [ "$${pinned%@*}" != '${_IMAGE}' ]; then
+          echo "could not resolve a ${_IMAGE}@sha256:<digest> for $$tag (got '$$pinned')" >&2
+          exit 1
+        fi
+        printf '%s\n' "$$pinned" > /workspace/pinned_ref.txt
+        echo "Resolved $$tag to $$pinned"
+
+  # LAST step: repin this channel's CronJob to the just-pushed digest, then read it back.
+  - id: repin
+    name: gcr.io/cloud-builders/kubectl
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        cronjob="$$(cat /workspace/cronjob_name.txt)"
+        pinned="$$(cat /workspace/pinned_ref.txt)"
+        founder="see docs/figma-connection-rollout.md step 7, founder steps 3 and 4 (roles/container.clusterViewer for the trigger's service account, and kubectl apply -f container/figma/refresh-repin-rbac.yaml). The tags are published; the CronJob stays on its last good digest."
+        gcloud container clusters get-credentials '${_CLUSTER}' --zone '${_ZONE}' --project '${PROJECT_ID}' \
+          || { echo "repin: could not get credentials for cluster ${_CLUSTER}: $$founder" >&2; exit 1; }
+        if ! out="$$(kubectl -n '${_NAMESPACE}' set image "cronjob/$$cronjob" "refresh=$$pinned" 2>&1)"; then
+          echo "$$out" >&2
+          case "$$out" in
+            *[Ff]orbidden*|*permission*|*PERMISSION*|*403*) echo "repin: the build's service account may not patch cronjob/$$cronjob: $$founder" >&2 ;;
+            *) echo "repin: kubectl set image failed for cronjob/$$cronjob: $$founder" >&2 ;;
+          esac
+          exit 1
+        fi
+        echo "$$out"
+        live="$$(kubectl -n '${_NAMESPACE}' get cronjob "$$cronjob" -o jsonpath='{.spec.jobTemplate.spec.template.spec.containers[0].image}')"
+        if [ "$$live" != "$$pinned" ]; then
+          echo "repin: cronjob/$$cronjob reads back '$$live', expected '$$pinned'" >&2
+          exit 1
+        fi
+        echo "Repinned cronjob/$$cronjob to $$pinned"
+
+timeout: 1800s
+
+options:
+  logging: CLOUD_LOGGING_ONLY

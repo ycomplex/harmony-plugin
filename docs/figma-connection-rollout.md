@@ -133,10 +133,44 @@ Record environment, proof outcomes and enabling time on B-1201. Do not unsuspend
    Create Kubernetes Secret `harmony-figma-refresh-board` in `harmony-conductor` from private files with keys
    `token`, `url`, `anon-key`. URL/key must target the same staging project as the token; never rely on prod defaults.
    Ordinary worker users are not registered refresh operators. Deleting this row revokes job board access.
-7. Build `container/figma/Dockerfile` and publish an immutable image; fill that image digest in
-   `container/figma/refresh-cronjob.yaml`. Apply it suspended with `kubectl -n harmony-conductor apply -f <MANIFEST>`.
+7. The refresh image is built by `container/figma/cloudbuild.yaml` (B-1337), never by hand. Per channel it builds
+   `container/figma/Dockerfile`, runs `container/figma/smoke.sh` against the candidate, pushes
+   `<version>-<channel>` then `:<channel>`, and as its last step repins that channel's CronJob to the digest it just
+   pushed (`kubectl set image`, then reads the image back). Both CronJobs are defined suspended in
+   `container/figma/refresh-cronjob.yaml`. Apply it suspended with `kubectl -n harmony-conductor apply -f <MANIFEST>`
+   only with each CronJob's current pinned image filled in: the template's image is a placeholder, and re-applying
+   it as committed would reset the pin.
    This is an hourly job, `Forbid`, `backoffLimit:0`, `restartPolicy:Never`. A durable board claim precedes a refresh.
    Crash/timeout/ambiguous response requires reconnect; a possibly spent refresh token is never retried.
+
+   Founder steps for the build (no leg applies them):
+
+   1. Read the real refresh image repository from the live CronJobs:
+      `kubectl -n harmony-conductor get cronjob harmony-figma-refresh harmony-figma-refresh-prod -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.jobTemplate.spec.template.spec.containers[0].image}{"\n"}{end}'`.
+      The part before `@sha256:` is the repository. The build's default `_IMAGE` is
+      `us-central1-docker.pkg.dev/harmony-conductor/harmony-workers/harmony-figma-refresh`.
+   2. Create two Cloud Build triggers on the plugin repository, both using `container/figma/cloudbuild.yaml`
+      (the same shape as the conductor's triggers in `docs/remote-conductor-runbook.md`, step 2):
+      - on push to the plugin's **`staging`** branch, with substitution `_CHANNEL=staging`;
+      - on push to its **`prod`** branch, with `_CHANNEL=prod`.
+
+      Set `_IMAGE` on both if the repository read in step 1 differs from the default. `_CLUSTER` (`harmony-legs`),
+      `_ZONE` (`us-central1-a`) and `_NAMESPACE` (`harmony-conductor`) default correctly.
+   3. Read each trigger's service account and let it reach the cluster:
+      `gcloud builds triggers describe <TRIGGER_NAME> --region <REGION> --format='value(serviceAccount)'`
+      (the value is `projects/<project>/serviceAccounts/<EMAIL>`), then
+      `gcloud projects add-iam-policy-binding harmony-conductor --member serviceAccount:<EMAIL> --role roles/container.clusterViewer`.
+      That role only lets the build fetch cluster credentials; it grants no Kubernetes object access.
+   4. Replace `REPLACE_WITH_CLOUD_BUILD_SERVICE_ACCOUNT_EMAIL` in `container/figma/refresh-repin-rbac.yaml` with that
+      `<EMAIL>` (add a second subject if the two triggers use different accounts) and apply it:
+      `kubectl apply -f container/figma/refresh-repin-rbac.yaml`. It grants `get` and `patch` on the two refresh
+      CronJobs in `harmony-conductor`, nothing else. Without steps 3 and 4 the build still publishes both tags, then
+      fails at its repin step naming this step, and the CronJob stays on its last good digest.
+
+   **How a change reaches the job.** A merge to `main` regenerates `staging`; the staging trigger builds the image
+   and repins `harmony-figma-refresh`. `./promote-prod.sh` moves `prod`; the prod trigger builds and repins
+   `harmony-figma-refresh-prod`. `promote-prod.sh` does not wait for that build. The next hourly run after the repin
+   uses the new image; there is nothing to restart.
 8. Grant launcher identities accessor on **access/PAT slots only**, not grant slots. Cloud Run's worker
    service account needs access to its bound access/PAT versions; GKE/Docker-host workers remain unable to
    read Secret Manager. Their launcher transfers only those two values through private temporary files.
@@ -151,7 +185,9 @@ Record environment, proof outcomes and enabling time on B-1201. Do not unsuspend
 Respect milestone merge order: B-1202 web + founder promote; B-1204/B-1205; B-1201 web then plugin; B-1206.
 Check the migration sorts after current origin/main before pushing; restamp if necessary. `promote-prod.sh` waits for production web
 schema/functions before plugin promotion. Wait for images. Repeat the provisioning/key and board-user
-steps against **prod**, apply/repin the suspended CronJob, check bindings and token-only mount paths,
+steps against **prod** (the prod board Secret is `harmony-figma-refresh-board-prod`), apply the suspended
+`harmony-figma-refresh-prod` CronJob once with the current pinned image filled in (after that the prod trigger's
+repin, step 7, moves its image on every promote; do not hand-repin it), check bindings and token-only mount paths,
 enable the job only after schema/secrets exist, and explicitly Update the conductor. Verify versions
 and all three launchers before enabling production connections. CronJob apply and Update are separate.
 

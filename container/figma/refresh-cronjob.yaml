@@ -1,4 +1,13 @@
 # Founder applies only after schema, operator registration, WI/IAM and image build.
+#
+# B-1337: both refresh CronJobs live here, harmony-figma-refresh (staging board) and harmony-figma-refresh-prod
+# (prod board). They differ only in name and board Secret. The prod job runs under the same KSA,
+# harmony-figma-refresh, as staging: docs/figma-connection-rollout.md's Production section repeats the staging
+# provisioning steps against prod and names no second refresh identity, so none is invented here.
+#
+# The image below is a PLACEHOLDER on purpose. container/figma/cloudbuild.yaml repins each live CronJob to the digest
+# it just pushed (`kubectl set image`), so re-applying this template would reset the image. The founder re-applies it
+# only with the CronJob's CURRENT pinned image filled in (read it with the kubectl command in the rollout doc, step 7).
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -40,6 +49,44 @@ spec:
                   valueFrom:
                     secretKeyRef:
                       name: harmony-figma-refresh-board
+                      key: token
+              resources:
+                requests: {cpu: 100m, memory: 128Mi}
+                limits: {cpu: "1", memory: 512Mi}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: harmony-figma-refresh-prod
+  namespace: harmony-conductor
+spec:
+  schedule: "0 * * * *"
+  suspend: true
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 600
+      template:
+        spec:
+          serviceAccountName: harmony-figma-refresh
+          restartPolicy: Never
+          containers:
+            - name: refresh
+              image: REPLACE_WITH_TESTED_PINNED_REFRESH_IMAGE
+              command: [node, /app/dist/figma-refresh-runner.js]
+              env:
+                - name: HARMONY_SUPABASE_URL
+                  valueFrom:
+                    secretKeyRef: {name: harmony-figma-refresh-board-prod, key: url}
+                - name: HARMONY_SUPABASE_ANON_KEY
+                  valueFrom:
+                    secretKeyRef: {name: harmony-figma-refresh-board-prod, key: anon-key}
+                - name: HARMONY_API_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: harmony-figma-refresh-board-prod
                       key: token
               resources:
                 requests: {cpu: 100m, memory: 128Mi}

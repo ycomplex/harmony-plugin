@@ -1,0 +1,34 @@
+# B-1337: the ONLY in-cluster permission container/figma/cloudbuild.yaml's repin step needs: read and patch the two
+# Figma refresh CronJobs in harmony-conductor (`kubectl set image` gets, then patches). Nothing else in the namespace,
+# and nothing cluster-wide. Reaching the cluster at all (`gcloud container clusters get-credentials`) is the separate
+# project-level grant roles/container.clusterViewer (docs/figma-connection-rollout.md, step 7).
+#
+# The founder applies this; no leg does. Before applying, replace the subject name with the Cloud Build trigger's
+# service account email, read with
+#   gcloud builds triggers describe <trigger-name> --region <region> --format='value(serviceAccount)'
+# (the value is projects/<project>/serviceAccounts/<email>; use only the <email> part).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: harmony-figma-refresh-repin
+  namespace: harmony-conductor
+rules:
+  - apiGroups: [batch]
+    resources: [cronjobs]
+    resourceNames: [harmony-figma-refresh, harmony-figma-refresh-prod]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: harmony-figma-refresh-repin
+  namespace: harmony-conductor
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: harmony-figma-refresh-repin
+subjects:
+  # The trigger's service account email (see the header). GKE maps a Google identity to a User subject by its email.
+  - apiGroup: rbac.authorization.k8s.io
+    kind: User
+    name: REPLACE_WITH_CLOUD_BUILD_SERVICE_ACCOUNT_EMAIL
