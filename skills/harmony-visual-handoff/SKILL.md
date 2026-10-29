@@ -125,11 +125,47 @@ working file: on a page for the ticket, or, when the ticket's page already holds
 separate page named for the ticket and marked agent-composed. Ask nothing and warn of nothing when the designer's
 file is the working file. Never modify the designer's frames or pages.
 
+#### Working file (B-1325)
+
+Each Harmony project has its own Figma **working file**. A design leg (a clarify flow sketch, and every design
+track, on Claude Code and Codex) composes **only** in that file, on a page named for the ticket,
+`<visual id> · <short title>` (e.g. `B-1319 · Design tool`). A later round of the same ticket reuses that page,
+found by the `<visual id> · ` prefix. The workspace's library file (the connection's `library_file_key`) is the
+component source only: write to the working file, never the library; never compose in the library file.
+
+Before the first `use_figma` call of the leg, run `node "${CLAUDE_PLUGIN_ROOT}/dist/bin/harmony.js" figma working-file resolve` (one JSON line):
+
+- **`ready`** → compose in that file (`working_file_key`) on the ticket page. The compose script finds the page
+  by its `<visual id> · ` prefix or creates it (`buildComposeCall`, which refuses a library target), then
+  switches with `figma.setCurrentPageAsync(page)` once.
+- **`refuse`** (`working-file-is-library`) → stop and say so. Do not compose.
+- **`ask`** (`no-working-file`) → stop composing and ask the operator for a Figma file link: file a
+  worker-question elicitation round (`mcp__harmony__start_elicitation({ task_id, trigger: 'worker-question', gate: 'designing' })`
+  then `mcp__harmony__file_elicitation_round`) asking for a link to the Figma file **for this project**, which
+  **must not be the library** file. Never create a file, never choose one yourself, never fall back to the library
+  or to any configured or remembered key.
+  On the **answered** round: run `node "${CLAUDE_PLUGIN_ROOT}/dist/bin/harmony.js" figma working-file validate <answer>`. Only if it prints `ok:true`,
+  run `node "${CLAUDE_PLUGIN_ROOT}/dist/bin/harmony.js" figma working-file save --file <key> --task <ticket> --exchange <exchange id>`. The save is called
+  **only after an answered round** and **always records the exchange id** (`--exchange` is required; the command
+  refuses without it, and without `--task`). On `saved:true`, add ONE ticket comment with the marker line,
+  `FIGMA-WORKING-FILE-SET project=<key> file=<file key> by=<who> via=leg exchange=<exchange id> task=<ticket id>`
+  (`formatWorkingFileSetComment`), then compose in that file.
+  - `rpc-absent` → use the answered file for **THIS LEG ONLY** and say plainly it could not be saved because the
+    board has not been promoted yet.
+  - `not-owner` → use it for this leg only, say it could not be saved because this token is not a workspace owner,
+    and ask the owner to set it in the Design tool panel.
+  - `validate` not ok (`is-library`, `not-found`, `forbidden`, `bad-key`) → tell the operator why and ask again;
+    never use that file.
+- **`unconnected`** → the HTML path, as above.
+
+Reads of **earlier** designs keep using the `file_key` stored on that design record; the working-file setting
+governs **writes** only.
+
 Figma path (planner: `src/tools/figma-composition.ts`):
 
 1. Keep the glanceable-vs-flow routing (step 2) unchanged.
-2. Read the **saved component map**; do no per-leg library search.
-3. Call `use_figma` **once** to build all option frames from **library instances** (not imported layers),
+2. Read the **saved component map**; do no per-leg library search. Resolve the working file first (see "Working file (B-1325)" above); compose only there.
+3. Call `use_figma` **once**, in the project's working file on the ticket page, to build all option frames from **library instances** (not imported layers),
    named `<ticket> · <option>`, the recommendation marked on exactly one frame, and provenance
    (`real` / `invented` / `illustrative`) as frame notes. A second `use_figma` call only to fix.
 4. A flow is N frames in order with a caption each; the order is kept in the planned `nodes` list.

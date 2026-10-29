@@ -11,6 +11,8 @@ export interface FigmaMetadata {
   generation?: number;
   handle?: string;
   library_file_key?: string;
+  /** B-1325: the project's Figma working file (the only file a design leg may write to); absent/null = none set. */
+  working_file_key?: string | null;
   component_map?: Record<string, string>;
   library_components?: Record<string, string>;
   access_expires_at?: string;

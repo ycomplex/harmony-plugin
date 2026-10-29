@@ -32,7 +32,8 @@ Invoke with a sub-track: `--track product` | `--track technical` | `--track ux-u
 > ux-ui sub-track to `/harmony-plugin:harmony-visual-handoff <task>` — it owns surface generation, the
 > elicit-don't-guess iterate loop, and **files the ux-ui decision** (`record_decision` + `reference_knowledge`
 > + `compose_brief` + `resolve_brief`, advancing to Designed only on the last required sub-track). Do **not**
-> also draft or compose a ux-ui brief here. The Product and Technical sub-tracks continue with the flow below.
+> also draft or compose a ux-ui brief here. The Product and Technical sub-tracks continue with the flow below. On the Figma path the hand-off composes only in
+> the project's working file per `harmony-visual-handoff` 3c "Working file (B-1325)".
 
 For a feature-changing UX/UI hand-off, pass the shared
 `skills/harmony-shared/current-account-maintenance.md` procedure to the owning
@@ -88,7 +89,8 @@ Read the clarify slot's `sketch` and the clarify exchange's answered questions
 it **covered** if an answer or a sketch frame settles it. **All covered** → propose the product track as
 `not-required`, with a note naming the answers and frames that cover it. **Some uncovered** → the product track
 runs on the residual only, and its brief lists **"Already answered, not re-asked"**. An existing sketch is
-reused, never recomposed.
+reused, never recomposed. Any Figma composing uses the project's working file per `harmony-visual-handoff` 3c
+"Working file (B-1325)" (never the library file).
 
 **"I've made edits in Figma" (B-1204).** A marker `pending_resolution.command === 'edited-in-tool'` (poll trigger
 `edited-in-tool`) on a design brief is **not** a worded reshape: route it to

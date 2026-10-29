@@ -119,3 +119,14 @@ describe('harmony-visual-handoff skill contract', () => {
     expect(skill.body.toLowerCase()).toMatch(/no throw,\s+no warn,\s+no\s+empty-edge write/);
   });
 });
+
+describe('harmony-visual-handoff: B-1325 working file', () => {
+  const body = readSkill('harmony-visual-handoff').body;
+  it('names the resolve command, marker, rpc-absent degradation and the exchange-id requirement', () => {
+    expect(body).toContain('figma working-file resolve');
+    expect(body).toContain('FIGMA-WORKING-FILE-SET');
+    expect(body).toContain('rpc-absent');
+    expect(body).toMatch(/always records the exchange id/);
+    expect(body).toMatch(/never the library/);
+  });
+});

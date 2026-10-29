@@ -187,7 +187,9 @@ does not exist: clarify behaves exactly as before. A **yes** composes the sketch
 `harmony-visual-handoff`'s Figma path BEFORE the clarification brief composes, and records it as
 `doc.frame.sketch` (`file_link`, `pinned_version`, ordered `frames[{ name, caption }]`,
 `preview_attachment_ids`, `mcp_call_count`) so it lands on the clarify slot. A sketch is a clarification aid,
-not a design decision. The item does not exist when a designer's
+not a design decision. The sketch is composed in the **project's working file**, on the ticket page, per
+`harmony-visual-handoff` 3c "Working file (B-1325)": run `harmony figma working-file resolve` first, ask the
+operator for a file when none is set, and never write to the library file. The item does not exist when a designer's
 design is already attached: when `node "${CLAUDE_PLUGIN_ROOT}/dist/bin/harmony.js" design adopt-check --task <ticket> --links-only`
 reports a readable Figma frame link on the ticket (description or comments), clarify behaves as if the preflight
 resolved to `html` for this item, and may mention the attached design as context.

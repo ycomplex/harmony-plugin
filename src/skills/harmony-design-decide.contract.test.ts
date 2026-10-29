@@ -157,3 +157,11 @@ describe('harmony-design-decide: B-977/B-997 entity-linking wiring', () => {
     expect(skill.body.toLowerCase()).toMatch(/no throw,\s+no warn,\s+no\s+empty-edge write/);
   });
 });
+
+describe('harmony-design-decide: B-1325 working file', () => {
+  it('the ux-ui delegation and coverage check use the project working file', () => {
+    const body = readSkill('harmony-design-decide').body;
+    expect(body.match(/Working file \(B-1325\)/g)!.length).toBeGreaterThanOrEqual(2);
+    expect(body).toMatch(/never the library file/);
+  });
+});

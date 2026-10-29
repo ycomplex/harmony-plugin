@@ -122,3 +122,12 @@ describe('harmony-clarify: B-977 confirm-or-adjust entity naming', () => {
     expect(skill.body).toMatch(/never a new field or write path|no new payload verb/i);
   });
 });
+
+describe('harmony-clarify: B-1325 working file', () => {
+  it('the flow sketch composes in the project working file, never the library', () => {
+    const body = readSkill('harmony-clarify').body;
+    expect(body).toContain('working-file resolve');
+    expect(body).toMatch(/Working file \(B-1325\)/);
+    expect(body).toMatch(/never write to the library file/);
+  });
+});

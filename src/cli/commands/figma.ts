@@ -31,6 +31,13 @@ import type {
   OAuthTokens,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { getAuthenticatedContext } from "../auth.js";
+import { readFigmaToken } from "./design.js";
+import { resolveTaskId } from "../../tools/resolve-task-id.js";
+import {
+  parseFigmaFileKey,
+  resolveComposeTarget,
+  validateWorkingFile,
+} from "../../tools/figma-working-file.js";
 import { runFigmaComponent } from "../figma-component.js";
 import {
   emptyBudget,
@@ -135,6 +142,22 @@ async function authorizeFigma(): Promise<Record<string, unknown>> {
   };
 }
 
+/** B-1325: the launch context the worker was handed (same decode as the preflight); null when none/disconnected. */
+function readLaunchContext(): FigmaMetadata | null {
+  const raw = process.env.HARMONY_FIGMA_CONTEXT_B64;
+  if (!raw) return null;
+  try {
+    const meta = JSON.parse(Buffer.from(raw, "base64").toString()) as FigmaMetadata;
+    return meta.state === "disconnected" ? null : meta;
+  } catch {
+    return null;
+  }
+}
+
+const emitLine = (o: unknown): void => {
+  process.stdout.write(JSON.stringify(o) + "\n");
+};
+
 export function registerFigmaCommands(program: Command, ports = {
   prompt: secretPrompt, readGrant: readClaudeFigmaGrant, mint: withClaudeFigmaSignIn,
 }): void {
@@ -143,6 +166,79 @@ export function registerFigmaCommands(program: Command, ports = {
     .description(
       "Workspace Figma connection (credentials are never retrievable)",
     );
+  const workingFile = figma
+    .command("working-file")
+    .description("The project's Figma working file: the only file a design leg writes to (one JSON line each)");
+  workingFile
+    .command("resolve")
+    .description("ready | ask | refuse | unconnected, from the launch context")
+    .action(() => {
+      const meta = readLaunchContext();
+      if (!meta) return emitLine({ status: "unconnected" });
+      const target = resolveComposeTarget({
+        libraryFileKey: meta.library_file_key,
+        workingFileKey: meta.working_file_key,
+      });
+      emitLine({
+        status: target.status,
+        ...(target.status === "ask" || target.status === "refuse" ? { reason: target.reason } : {}),
+        ...(meta.working_file_key ? { working_file_key: meta.working_file_key } : {}),
+        ...(meta.library_file_key ? { library_file_key: meta.library_file_key } : {}),
+      });
+    });
+  workingFile
+    .command("validate <link-or-key>")
+    .description("Check an operator-supplied file is reachable and is not the library")
+    .action(async (input: string) => {
+      const meta = readLaunchContext();
+      emitLine(
+        await validateWorkingFile({
+          input,
+          libraryFileKey: meta?.library_file_key,
+          token: readFigmaToken(),
+        }),
+      );
+    });
+  workingFile
+    .command("save")
+    .description("Save the answered file as the project's working file (owner-guarded RPC)")
+    .requiredOption("--file <link-or-key>", "Figma file link or key")
+    .option("--task <ticket>", "ticket visual id (B-123), number or uuid")
+    .option("--exchange <id>", "the answered worker-question exchange id")
+    .action(async (opts: { file: string; task?: string; exchange?: string }) => {
+      if (!opts.exchange) return emitLine({ saved: false, reason: "missing-exchange" });
+      if (!opts.task) return emitLine({ saved: false, reason: "missing-task" });
+      const key = parseFigmaFileKey(opts.file);
+      if (!key) return emitLine({ saved: false, reason: "bad-key" });
+      const meta = readLaunchContext();
+      if (meta?.library_file_key && key === meta.library_file_key) {
+        return emitLine({ saved: false, reason: "is-library" });
+      }
+      try {
+        const ctx = await getAuthenticatedContext();
+        const taskId = await resolveTaskId(ctx.client, ctx.projectId, opts.task);
+        const { error } = await ctx.client.rpc("set_project_figma_working_file", {
+          p_project_id: ctx.projectId,
+          p_file_key: key,
+          p_set_via: "leg",
+          p_task_id: taskId,
+          p_exchange_id: opts.exchange,
+        });
+        if (error) {
+          if (error.code === "PGRST202" || error.code === "42883") {
+            return emitLine({ saved: false, reason: "rpc-absent" });
+          }
+          if (error.code === "42501") return emitLine({ saved: false, reason: "not-owner" });
+          emitLine({ saved: false, reason: "error", detail: error.message });
+          process.exitCode = 1;
+          return;
+        }
+        emitLine({ saved: true, file_key: key, set_via: "leg" });
+      } catch (e) {
+        emitLine({ saved: false, reason: "error", detail: e instanceof Error ? e.message : "save failed" });
+        process.exitCode = 1;
+      }
+    });
   figma
     .command("budget")
     .option("--reserve", "Reserve one actual MCP attempt")
