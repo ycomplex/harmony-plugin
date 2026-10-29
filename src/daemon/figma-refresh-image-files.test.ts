@@ -235,11 +235,10 @@ describe('container/figma/smoke.sh', () => {
     expect(statSync(repo('container/figma/smoke.sh')).mode & 0o111).not.toBe(0);
   });
 
-  it('checks the files, non-root user, label, library-map version marker and the auth guard', () => {
+  it('checks the files, non-root user, label and the auth guard', () => {
     expect(s).toContain('/app/dist/figma-refresh-runner.js');
     expect(s).toContain('/app/dist/THIRD_PARTY_NOTICES');
     expect(s).toContain('harmony.plugin_version');
-    expect(s).toContain("LIBRARY_MAP_VERSION = 2;");
     expect(s).toContain('No active project. Run \\`harmony login\\` to add one.');
     expect(s).toContain('getAuthenticatedContext');
     expect(s).toContain('--network none');
@@ -248,8 +247,8 @@ describe('container/figma/smoke.sh', () => {
     expect(header).toContain('NOT proved');
   });
 
-  it('the map-version marker tracks the source constant', () => {
-    expect(read('src/tools/figma-library-map.ts')).toContain('export const LIBRARY_MAP_VERSION = 2;');
+  it('does not assert any specific library-map version, so a map-version bump never fails the build', () => {
+    expect(s).not.toContain('LIBRARY_MAP_VERSION');
   });
 });
 
