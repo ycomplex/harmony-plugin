@@ -112,6 +112,19 @@ Dependencies, not assumptions: the connection reader, the **saved component map*
 are **B-1201's**; the stored record, `design_artefact` (schema_version 1), is **B-1202's**. Until B-1201 lands the preflight resolves to
 `html`, so this step does not run.
 
+**Adopt first (B-1320).** When the ticket already links a designer's Figma frames, adopt them before composing
+anything. Run `node "${CLAUDE_PLUGIN_ROOT}/dist/bin/harmony.js" design adopt-check --task <ticket>` (read-only, REST
+only, zero MCP calls). For each frame with verdict `adopted` (every instance comes from the workspace library),
+compose **no options**: attach live REST previews, build the artefact with `assembleAdoptedArtefact`
+(`src/tools/figma-adopt.ts`; every node `human-in-tool`, `mcp_call_count` 0, no `version_id`), and ask **"Adopt these
+frames as drawn?"** as the brief decision; the accept records them as the ticket's design, and the content
+fingerprint is taken at accept as for composed designs. State every frame's verdict on the brief with its reason:
+adopted / off-library / not covering the decision (your judgment, from the frame against the decision) / unreadable /
+not checked. A `not-checked` frame is never adopted. Compose only the uncovered part, from library instances, in the
+working file: on a page for the ticket, or, when the ticket's page already holds the designer's frames, on a
+separate page named for the ticket and marked agent-composed. Ask nothing and warn of nothing when the designer's
+file is the working file. Never modify the designer's frames or pages.
+
 Figma path (planner: `src/tools/figma-composition.ts`):
 
 1. Keep the glanceable-vs-flow routing (step 2) unchanged.
@@ -158,8 +171,8 @@ Figma path (planner: `src/tools/figma-composition.ts`):
    the operator when it is safe to proceed, and resume on the answer:
    `mcp__harmony__start_elicitation({ task_id, trigger: 'worker-question', gate: 'designing' })` then
    `mcp__harmony__file_elicitation_round({ task_id, context_line: "Figma is throttling (429)...", questions: [...] })`.
-9. A Claude Design scaffold or any inception sketch is **reference only**: the recorded artefact is always
-   re-composed from library instances.
+9. A Claude Design scaffold or an inception sketch is **reference only** (re-composed from library instances);
+   a designer's own library-built Figma frames are **adopted** as drawn, per the block above.
 
 Then continue at step 4.
 
