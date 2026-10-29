@@ -166,6 +166,22 @@ Function secrets are an environment-wide boundary; review every function deploye
 Never grant the handler secretAccessor to implement library refresh: the scheduled owner handles the explicit
 cache request with its PAT, without reading a full grant or refreshing unless expiry makes it due.
 
+### One-time library map rebuild (B-1321)
+
+The saved library map used to key components by bare name, so same-named set variants overwrote each
+other. Map version 2 keys set variants `"<set> :: <variant>"` and keeps unique standalone names bare;
+ambiguous standalone names go to `library_ambiguous`, which is never part of the launch context.
+
+- `figma_refresh_queue` lists any connected workspace whose `library_map_version` is below 2, so no
+  reconnect and no manual library refresh request is needed.
+- The next hourly refresh rebuilds the map once and publishes version 2.
+- A map-build failure (duplicate qualified keys, a Figma REST error, a write error) is stored on the
+  connection as `library_map_error`, the previous map is kept, and the same pass still runs the OAuth
+  token refresh. It never moves the connection to `reconnect`.
+- Either deploy order is safe. Old runner on the new database: the map keeps its old shape and the
+  lookup command falls back to bare names. New runner on an old database: a missing
+  `library_map_version` counts as 1 and the lookup RPC being absent counts as no candidates.
+
 ## Proof ledger (no unrun proof is a pass)
 
 - Claude static header: operator PASS, Code 2.1.310; fresh profile, exactly one whoami; bogus header rejected 401.

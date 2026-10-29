@@ -3,8 +3,9 @@ import { getAuthenticatedContext } from "../src/cli/auth.js";
 import {
   type FigmaGrant,
   type RefreshWork,
-  refreshWorkspaceSafely,
+  refreshPass,
 } from "../src/tools/figma-refresh.js";
+import type { LibraryComponent } from "../src/tools/figma-library-map.js";
 
 const ctx = await getAuthenticatedContext();
 const { data: queue, error } = await ctx.client.rpc("figma_refresh_queue");
@@ -31,58 +32,53 @@ const call = async (path: string, init: RequestInit = {}) => {
 for (
   const work of (queue ?? []) as (RefreshWork & {
     library_refresh_requested: boolean;
+    library_map_version?: number | null;
     pat_version: string;
     library_file_key: string;
     refresh_due: boolean;
   })[]
 ) {
-  if (work.library_refresh_requested && !work.in_flight) {
-    try {
-      if (
-        !/^projects\/harmony-conductor\/secrets\/harmony-figma-ws-[a-f0-9-]{36}-pat\/versions\/\d+$/
-          .test(
-            work.pat_version,
-          ) ||
-        !/^[-_a-zA-Z0-9]+$/.test(work.library_file_key)
-      ) {
-        throw new Error("Invalid library references");
-      }
-      const encoded = await call(work.pat_version + ":access");
-      const pat = Buffer.from(encoded.payload.data, "base64").toString();
-      const response = await fetch(
-        `https://api.figma.com/v1/files/${work.library_file_key}/components`,
-        {
-          headers: { "X-Figma-Token": pat },
-          signal: AbortSignal.timeout(20000),
-        },
-      );
-      if (!response.ok) throw new Error("Library refresh failed");
-      const components = (await response.json()) as {
-        meta: { components: Array<{ name: string; key: string }> };
-      };
-      const { error: e } = await ctx.client.rpc("figma_refresh_transition", {
-        p_workspace_id: work.workspace_id,
-        p_generation: work.generation,
-        p_action: "library",
-        p_data: {
-          library_components: Object.fromEntries(
-            components.meta.components.map((c) => [c.name, c.key]),
-          ),
-        },
-      });
-      if (e) throw new Error("Library cache publication failed");
-    } catch {
-      console.log(
-        JSON.stringify({
-          workspace_id: work.workspace_id,
-          result: "library-refresh-failed",
-        }),
-      );
-    }
-  }
-  if (!work.refresh_due && !work.in_flight) continue;
-  const outcome = await refreshWorkspaceSafely(
+  const outcome = await refreshPass(
     work,
+    {
+      fetchComponents: async () => {
+        if (
+          !/^projects\/harmony-conductor\/secrets\/harmony-figma-ws-[a-f0-9-]{36}-pat\/versions\/\d+$/
+            .test(work.pat_version) ||
+          !/^[-_a-zA-Z0-9]+$/.test(work.library_file_key)
+        ) {
+          throw new Error("Invalid library references");
+        }
+        const encoded = await call(work.pat_version + ":access");
+        const pat = Buffer.from(encoded.payload.data, "base64").toString();
+        const response = await fetch(
+          `https://api.figma.com/v1/files/${work.library_file_key}/components`,
+          {
+            headers: { "X-Figma-Token": pat },
+            signal: AbortSignal.timeout(20000),
+          },
+        );
+        if (!response.ok) throw new Error("Library refresh failed");
+        const components = (await response.json()) as {
+          meta: { components: LibraryComponent[] };
+        };
+        return components.meta.components;
+      },
+      transition: async (w, action, data) => {
+        const { data: ok, error: e } = await ctx.client.rpc(
+          "figma_refresh_transition",
+          {
+            p_workspace_id: w.workspace_id,
+            p_generation: w.generation,
+            p_action: action,
+            p_data: data,
+          },
+        );
+        if (e) throw new Error("Library state write failed");
+        return ok === true;
+      },
+      log: (entry) => console.log(JSON.stringify(entry)),
+    },
     {
       transition: async (w, action, data) => {
         const { data: ok, error: e } = await ctx.client.rpc(
@@ -182,6 +178,7 @@ for (
     },
     Date.now(),
   );
+  if (outcome === null) continue;
   console.log(
     JSON.stringify({
       workspace_id: work.workspace_id,

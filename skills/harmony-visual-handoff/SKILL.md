@@ -80,8 +80,12 @@ Run the preflight (`src/tools/figma-connection.ts`, `resolveFigmaRoute`) before 
 
 B-1201: run `node "${CLAUDE_PLUGIN_ROOT}/dist/bin/harmony.js" figma context` for the live connection. Missing schema means unconnected;
 other read errors stop. A connected worker must have passed `figma install-worker` with the
-exact generation and version refs and mounted access-token/PAT files. Use `library_components`
-from this saved context; `component_map` maps names to repository paths for build. Never call
+exact generation and version refs and mounted access-token/PAT files. Look components up with
+`node "${CLAUDE_PLUGIN_ROOT}/dist/bin/harmony.js" figma component "<variant name>" --in "<set name>"`
+and discover sets with `node "${CLAUDE_PLUGIN_ROOT}/dist/bin/harmony.js" figma component --sets`
+(one call, no Figma search). The saved map's set variants are keyed "<set> :: <variant>", so identically
+named variants of different sets never collide. An `ambiguous` answer is the answer: pick from the
+returned candidates and do not spend a Figma call searching. `component_map` maps names to repository paths for build. Never call
 get_libraries/search_design_system per leg. Show “Figma edits are made as @handle” on every
 Figma-composed brief. Only an unconnected workspace uses HTML automatically.
 

@@ -52574,6 +52574,134 @@ async function getAuthenticatedContext(projectConfig) {
   return { client, projectId, userId };
 }
 
+// src/tools/figma-library-map.ts
+var SET_SEPARATOR = " :: ";
+
+// src/tools/figma-library.ts
+var has = (map, k) => Object.prototype.hasOwnProperty.call(map, k);
+function isLegacyMap(map) {
+  return !Object.keys(map).some((k) => k.includes(SET_SEPARATOR));
+}
+async function resolveLibraryComponent(map, name, opts = {}) {
+  const legacy = isLegacyMap(map);
+  if (opts.set !== void 0) {
+    const qualified = `${opts.set}${SET_SEPARATOR}${name}`;
+    if (has(map, qualified)) {
+      return { status: "found", key: map[qualified], name: qualified, via: "qualified" };
+    }
+    if (legacy && has(map, name)) {
+      return { status: "found", key: map[name], name, via: "legacy" };
+    }
+    return { status: "not-found" };
+  }
+  if (has(map, name)) {
+    return {
+      status: "found",
+      key: map[name],
+      name,
+      via: legacy ? "legacy" : "bare"
+    };
+  }
+  const suffix = `${SET_SEPARATOR}${name}`;
+  const hits = Object.keys(map).filter((k) => k.endsWith(suffix)).sort();
+  if (hits.length === 1) {
+    return { status: "found", key: map[hits[0]], name: hits[0], via: "qualified" };
+  }
+  if (hits.length > 1) {
+    return {
+      status: "ambiguous",
+      name,
+      candidates: hits.map((k) => ({
+        key: map[k],
+        name: k,
+        detail: `set ${k.slice(0, k.length - suffix.length)}`
+      }))
+    };
+  }
+  if (opts.candidates) {
+    try {
+      const rows = await opts.candidates(name);
+      if (Array.isArray(rows) && rows.length > 0) {
+        return {
+          status: "ambiguous",
+          name,
+          candidates: rows.map((r) => ({
+            key: r.key,
+            frame: r.frame,
+            page: r.page,
+            detail: `frame ${r.frame ?? "?"}`
+          }))
+        };
+      }
+    } catch {
+    }
+  }
+  return { status: "not-found" };
+}
+function listLibrarySets(map) {
+  const counts = /* @__PURE__ */ new Map();
+  for (const k of Object.keys(map)) {
+    const i = k.indexOf(SET_SEPARATOR);
+    if (i < 0) continue;
+    const set = k.slice(0, i);
+    counts.set(set, (counts.get(set) ?? 0) + 1);
+  }
+  return [...counts.entries()].sort(([a3], [b]) => a3 < b ? -1 : a3 > b ? 1 : 0).map(([set, variants]) => ({ set, variants }));
+}
+
+// src/cli/figma-component.ts
+var ABSENT = /* @__PURE__ */ new Set(["PGRST202", "42883"]);
+var REFUSAL = "Figma context unavailable; refusing configured Figma work.\n";
+async function runFigmaComponent(args, deps) {
+  if (!args.sets && !args.name) {
+    return {
+      exitCode: 1,
+      stderr: "Usage: harmony figma component <name> [--in <set>] | --sets\n"
+    };
+  }
+  let ctx;
+  try {
+    const { data, error: error2 } = await deps.context();
+    if (error2 || !data || typeof data !== "object") {
+      return { exitCode: 1, stderr: REFUSAL };
+    }
+    ctx = data;
+  } catch {
+    return { exitCode: 1, stderr: REFUSAL };
+  }
+  if (ctx.state !== "connected") {
+    return {
+      exitCode: 1,
+      stderr: `Figma connection is ${typeof ctx.state === "string" ? ctx.state : "unavailable"}; refusing configured Figma work.
+`
+    };
+  }
+  const raw = ctx.library_components;
+  const map = raw && typeof raw === "object" ? raw : {};
+  if (args.sets) {
+    return {
+      exitCode: 0,
+      stdout: JSON.stringify({ status: "sets", sets: listLibrarySets(map) }) + "\n"
+    };
+  }
+  const result = await resolveLibraryComponent(map, args.name, {
+    set: args.set,
+    // Only a bare name can be one of the stored ambiguous standalones.
+    candidates: args.set === void 0 ? async (name) => {
+      const { data, error: error2 } = await deps.candidates(name);
+      if (error2) {
+        if (error2.code && ABSENT.has(error2.code)) return [];
+        throw new Error("candidates unavailable");
+      }
+      return Array.isArray(data) ? data : [];
+    } : void 0
+  });
+  return {
+    exitCode: result.status === "not-found" ? 2 : 0,
+    stdout: JSON.stringify(result) + "\n"
+  };
+}
+
 // src/tools/figma-leg-budget.ts
 var emptyBudget = () => ({
   used: 0,
@@ -55165,6 +55293,30 @@ function registerFigmaCommands(program3, ports = {
       );
       process.exitCode = 1;
     }
+  });
+  figma.command("component [name]").description("Look up a library component key in the saved map (one JSON line)").option("--in <set>", "component set the variant belongs to").option("--sets", "list the saved library's component sets").action(async (name, opts) => {
+    let outcome;
+    try {
+      const ctx = await getAuthenticatedContext();
+      outcome = await runFigmaComponent(
+        { name, set: opts.in, sets: opts.sets },
+        {
+          context: async () => ctx.client.rpc("figma_launch_context", { p_project_id: ctx.projectId }),
+          candidates: async (n) => ctx.client.rpc("figma_library_candidates", {
+            p_project_id: ctx.projectId,
+            p_name: n
+          })
+        }
+      );
+    } catch {
+      outcome = {
+        exitCode: 1,
+        stderr: "Figma context unavailable; refusing configured Figma work.\n"
+      };
+    }
+    if (outcome.stdout) process.stdout.write(outcome.stdout);
+    if (outcome.stderr) process.stderr.write(outcome.stderr);
+    process.exitCode = outcome.exitCode;
   });
   figma.command("install-worker").requiredOption("--adapter <adapter>", "claude-code or codex").requiredOption("--plugin-dir <path>", "Plugin checkout").action(async (opts) => {
     try {
@@ -67523,7 +67675,7 @@ function tokenizeArgs(args) {
   const tokens = [];
   let cur = "";
   let quote = null;
-  let has2 = false;
+  let has3 = false;
   for (let i = 0; i < args.length; i++) {
     const c = args[i];
     if (quote) {
@@ -67531,20 +67683,20 @@ function tokenizeArgs(args) {
       else cur += c;
     } else if (c === '"' || c === "'") {
       quote = c;
-      has2 = true;
+      has3 = true;
     } else if (c === "\\" && i + 1 < args.length && args[i + 1] === " ") {
       cur += " ";
       i++;
     } else if (/\s/.test(c)) {
-      if (has2 || cur) tokens.push(cur);
+      if (has3 || cur) tokens.push(cur);
       cur = "";
-      has2 = false;
+      has3 = false;
     } else {
       cur += c;
-      has2 = true;
+      has3 = true;
     }
   }
-  if (has2 || cur) tokens.push(cur);
+  if (has3 || cur) tokens.push(cur);
   return tokens;
 }
 var isNode = (exe) => /^(node|nodejs)(\d+(\.\d+)*)?$/.test(basename3(exe));
@@ -67911,7 +68063,7 @@ async function loadSettings(deps, opts = {}) {
     deploymentConfig: opts.config
   };
 }
-var has = (v2) => v2 !== void 0 && v2 !== "";
+var has2 = (v2) => v2 !== void 0 && v2 !== "";
 async function haveTool(deps, tool) {
   return (await deps.exec("sh", ["-c", 'command -v "$1"', "_", tool])).code === 0;
 }
@@ -67965,7 +68117,7 @@ async function runPreflight(deps, s, opts = {}) {
     add(`tool:${t}`, ok, ok ? `${t} found on PATH` : `${t} is not on PATH`, ok ? `install ${t} or fix PATH` : t === AUTH_PLUGIN ? await authPluginFix(deps, s.env) : `install ${t} or fix PATH`);
   }
   if (!s.profile) add("profile", true, "profile not determined (no config file names one and none was passed): only generic tools were checked");
-  const tokenOk = has(s.env.HARMONY_API_TOKEN);
+  const tokenOk = has2(s.env.HARMONY_API_TOKEN);
   add("cred:HARMONY_API_TOKEN", tokenOk, tokenOk ? "present" : missingTokenReason(deps, s), 'name its secret in conductor-host.json ("secrets": { "api_token": "<secret-name>" }) or export HARMONY_API_TOKEN');
   let board = null;
   if (tokenOk) {
@@ -67977,8 +68129,8 @@ async function runPreflight(deps, s, opts = {}) {
     }
   } else add("cred:board", false, "not attempted: HARMONY_API_TOKEN is not set");
   const keyPath = s.env.HARMONY_APP_PRIVATE_KEY_PATH;
-  if (has(s.env.HARMONY_APP_PRIVATE_KEY)) add("cred:github-app-key", true, "HARMONY_APP_PRIVATE_KEY present");
-  else if (has(keyPath)) {
+  if (has2(s.env.HARMONY_APP_PRIVATE_KEY)) add("cred:github-app-key", true, "HARMONY_APP_PRIVATE_KEY present");
+  else if (has2(keyPath)) {
     const readable = (() => {
       try {
         deps.readFileSync(keyPath);
@@ -67992,7 +68144,7 @@ async function runPreflight(deps, s, opts = {}) {
   if (s.profile === "gke") {
     const ns = s.env.HARMONY_GKE_NAMESPACE || "harmony-legs";
     const secret = s.env.HARMONY_GKE_BASE_SECRET || "harmony-worker-secrets";
-    const args = ["-n", ns, ...has(s.env.HARMONY_GKE_CONTEXT) ? ["--context", s.env.HARMONY_GKE_CONTEXT] : [], "get", "secret", secret];
+    const args = ["-n", ns, ...has2(s.env.HARMONY_GKE_CONTEXT) ? ["--context", s.env.HARMONY_GKE_CONTEXT] : [], "get", "secret", secret];
     const r = await deps.exec("kubectl", args, { env: s.env });
     add("reach:gke-base-secret", r.code === 0, r.code === 0 ? `base Secret ${ns}/${secret} exists` : `kubectl cannot read base Secret ${ns}/${secret}`, "check the kubeconfig context, or run container/gke/setup-cluster.sh");
   } else if (s.profile === "cloud") {
@@ -68001,8 +68153,8 @@ async function runPreflight(deps, s, opts = {}) {
     const project = resolveGcpProject({ env: s.env, merged: s.merged, existsSync: deps.existsSync, readFileSync: deps.readFileSync });
     if (!project) {
       add("reach:cloud-run-job", false, "no GCP project is configured", "set gcp.project in .harmony/conductor.json (or ~/.harmony/conductor-host.json)");
-    } else if (!has(job) || !has(region)) {
-      add("reach:cloud-run-job", false, `${[!has(job) ? "HARMONY_CLOUD_RUN_JOB" : "", !has(region) ? "HARMONY_CLOUD_RUN_REGION" : ""].filter(Boolean).join(", ")} not set`, "set cloud_run.job and gcp.region in the config files");
+    } else if (!has2(job) || !has2(region)) {
+      add("reach:cloud-run-job", false, `${[!has2(job) ? "HARMONY_CLOUD_RUN_JOB" : "", !has2(region) ? "HARMONY_CLOUD_RUN_REGION" : ""].filter(Boolean).join(", ")} not set`, "set cloud_run.job and gcp.region in the config files");
     } else {
       const r = await deps.exec("gcloud", ["run", "jobs", "describe", job, `--region=${region}`, `--project=${project}`, "--format=value(name)"], { env: s.env });
       add("reach:cloud-run-job", r.code === 0, r.code === 0 ? `Cloud Run job ${job} exists` : `Cloud Run job ${job} (region ${region}, project ${project}) does not exist or is unreadable`, "check gcloud auth and the job name");

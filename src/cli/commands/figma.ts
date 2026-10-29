@@ -31,6 +31,7 @@ import type {
   OAuthTokens,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { getAuthenticatedContext } from "../auth.js";
+import { runFigmaComponent } from "../figma-component.js";
 import {
   emptyBudget,
   type LegBudget,
@@ -243,6 +244,37 @@ export function registerFigmaCommands(program: Command, ports = {
       process.exitCode = 1;
     }
   });
+  figma
+    .command("component [name]")
+    .description("Look up a library component key in the saved map (one JSON line)")
+    .option("--in <set>", "component set the variant belongs to")
+    .option("--sets", "list the saved library's component sets")
+    .action(async (name: string | undefined, opts: { in?: string; sets?: boolean }) => {
+      let outcome;
+      try {
+        const ctx = await getAuthenticatedContext();
+        outcome = await runFigmaComponent(
+          { name, set: opts.in, sets: opts.sets },
+          {
+            context: async () =>
+              ctx.client.rpc("figma_launch_context", { p_project_id: ctx.projectId }),
+            candidates: async (n) =>
+              ctx.client.rpc("figma_library_candidates", {
+                p_project_id: ctx.projectId,
+                p_name: n,
+              }),
+          },
+        );
+      } catch {
+        outcome = {
+          exitCode: 1 as const,
+          stderr: "Figma context unavailable; refusing configured Figma work.\n",
+        };
+      }
+      if (outcome.stdout) process.stdout.write(outcome.stdout);
+      if (outcome.stderr) process.stderr.write(outcome.stderr);
+      process.exitCode = outcome.exitCode;
+    });
   figma
     .command("install-worker")
     .requiredOption("--adapter <adapter>", "claude-code or codex")
