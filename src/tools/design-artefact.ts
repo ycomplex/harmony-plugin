@@ -34,6 +34,37 @@ export async function validateDesignAttachments(client: SupabaseClient, taskId: 
   }
   return a;
 }
+/** B-1338 — a designer-linked Figma frame the adopt check judged, shown on the design brief with its live preview. */
+export interface DesignerFrame {
+  id: string;
+  name: string;
+  file_key: string;
+  verdict: 'adopted' | 'off-library' | 'not-covering' | 'unreadable' | 'not-checked';
+  reason: string;
+  preview_attachment_id?: string;
+  preview_filename?: string;
+}
+const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+/** Refuses a designer-frame preview that is not a finalized same-ticket image attachment (with its actual filename, when given). */
+export async function validateDesignerFrameAttachments(client: SupabaseClient, taskId: string, frames: DesignerFrame[]): Promise<void> {
+  const withPreview = frames.filter((f) => f.preview_attachment_id);
+  if (!withPreview.length) return;
+  const ids = [...new Set(withPreview.map((f) => f.preview_attachment_id as string))];
+  const { data, error } = await client.from('attachments').select('id, filename, content_type').eq('task_id', taskId).eq('status', 'finalized').in('id', ids);
+  if (error) throw new Error(error.message);
+  for (const f of withPreview) {
+    const row = data?.find((r: { id: string }) => r.id === f.preview_attachment_id);
+    if (!row || (f.preview_filename !== undefined && row.filename !== f.preview_filename) || !IMAGE_TYPES.includes(row.content_type)) {
+      throw new Error(`Designer frame "${f.name}" preview must reference a finalized same-ticket image attachment with its actual filename.`);
+    }
+  }
+}
+export function renderDesignerFrames(frames: DesignerFrame[]): string[] {
+  return ["**Designer's frames:**", ...frames.map((f) => {
+    const preview = f.preview_attachment_id ? ` — ${f.preview_filename ?? 'preview'} (ticket attachment ${f.preview_attachment_id})` : '';
+    return `- ${f.name} — ${f.verdict} — ${f.reason}${preview}`;
+  })];
+}
 export function renderDesignArtefact(a: DesignArtefact): string[] {
   if (a.tool === 'html') return [`**Design preview:** ${a.surface_filename} (ticket attachment ${a.surface_attachment_id}; download and open locally)`];
   return [`**Design previews:** [Open Figma file${a.version_id ? ` — version ${a.version_id}` : ''}](${a.file_url})`, ...a.nodes.map(n => `- ${n.name}: ${n.caption} — ${n.preview_filename} (ticket attachment ${n.preview_attachment_id})`)];

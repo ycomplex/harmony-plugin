@@ -221,6 +221,17 @@ describe('B-1320 adopt a designer\'s frames', () => {
     expect(block).toMatch(/`not-checked` frame is never adopted/);
     expect(block).toMatch(/Never modify the designer's frames or pages/);
   });
+  it('B-1338: the check reads the saved library map, never a Figma component lookup; every judged frame is shown', () => {
+    const adopt = figmaPath.indexOf('**Adopt first (B-1320).**');
+    const block = figmaPath.slice(adopt, figmaPath.indexOf('Figma path (planner:'));
+    expect(block).toMatch(/reads the workspace's saved library map and its ambiguous-name candidates, never a Figma component\s+lookup/);
+    expect(block).not.toMatch(/asks? Figma (which file|per component)/i);
+    expect(block).toMatch(/A name-only match is off-library \("drawn from another copy of the library"\)/);
+    expect(block).toMatch(/For EVERY frame given a verdict, adopted or not, attach its\s+live REST preview/);
+    expect(block).toContain('`frame.designer_frames`');
+    expect(block).toMatch(/inline above the decision/);
+    expect(block).toContain('--url <figma-link>');
+  });
   it('item 9 separates the scaffold (reference) from the designer\'s frames (adopted)', () => {
     expect(figmaPath).toMatch(/9\. A Claude Design scaffold or an inception sketch is \*\*reference only\*\*[\s\S]*designer's own library-built Figma frames are \*\*adopted\*\*/);
   });

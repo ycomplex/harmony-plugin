@@ -18,8 +18,8 @@ import {
 
 import { listComments } from '../../tools/comments.js';
 import {
-  findFigmaLinks, classifyFrames, createComponentLookup, DEFAULT_LOOKUP_CAP,
-  type FigmaLink, type FrameVerdict, type LookupComponentFile, type ReadNodes, type Sleep,
+  findFigmaLinks, classifyFrames, buildLibraryIndex,
+  type FigmaLink, type FrameVerdict, type LibraryContext, type ReadCandidates, type ReadNodes, type Sleep,
 } from '../../tools/figma-adopt.js';
 import { createFigmaRestClient, FigmaRestError, type FigmaNodesResponse } from '../../tools/figma-reconcile.js';
 
@@ -114,27 +114,29 @@ export async function fingerprintCompare(taskRef: string, by: string, deps: Fing
   return { command: 'compare', status: 'changed', changed_frame_ids: changed, wrote: true };
 }
 
-// B-1320 — `harmony design adopt-check --task <id> [--links-only]`. READ-ONLY: finds the Figma frame links on the
-// ticket (description + comments), reads the frames live over REST and says which are library-built and so can be
-// adopted as drawn. Writes nothing to the board and nothing to Figma. Exit 0 on every expected state.
+// B-1320 — `harmony design adopt-check --task <id> [--links-only] [--url <link>]...`. READ-ONLY: finds the Figma frame
+// links on the ticket (description + comments), or takes the given --url links instead, reads the frames live over
+// REST and says which are library-built and so can be adopted as drawn. B-1338: membership is judged against the
+// workspace's saved library map (figma_launch_context) and its ambiguous-name candidates (figma_library_candidates),
+// never a Figma component lookup. Writes nothing to the board and nothing to Figma. Exit 0 on every expected state.
 export interface AdoptCheckDeps {
   /** The ticket's description and every comment's text. */
   readTexts(taskRef: string): Promise<string[]>;
-  /** The workspace library file key, or null when Figma is not connected (or the context is unreadable). */
-  readLibraryFileKey(): Promise<string | null>;
+  /** The launch-context fields the check reads, or null when the context is unreadable. */
+  readLibraryContext(): Promise<LibraryContext | null>;
+  /** Component keys stored for one ambiguous bare name; [] when the RPC is absent; throws on any other error. */
+  readCandidates: ReadCandidates;
   token: string | undefined;
   readNodes: ReadNodes;
-  lookupComponentFile: LookupComponentFile;
   sleep?: Sleep;
-  cap?: number;
 }
 
-export async function adoptCheck(taskRef: string, opts: { linksOnly?: boolean }, deps: AdoptCheckDeps): Promise<Obj> {
-  const cap = deps.cap ?? DEFAULT_LOOKUP_CAP;
-  const links = findFigmaLinks(await deps.readTexts(taskRef));
+export async function adoptCheck(taskRef: string, opts: { linksOnly?: boolean; urls?: string[] }, deps: AdoptCheckDeps): Promise<Obj> {
+  const links = opts.urls && opts.urls.length > 0 ? findFigmaLinks(opts.urls) : findFigmaLinks(await deps.readTexts(taskRef));
   const plain = (l: FigmaLink) => ({ fileKey: l.fileKey, nodeId: l.nodeId, url: l.url });
-  if (links.length === 0) return { command: 'adopt-check', status: 'no-links', links: [], frames: [], lookups_used: 0, lookup_cap: cap };
-  if (!deps.token) return { command: 'adopt-check', status: 'no-token', links: links.map(plain), frames: [], lookups_used: 0, lookup_cap: cap };
+  const source = opts.urls && opts.urls.length > 0 ? 'url' : 'ticket';
+  if (links.length === 0) return { command: 'adopt-check', status: 'no-links', source, links: [], frames: [], candidate_reads: 0 };
+  if (!deps.token) return { command: 'adopt-check', status: 'no-token', source, links: links.map(plain), frames: [], candidate_reads: 0 };
 
   if (opts.linksOnly) {
     const out: Obj[] = [];
@@ -147,18 +149,35 @@ export async function adoptCheck(taskRef: string, opts: { linksOnly?: boolean },
         out.push({ ...plain(l), readable: false, reason: err instanceof FigmaRestError ? `Figma returned ${err.status}` : 'Figma was unreachable' });
       }
     }
-    return { command: 'adopt-check', status: 'ok', links_only: true, links: out, frames: [], lookups_used: 0, lookup_cap: cap };
+    return { command: 'adopt-check', status: 'ok', source, links_only: true, links: out, frames: [], candidate_reads: 0 };
   }
 
-  const libraryFileKey = await deps.readLibraryFileKey();
-  if (!libraryFileKey) return { command: 'adopt-check', status: 'not-connected', links: links.map(plain), frames: [], lookups_used: 0, lookup_cap: cap };
-  const r = await classifyFrames({
-    links, libraryFileKey, readNodes: deps.readNodes, lookupComponentFile: deps.lookupComponentFile, cap, sleep: deps.sleep,
-  });
+  const ctx = await deps.readLibraryContext();
+  const libraryFileKey = ctx && ctx.state !== 'disconnected' && typeof ctx.library_file_key === 'string' && ctx.library_file_key ? ctx.library_file_key : null;
+  if (!libraryFileKey) return { command: 'adopt-check', status: 'not-connected', source, links: links.map(plain), frames: [], candidate_reads: 0 };
+  const library = buildLibraryIndex(ctx);
+  const r = await classifyFrames({ links, library, readNodes: deps.readNodes, candidates: deps.readCandidates, sleep: deps.sleep });
   return {
-    command: 'adopt-check', status: 'ok', links: links.map(plain), frames: r.frames as FrameVerdict[],
-    lookups_used: r.lookupsUsed, lookup_cap: r.lookupCap,
+    command: 'adopt-check', status: 'ok', source, links: links.map(plain), frames: r.frames as FrameVerdict[],
+    library: library.status === 'ok'
+      ? { status: 'ok', file_key: library.fileKey, components: library.names.size, refreshed_at: library.refreshedAt }
+      : { status: 'unavailable', reason: library.reason },
+    candidate_reads: r.candidateReads,
   };
+}
+
+/** PostgREST / Postgres codes meaning "the RPC does not exist here" (an older board): treated as no candidates. */
+const ABSENT_RPC = new Set(['PGRST202', '42883']);
+
+/** figma_library_candidates' answer -> the stored component keys. Absent RPC => []; any other error throws. */
+export function candidateKeysFrom(res: { data: unknown; error: { code?: string } | null }): string[] {
+  if (res.error) {
+    if (res.error.code && ABSENT_RPC.has(res.error.code)) return [];
+    throw new Error(`figma_library_candidates failed${res.error.code ? ` (${res.error.code})` : ''}`);
+  }
+  return Array.isArray(res.data)
+    ? res.data.map((row) => (isObj(row) && typeof row.key === 'string' ? row.key : null)).filter((k): k is string => k !== null)
+    : [];
 }
 
 export function registerDesignCommands(program: Command): void {
@@ -200,7 +219,8 @@ export function registerDesignCommands(program: Command): void {
     .description('Read-only: find the designer\'s Figma frame links on the ticket and say which are library-built (adoptable as drawn)')
     .requiredOption('--task <id>', 'Task ID (UUID, number, or B-123)')
     .option('--links-only', 'Only report the links and whether each names a readable frame (no library check)')
-    .action(async (opts: { task: string; linksOnly?: boolean }) => {
+    .option('--url <figma-link>', 'Check this Figma link instead of the ticket\'s links (repeatable)', (v: string, prev: string[] = []) => [...prev, v])
+    .action(async (opts: { task: string; linksOnly?: boolean; url?: string[] }) => {
       try {
         const ctx = await getAuthenticatedContext();
         const token = readFigmaToken();
@@ -212,18 +232,18 @@ export function registerDesignCommands(program: Command): void {
             const comments = (await listComments(ctx.client, ctx.projectId, { task_id: ref })) as Array<{ content?: string | null }> | null;
             return [t.description ?? '', ...(comments ?? []).map((c) => c.content ?? '')];
           },
-          readLibraryFileKey: async () => {
+          readLibraryContext: async () => {
             try {
               const { data, error } = await ctx.client.rpc('figma_launch_context', { p_project_id: ctx.projectId });
-              if (error || !isObj(data) || data.state === 'disconnected') return null;
-              return typeof data.library_file_key === 'string' && data.library_file_key ? data.library_file_key : null;
+              return error || !isObj(data) ? null : (data as LibraryContext);
             } catch { return null; }
           },
+          readCandidates: async (name) =>
+            candidateKeysFrom(await ctx.client.rpc('figma_library_candidates', { p_project_id: ctx.projectId, p_name: name })),
           readNodes: async (fileKey, ids): Promise<FigmaNodesResponse> =>
             createFigmaRestClient({ token: token ?? '', fetch: nodeFetch as never, fileKey }).getNodesLive(ids),
-          lookupComponentFile: createComponentLookup({ token: token ?? '', fetch: nodeFetch as never }),
         };
-        console.log(JSON.stringify(await adoptCheck(opts.task, { linksOnly: opts.linksOnly }, deps)));
+        console.log(JSON.stringify(await adoptCheck(opts.task, { linksOnly: opts.linksOnly, urls: opts.url }, deps)));
       } catch (err) {
         console.log(JSON.stringify({ status: 'error', error: err instanceof Error ? err.message : String(err) }));
         process.exit(1);

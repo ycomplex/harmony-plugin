@@ -72,8 +72,19 @@ export interface FigmaComponentMeta {
   componentSetId?: string;
 }
 
+/** One entry of the `componentSets` map Figma returns beside a node: componentSetId -> its key and name (B-1338). */
+export interface FigmaComponentSetMeta {
+  key?: string;
+  name?: string;
+  remote?: boolean;
+}
+
 export interface FigmaNodesResponse {
-  nodes: Record<string, { document: FigmaNode; components?: Record<string, FigmaComponentMeta> } | null>;
+  nodes: Record<string, {
+    document: FigmaNode;
+    components?: Record<string, FigmaComponentMeta>;
+    componentSets?: Record<string, FigmaComponentSetMeta>;
+  } | null>;
 }
 
 export interface FigmaRestClient {
