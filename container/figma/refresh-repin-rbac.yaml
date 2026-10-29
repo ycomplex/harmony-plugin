@@ -3,10 +3,10 @@
 # and nothing cluster-wide. Reaching the cluster at all (`gcloud container clusters get-credentials`) is the separate
 # project-level grant roles/container.clusterViewer (docs/figma-connection-rollout.md, step 7).
 #
-# The founder applies this; no leg does. Before applying, replace the subject name with the Cloud Build trigger's
-# service account email, read with
-#   gcloud builds triggers describe <trigger-name> --region <region> --format='value(serviceAccount)'
-# (the value is projects/<project>/serviceAccounts/<email>; use only the <email> part).
+# The founder applies this; no leg does. The subject is the DEDICATED build service account
+# harmony-figma-refresh-build@harmony-conductor.iam.gserviceaccount.com, created in docs/figma-connection-rollout.md
+# step 7, founder step 2. It is the `--service-account` of both regional (us-central1) Figma refresh triggers, never the
+# default compute service account (<number>-compute@developer.gserviceaccount.com) the other triggers run as.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -28,7 +28,7 @@ roleRef:
   kind: Role
   name: harmony-figma-refresh-repin
 subjects:
-  # The trigger's service account email (see the header). GKE maps a Google identity to a User subject by its email.
+  # The triggers' dedicated service account (see the header). GKE maps a Google identity to a User subject by its email.
   - apiGroup: rbac.authorization.k8s.io
     kind: User
-    name: REPLACE_WITH_CLOUD_BUILD_SERVICE_ACCOUNT_EMAIL
+    name: harmony-figma-refresh-build@harmony-conductor.iam.gserviceaccount.com

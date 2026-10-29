@@ -145,27 +145,38 @@ Record environment, proof outcomes and enabling time on B-1201. Do not unsuspend
 
    Founder steps for the build (no leg applies them):
 
-   1. Read the real refresh image repository from the live CronJobs:
+   1. Confirm the live image:
       `kubectl -n harmony-conductor get cronjob harmony-figma-refresh harmony-figma-refresh-prod -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.jobTemplate.spec.template.spec.containers[0].image}{"\n"}{end}'`.
-      The part before `@sha256:` is the repository. The build's default `_IMAGE` is
-      `us-central1-docker.pkg.dev/harmony-conductor/harmony-workers/harmony-figma-refresh`.
-   2. Create two Cloud Build triggers on the plugin repository, both using `container/figma/cloudbuild.yaml`
-      (the same shape as the conductor's triggers in `docs/remote-conductor-runbook.md`, step 2):
-      - on push to the plugin's **`staging`** branch, with substitution `_CHANNEL=staging`;
-      - on push to its **`prod`** branch, with `_CHANNEL=prod`.
+      The part before `@sha256:` is the repository. On 2026-10-29 both jobs showed
+      `us-central1-docker.pkg.dev/harmony-conductor/harmony-workers/harmony-figma-refresh@sha256:a0ec5db1…` (built from
+      prod 0.16.72), so the build's default `_IMAGE` is correct; override it only if this read ever differs.
+   2. Create the dedicated build identity and give it only what the build needs:
+      `gcloud iam service-accounts create harmony-figma-refresh-build --project harmony-conductor`, then
+      - `gcloud projects add-iam-policy-binding harmony-conductor --member serviceAccount:harmony-figma-refresh-build@harmony-conductor.iam.gserviceaccount.com --role roles/logging.logWriter`
+        (a user-specified build service account needs it; the build already uses `CLOUD_LOGGING_ONLY`);
+      - `gcloud artifacts repositories add-iam-policy-binding harmony-workers --location us-central1 --project harmony-conductor --member serviceAccount:harmony-figma-refresh-build@harmony-conductor.iam.gserviceaccount.com --role roles/artifactregistry.writer`
+        (the `harmony-workers` repository only);
+      - `gcloud projects add-iam-policy-binding harmony-conductor --member serviceAccount:harmony-figma-refresh-build@harmony-conductor.iam.gserviceaccount.com --role roles/container.clusterViewer`
+        (fetches cluster credentials only; no Kubernetes object access).
 
-      Set `_IMAGE` on both if the repository read in step 1 differs from the default. `_CLUSTER` (`harmony-legs`),
-      `_ZONE` (`us-central1-a`) and `_NAMESPACE` (`harmony-conductor`) default correctly.
-   3. Read each trigger's service account and let it reach the cluster:
-      `gcloud builds triggers describe <TRIGGER_NAME> --region <REGION> --format='value(serviceAccount)'`
-      (the value is `projects/<project>/serviceAccounts/<EMAIL>`), then
-      `gcloud projects add-iam-policy-binding harmony-conductor --member serviceAccount:<EMAIL> --role roles/container.clusterViewer`.
-      That role only lets the build fetch cluster credentials; it grants no Kubernetes object access.
-   4. Replace `REPLACE_WITH_CLOUD_BUILD_SERVICE_ACCOUNT_EMAIL` in `container/figma/refresh-repin-rbac.yaml` with that
-      `<EMAIL>` (add a second subject if the two triggers use different accounts) and apply it:
-      `kubectl apply -f container/figma/refresh-repin-rbac.yaml`. It grants `get` and `patch` on the two refresh
-      CronJobs in `harmony-conductor`, nothing else. Without steps 3 and 4 the build still publishes both tags, then
-      fails at its repin step naming this step, and the CronJob stays on its last good digest.
+      The founder needs `roles/iam.serviceAccountUser` on this service account to attach it to a trigger. Do **not**
+      use the default compute service account (`<number>-compute@developer.gserviceaccount.com`) that the other
+      triggers run as.
+   3. Create the two triggers **regionally in `us-central1`**, like every existing trigger (there are no global ones),
+      both with build config `container/figma/cloudbuild.yaml` and
+      `--service-account projects/harmony-conductor/serviceAccounts/harmony-figma-refresh-build@harmony-conductor.iam.gserviceaccount.com`:
+      - `harmony-figma-refresh-image-staging`: branch `^staging$`, substitution `_CHANNEL=staging`;
+      - `harmony-figma-refresh-image-prod`: branch `^prod$`, substitution `_CHANNEL=prod`.
+
+      Copy the shape of the conductor's `harmony-conductor-image-staging` / `harmony-conductor-image-prod` triggers
+      (`docs/remote-conductor-runbook.md`, step 2; same repository connection). `_IMAGE`, `_CLUSTER` (`harmony-legs`),
+      `_ZONE` (`us-central1-a`) and `_NAMESPACE` (`harmony-conductor`) default correctly. Confirm each with
+      `gcloud builds triggers describe <NAME> --region us-central1 --format='value(serviceAccount)'`; it must read
+      `projects/harmony-conductor/serviceAccounts/harmony-figma-refresh-build@harmony-conductor.iam.gserviceaccount.com`.
+   4. Apply the RBAC: `kubectl apply -f container/figma/refresh-repin-rbac.yaml`. Its subject is already the dedicated
+      service account's email. It grants `get` and `patch` on the two refresh CronJobs in `harmony-conductor`, nothing
+      else. Without steps 2–4 the build still publishes both tags, then fails at its repin step naming this step, and
+      the CronJob stays on its last good digest.
 
    **How a change reaches the job.** A merge to `main` regenerates `staging`; the staging trigger builds the image
    and repins `harmony-figma-refresh`. `./promote-prod.sh` moves `prod`; the prod trigger builds and repins

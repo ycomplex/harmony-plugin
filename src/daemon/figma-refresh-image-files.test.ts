@@ -209,6 +209,8 @@ describe('container/figma/cloudbuild.yaml', () => {
       expect(r.status).not.toBe(0);
       expect(r.stderr).toContain('may not patch cronjob/harmony-figma-refresh-prod');
       expect(r.stderr).toContain('docs/figma-connection-rollout.md');
+      expect(r.stderr).toContain('founder steps 2 and 4');
+      expect(r.stderr).toContain('harmony-figma-refresh-build@harmony-conductor.iam.gserviceaccount.com');
     });
   });
 });
@@ -279,12 +281,14 @@ describe('container/figma/refresh-repin-rbac.yaml', () => {
     ]);
   });
 
-  it('binds it to the trigger service account placeholder as a User', () => {
+  it('binds it to the dedicated build service account as a User, never a default compute account', () => {
     const rb = docs[1]!;
     expect(rb.roleRef).toMatchObject({ kind: 'Role', name: 'harmony-figma-refresh-repin' });
     expect(rb.subjects).toEqual([
-      expect.objectContaining({ kind: 'User', name: 'REPLACE_WITH_CLOUD_BUILD_SERVICE_ACCOUNT_EMAIL' }),
+      expect.objectContaining({ kind: 'User', name: 'harmony-figma-refresh-build@harmony-conductor.iam.gserviceaccount.com' }),
     ]);
+    for (const s of rb.subjects!) expect(s.name).not.toMatch(/-compute@developer\.gserviceaccount\.com$/);
+    expect(read('container/figma/refresh-repin-rbac.yaml')).not.toContain('REPLACE_WITH');
   });
 });
 

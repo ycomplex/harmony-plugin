@@ -5,7 +5,9 @@
 # (B-1321's library-map version 2, for one) never reached the job. The digest pin stays; this build moves it.
 #
 # Run it from a Cloud Build trigger on the plugin's `staging` branch (with _CHANNEL=staging) and one on `prod` (with
-# _CHANNEL=prod). The founder creates both triggers (docs/figma-connection-rollout.md, step 7). It is a SEPARATE file
+# _CHANNEL=prod), both REGIONAL in us-central1 and both running as the dedicated service account
+# harmony-figma-refresh-build@harmony-conductor.iam.gserviceaccount.com, not the default compute one. The founder creates
+# the account and both triggers (docs/figma-connection-rollout.md, step 7, founder steps 2 and 3). It is a SEPARATE file
 # from container/cloudbuild.yaml and container/conductor/cloudbuild.yaml on purpose: those images are untouched, and
 # only this build holds the narrow repin grant (container/figma/refresh-repin-rbac.yaml). The Dockerfile builds the
 # runner from source with npm ci, so this build does not need the branch's dist/; it reads the version from
@@ -125,7 +127,7 @@ steps:
         set -euo pipefail
         cronjob="$$(cat /workspace/cronjob_name.txt)"
         pinned="$$(cat /workspace/pinned_ref.txt)"
-        founder="see docs/figma-connection-rollout.md step 7, founder steps 3 and 4 (roles/container.clusterViewer for the trigger's service account, and kubectl apply -f container/figma/refresh-repin-rbac.yaml). The tags are published; the CronJob stays on its last good digest."
+        founder="see docs/figma-connection-rollout.md step 7, founder steps 2 and 4 (the dedicated service account harmony-figma-refresh-build@harmony-conductor.iam.gserviceaccount.com with roles/container.clusterViewer, and kubectl apply -f container/figma/refresh-repin-rbac.yaml). The tags are published; the CronJob stays on its last good digest."
         gcloud container clusters get-credentials '${_CLUSTER}' --zone '${_ZONE}' --project '${PROJECT_ID}' \
           || { echo "repin: could not get credentials for cluster ${_CLUSTER}: $$founder" >&2; exit 1; }
         if ! out="$$(kubectl -n '${_NAMESPACE}' set image "cronjob/$$cronjob" "refresh=$$pinned" 2>&1)"; then
