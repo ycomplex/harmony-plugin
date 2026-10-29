@@ -378,8 +378,10 @@ array of feature-entity name(s) clarify's own accept confirmed:
   (alongside the product track's own AC edits below, when this is the product sub-track — the two
   coexist in one array):
   ```
-  { write_kind: "entity_link", ref: slugRef("entity", name), entity_name: name, decision_id: decision.id }
+  { write_kind: "entity_link", ref: slugRef("entity", name), entity_name: name, kind: "feature", decision_id: decision.id }
   ```
+  Names in `implements_entities` are feature entities, so author `kind: "feature"` (author the kind the
+  entity actually is if you link something else). A name-only item for an ambiguous name is refused before any write.
 - **Absent entirely** (the PERMANENT state for every ticket already past clarify before B-977 shipped —
   e.g. B-975, B-978, and every other open v1.5 ticket at Designed-or-later; not a transition window that
   closes) or **present but an empty list** (`names: []` — a legitimate "no linkable feature" answer) →

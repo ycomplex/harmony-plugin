@@ -464,7 +464,7 @@ export async function handleToolCall(
         result = await consumeAcceptRemark(client, projectId, args as any, userId);
         break;
       case 'consume_pending_acceptance_event':
-        result = await consumePendingAcceptanceEventToolHandler(client, projectId, args as any);
+        result = await consumePendingAcceptanceEventToolHandler(client, projectId, args as any, userId);
         break;
       case 'consume_acceptance_event':
         result = await consumeAcceptanceEventToolHandler(client, args as any);

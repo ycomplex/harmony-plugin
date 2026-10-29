@@ -536,7 +536,7 @@ async function composeAndAccept(
     provenance: RESOLVE_BRIEF_PROVENANCE_RECORDED,
   });
   if (PAYLOAD_CARRYING_REASONS.has(args.reason)) {
-    const consumed = await consumePendingAcceptanceEvent(client, projectId, taskId);
+    const consumed = await consumePendingAcceptanceEvent(client, projectId, taskId, { userId });
     if (consumed.status !== 'consumed' && consumed.status !== 'none' && consumed.status !== 'substrate-absent') {
       throw new Error(
         `recorded walk: ${args.reason} accept deferred a payload this core could not apply cleanly ` +
