@@ -55,9 +55,9 @@ describe('visual-handoff: the artefact write', () => {
     expect(figmaPath).toMatch(/`<ticket> · <option>`/);
     expect(figmaPath).toMatch(/provenance[\s\S]*real[\s\S]*invented[\s\S]*illustrative[\s\S]*frame notes/);
   });
-  it('renders over REST /v1/images pinned to the file version', () => {
+  it('renders over REST /v1/images from the live file, with no version parameter', () => {
     expect(figmaPath).toContain('GET /v1/images');
-    expect(figmaPath).toMatch(/GET \/v1\/images\?ids=…&version=<that id>/);
+    expect(figmaPath).toMatch(/GET \/v1\/images\?ids=…&format=png`\s+with \*\*no `version` parameter\*\*/);
     expect(figmaPath).toMatch(/not\s+`get_screenshot`/);
   });
   it('records the MCP call count with a hard cap of 6 (typical 2-3), through the shared limiter', () => {
@@ -120,29 +120,68 @@ describe('design-decide: product-track coverage check', () => {
   });
 });
 
-describe('visual-handoff: composition pins its own previews (B-1203)', () => {
-  it('ends the compose script with a settle wait and figma.saveVersionHistoryAsync, in the same call', () => {
-    expect(figmaPath).toContain('figma.saveVersionHistoryAsync');
-    expect(figmaPath).toMatch(/settle\s+wait/);
-    expect(figmaPath).toMatch(/inside the same call\*\*\s*\(no extra MCP call\)/);
+describe('visual-handoff: previews render from the live file (B-1203)', () => {
+  it('has no save tail: the compose script returns frameIds and saves no version', () => {
+    expect(figmaPath).toMatch(/returns `\{ frameIds \}`[\s\S]*saves no version/);
+    expect(figmaPath).toMatch(/refuses `figma\.saveVersionHistoryAsync`/);
+    expect(figmaPath).toMatch(/no\s+save tail/);
+    expect(figmaPath).not.toMatch(/ends by saving a Figma version/);
+    expect(figmaPath).not.toMatch(/saveVersionTail/);
+    expect(figmaPath).toMatch(/never waits on autosave/);
   });
-  it('pins to the returned version id and does not wait on autosave', () => {
-    expect(figmaPath).toMatch(/Pin to that \*\*returned version\s+id\*\*/);
-    expect(figmaPath).toMatch(/version=<that id>/);
-    expect(figmaPath).toMatch(/autosave wait[\s\S]*is \*\*retired\*\*/);
-    expect(figmaPath).toMatch(/do\s+not wait on autosave/);
-  });
-  it('checks every frame present and every image non-null, else the honest no-preview note, never failing the gate', () => {
+  it('checks every frame in the compose result and every image non-null, else the honest no-preview note, never failing the gate', () => {
     expect(figmaPath).toContain('checkPreviewSet');
-    expect(figmaPath).toMatch(/every planned frame is in the\s+saved version's `frameIds` and every image URL is non-null/);
+    expect(figmaPath).toMatch(/every planned frame is in the\s+compose call's returned `frameIds` and every image URL is non-null/);
     expect(figmaPath).toContain('NO_PREVIEW_NOTE');
     expect(figmaPath).toMatch(/never a\s+partial set/);
     expect(figmaPath).toMatch(/do \*\*not\*\* fail the gate/);
   });
+  it('writes a versionless record only when the board reports version_optional, else says plainly no record was stored', () => {
+    expect(figmaPath).toMatch(/optional since B-1203/);
+    expect(figmaPath).toMatch(/ONLY when the board reports `version_optional: true`/);
+    expect(figmaPath).toContain('VersionOptionalUnsupportedError');
+    expect(figmaPath).toMatch(/say plainly on the brief that no design\s+record was stored/);
+    expect(figmaPath).toMatch(/never a silent miss/);
+  });
+  it('asks an operator who wants to edit to save a version under the exact suggested name', () => {
+    expect(figmaPath).toContain('suggestedVersionName');
+    expect(figmaPath).toContain('Before · <ticket> · round <brief iteration>');
+  });
   it('applies to a clarify sketch and leaves the gating untouched', () => {
-    expect(figmaPath).toMatch(/same applies to a\s+clarify sketch: its `frame\.sketch` `pinned_version`/);
+    expect(figmaPath).toMatch(/A clarify sketch\s+composes the same way/);
     expect(figmaPath).toMatch(/unconnected\s*→\s*`html`[\s\S]*unchanged/);
     expect(figmaPath).toMatch(/hard cap 6 per leg/);
+  });
+  it('reconciles a versionless record by exact name and never reports no changes on an unknown baseline', () => {
+    const i = handoff.indexOf("### 3d. Reconcile a designer's edits (B-1204)");
+    const seg = handoff.slice(i, handoff.indexOf('### 4. Iterate', i));
+    expect(seg).toContain('findVersionByLabel');
+    expect(seg).toMatch(/\*\*exactly\*\*\s+equals that name/);
+    expect(seg).toContain('named-version-missing');
+    expect(seg).toContain('I can\'t see a version named "<name>".');
+    expect(seg).toMatch(/possible\s+change — please\s+confirm/);
+    expect(seg).toMatch(/never as "no changes"/);
+    expect(seg).toContain('harmony design fingerprint take');
+    expect(seg).toContain('harmony design fingerprint compare');
+  });
+});
+
+describe('design-decide and start-work: the content fingerprint (B-1203)', () => {
+  const startWork = readSkill('start-work').body;
+  it('design-decide takes the fingerprint after the design accept is consumed, and a failure never blocks', () => {
+    const i = design.indexOf('**Fingerprint the accepted Figma design (B-1203).**');
+    expect(i).toBeGreaterThan(design.indexOf('behavior is unchanged by B-1034.') - 1);
+    const seg = design.slice(i, i + 1400);
+    expect(seg).toContain('design fingerprint take --task <ticket>');
+    expect(seg).toMatch(/figma\*\* `design_artefact`/);
+    expect(seg).toMatch(/`not-taken`/);
+    expect(seg).toMatch(/never\s+blocks/);
+  });
+  it('start-work compares at the plan gate and at the build gate, and a changed fingerprint stops the build', () => {
+    expect(startWork).toContain('design fingerprint compare --task <ticket> --by plan');
+    expect(startWork).toContain('design fingerprint compare --task <ticket> --by build');
+    expect(startWork).toMatch(/Drift `changed` stops the build/);
+    expect(startWork).toMatch(/unless a plan step names/);
   });
 });
 

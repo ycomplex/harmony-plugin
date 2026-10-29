@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { fingerprintTake, fingerprintCompare, readFigmaToken, FIGMA_PAT_FILE, type FingerprintDeps } from './design.js';
 import { fingerprintFrames, type FingerprintFetch } from '../../tools/design-fingerprint.js';
 
-type N = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+type N = Record<string, any>;
 const nodes = (): N => JSON.parse(readFileSync(fileURLToPath(new URL('../../tools/__fixtures__/design-fingerprint.live-2026-10-29.json', import.meta.url)), 'utf8'));
 const FRAME = '25:205';
 const artefact = (over: N = {}) => ({

@@ -11,12 +11,15 @@ The wire shape is documented with a complete example in
 The authoritative runtime validator is `DesignArtefactSchema` in
 `src/tools/design-artefact.ts`. Common fields are `schema_version: 1`, `tool`,
 `composed_at`, `provenance_notes` and measured integer `mcp_call_count` (zero is
-valid). Figma records require `file_key`, `file_url`, `version_id` and ordered
-`nodes[{id,name,caption,preview_attachment_id,preview_filename}]`. HTML records
+valid). Figma records require `file_key`, `file_url` and ordered
+`nodes[{id,name,caption,preview_attachment_id,preview_filename}]`; `version_id` is optional (B-1203): a live-file
+composition has none, and the plugin writes a versionless record only when `design_artefact_capability` reports
+`version_optional: true`, otherwise `validateDesignAttachments` throws `VersionOptionalUnsupportedError`. HTML records
 use `surface_attachment_id` and `surface_filename`; no Figma version is invented.
 There are no persisted signed URLs or credential fields.
 
-Compose validates finalized same-ticket attachment IDs, filenames and media types.
+Composition renders previews from the LIVE file (`GET /v1/images`, no version) and never saves a version; the
+versioned protocol below serves only the reconcile read-back of a record that carries a `version_id`. Compose validates finalized same-ticket attachment IDs, filenames and media types.
 The producer must check that all requested frames exist at explicit version X,
 render at X, verify non-null image results and download their PNG bytes. A valid
 version can predate the new frame and return 200/null. The source preparation
@@ -25,7 +28,9 @@ must upload the returned bytes through the existing attachment substrate.
 
 At acceptance the consuming worker reads latest version Y through REST when an
 optional injected `HARMONY_FIGMA_TOKEN` is present. Credentials are not stored or
-fetched here. The observation is `changed`, `unchanged`, or `unchecked`, with a
+fetched here. A versionless record has no version to compare: its drift is the content fingerprint
+(`src/tools/design-fingerprint.ts`) taken by the leg that consumes the design accept (`harmony design fingerprint take`),
+stored at `field_values.design_fingerprint` and compared by the plan and build gates (`... compare --by plan|build`). The observation is `changed`, `unchanged`, or `unchecked`, with a
 `checked_at` timestamp and `latest_version_id` when known. The slot RPC freezes
 the first observation on the accepted event before writing. Retries reuse the
 ledger; an older event cannot overwrite a newer accepted design. X is always the

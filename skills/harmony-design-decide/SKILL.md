@@ -493,6 +493,17 @@ Show the rendered `content`. On the human's command:
   payload and never re-applies (or double-files) the AC edits you already made above — that branch's
   behavior is unchanged by B-1034.
 
+  **Fingerprint the accepted Figma design (B-1203).** Right after that `consume_pending_acceptance_event`
+  call, when the accepted brief's frame carries a **figma** `design_artefact`, run
+  `node "${CLAUDE_PLUGIN_ROOT}/dist/bin/harmony.js" design fingerprint take --task <ticket>` (a `harmony` on PATH works
+  too). It takes ONE REST read of the accepted frames and stores a content fingerprint at
+  `field_values.design_fingerprint`, which the plan and build gates compare later to detect drift (a
+  versionless record has no version to compare). It exits 0 on every expected state and prints one JSON line.
+  A failure (no token, Figma unreachable, rate limited) is written as `not-taken` with a reason and **never
+  blocks** the accept or the advance; say so in your report. A non-Figma design, or one without nodes, is
+  skipped with no write. The token comes from `HARMONY_FIGMA_TOKEN` or `/secrets/figma/pat` and is never
+  echoed. The web only displays the status; it never calls Figma.
+
   **The ticket + decision's implemented-entity edges (B-977) already landed above (B-997).** Step 4's
   `doc.payload` authored one `entity_link` item per confirmed name (three-state handling: present/
   absent/empty — see step 4), and the SAME `consume_pending_acceptance_event` call just above lands them

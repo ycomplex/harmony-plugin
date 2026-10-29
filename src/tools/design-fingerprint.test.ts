@@ -9,7 +9,7 @@ import {
 // REAL nodes response for frame 25:205 (file cE0x2i7UkD7X73p8WwnCzy), captured 2026-10-29. Three reads taken
 // ~100 s apart were byte-identical (sha256 c349e903ba5b1e68024003f79d17c0c718bac33f6c5ff9ae33d9fd3670804e37).
 const raw = readFileSync(fileURLToPath(new URL('./__fixtures__/design-fingerprint.live-2026-10-29.json', import.meta.url)), 'utf8');
-type N = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
+type N = Record<string, any>;
 const load = (): N => JSON.parse(raw) as N;
 const FRAME = '25:205';
 const walk = (n: N, fn: (n: N) => void) => { fn(n); for (const c of n.children ?? []) walk(c, fn); };
