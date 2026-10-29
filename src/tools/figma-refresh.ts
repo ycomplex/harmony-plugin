@@ -1,3 +1,10 @@
+import {
+  buildLibraryMap,
+  LIBRARY_MAP_VERSION,
+  type LibraryComponent,
+  LibraryMapError,
+} from "./figma-library-map.js";
+
 /** Single refresh owner. A durable claim precedes ANY read/refresh; never retry an ambiguous grant. */
 export interface FigmaGrant {
   access_token: string;
@@ -11,6 +18,9 @@ export interface RefreshWork {
   generation: number;
   grant_version: string;
   in_flight: boolean;
+  /** Absent on an older database: treated as version 1. */
+  library_map_version?: number | null;
+  library_refresh_requested?: boolean;
 }
 export interface RefreshPorts {
   transition(
@@ -110,4 +120,81 @@ export async function refreshWorkspaceSafely(
   } catch {
     return "refresh-state-write-failed";
   }
+}
+
+/** The library step runs when a refresh was requested or the stored map predates the current keying. */
+export function libraryRefreshDue(work: RefreshWork): boolean {
+  return !work.in_flight &&
+    (work.library_refresh_requested === true ||
+      (work.library_map_version ?? 1) < LIBRARY_MAP_VERSION);
+}
+
+export interface LibraryPorts {
+  fetchComponents(work: RefreshWork): Promise<LibraryComponent[]>;
+  transition(
+    work: RefreshWork,
+    action: "library" | "library_failed",
+    data: Record<string, unknown>,
+  ): Promise<boolean>;
+  log(entry: Record<string, unknown>): void;
+}
+
+const MAX_ERROR = 300;
+/** Short and secret-free: duplicate component keys for a map error, a fixed string otherwise. */
+export function libraryErrorMessage(e: unknown): string {
+  if (e instanceof LibraryMapError) {
+    return `Duplicate library keys: ${e.duplicates.join("; ")}`.slice(0, MAX_ERROR);
+  }
+  return "Library refresh failed";
+}
+
+/**
+ * Never throws: a library failure is recorded on the connection (`library_failed`) and must not
+ * stop the OAuth token refresh that follows in the same pass.
+ */
+export async function refreshLibrary(
+  work: RefreshWork,
+  ports: LibraryPorts,
+): Promise<"skipped" | "published" | "failed"> {
+  if (!libraryRefreshDue(work)) return "skipped";
+  try {
+    const built = buildLibraryMap(await ports.fetchComponents(work));
+    const ok = await ports.transition(work, "library", {
+      library_components: built.library_components,
+      library_ambiguous: built.library_ambiguous,
+      library_map_version: LIBRARY_MAP_VERSION,
+    });
+    return ok ? "published" : "skipped";
+  } catch (e) {
+    const error = libraryErrorMessage(e);
+    ports.log({
+      workspace_id: work.workspace_id,
+      result: "library-refresh-failed",
+      error,
+    });
+    try {
+      await ports.transition(work, "library_failed", { error });
+    } catch {
+      ports.log({
+        workspace_id: work.workspace_id,
+        result: "library-failure-write-failed",
+      });
+    }
+    return "failed";
+  }
+}
+
+/**
+ * One queue item: the library step first, then the OAuth token refresh exactly as before.
+ * The library step never throws, so a map failure cannot starve the token refresh.
+ */
+export async function refreshPass(
+  work: RefreshWork & { refresh_due?: boolean },
+  library: LibraryPorts,
+  tokens: RefreshPorts,
+  now: number,
+): Promise<string | null> {
+  await refreshLibrary(work, library);
+  if (!work.refresh_due && !work.in_flight) return null;
+  return refreshWorkspaceSafely(work, tokens, now);
 }
