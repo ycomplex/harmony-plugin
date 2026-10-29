@@ -52695,6 +52695,26 @@ async function validateDesignAttachments(client, taskId, raw) {
   }
   return a3;
 }
+var IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+async function validateDesignerFrameAttachments(client, taskId, frames) {
+  const withPreview = frames.filter((f2) => f2.preview_attachment_id);
+  if (!withPreview.length) return;
+  const ids = [...new Set(withPreview.map((f2) => f2.preview_attachment_id))];
+  const { data, error: error2 } = await client.from("attachments").select("id, filename, content_type").eq("task_id", taskId).eq("status", "finalized").in("id", ids);
+  if (error2) throw new Error(error2.message);
+  for (const f2 of withPreview) {
+    const row = data?.find((r) => r.id === f2.preview_attachment_id);
+    if (!row || f2.preview_filename !== void 0 && row.filename !== f2.preview_filename || !IMAGE_TYPES.includes(row.content_type)) {
+      throw new Error(`Designer frame "${f2.name}" preview must reference a finalized same-ticket image attachment with its actual filename.`);
+    }
+  }
+}
+function renderDesignerFrames(frames) {
+  return ["**Designer's frames:**", ...frames.map((f2) => {
+    const preview = f2.preview_attachment_id ? ` \u2014 ${f2.preview_filename ?? "preview"} (ticket attachment ${f2.preview_attachment_id})` : "";
+    return `- ${f2.name} \u2014 ${f2.verdict} \u2014 ${f2.reason}${preview}`;
+  })];
+}
 function renderDesignArtefact(a3) {
   if (a3.tool === "html") return [`**Design preview:** ${a3.surface_filename} (ticket attachment ${a3.surface_attachment_id}; download and open locally)`];
   return [`**Design previews:** [Open Figma file${a3.version_id ? ` \u2014 version ${a3.version_id}` : ""}](${a3.file_url})`, ...a3.nodes.map((n) => `- ${n.name}: ${n.caption} \u2014 ${n.preview_filename} (ticket attachment ${n.preview_attachment_id})`)];
@@ -52759,6 +52779,15 @@ var briefFrameSchema = external_exports.discriminatedUnion("kind", [
     not_reopened: strings.optional(),
     derisk: object3({ run: strings, not_run: strings }).optional(),
     files_on_accept: strings.optional(),
+    designer_frames: external_exports.array(object3({
+      id: external_exports.string(),
+      name: external_exports.string(),
+      file_key: external_exports.string(),
+      verdict: external_exports.enum(["adopted", "off-library", "not-covering", "unreadable", "not-checked"]),
+      reason: external_exports.string(),
+      preview_attachment_id: external_exports.string().optional(),
+      preview_filename: external_exports.string().optional()
+    })).optional(),
     ...floor
   }),
   object3({
@@ -53850,6 +53879,7 @@ function renderFrame(frame) {
     }
     case "design": {
       if (frame.design_artefact) out.push(...renderDesignArtefact(frame.design_artefact), "");
+      if (frame.designer_frames?.length) out.push(...renderDesignerFrames(frame.designer_frames), "");
       const others = (frame.tracks ?? []).filter((t) => t.track !== frame.track).map((t) => `${t.track} ${t.status}${t.note ? ` (${t.note})` : ""}`);
       out.push(`**Track:** ${[frame.track, ...others].join(" \xB7 ")}`);
       const reach = frame.reach ?? [];
@@ -54928,6 +54958,9 @@ async function composeBrief(client, projectId, userId, args) {
   if (docWithContradiction.frame?.kind === "design" && docWithContradiction.frame.design_artefact) {
     await validateDesignAttachments(client, taskId, docWithContradiction.frame.design_artefact);
   }
+  if (docWithContradiction.frame?.kind === "design" && docWithContradiction.frame.designer_frames?.length) {
+    await validateDesignerFrameAttachments(client, taskId, docWithContradiction.frame.designer_frames);
+  }
   const manifestEvidence = await withManifestEvidence(client, taskId, docWithContradiction, args);
   const doc = withDerivedEntryContent(
     withDerivedGateSlot(manifestEvidence.doc, args.reason),
@@ -55099,7 +55132,7 @@ async function composeBrief(client, projectId, userId, args) {
 }
 var composeBriefTool = {
   name: "compose_brief",
-  description: "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the \xA73.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task produces the NEXT REVISION of the same brief (edit/iterate): B-843 supersedes the active row and inserts its successor in one transaction, so every earlier version stays readable and `iteration` keeps counting. Pass `iterate_feedback` (the human's verbatim words) ONLY on the recompose a send-back actually CAUSED: the recompose that CONSUMES a `pending_resolution` marker supplies that marker's `detail`, and every OTHER recompose omits the parameter (it then lands null). Omit it on a self-redraft, a rebase, an answer to an accept-with-remark, and the single recompose that follows a concluded `discuss` exchange \u2014 a brief that was talked over has no send-back words to attribute. compose_brief NEVER reads `pending_resolution` to fill this field; the CALLER supplies it, so re-stamping the last feedback you happen to know about is the defect, not the habit. The revision write is a PARTIAL: fields you omit CARRY FORWARD from the previous revision and only an explicit null clears one \u2014 so omitting `decision_ref` no longer silently drops the pointer to the entry accept promotes. B-901 generalises that to the DOC and to `pending_activity`: the prior revision's doc is merged key-level BEFORE anything is rendered, linted or derived, so a partial recompose can no longer render a page shorter than the record behind it, and the **On accept:** line states the row's true consequence rather than this call's own argument. On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief \u2014 coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning). On a FIRST compose only (when no active brief exists yet), pass `couple_claim_ids` (B-736) = the ids of elicitation claims minted just before this call \u2014 compose atomically couples them (`underwriting_brief_id`) to the brief it creates via `compose_brief_initial`, tolerantly falling back to a bare insert plus a separate coupling update on a DB that does not yet have that RPC; omit it when no exchange ran. Each gate's brief contract \u2014 the one question it answers, its must-haves, and the engagement depth it owes the human \u2014 lives in skills/harmony-shared/brief-authoring.md: author the doc against your gate's section plus its legibility contract; do not restate it here. Write one-scan prose (short sentences, no stacked parentheticals, jargon and internal IDs spelled out); the brief is the summary, and the render appends the depth-pointer line automatically whenever the brief carries a decision_ref \u2014 do not hand-write it. B-866: the doc you compose is the SINGLE authored prose source. The human reads the rendered brief; at the four gates that record their own entry the accept promotes a mechanical projection of the SAME doc as that entry's body (stamped 'Derived from the ratified brief', with any element the brief did not show them marked NOT RATIFIED). Do not author entry prose separately \u2014 put it in the doc. The depth-pointer is rendered from the MERGED decision_ref, so a partial recompose that omits it keeps the pointer. B-876: also author `doc.frame` \u2014 the gate-specific frame, a `kind`-discriminated block carrying the must-haves the BLUF spine has no field for (clarify: solving/in_scope/not_solving; decompose: elements/coverage; design: track/tracks/reach; plan: scope/steps/attestation/carried_unproven/ac_coverage; release: act/unproven/evidence_status; verify: environment/criteria ledger/steps runbook). Its `kind` must match the gate `reason`; the render positions it per gate (clarify above DECIDE, release below DECIDE and above Recommend, everything else below Recommend). Omitting it renders exactly the pre-B-876 bytes and every frame rule is a WARNING, with two exceptions: (B-1016) a `release` frame missing `evidence_status` is REFUSED outright \u2014 call `get_build_evidence_status` and carry its counts; (B-1068) a `verify` frame fails its runbook-integrity checks \u2014 see `frame.steps` below. On an in-place iterate (round 2+), also author `doc.revision` = { round, changes: [{ change, responds_to }] }, each change bound to the feedback it answers; it renders under the On-accept line, never above the frame. B-1143: release frames carry `settled_beyond_design: [{ behaviour, ac, knowledge_entry_id }]`, or an explicit `[]` when none; record the knowledge writes before composing. Empty reports touching Accepted surface-tagged entries emit an advisory warning. For a `release-decision-pending` brief pass `changed_paths` (the PR diff) \u2014 compose computes `frame.risk_classes` from it with the deterministic path detector and OVERWRITES whatever you authored there; no diff yields an empty list. That diff-derived field does NOT replace the B-516 classes carried from auto-advanced gates, which still ride the brief as prose labelled as carried from gates. B-838: also pass `diff_content` (the same PR diff, removed/replaced lines) on a `release-decision-pending` compose \u2014 compose computes `frame.contradiction_signal` from it (which Accepted knowledge entries this diff touches or contradicts) and OVERWRITES whatever the doc authored, on the same three-state contract as the field's own doc comment. On the five forward gates (clarify/decompose/design/plan/release), also author `doc.frame.floor_reviewed` = the ids of this ticket's FLOOR-set Accepted entries (`list_ticket_knowledge`, Accepted only) you confirmed reviewed for contradiction before composing \u2014 an empty FLOOR set needs nothing here and warns on nothing; a non-empty one left unreviewed is a WARNING, never a refusal. B-1017: pass `revision_cause` on every redraft that is not a send-back \u2014 see skills/harmony-shared/brief-authoring.md \xA7Stating the cause of a redraft.",
+  description: "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the \xA73.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task produces the NEXT REVISION of the same brief (edit/iterate): B-843 supersedes the active row and inserts its successor in one transaction, so every earlier version stays readable and `iteration` keeps counting. Pass `iterate_feedback` (the human's verbatim words) ONLY on the recompose a send-back actually CAUSED: the recompose that CONSUMES a `pending_resolution` marker supplies that marker's `detail`, and every OTHER recompose omits the parameter (it then lands null). Omit it on a self-redraft, a rebase, an answer to an accept-with-remark, and the single recompose that follows a concluded `discuss` exchange \u2014 a brief that was talked over has no send-back words to attribute. compose_brief NEVER reads `pending_resolution` to fill this field; the CALLER supplies it, so re-stamping the last feedback you happen to know about is the defect, not the habit. The revision write is a PARTIAL: fields you omit CARRY FORWARD from the previous revision and only an explicit null clears one \u2014 so omitting `decision_ref` no longer silently drops the pointer to the entry accept promotes. B-901 generalises that to the DOC and to `pending_activity`: the prior revision's doc is merged key-level BEFORE anything is rendered, linted or derived, so a partial recompose can no longer render a page shorter than the record behind it, and the **On accept:** line states the row's true consequence rather than this call's own argument. On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief \u2014 coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning). On a FIRST compose only (when no active brief exists yet), pass `couple_claim_ids` (B-736) = the ids of elicitation claims minted just before this call \u2014 compose atomically couples them (`underwriting_brief_id`) to the brief it creates via `compose_brief_initial`, tolerantly falling back to a bare insert plus a separate coupling update on a DB that does not yet have that RPC; omit it when no exchange ran. Each gate's brief contract \u2014 the one question it answers, its must-haves, and the engagement depth it owes the human \u2014 lives in skills/harmony-shared/brief-authoring.md: author the doc against your gate's section plus its legibility contract; do not restate it here. Write one-scan prose (short sentences, no stacked parentheticals, jargon and internal IDs spelled out); the brief is the summary, and the render appends the depth-pointer line automatically whenever the brief carries a decision_ref \u2014 do not hand-write it. B-866: the doc you compose is the SINGLE authored prose source. The human reads the rendered brief; at the four gates that record their own entry the accept promotes a mechanical projection of the SAME doc as that entry's body (stamped 'Derived from the ratified brief', with any element the brief did not show them marked NOT RATIFIED). Do not author entry prose separately \u2014 put it in the doc. The depth-pointer is rendered from the MERGED decision_ref, so a partial recompose that omits it keeps the pointer. B-876: also author `doc.frame` \u2014 the gate-specific frame, a `kind`-discriminated block carrying the must-haves the BLUF spine has no field for (clarify: solving/in_scope/not_solving; decompose: elements/coverage; design: track/tracks/reach, plus optional designer_frames: [{ id, name, file_key, verdict: adopted|off-library|not-covering|unreadable|not-checked, reason, preview_attachment_id?, preview_filename? }] for every designer-linked Figma frame the adopt check judged (B-1338; each preview must be a finalized image attachment on this ticket); plan: scope/steps/attestation/carried_unproven/ac_coverage; release: act/unproven/evidence_status; verify: environment/criteria ledger/steps runbook). Its `kind` must match the gate `reason`; the render positions it per gate (clarify above DECIDE, release below DECIDE and above Recommend, everything else below Recommend). Omitting it renders exactly the pre-B-876 bytes and every frame rule is a WARNING, with two exceptions: (B-1016) a `release` frame missing `evidence_status` is REFUSED outright \u2014 call `get_build_evidence_status` and carry its counts; (B-1068) a `verify` frame fails its runbook-integrity checks \u2014 see `frame.steps` below. On an in-place iterate (round 2+), also author `doc.revision` = { round, changes: [{ change, responds_to }] }, each change bound to the feedback it answers; it renders under the On-accept line, never above the frame. B-1143: release frames carry `settled_beyond_design: [{ behaviour, ac, knowledge_entry_id }]`, or an explicit `[]` when none; record the knowledge writes before composing. Empty reports touching Accepted surface-tagged entries emit an advisory warning. For a `release-decision-pending` brief pass `changed_paths` (the PR diff) \u2014 compose computes `frame.risk_classes` from it with the deterministic path detector and OVERWRITES whatever you authored there; no diff yields an empty list. That diff-derived field does NOT replace the B-516 classes carried from auto-advanced gates, which still ride the brief as prose labelled as carried from gates. B-838: also pass `diff_content` (the same PR diff, removed/replaced lines) on a `release-decision-pending` compose \u2014 compose computes `frame.contradiction_signal` from it (which Accepted knowledge entries this diff touches or contradicts) and OVERWRITES whatever the doc authored, on the same three-state contract as the field's own doc comment. On the five forward gates (clarify/decompose/design/plan/release), also author `doc.frame.floor_reviewed` = the ids of this ticket's FLOOR-set Accepted entries (`list_ticket_knowledge`, Accepted only) you confirmed reviewed for contradiction before composing \u2014 an empty FLOOR set needs nothing here and warns on nothing; a non-empty one left unreviewed is a WARNING, never a refusal. B-1017: pass `revision_cause` on every redraft that is not a send-back \u2014 see skills/harmony-shared/brief-authoring.md \xA7Stating the cause of a redraft.",
   inputSchema: {
     type: "object",
     properties: {
@@ -56506,6 +56539,9 @@ function createFigmaRestClient(opts) {
   };
 }
 
+// src/tools/figma-library-map.ts
+var SET_SEPARATOR = " :: ";
+
 // src/tools/figma-adopt.ts
 var LINK_RE = /https?:\/\/(?:www\.)?figma\.com\/(design|file)\/([A-Za-z0-9]+)(?:\/branch\/([A-Za-z0-9]+))?[^\s<>"'`)\]]*/gi;
 function parseNodeId(url2) {
@@ -56560,102 +56596,97 @@ async function withBackoff(call3, sleep) {
     }
   }
 }
-var DEFAULT_LOOKUP_CAP = 40;
-function createComponentLookup(opts) {
-  const base2 = (opts.baseUrl ?? FIGMA_API_BASE).replace(/\/+$/, "");
-  return async (key) => {
-    const path4 = `/v1/components/${encodeURIComponent(key)}`;
-    const res = await opts.fetch(`${base2}${path4}`, { method: "GET", headers: { "X-Figma-Token": opts.token } });
-    if (res.ok) {
-      const body = await res.json();
-      const fk = body?.meta?.file_key;
-      if (typeof fk !== "string" || !fk) throw new FigmaRestError("http-error", "Figma returned no file_key for the component.", res.status);
-      return { fileKey: fk };
-    }
-    if (res.status === 429) {
-      const raw = res.headers.get("retry-after");
-      const secs = raw !== null && raw.trim() !== "" && Number.isFinite(Number(raw)) ? Number(raw) : null;
-      throw new FigmaRestError("rate-limited", "Figma rate-limited the component lookup (429).", 429, secs);
-    }
-    if (res.status === 404) throw new FigmaRestError("file-not-found", "Figma has no published component for that key (404).", 404);
-    if (res.status === 401 || res.status === 403) throw new FigmaRestError("unauthorized", `Figma refused the token (${res.status}).`, res.status);
-    throw new FigmaRestError("http-error", `Figma returned HTTP ${res.status} for ${path4}.`, res.status);
+var CURRENT_LIBRARY_MAP_VERSION = 2;
+var REFRESH = "refresh the map and run again";
+function buildLibraryIndex(ctx) {
+  if (!ctx || ctx.state === "disconnected" || typeof ctx.library_file_key !== "string" || !ctx.library_file_key) {
+    return { status: "unavailable", reason: "Not checked: Figma is not connected for this workspace (no library file)" };
+  }
+  if (typeof ctx.library_map_error === "string" && ctx.library_map_error.trim()) {
+    return { status: "unavailable", reason: `Not checked: the workspace's saved library map failed its last refresh (${ctx.library_map_error.trim()}); ${REFRESH}` };
+  }
+  const raw = ctx.library_components;
+  const entries = raw && typeof raw === "object" && !Array.isArray(raw) ? Object.entries(raw).filter((e) => typeof e[1] === "string" && e[1] !== "") : [];
+  if (entries.length === 0) {
+    return { status: "unavailable", reason: `Not checked: the workspace's saved library map is ${raw ? "empty" : "missing"}; ${REFRESH}` };
+  }
+  const version5 = typeof ctx.library_map_version === "number" ? ctx.library_map_version : null;
+  if (version5 === null || version5 < CURRENT_LIBRARY_MAP_VERSION) {
+    return { status: "unavailable", reason: `Not checked: the workspace's saved library map is out of date (map version ${version5 ?? "unknown"}); ${REFRESH}` };
+  }
+  return {
+    status: "ok",
+    fileKey: ctx.library_file_key,
+    keys: new Set(entries.map(([, k]) => k)),
+    names: new Map(entries),
+    refreshedAt: typeof ctx.library_refreshed_at === "string" && ctx.library_refreshed_at ? ctx.library_refreshed_at : null
   };
 }
+function qualifiedComponentName(meta, sets, fallback) {
+  const bare = meta.name ?? fallback;
+  const setName = meta.componentSetId ? sets?.[meta.componentSetId]?.name : void 0;
+  return setName ? { name: `${setName}${SET_SEPARATOR}${bare}`, standalone: false } : { name: bare, standalone: true };
+}
 async function checkLibraryMembership(opts) {
-  const cap = opts.cap ?? DEFAULT_LOOKUP_CAP;
-  const sleep = opts.sleep ?? realSleep;
+  if (opts.library.status !== "ok") {
+    const reason = opts.library.reason;
+    return {
+      frames: opts.frames.map((f2) => ({ frameId: f2.id, verdict: "not-checked", reason, instance_count: f2.instances.length, instances: [] })),
+      candidateReads: 0
+    };
+  }
+  const lib = opts.library;
   const cache = /* @__PURE__ */ new Map();
-  let used = 0;
-  let halted = null;
-  async function resolveKey(key) {
-    const hit = cache.get(key);
-    if (hit) return { result: hit, requests: 0 };
-    if (halted) return { result: { kind: "unresolved", reason: halted }, requests: 0 };
-    if (used >= cap) return { result: { kind: "unresolved", reason: `the lookup cap of ${cap} was reached` }, requests: 0 };
-    const a3 = await withBackoff(() => opts.lookupComponentFile(key), sleep);
-    used += a3.requests;
-    let result;
-    if (a3.ok) result = { kind: "file", fileKey: a3.value.fileKey };
-    else if (a3.kind === "backoff-exhausted") {
-      halted = "Figma kept rate-limiting the component lookups";
-      result = { kind: "unresolved", reason: halted };
-    } else {
-      const msg = a3.error instanceof Error ? a3.error.message : String(a3.error);
-      result = { kind: "unresolved", reason: `the component lookup failed (${msg})` };
+  let reads = 0;
+  async function candidatesFor(name) {
+    const hit = cache.get(name);
+    if (hit) return hit;
+    reads++;
+    const keys = await opts.candidates(name);
+    cache.set(name, keys);
+    return keys;
+  }
+  const refreshed = lib.refreshedAt ? lib.refreshedAt.slice(0, 10) : "at an unknown date";
+  async function judge(inst, f2) {
+    const meta = inst.componentId ? f2.components[inst.componentId] : void 0;
+    const base2 = { nodeId: inst.nodeId, name: inst.name };
+    if (!inst.componentId || !meta || !meta.key) {
+      return { ...base2, component: meta?.name ?? inst.name, verdict: "off-library", reason: `"${inst.name}" is not a published component (no component key in the file's component map)` };
     }
-    if (result.kind === "file" || a3.ok === false && a3.kind === "error" && a3.error instanceof FigmaRestError && a3.error.status === 404) cache.set(key, result);
-    return { result, requests: a3.requests };
+    const q2 = qualifiedComponentName(meta, f2.componentSets, inst.name);
+    const v2 = (verdict, reason) => ({ ...base2, component: q2.name, verdict, reason });
+    if (meta.remote === false) return v2("off-library", `'${q2.name}' is a local component of the designer's file, not a library component`);
+    if (lib.keys.has(meta.key)) return v2("library", `'${q2.name}' is in the workspace's saved library map`);
+    let candidateKeys = [];
+    if (q2.standalone) {
+      try {
+        candidateKeys = await candidatesFor(q2.name);
+      } catch (err) {
+        return v2("not-checked", `the library candidates for '${q2.name}' could not be read (${err instanceof Error ? err.message : String(err)})`);
+      }
+      if (candidateKeys.includes(meta.key)) return v2("library", `'${q2.name}' is one of the workspace library's components of that name`);
+    }
+    if (lib.names.has(q2.name) || candidateKeys.length > 0) {
+      return v2("off-library", `drawn from another copy of the library: '${q2.name}' matches the workspace library by name but not by component key`);
+    }
+    return v2("off-library", `'${q2.name}' is not in the workspace's saved library map (refreshed ${refreshed}); if it was added to the library since, refresh the map`);
   }
   const out = [];
   for (const f2 of opts.frames) {
-    const base2 = { frameId: f2.id, instances: f2.instances.length };
-    let lookups = 0;
+    const base2 = { frameId: f2.id, instance_count: f2.instances.length };
     if (f2.instances.length === 0) {
-      out.push({ ...base2, verdict: "off-library", reason: "it holds no library component instances", lookups });
+      out.push({ ...base2, verdict: "off-library", reason: "Off-library: it holds no library component instances", instances: [] });
       continue;
     }
-    let offReason = null;
-    const keys = [];
-    for (const inst of f2.instances) {
-      const meta = inst.componentId ? f2.components[inst.componentId] : void 0;
-      if (!inst.componentId || !meta) {
-        offReason = `"${inst.name}" is not a published component (no entry in the file's component map)`;
-        break;
-      }
-      if (meta.remote === false) {
-        offReason = `"${inst.name}" is a local component of the designer's file, not a library component`;
-        break;
-      }
-      if (!meta.key) {
-        offReason = `"${inst.name}" has no component key`;
-        break;
-      }
-      keys.push({ key: meta.key, name: meta.name ?? inst.name });
-    }
-    if (offReason) {
-      out.push({ ...base2, verdict: "off-library", reason: `Off-library: ${offReason}`, lookups });
-      continue;
-    }
-    let unresolved = null;
-    let wrongFile = null;
-    for (const { key, name } of [...new Map(keys.map((k) => [k.key, k])).values()]) {
-      const r = await resolveKey(key);
-      lookups += r.requests;
-      if (r.result.kind === "unresolved") {
-        unresolved ??= r.result.reason;
-        continue;
-      }
-      if (r.result.fileKey !== opts.libraryFileKey) {
-        wrongFile = `"${name}" comes from another file (${r.result.fileKey}), not the workspace library`;
-        break;
-      }
-    }
-    if (wrongFile) out.push({ ...base2, verdict: "off-library", reason: `Off-library: ${wrongFile}`, lookups });
-    else if (unresolved) out.push({ ...base2, verdict: "not-checked", reason: `Not checked: ${unresolved}; not adopting on partial evidence`, lookups });
-    else out.push({ ...base2, verdict: "library", reason: `Every one of its ${f2.instances.length} component instance(s) comes from the workspace library`, lookups });
+    const instances = [];
+    for (const inst of f2.instances) instances.push(await judge(inst, f2));
+    const off = instances.find((i) => i.verdict === "off-library");
+    const unchecked = instances.find((i) => i.verdict === "not-checked");
+    if (off) out.push({ ...base2, verdict: "off-library", reason: `Off-library: ${off.reason}`, instances });
+    else if (unchecked) out.push({ ...base2, verdict: "not-checked", reason: `Not checked: ${unchecked.reason}; not adopting on partial evidence`, instances });
+    else out.push({ ...base2, verdict: "library", reason: `Every one of its ${f2.instances.length} component instance(s) is in the workspace library`, instances });
   }
-  return { frames: out, lookupsUsed: used, lookupCap: cap };
+  return { frames: out, candidateReads: reads };
 }
 var FRAME_TYPES = /* @__PURE__ */ new Set(["FRAME", "COMPONENT", "COMPONENT_SET", "SECTION", "INSTANCE"]);
 function readFailure(a3) {
@@ -56671,7 +56702,7 @@ function readFailure(a3) {
 async function classifyFrames(opts) {
   const sleep = opts.sleep ?? realSleep;
   const slots = [];
-  const fail3 = (fileKey, id, verdict, reason) => ({ kind: "verdict", v: { id, name: null, fileKey, verdict, reason, instances: 0, lookups: 0 } });
+  const fail3 = (fileKey, id, verdict, reason) => ({ kind: "verdict", v: { id, name: null, fileKey, verdict, reason, instance_count: 0, instances: [] } });
   const idsByFile = /* @__PURE__ */ new Map();
   for (const l of opts.links) if (l.nodeId) idsByFile.set(l.fileKey, [.../* @__PURE__ */ new Set([...idsByFile.get(l.fileKey) ?? [], l.nodeId])]);
   const reads = /* @__PURE__ */ new Map();
@@ -56694,12 +56725,13 @@ async function classifyFrames(opts) {
     }
     const doc = entry.document;
     const components = entry.components ?? {};
+    const componentSets = entry.componentSets ?? {};
     if (doc.type === "CANVAS") {
       const frames2 = (doc.children ?? []).filter((c) => c.type === "FRAME");
       if (frames2.length === 0) slots.push(fail3(l.fileKey, l.nodeId, "unreadable", "Unreadable: the page holds no top-level frames"));
-      for (const c of frames2) slots.push({ kind: "frame", fileKey: l.fileKey, node: c, components });
+      for (const c of frames2) slots.push({ kind: "frame", fileKey: l.fileKey, node: c, components, componentSets });
     } else if (doc.type !== void 0 && FRAME_TYPES.has(doc.type)) {
-      slots.push({ kind: "frame", fileKey: l.fileKey, node: doc, components });
+      slots.push({ kind: "frame", fileKey: l.fileKey, node: doc, components, componentSets });
     } else {
       slots.push(fail3(l.fileKey, l.nodeId, "unreadable", `Unreadable: the node is a ${doc.type ?? "unknown node"}, not a frame`));
     }
@@ -56714,11 +56746,9 @@ async function classifyFrames(opts) {
   });
   const toCheck = unique.filter((s) => s.kind === "frame");
   const membership = await checkLibraryMembership({
-    frames: toCheck.map((s) => ({ id: `${s.fileKey}|${s.node.id}`, instances: collectInstances(s.node), components: s.components })),
-    libraryFileKey: opts.libraryFileKey,
-    lookupComponentFile: opts.lookupComponentFile,
-    cap: opts.cap,
-    sleep
+    frames: toCheck.map((s) => ({ id: `${s.fileKey}|${s.node.id}`, instances: collectInstances(s.node), components: s.components, componentSets: s.componentSets })),
+    library: opts.library,
+    candidates: opts.candidates
   });
   const byKey = new Map(membership.frames.map((m) => [m.frameId, m]));
   const frames = unique.map((s) => {
@@ -56730,11 +56760,11 @@ async function classifyFrames(opts) {
       fileKey: s.fileKey,
       verdict: m.verdict === "library" ? "adopted" : m.verdict,
       reason: m.reason,
-      instances: m.instances,
-      lookups: m.lookups
+      instance_count: m.instance_count,
+      instances: m.instances
     };
   });
-  return { frames, lookupsUsed: membership.lookupsUsed, lookupCap: membership.lookupCap };
+  return { frames, candidateReads: membership.candidateReads };
 }
 
 // src/cli/commands/design.ts
@@ -56814,11 +56844,11 @@ async function fingerprintCompare(taskRef, by, deps) {
   return { command: "compare", status: "changed", changed_frame_ids: changed, wrote: true };
 }
 async function adoptCheck(taskRef, opts, deps) {
-  const cap = deps.cap ?? DEFAULT_LOOKUP_CAP;
-  const links = findFigmaLinks(await deps.readTexts(taskRef));
+  const links = opts.urls && opts.urls.length > 0 ? findFigmaLinks(opts.urls) : findFigmaLinks(await deps.readTexts(taskRef));
   const plain = (l) => ({ fileKey: l.fileKey, nodeId: l.nodeId, url: l.url });
-  if (links.length === 0) return { command: "adopt-check", status: "no-links", links: [], frames: [], lookups_used: 0, lookup_cap: cap };
-  if (!deps.token) return { command: "adopt-check", status: "no-token", links: links.map(plain), frames: [], lookups_used: 0, lookup_cap: cap };
+  const source = opts.urls && opts.urls.length > 0 ? "url" : "ticket";
+  if (links.length === 0) return { command: "adopt-check", status: "no-links", source, links: [], frames: [], candidate_reads: 0 };
+  if (!deps.token) return { command: "adopt-check", status: "no-token", source, links: links.map(plain), frames: [], candidate_reads: 0 };
   if (opts.linksOnly) {
     const out = [];
     for (const l of links) {
@@ -56833,26 +56863,30 @@ async function adoptCheck(taskRef, opts, deps) {
         out.push({ ...plain(l), readable: false, reason: err instanceof FigmaRestError ? `Figma returned ${err.status}` : "Figma was unreachable" });
       }
     }
-    return { command: "adopt-check", status: "ok", links_only: true, links: out, frames: [], lookups_used: 0, lookup_cap: cap };
+    return { command: "adopt-check", status: "ok", source, links_only: true, links: out, frames: [], candidate_reads: 0 };
   }
-  const libraryFileKey = await deps.readLibraryFileKey();
-  if (!libraryFileKey) return { command: "adopt-check", status: "not-connected", links: links.map(plain), frames: [], lookups_used: 0, lookup_cap: cap };
-  const r = await classifyFrames({
-    links,
-    libraryFileKey,
-    readNodes: deps.readNodes,
-    lookupComponentFile: deps.lookupComponentFile,
-    cap,
-    sleep: deps.sleep
-  });
+  const ctx = await deps.readLibraryContext();
+  const libraryFileKey = ctx && ctx.state !== "disconnected" && typeof ctx.library_file_key === "string" && ctx.library_file_key ? ctx.library_file_key : null;
+  if (!libraryFileKey) return { command: "adopt-check", status: "not-connected", source, links: links.map(plain), frames: [], candidate_reads: 0 };
+  const library = buildLibraryIndex(ctx);
+  const r = await classifyFrames({ links, library, readNodes: deps.readNodes, candidates: deps.readCandidates, sleep: deps.sleep });
   return {
     command: "adopt-check",
     status: "ok",
+    source,
     links: links.map(plain),
     frames: r.frames,
-    lookups_used: r.lookupsUsed,
-    lookup_cap: r.lookupCap
+    library: library.status === "ok" ? { status: "ok", file_key: library.fileKey, components: library.names.size, refreshed_at: library.refreshedAt } : { status: "unavailable", reason: library.reason },
+    candidate_reads: r.candidateReads
   };
+}
+var ABSENT_RPC = /* @__PURE__ */ new Set(["PGRST202", "42883"]);
+function candidateKeysFrom(res) {
+  if (res.error) {
+    if (res.error.code && ABSENT_RPC.has(res.error.code)) return [];
+    throw new Error(`figma_library_candidates failed${res.error.code ? ` (${res.error.code})` : ""}`);
+  }
+  return Array.isArray(res.data) ? res.data.map((row) => isObj3(row) && typeof row.key === "string" ? row.key : null).filter((k) => k !== null) : [];
 }
 function registerDesignCommands(program3) {
   const design = program3.command("design").description("Accepted-design helpers (B-1203)");
@@ -56878,7 +56912,7 @@ function registerDesignCommands(program3) {
   }
   fp.command("take").description("Take and store the fingerprint of the ticket's accepted Figma design (run right after the design accept)").requiredOption("--task <id>", "Task ID (UUID, number, or B-123)").action(async (opts) => run((t, d) => fingerprintTake(t, d), opts.task));
   fp.command("compare").description("Compare the live design with the stored fingerprint and record the drift verdict").requiredOption("--task <id>", "Task ID (UUID, number, or B-123)").requiredOption("--by <gate>", "Who is checking: plan, build, ...").action(async (opts) => run((t, d) => fingerprintCompare(t, opts.by, d), opts.task));
-  design.command("adopt-check").description("Read-only: find the designer's Figma frame links on the ticket and say which are library-built (adoptable as drawn)").requiredOption("--task <id>", "Task ID (UUID, number, or B-123)").option("--links-only", "Only report the links and whether each names a readable frame (no library check)").action(async (opts) => {
+  design.command("adopt-check").description("Read-only: find the designer's Figma frame links on the ticket and say which are library-built (adoptable as drawn)").requiredOption("--task <id>", "Task ID (UUID, number, or B-123)").option("--links-only", "Only report the links and whether each names a readable frame (no library check)").option("--url <figma-link>", "Check this Figma link instead of the ticket's links (repeatable)", (v2, prev = []) => [...prev, v2]).action(async (opts) => {
     try {
       const ctx = await getAuthenticatedContext();
       const token = readFigmaToken();
@@ -56890,28 +56924,24 @@ function registerDesignCommands(program3) {
           const comments = await listComments(ctx.client, ctx.projectId, { task_id: ref });
           return [t.description ?? "", ...(comments ?? []).map((c) => c.content ?? "")];
         },
-        readLibraryFileKey: async () => {
+        readLibraryContext: async () => {
           try {
             const { data, error: error2 } = await ctx.client.rpc("figma_launch_context", { p_project_id: ctx.projectId });
-            if (error2 || !isObj3(data) || data.state === "disconnected") return null;
-            return typeof data.library_file_key === "string" && data.library_file_key ? data.library_file_key : null;
+            return error2 || !isObj3(data) ? null : data;
           } catch {
             return null;
           }
         },
-        readNodes: async (fileKey, ids) => createFigmaRestClient({ token: token ?? "", fetch: nodeFetch, fileKey }).getNodesLive(ids),
-        lookupComponentFile: createComponentLookup({ token: token ?? "", fetch: nodeFetch })
+        readCandidates: async (name) => candidateKeysFrom(await ctx.client.rpc("figma_library_candidates", { p_project_id: ctx.projectId, p_name: name })),
+        readNodes: async (fileKey, ids) => createFigmaRestClient({ token: token ?? "", fetch: nodeFetch, fileKey }).getNodesLive(ids)
       };
-      console.log(JSON.stringify(await adoptCheck(opts.task, { linksOnly: opts.linksOnly }, deps)));
+      console.log(JSON.stringify(await adoptCheck(opts.task, { linksOnly: opts.linksOnly, urls: opts.url }, deps)));
     } catch (err) {
       console.log(JSON.stringify({ status: "error", error: err instanceof Error ? err.message : String(err) }));
       process.exit(1);
     }
   });
 }
-
-// src/tools/figma-library-map.ts
-var SET_SEPARATOR = " :: ";
 
 // src/tools/figma-library.ts
 var has = (map, k) => Object.prototype.hasOwnProperty.call(map, k);

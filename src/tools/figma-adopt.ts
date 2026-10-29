@@ -1,18 +1,23 @@
 // B-1320 — adopt a designer's library-built Figma frames as the ticket's design, instead of recomposing options.
-// PURE / INJECTABLE: every network port (node reads, component-key lookups, sleep) is handed in, so the unit
-// tests need no network. Everything is read over Figma REST (header X-Figma-Token), never through the hosted
-// Figma tool server, so a fully adopted design spends 0 MCP composition calls. Nothing here writes to Figma.
+// PURE / INJECTABLE: every port (node reads, the saved library map, the ambiguous-name candidates, sleep) is
+// handed in, so the unit tests need no network. Frames are read over Figma REST (header X-Figma-Token), never
+// through the hosted Figma tool server, so a fully adopted design spends 0 MCP composition calls. Nothing here
+// writes to Figma.
 //
-// "Library-built" is decided against the component's PUBLISHED file, not the saved component map (which matched
-// only 1 of 4 real library components, B-1321's finding): each instance's componentId is resolved through the
-// node response's `components` map to a component key, and GET /v1/components/<key> says which file owns it.
-// A frame is adopted only when EVERY instance resolves to the workspace library file. Partial evidence (lookup
-// cap reached, backoff exhausted, lookup failed) yields `not-checked`, which is never adopted.
+// B-1338: library membership is decided against the WORKSPACE'S SAVED LIBRARY MAP (figma_launch_context's
+// library_components, version 2) plus the stored ambiguous-name candidates (figma_library_candidates), never a
+// Figma component lookup (GET /v1/components/<key> answers 403 to the workspace token). Each instance's
+// componentId is resolved through the node response's `components` map to a component key; the key must be one
+// of the map's values, or (for a standalone component) one of the candidates stored for its bare name. A name
+// that matches the library while the key does not was drawn from another copy of the kit: off-library. A frame
+// is adopted only when EVERY instance is library. A missing, empty, out-of-date (version < 2) or errored map
+// yields `not-checked` for every frame, which is never adopted.
 import {
-  FigmaRestError, FIGMA_API_BASE, assemblePendingArtefact,
-  type FetchLike, type FigmaComponentMeta, type FigmaNode, type FigmaNodesResponse,
+  FigmaRestError, assemblePendingArtefact,
+  type FigmaComponentMeta, type FigmaComponentSetMeta, type FigmaNode, type FigmaNodesResponse,
 } from './figma-reconcile.js';
 import { nextThrottleDelay, type ProvenanceNote } from './figma-composition.js';
+import { SET_SEPARATOR } from './figma-library-map.js';
 
 // ——— 1. links ————————————————————————————————————————————————————————————————————————————————
 
@@ -99,115 +104,155 @@ async function withBackoff<T>(call: () => Promise<T>, sleep: Sleep): Promise<Att
 
 // ——— 4. library membership ———————————————————————————————————————————————————————————————————
 
-/** Per-leg ceiling on component-key lookups (each request issued counts, retries included). */
-export const DEFAULT_LOOKUP_CAP = 40;
+/** The saved library map, indexed for membership checks. Built from figma_launch_context by buildLibraryIndex. */
+export type LibraryIndex =
+  | { status: 'ok'; fileKey: string; keys: Set<string>; names: Map<string, string>; refreshedAt: string | null }
+  | { status: 'unavailable'; reason: string };
 
-/** Resolve a component key to the file that publishes it. Throws FigmaRestError on failure (429 => 'rate-limited'). */
-export type LookupComponentFile = (key: string) => Promise<{ fileKey: string }>;
+/** The figma_launch_context fields the check reads (everything optional: the RPC is parsed defensively). */
+export interface LibraryContext {
+  state?: unknown;
+  library_file_key?: unknown;
+  library_components?: unknown;
+  library_map_version?: unknown;
+  library_map_error?: unknown;
+  library_refreshed_at?: unknown;
+}
 
-export function createComponentLookup(opts: { token: string; fetch: FetchLike; baseUrl?: string }): LookupComponentFile {
-  const base = (opts.baseUrl ?? FIGMA_API_BASE).replace(/\/+$/, '');
-  return async (key) => {
-    const path = `/v1/components/${encodeURIComponent(key)}`;
-    const res = await opts.fetch(`${base}${path}`, { method: 'GET', headers: { 'X-Figma-Token': opts.token } });
-    if (res.ok) {
-      const body = (await res.json()) as { meta?: { file_key?: unknown } };
-      const fk = body?.meta?.file_key;
-      if (typeof fk !== 'string' || !fk) throw new FigmaRestError('http-error', 'Figma returned no file_key for the component.', res.status);
-      return { fileKey: fk };
-    }
-    if (res.status === 429) {
-      const raw = res.headers.get('retry-after');
-      const secs = raw !== null && raw.trim() !== '' && Number.isFinite(Number(raw)) ? Number(raw) : null;
-      throw new FigmaRestError('rate-limited', 'Figma rate-limited the component lookup (429).', 429, secs);
-    }
-    if (res.status === 404) throw new FigmaRestError('file-not-found', 'Figma has no published component for that key (404).', 404);
-    if (res.status === 401 || res.status === 403) throw new FigmaRestError('unauthorized', `Figma refused the token (${res.status}).`, res.status);
-    throw new FigmaRestError('http-error', `Figma returned HTTP ${res.status} for ${path}.`, res.status);
+/** The current saved-map shape (set-qualified variant names, B-1321). An older map is not trusted. */
+export const CURRENT_LIBRARY_MAP_VERSION = 2;
+
+const REFRESH = 'refresh the map and run again';
+
+export function buildLibraryIndex(ctx: LibraryContext | null | undefined): LibraryIndex {
+  if (!ctx || ctx.state === 'disconnected' || typeof ctx.library_file_key !== 'string' || !ctx.library_file_key) {
+    return { status: 'unavailable', reason: 'Not checked: Figma is not connected for this workspace (no library file)' };
+  }
+  if (typeof ctx.library_map_error === 'string' && ctx.library_map_error.trim()) {
+    return { status: 'unavailable', reason: `Not checked: the workspace's saved library map failed its last refresh (${ctx.library_map_error.trim()}); ${REFRESH}` };
+  }
+  const raw = ctx.library_components;
+  const entries = raw && typeof raw === 'object' && !Array.isArray(raw)
+    ? Object.entries(raw as Record<string, unknown>).filter((e): e is [string, string] => typeof e[1] === 'string' && e[1] !== '')
+    : [];
+  if (entries.length === 0) {
+    return { status: 'unavailable', reason: `Not checked: the workspace's saved library map is ${raw ? 'empty' : 'missing'}; ${REFRESH}` };
+  }
+  const version = typeof ctx.library_map_version === 'number' ? ctx.library_map_version : null;
+  if (version === null || version < CURRENT_LIBRARY_MAP_VERSION) {
+    return { status: 'unavailable', reason: `Not checked: the workspace's saved library map is out of date (map version ${version ?? 'unknown'}); ${REFRESH}` };
+  }
+  return {
+    status: 'ok',
+    fileKey: ctx.library_file_key,
+    keys: new Set(entries.map(([, k]) => k)),
+    names: new Map(entries),
+    refreshedAt: typeof ctx.library_refreshed_at === 'string' && ctx.library_refreshed_at ? ctx.library_refreshed_at : null,
   };
 }
 
+/** The component keys stored for one ambiguous bare name (figma_library_candidates). Throws when unreadable. */
+export type ReadCandidates = (name: string) => Promise<string[]>;
+
+export type InstanceVerdictKind = 'library' | 'off-library' | 'not-checked';
+export interface InstanceVerdict {
+  nodeId: string;
+  name: string;
+  /** The library-map spelling: `"<Set> :: <Variant>"` for a set variant, else the bare component name. */
+  component: string;
+  verdict: InstanceVerdictKind;
+  reason: string;
+}
+
 export type MembershipVerdict = 'library' | 'off-library' | 'not-checked';
-export interface FrameMembership { frameId: string; verdict: MembershipVerdict; reason: string; instances: number; lookups: number }
+export interface FrameMembership { frameId: string; verdict: MembershipVerdict; reason: string; instance_count: number; instances: InstanceVerdict[] }
 
-export interface MembershipFrame { id: string; instances: InstanceRef[]; components: Record<string, FigmaComponentMeta> }
+export interface MembershipFrame {
+  id: string;
+  instances: InstanceRef[];
+  components: Record<string, FigmaComponentMeta>;
+  componentSets?: Record<string, FigmaComponentSetMeta>;
+}
 
-type KeyResult = { kind: 'file'; fileKey: string } | { kind: 'unresolved'; reason: string };
+/** The library-map spelling of a component, and whether it is a standalone (no named set). */
+export function qualifiedComponentName(meta: FigmaComponentMeta, sets: Record<string, FigmaComponentSetMeta> | undefined, fallback: string): { name: string; standalone: boolean } {
+  const bare = meta.name ?? fallback;
+  const setName = meta.componentSetId ? sets?.[meta.componentSetId]?.name : undefined;
+  return setName ? { name: `${setName}${SET_SEPARATOR}${bare}`, standalone: false } : { name: bare, standalone: true };
+}
 
 /**
- * Decide, frame by frame, whether every instance belongs to the library file. Each DISTINCT component key is
- * looked up once (shared across frames). A reached cap or an exhausted backoff leaves the affected frames
- * `not-checked`; they are never judged on partial evidence. A frame that already holds a definite off-library
- * instance is off-library whatever else is unchecked.
+ * Decide, frame by frame and instance by instance, whether every instance is a component of the workspace
+ * library: its key is in the saved map, or (standalone only) among the candidates stored for its bare name.
+ * Candidate reads are cached per name for the run. An unreadable candidate list leaves the instance (and so the
+ * frame) `not-checked`; a frame that also holds a definite off-library instance is off-library.
  */
 export async function checkLibraryMembership(opts: {
   frames: MembershipFrame[];
-  libraryFileKey: string;
-  lookupComponentFile: LookupComponentFile;
-  cap?: number;
-  sleep?: Sleep;
-}): Promise<{ frames: FrameMembership[]; lookupsUsed: number; lookupCap: number }> {
-  const cap = opts.cap ?? DEFAULT_LOOKUP_CAP;
-  const sleep = opts.sleep ?? realSleep;
-  const cache = new Map<string, KeyResult>();
-  let used = 0;
-  let halted: string | null = null; // set once backoff is exhausted: later keys are not attempted
+  library: LibraryIndex;
+  candidates: ReadCandidates;
+}): Promise<{ frames: FrameMembership[]; candidateReads: number }> {
+  if (opts.library.status !== 'ok') {
+    const reason = opts.library.reason;
+    return {
+      frames: opts.frames.map((f) => ({ frameId: f.id, verdict: 'not-checked', reason, instance_count: f.instances.length, instances: [] })),
+      candidateReads: 0,
+    };
+  }
+  const lib: Extract<LibraryIndex, { status: 'ok' }> = opts.library;
+  const cache = new Map<string, string[]>();
+  let reads = 0;
+  async function candidatesFor(name: string): Promise<string[]> {
+    const hit = cache.get(name);
+    if (hit) return hit;
+    reads++;
+    const keys = await opts.candidates(name);
+    cache.set(name, keys);
+    return keys;
+  }
+  const refreshed = lib.refreshedAt ? lib.refreshedAt.slice(0, 10) : 'at an unknown date';
 
-  async function resolveKey(key: string): Promise<{ result: KeyResult; requests: number }> {
-    const hit = cache.get(key);
-    if (hit) return { result: hit, requests: 0 };
-    if (halted) return { result: { kind: 'unresolved', reason: halted }, requests: 0 };
-    if (used >= cap) return { result: { kind: 'unresolved', reason: `the lookup cap of ${cap} was reached` }, requests: 0 };
-    const a = await withBackoff(() => opts.lookupComponentFile(key), sleep);
-    used += a.requests;
-    let result: KeyResult;
-    if (a.ok) result = { kind: 'file', fileKey: a.value.fileKey };
-    else if (a.kind === 'backoff-exhausted') {
-      halted = 'Figma kept rate-limiting the component lookups';
-      result = { kind: 'unresolved', reason: halted };
-    } else {
-      const msg = a.error instanceof Error ? a.error.message : String(a.error);
-      result = { kind: 'unresolved', reason: `the component lookup failed (${msg})` };
+  async function judge(inst: InstanceRef, f: MembershipFrame): Promise<InstanceVerdict> {
+    const meta = inst.componentId ? f.components[inst.componentId] : undefined;
+    const base = { nodeId: inst.nodeId, name: inst.name };
+    if (!inst.componentId || !meta || !meta.key) {
+      return { ...base, component: meta?.name ?? inst.name, verdict: 'off-library', reason: `"${inst.name}" is not a published component (no component key in the file's component map)` };
     }
-    // Only a definite answer is cached; a transient failure may be retried by a later frame within the cap.
-    if (result.kind === 'file' || (a.ok === false && a.kind === 'error' && a.error instanceof FigmaRestError && a.error.status === 404)) cache.set(key, result);
-    return { result, requests: a.requests };
+    const q = qualifiedComponentName(meta, f.componentSets, inst.name);
+    const v = (verdict: InstanceVerdictKind, reason: string): InstanceVerdict => ({ ...base, component: q.name, verdict, reason });
+    if (meta.remote === false) return v('off-library', `'${q.name}' is a local component of the designer's file, not a library component`);
+    if (lib.keys.has(meta.key)) return v('library', `'${q.name}' is in the workspace's saved library map`);
+    let candidateKeys: string[] = [];
+    if (q.standalone) {
+      try {
+        candidateKeys = await candidatesFor(q.name);
+      } catch (err) {
+        return v('not-checked', `the library candidates for '${q.name}' could not be read (${err instanceof Error ? err.message : String(err)})`);
+      }
+      if (candidateKeys.includes(meta.key)) return v('library', `'${q.name}' is one of the workspace library's components of that name`);
+    }
+    if (lib.names.has(q.name) || candidateKeys.length > 0) {
+      return v('off-library', `drawn from another copy of the library: '${q.name}' matches the workspace library by name but not by component key`);
+    }
+    return v('off-library', `'${q.name}' is not in the workspace's saved library map (refreshed ${refreshed}); if it was added to the library since, refresh the map`);
   }
 
   const out: FrameMembership[] = [];
   for (const f of opts.frames) {
-    const base = { frameId: f.id, instances: f.instances.length };
-    let lookups = 0;
+    const base = { frameId: f.id, instance_count: f.instances.length };
     if (f.instances.length === 0) {
-      out.push({ ...base, verdict: 'off-library', reason: 'it holds no library component instances', lookups });
+      out.push({ ...base, verdict: 'off-library', reason: 'Off-library: it holds no library component instances', instances: [] });
       continue;
     }
-    // Pass 1: structural verdicts that need no lookup.
-    let offReason: string | null = null;
-    const keys: Array<{ key: string; name: string }> = [];
-    for (const inst of f.instances) {
-      const meta = inst.componentId ? f.components[inst.componentId] : undefined;
-      if (!inst.componentId || !meta) { offReason = `"${inst.name}" is not a published component (no entry in the file's component map)`; break; }
-      if (meta.remote === false) { offReason = `"${inst.name}" is a local component of the designer's file, not a library component`; break; }
-      if (!meta.key) { offReason = `"${inst.name}" has no component key`; break; }
-      keys.push({ key: meta.key, name: meta.name ?? inst.name });
-    }
-    if (offReason) { out.push({ ...base, verdict: 'off-library', reason: `Off-library: ${offReason}`, lookups }); continue; }
-
-    // Pass 2: distinct keys, looked up once.
-    let unresolved: string | null = null;
-    let wrongFile: string | null = null;
-    for (const { key, name } of [...new Map(keys.map((k) => [k.key, k])).values()]) {
-      const r = await resolveKey(key);
-      lookups += r.requests;
-      if (r.result.kind === 'unresolved') { unresolved ??= r.result.reason; continue; }
-      if (r.result.fileKey !== opts.libraryFileKey) { wrongFile = `"${name}" comes from another file (${r.result.fileKey}), not the workspace library`; break; }
-    }
-    if (wrongFile) out.push({ ...base, verdict: 'off-library', reason: `Off-library: ${wrongFile}`, lookups });
-    else if (unresolved) out.push({ ...base, verdict: 'not-checked', reason: `Not checked: ${unresolved}; not adopting on partial evidence`, lookups });
-    else out.push({ ...base, verdict: 'library', reason: `Every one of its ${f.instances.length} component instance(s) comes from the workspace library`, lookups });
+    const instances: InstanceVerdict[] = [];
+    for (const inst of f.instances) instances.push(await judge(inst, f));
+    const off = instances.find((i) => i.verdict === 'off-library');
+    const unchecked = instances.find((i) => i.verdict === 'not-checked');
+    if (off) out.push({ ...base, verdict: 'off-library', reason: `Off-library: ${off.reason}`, instances });
+    else if (unchecked) out.push({ ...base, verdict: 'not-checked', reason: `Not checked: ${unchecked.reason}; not adopting on partial evidence`, instances });
+    else out.push({ ...base, verdict: 'library', reason: `Every one of its ${f.instances.length} component instance(s) is in the workspace library`, instances });
   }
-  return { frames: out, lookupsUsed: used, lookupCap: cap };
+  return { frames: out, candidateReads: reads };
 }
 
 // ——— 5. verdicts —————————————————————————————————————————————————————————————————————————————
@@ -220,8 +265,8 @@ export interface FrameVerdict {
   fileKey: string;
   verdict: AdoptVerdict;
   reason: string;
-  instances: number;
-  lookups: number;
+  instance_count: number;
+  instances: InstanceVerdict[];
 }
 
 export type ReadNodes = (fileKey: string, ids: string[]) => Promise<FigmaNodesResponse>;
@@ -246,17 +291,16 @@ function readFailure(a: Extract<Attempt<unknown>, { ok: false }>): { verdict: Ad
  */
 export async function classifyFrames(opts: {
   links: FigmaLink[];
-  libraryFileKey: string;
+  library: LibraryIndex;
   readNodes: ReadNodes;
-  lookupComponentFile: LookupComponentFile;
-  cap?: number;
+  candidates: ReadCandidates;
   sleep?: Sleep;
-}): Promise<{ frames: FrameVerdict[]; lookupsUsed: number; lookupCap: number }> {
+}): Promise<{ frames: FrameVerdict[]; candidateReads: number }> {
   const sleep = opts.sleep ?? realSleep;
-  type Slot = { kind: 'verdict'; v: FrameVerdict } | { kind: 'frame'; fileKey: string; node: FigmaNode; components: Record<string, FigmaComponentMeta> };
+  type Slot = { kind: 'verdict'; v: FrameVerdict } | { kind: 'frame'; fileKey: string; node: FigmaNode; components: Record<string, FigmaComponentMeta>; componentSets: Record<string, FigmaComponentSetMeta> };
   const slots: Slot[] = [];
   const fail = (fileKey: string, id: string | null, verdict: AdoptVerdict, reason: string): Slot =>
-    ({ kind: 'verdict', v: { id, name: null, fileKey, verdict, reason, instances: 0, lookups: 0 } });
+    ({ kind: 'verdict', v: { id, name: null, fileKey, verdict, reason, instance_count: 0, instances: [] } });
 
   // One read per file, with every node id that file's links name.
   const idsByFile = new Map<string, string[]>();
@@ -272,12 +316,13 @@ export async function classifyFrames(opts: {
     if (!entry?.document) { slots.push(fail(l.fileKey, l.nodeId, 'unreadable', 'Unreadable: the node is absent from the file (deleted, or the link is stale)')); continue; }
     const doc = entry.document;
     const components = entry.components ?? {};
+    const componentSets = entry.componentSets ?? {};
     if (doc.type === 'CANVAS') {
       const frames = (doc.children ?? []).filter((c) => c.type === 'FRAME');
       if (frames.length === 0) slots.push(fail(l.fileKey, l.nodeId, 'unreadable', 'Unreadable: the page holds no top-level frames'));
-      for (const c of frames) slots.push({ kind: 'frame', fileKey: l.fileKey, node: c, components });
+      for (const c of frames) slots.push({ kind: 'frame', fileKey: l.fileKey, node: c, components, componentSets });
     } else if (doc.type !== undefined && FRAME_TYPES.has(doc.type)) {
-      slots.push({ kind: 'frame', fileKey: l.fileKey, node: doc, components });
+      slots.push({ kind: 'frame', fileKey: l.fileKey, node: doc, components, componentSets });
     } else {
       slots.push(fail(l.fileKey, l.nodeId, 'unreadable', `Unreadable: the node is a ${doc.type ?? 'unknown node'}, not a frame`));
     }
@@ -295,11 +340,9 @@ export async function classifyFrames(opts: {
 
   const toCheck = unique.filter((s): s is Extract<Slot, { kind: 'frame' }> => s.kind === 'frame');
   const membership = await checkLibraryMembership({
-    frames: toCheck.map((s) => ({ id: `${s.fileKey}|${s.node.id}`, instances: collectInstances(s.node), components: s.components })),
-    libraryFileKey: opts.libraryFileKey,
-    lookupComponentFile: opts.lookupComponentFile,
-    cap: opts.cap,
-    sleep,
+    frames: toCheck.map((s) => ({ id: `${s.fileKey}|${s.node.id}`, instances: collectInstances(s.node), components: s.components, componentSets: s.componentSets })),
+    library: opts.library,
+    candidates: opts.candidates,
   });
   const byKey = new Map(membership.frames.map((m) => [m.frameId, m]));
 
@@ -309,10 +352,10 @@ export async function classifyFrames(opts: {
     return {
       id: s.node.id, name: s.node.name ?? s.node.id, fileKey: s.fileKey,
       verdict: m.verdict === 'library' ? 'adopted' : m.verdict,
-      reason: m.reason, instances: m.instances, lookups: m.lookups,
+      reason: m.reason, instance_count: m.instance_count, instances: m.instances,
     };
   });
-  return { frames, lookupsUsed: membership.lookupsUsed, lookupCap: membership.lookupCap };
+  return { frames, candidateReads: membership.candidateReads };
 }
 
 // ——— 6. the adopted artefact —————————————————————————————————————————————————————————————————
