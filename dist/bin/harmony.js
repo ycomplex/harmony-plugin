@@ -46099,12 +46099,43 @@ import { chmodSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join as join5 } from "node:path";
 import { randomUUID } from "node:crypto";
+var DEFAULT_NAMESPACE = "harmony-legs";
+var NAMESPACE_NAME = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
+function resolveSignInNamespace(env2 = process.env, load = loadConductorConfigSync) {
+  let ns;
+  try {
+    ns = load({ env: env2, warn: () => {
+    } })?.merged.gke?.namespace;
+  } catch (error2) {
+    if (error2 instanceof ConductorConfigError) {
+      throw new FigmaSetupError(`The conductor configuration is invalid, so the sign-in namespace cannot be resolved:
+${error2.message}
+No pod was created.`);
+    }
+    throw error2;
+  }
+  ns = ns || env2.HARMONY_GKE_NAMESPACE || DEFAULT_NAMESPACE;
+  if (!NAMESPACE_NAME.test(ns) || ns.length > 63) {
+    throw new FigmaSetupError(`"${ns}" is not a valid Kubernetes namespace name. Fix gke.namespace in the conductor configuration, then retry. No pod was created.`);
+  }
+  return ns;
+}
 var defaults = {
   run: (args, interactive = false, signal) => new Promise((resolve8, reject) => {
     const child = spawn("kubectl", args, { stdio: interactive ? "inherit" : "ignore", signal });
     child.once("error", () => reject(new FigmaSetupError("Figma sign-in pod command failed.")));
     child.once("exit", (code) => code === 0 ? resolve8() : reject(new FigmaSetupError("Figma sign-in pod command failed.")));
   }),
+  capture: (args) => new Promise((resolve8) => {
+    const child = spawn("kubectl", args, { stdio: ["ignore", "pipe", "ignore"] });
+    let out = "";
+    child.stdout.on("data", (chunk) => {
+      if (out.length < 4096) out += chunk.toString("utf8");
+    });
+    child.once("error", () => resolve8({ code: null, out: "" }));
+    child.once("close", (code) => resolve8({ code, out }));
+  }),
+  namespace: () => resolveSignInNamespace(),
   temp: () => mkdtempSync(join5(tmpdir(), "harmony-figma-")),
   chmod: (path4) => chmodSync(path4, 384),
   remove: (path4) => rmSync(path4, { recursive: true, force: true }),
@@ -46112,11 +46143,15 @@ var defaults = {
 };
 async function withClaudeFigmaSignIn(consume, ports = defaults, version5 = process.env.HARMONY_FIGMA_CLAUDE_VERSION ?? "2.1.312") {
   if (!/^\d+\.\d+\.\d+$/.test(version5)) throw new Error("Invalid Claude Code version.");
-  const base2 = ["--request-timeout=70s", "-n", "harmony-legs"];
-  try {
-    await ports.run(["--request-timeout=15s", "-n", "harmony-legs", "auth", "can-i", "create", "pods", "--quiet"]);
-  } catch {
+  const ns = ports.namespace();
+  const base2 = ["--request-timeout=70s", "-n", ns];
+  const probe = await ports.capture(["--request-timeout=15s", "-n", ns, "auth", "can-i", "create", "pods"]);
+  const answer = probe.out.trim().split(/\s+/)[0]?.toLowerCase();
+  if (probe.code === null || answer !== "yes" && answer !== "no") {
     throw new FigmaSetupError("kubectl could not reach the harmony cluster. Run `gcloud auth login`, then retry. No pod was created.");
+  }
+  if (answer === "no") {
+    throw new FigmaSetupError(`Your account may not create pods in ${ns} (kubectl auth can-i create pods was denied). Ask a cluster admin for permission to create pods there, then retry. No pod was created.`);
   }
   const dir = ports.temp();
   const pod = "harmony-figma-" + randomUUID();
@@ -46159,7 +46194,7 @@ async function withClaudeFigmaSignIn(consume, ports = defaults, version5 = proce
       try {
         await ports.run([...base2, "delete", "pod", pod, "--ignore-not-found=true", "--wait=true", "--timeout=60s"]);
       } catch {
-        leftovers.push(`Remove pod ${pod} in harmony-legs before reconnecting.`);
+        leftovers.push(`Remove pod ${pod} in ${ns} before reconnecting.`);
       }
     }
     try {
