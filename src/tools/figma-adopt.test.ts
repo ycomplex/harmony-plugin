@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   findFigmaLinks, collectInstances, checkLibraryMembership, classifyFrames, assembleAdoptedArtefact,
-  createComponentLookup, DEFAULT_LOOKUP_CAP,
+  buildLibraryIndex, type LibraryIndex,
 } from './figma-adopt.js';
 import { FigmaRestError, type FigmaNode, type FigmaNodesResponse, type FigmaComponentMeta } from './figma-reconcile.js';
 import { DesignArtefactSchema } from './design-artefact.js';
@@ -45,92 +45,126 @@ const comps = (m: Record<string, string>, extra: Record<string, FigmaComponentMe
   ...Object.fromEntries(Object.entries(m).map(([id, key]) => [id, { key, name: id, remote: true }])), ...extra,
 });
 
-function lookupFor(files: Record<string, string>) {
-  return vi.fn(async (key: string) => {
-    if (!files[key]) throw new FigmaRestError('file-not-found', 'nf', 404);
-    return { fileKey: files[key] };
-  });
-}
+const CTX = {
+  state: 'connected', library_file_key: LIB, library_map_version: 2, library_map_error: null,
+  library_refreshed_at: '2026-10-28T09:00:00.000Z',
+  library_components: { 'Button :: Primary': 'k1', 'Button :: Secondary': 'k2', Card: 'k3' },
+};
+const okLib = (over: Record<string, unknown> = {}): LibraryIndex => buildLibraryIndex({ ...CTX, ...over });
+const noCandidates = vi.fn(async () => [] as string[]);
 
-describe('checkLibraryMembership', () => {
-  const mk = (id: string, ids: string[], components: Record<string, FigmaComponentMeta>) => ({
-    id, instances: ids.map((c, i) => ({ nodeId: `${id}/${i}`, name: c, componentId: c })), components,
+describe('buildLibraryIndex', () => {
+  it('indexes the map values as keys and the entries as names', () => {
+    const l = okLib();
+    expect(l.status).toBe('ok');
+    if (l.status !== 'ok') return;
+    expect([...l.keys].sort()).toEqual(['k1', 'k2', 'k3']);
+    expect(l.names.get('Button :: Primary')).toBe('k1');
+    expect(l.fileKey).toBe(LIB);
   });
-
-  it('all-library frame is library; each distinct key looked up once across frames', async () => {
-    const lookup = lookupFor({ k1: LIB, k2: LIB });
-    const c = comps({ a: 'k1', b: 'k2' });
-    const r = await checkLibraryMembership({ frames: [mk('f1', ['a', 'b', 'a'], c), mk('f2', ['a'], c)], libraryFileKey: LIB, lookupComponentFile: lookup, sleep: noSleep });
-    expect(r.frames.map((f) => f.verdict)).toEqual(['library', 'library']);
-    expect(lookup).toHaveBeenCalledTimes(2);
-    expect(r.lookupsUsed).toBe(2);
+  it.each([
+    ['disconnected', { state: 'disconnected' }, /not connected/],
+    ['no library file', { library_file_key: null }, /not connected/],
+    ['missing map', { library_components: null }, /map is missing; refresh the map/],
+    ['empty map', { library_components: {} }, /map is empty; refresh the map/],
+    ['version 1', { library_map_version: 1 }, /out of date \(map version 1\); refresh the map and run again/],
+    ['no version', { library_map_version: undefined }, /out of date \(map version unknown\)/],
+    ['errored', { library_map_error: 'Figma 500' }, /failed its last refresh \(Figma 500\)/],
+  ])('%s => unavailable, reason says which', (_n, over, re) => {
+    const l = okLib(over);
+    expect(l.status).toBe('unavailable');
+    if (l.status === 'unavailable') expect(l.reason).toMatch(re);
   });
-  it('one off-library instance makes the frame off-library and names it', async () => {
-    const r = await checkLibraryMembership({ frames: [mk('f', ['a', 'b'], comps({ a: 'k1', b: 'k2' }))], libraryFileKey: LIB, lookupComponentFile: lookupFor({ k1: LIB, k2: 'OTHER' }), sleep: noSleep });
-    expect(r.frames[0].verdict).toBe('off-library');
-    expect(r.frames[0].reason).toMatch(/another file \(OTHER\)/);
-  });
-  it('a local component (remote:false) is off-library without a lookup', async () => {
-    const lookup = lookupFor({});
-    const r = await checkLibraryMembership({ frames: [mk('f', ['a'], { a: { key: 'k', name: 'Local', remote: false } })], libraryFileKey: LIB, lookupComponentFile: lookup, sleep: noSleep });
-    expect(r.frames[0].verdict).toBe('off-library');
-    expect(r.frames[0].reason).toMatch(/local component/);
-    expect(lookup).not.toHaveBeenCalled();
-  });
-  it('a component missing from the map, and a frame with no instances, are off-library', async () => {
-    const r = await checkLibraryMembership({ frames: [mk('f', ['zz'], {}), { id: 'g', instances: [], components: {} }], libraryFileKey: LIB, lookupComponentFile: lookupFor({}), sleep: noSleep });
-    expect(r.frames.map((f) => f.verdict)).toEqual(['off-library', 'off-library']);
-  });
-  it('cap reached leaves the unchecked frames not-checked, never library', async () => {
-    const c = comps({ a: 'k1', b: 'k2', c: 'k3' });
-    const lookup = lookupFor({ k1: LIB, k2: LIB, k3: LIB });
-    const r = await checkLibraryMembership({ frames: [mk('f1', ['a', 'b'], c), mk('f2', ['c'], c)], libraryFileKey: LIB, lookupComponentFile: lookup, cap: 2, sleep: noSleep });
-    expect(r.frames.map((f) => f.verdict)).toEqual(['library', 'not-checked']);
-    expect(lookup).toHaveBeenCalledTimes(2);
-    expect(r.lookupCap).toBe(2);
-  });
-  it('partial evidence never adopts: one key unresolved out of two in a frame', async () => {
-    const lookup = vi.fn(async (key: string) => { if (key === 'k2') throw new FigmaRestError('http-error', 'boom', 500); return { fileKey: LIB }; });
-    const r = await checkLibraryMembership({ frames: [mk('f', ['a', 'b'], comps({ a: 'k1', b: 'k2' }))], libraryFileKey: LIB, lookupComponentFile: lookup, sleep: noSleep });
-    expect(r.frames[0].verdict).toBe('not-checked');
-  });
-  it('definite off-library wins over an unchecked sibling', async () => {
-    const lookup = vi.fn(async (key: string) => { if (key === 'k1') throw new FigmaRestError('http-error', 'boom', 500); return { fileKey: 'OTHER' }; });
-    const r = await checkLibraryMembership({ frames: [mk('f', ['a', 'b'], comps({ a: 'k1', b: 'k2' }))], libraryFileKey: LIB, lookupComponentFile: lookup, sleep: noSleep });
-    expect(r.frames[0].verdict).toBe('off-library');
-  });
-  it('429 is retried with backoff and then succeeds', async () => {
-    let n = 0;
-    const sleep = vi.fn(noSleep);
-    const lookup = vi.fn(async () => { if (n++ < 2) throw new FigmaRestError('rate-limited', 'rl', 429, 3); return { fileKey: LIB }; });
-    const r = await checkLibraryMembership({ frames: [mk('f', ['a'], comps({ a: 'k1' }))], libraryFileKey: LIB, lookupComponentFile: lookup, sleep });
-    expect(r.frames[0].verdict).toBe('library');
-    expect(sleep).toHaveBeenCalledTimes(2);
-    expect(sleep).toHaveBeenCalledWith(3000);
-    expect(r.lookupsUsed).toBe(3);
-  });
-  it('429 backoff exhausted => not-checked, and later keys are not attempted', async () => {
-    const lookup = vi.fn(async () => { throw new FigmaRestError('rate-limited', 'rl', 429); });
-    const c = comps({ a: 'k1', b: 'k2' });
-    const r = await checkLibraryMembership({ frames: [mk('f1', ['a'], c), mk('f2', ['b'], c)], libraryFileKey: LIB, lookupComponentFile: lookup, sleep: noSleep });
-    expect(r.frames.map((f) => f.verdict)).toEqual(['not-checked', 'not-checked']);
-    expect(lookup).toHaveBeenCalledTimes(5);
-  });
-  it('default cap is 40', () => expect(DEFAULT_LOOKUP_CAP).toBe(40));
 });
 
-describe('createComponentLookup', () => {
-  const res = (status: number, body: unknown = {}, headers: Record<string, string> = {}) => ({
-    ok: status < 300, status, headers: { get: (n: string) => headers[n.toLowerCase()] ?? null }, json: async () => body, arrayBuffer: async () => new ArrayBuffer(0),
+describe('checkLibraryMembership', () => {
+  const mk = (id: string, ids: string[], components: Record<string, FigmaComponentMeta>, componentSets: Record<string, { name: string }> = {}) => ({
+    id, instances: ids.map((c, i) => ({ nodeId: `${id}/${i}`, name: c, componentId: c })), components, componentSets,
   });
-  it('reads meta.file_key with the token header', async () => {
-    const f = vi.fn(async () => res(200, { meta: { file_key: 'LIBFILE' } }));
-    expect(await createComponentLookup({ token: 't', fetch: f })('abc')).toEqual({ fileKey: 'LIBFILE' });
-    expect(f).toHaveBeenCalledWith('https://api.figma.com/v1/components/abc', { method: 'GET', headers: { 'X-Figma-Token': 't' } });
+  const setComps: Record<string, FigmaComponentMeta> = {
+    p: { key: 'k1', name: 'Primary', remote: true, componentSetId: 'S' },
+    s: { key: 'k2', name: 'Secondary', remote: true, componentSetId: 'S' },
+  };
+  const sets = { S: { name: 'Button' } };
+
+  it('every key in the map => library, with per-instance verdicts', async () => {
+    const r = await checkLibraryMembership({ frames: [mk('f', ['p', 's', 'p'], setComps, sets)], library: okLib(), candidates: noCandidates });
+    expect(r.frames[0].verdict).toBe('library');
+    expect(r.frames[0].instance_count).toBe(3);
+    expect(r.frames[0].instances.map((i) => [i.component, i.verdict])).toEqual([
+      ['Button :: Primary', 'library'], ['Button :: Secondary', 'library'], ['Button :: Primary', 'library'],
+    ]);
+    expect(r.candidateReads).toBe(0);
   });
-  it('maps 429 with Retry-After and 404', async () => {
-    await expect(createComponentLookup({ token: 't', fetch: async () => res(429, {}, { 'retry-after': '7' }) })('k')).rejects.toMatchObject({ code: 'rate-limited', retryAfterSeconds: 7 });
-    await expect(createComponentLookup({ token: 't', fetch: async () => res(404) })('k')).rejects.toMatchObject({ code: 'file-not-found' });
+  it('a nested icon not in the map resolves through its bare-name candidates => library; reads cached per name', async () => {
+    const candidates = vi.fn(async (name: string) => (name === 'Star' ? ['kStar16', 'kStar24'] : []));
+    const c = { ...setComps, i: { key: 'kStar24', name: 'Star', remote: true } };
+    const r = await checkLibraryMembership({ frames: [mk('f', ['p', 'i', 'i'], c, sets), mk('g', ['i'], c, sets)], library: okLib(), candidates });
+    expect(r.frames.map((f) => f.verdict)).toEqual(['library', 'library']);
+    expect(candidates).toHaveBeenCalledTimes(1);
+    expect(r.candidateReads).toBe(1);
+  });
+  it('name-only match (another copy of the kit) => off-library naming the component', async () => {
+    const c: Record<string, FigmaComponentMeta> = { p: { key: 'OTHER1', name: 'Primary', remote: true, componentSetId: 'S' } };
+    const r = await checkLibraryMembership({ frames: [mk('f', ['p'], c, sets)], library: okLib(), candidates: noCandidates });
+    expect(r.frames[0].verdict).toBe('off-library');
+    expect(r.frames[0].reason).toBe("Off-library: drawn from another copy of the library: 'Button :: Primary' matches the workspace library by name but not by component key");
+    expect(r.frames[0].instances[0]).toMatchObject({ component: 'Button :: Primary', verdict: 'off-library' });
+  });
+  it('a standalone whose bare name has candidates but not this key => another copy', async () => {
+    const c: Record<string, FigmaComponentMeta> = { i: { key: 'kX', name: 'Star', remote: true } };
+    const r = await checkLibraryMembership({ frames: [mk('f', ['i'], c)], library: okLib(), candidates: async () => ['kStar16'] });
+    expect(r.frames[0].reason).toMatch(/another copy of the library: 'Star'/);
+  });
+  it('key not in the map and the name unknown => off-library naming it, with the refresh hint', async () => {
+    const c: Record<string, FigmaComponentMeta> = { z: { key: 'kZ', name: 'Banner', remote: true } };
+    const r = await checkLibraryMembership({ frames: [mk('f', ['z'], c)], library: okLib(), candidates: noCandidates });
+    expect(r.frames[0].verdict).toBe('off-library');
+    expect(r.frames[0].reason).toBe("Off-library: 'Banner' is not in the workspace's saved library map (refreshed 2026-10-28); if it was added to the library since, refresh the map");
+  });
+  it('one off-library instance makes the frame off-library; the reason names the first one', async () => {
+    const c = { ...setComps, z: { key: 'kZ', name: 'Banner', remote: true }, y: { key: 'kY', name: 'Toast', remote: true } };
+    const r = await checkLibraryMembership({ frames: [mk('f', ['p', 'z', 'y'], c, sets)], library: okLib(), candidates: noCandidates });
+    expect(r.frames[0].reason).toMatch(/'Banner'/);
+    expect(r.frames[0].instances.map((i) => i.verdict)).toEqual(['library', 'off-library', 'off-library']);
+  });
+  it('a local component (remote:false) is off-library even when its key is in the map', async () => {
+    const r = await checkLibraryMembership({ frames: [mk('f', ['a'], { a: { key: 'k3', name: 'Card', remote: false } })], library: okLib(), candidates: noCandidates });
+    expect(r.frames[0].verdict).toBe('off-library');
+    expect(r.frames[0].reason).toMatch(/local component/);
+  });
+  it('a component missing from the file map, and a frame with no instances, are off-library', async () => {
+    const r = await checkLibraryMembership({ frames: [mk('f', ['zz'], {}), { id: 'g', instances: [], components: {} }], library: okLib(), candidates: noCandidates });
+    expect(r.frames.map((f) => f.verdict)).toEqual(['off-library', 'off-library']);
+    expect(r.frames[0].reason).toMatch(/not a published component/);
+  });
+  it.each([
+    ['version 1', { library_map_version: 1 }],
+    ['empty', { library_components: {} }],
+    ['errored', { library_map_error: 'boom' }],
+    ['disconnected', { state: 'disconnected' }],
+  ])('map %s => every frame not-checked, nothing adopted, no candidate reads', async (_n, over) => {
+    const candidates = vi.fn(async () => ['k1']);
+    const r = await checkLibraryMembership({ frames: [mk('f', ['p'], setComps, sets)], library: okLib(over), candidates });
+    expect(r.frames[0].verdict).toBe('not-checked');
+    expect(r.frames[0].reason).toMatch(/^Not checked: /);
+    expect(candidates).not.toHaveBeenCalled();
+  });
+  it('unreadable candidates => not-checked; a definite off-library sibling still wins', async () => {
+    const boom = async () => { throw new Error('candidates unavailable'); };
+    const c: Record<string, FigmaComponentMeta> = { i: { key: 'kX', name: 'Star', remote: true }, z: { key: 'kZ', name: 'Banner', remote: true, componentSetId: 'T' } };
+    const a = await checkLibraryMembership({ frames: [mk('f', ['i'], c)], library: okLib(), candidates: boom });
+    expect(a.frames[0].verdict).toBe('not-checked');
+    expect(a.frames[0].reason).toMatch(/candidates for 'Star' could not be read/);
+    const b = await checkLibraryMembership({ frames: [mk('f', ['i', 'z'], c, { T: { name: 'Banner set' } })], library: okLib(), candidates: boom });
+    expect(b.frames[0].verdict).toBe('off-library');
+  });
+  it('a set variant never consults the candidates', async () => {
+    const candidates = vi.fn(async () => ['OTHER1']);
+    const c: Record<string, FigmaComponentMeta> = { p: { key: 'OTHER1', name: 'Primary', remote: true, componentSetId: 'S' } };
+    const r = await checkLibraryMembership({ frames: [mk('f', ['p'], c, sets)], library: okLib(), candidates });
+    expect(r.frames[0].verdict).toBe('off-library');
+    expect(candidates).not.toHaveBeenCalled();
   });
 });
 
@@ -139,50 +173,73 @@ describe('classifyFrames', () => {
     frame('1:1', [inst('1:2', 'a')]), { id: '1:9', name: 'note', type: 'TEXT' }, frame('1:3', [inst('1:4', 'a')]),
   ] };
   const resp = (nodes: FigmaNodesResponse['nodes']): FigmaNodesResponse => ({ nodes });
-  const components = comps({ a: 'k1' });
+  const components = comps({ a: 'k3' });
 
   it('expands a page link to its top-level frames in order and adopts library-built ones', async () => {
     const r = await classifyFrames({
-      links: [{ fileKey: 'F', nodeId: '0:1', url: 'u' }], libraryFileKey: LIB,
-      readNodes: async () => resp({ '0:1': { document: page, components } }), lookupComponentFile: lookupFor({ k1: LIB }), sleep: noSleep,
+      links: [{ fileKey: 'F', nodeId: '0:1', url: 'u' }], library: okLib(),
+      readNodes: async () => resp({ '0:1': { document: page, components } }), candidates: noCandidates, sleep: noSleep,
     });
     expect(r.frames.map((f) => [f.id, f.verdict])).toEqual([['1:1', 'adopted'], ['1:3', 'adopted']]);
-    expect(r.lookupsUsed).toBe(1);
+    expect(r.frames[0].instances).toHaveLength(1);
+  });
+  it('reads set names from the node response componentSets', async () => {
+    const r = await classifyFrames({
+      links: [{ fileKey: 'F', nodeId: '1:1', url: 'u' }], library: okLib(), candidates: noCandidates, sleep: noSleep,
+      readNodes: async () => resp({ '1:1': {
+        document: frame('1:1', [inst('1:2', 'c')]),
+        components: { c: { key: 'k2', name: 'Secondary', remote: true, componentSetId: 'S' } },
+        componentSets: { S: { key: 'sk', name: 'Button' } },
+      } }),
+    });
+    expect(r.frames[0].verdict).toBe('adopted');
+    expect(r.frames[0].instances[0].component).toBe('Button :: Secondary');
   });
   it('treats a FRAME link as itself and dedupes a frame reached by page and frame link', async () => {
     const r = await classifyFrames({
-      links: [{ fileKey: 'F', nodeId: '0:1', url: 'u' }, { fileKey: 'F', nodeId: '1:3', url: 'v' }], libraryFileKey: LIB,
+      links: [{ fileKey: 'F', nodeId: '0:1', url: 'u' }, { fileKey: 'F', nodeId: '1:3', url: 'v' }], library: okLib(),
       readNodes: async () => resp({ '0:1': { document: page, components }, '1:3': { document: page.children![2], components } }),
-      lookupComponentFile: lookupFor({ k1: LIB }), sleep: noSleep,
+      candidates: noCandidates, sleep: noSleep,
     });
     expect(r.frames.map((f) => f.id)).toEqual(['1:1', '1:3']);
   });
   it('unreadable: no node id, absent node, 403, 404', async () => {
     const links = [{ fileKey: 'F', nodeId: null, url: 'u' }, { fileKey: 'F', nodeId: '7:7', url: 'v' }];
-    const r = await classifyFrames({ links, libraryFileKey: LIB, readNodes: async () => resp({ '7:7': null }), lookupComponentFile: lookupFor({}), sleep: noSleep });
+    const r = await classifyFrames({ links, library: okLib(), readNodes: async () => resp({ '7:7': null }), candidates: noCandidates, sleep: noSleep });
     expect(r.frames.map((f) => f.verdict)).toEqual(['unreadable', 'unreadable']);
     expect(r.frames[0].reason).toMatch(/names no frame/);
     for (const [status, code] of [[403, 'unauthorized'], [404, 'file-not-found']] as const) {
       const x = await classifyFrames({
-        links: [{ fileKey: 'F', nodeId: '1:1', url: 'u' }], libraryFileKey: LIB, lookupComponentFile: lookupFor({}), sleep: noSleep,
+        links: [{ fileKey: 'F', nodeId: '1:1', url: 'u' }], library: okLib(), candidates: noCandidates, sleep: noSleep,
         readNodes: async () => { throw new FigmaRestError(code, 'x', status); },
       });
       expect(x.frames[0].verdict).toBe('unreadable');
     }
   });
+  it('a read 429 is retried with backoff and then succeeds', async () => {
+    let n = 0;
+    const sleep = vi.fn(noSleep);
+    const r = await classifyFrames({
+      links: [{ fileKey: 'F', nodeId: '0:1', url: 'u' }], library: okLib(), candidates: noCandidates, sleep,
+      readNodes: async () => { if (n++ < 2) throw new FigmaRestError('rate-limited', 'rl', 429, 3); return resp({ '0:1': { document: page, components } }); },
+    });
+    expect(r.frames[0].verdict).toBe('adopted');
+    expect(sleep).toHaveBeenCalledWith(3000);
+  });
   it('a read that stays rate-limited is not-checked', async () => {
     const r = await classifyFrames({
-      links: [{ fileKey: 'F', nodeId: '1:1', url: 'u' }], libraryFileKey: LIB, lookupComponentFile: lookupFor({}), sleep: noSleep,
+      links: [{ fileKey: 'F', nodeId: '1:1', url: 'u' }], library: okLib(), candidates: noCandidates, sleep: noSleep,
       readNodes: async () => { throw new FigmaRestError('rate-limited', 'rl', 429); },
     });
     expect(r.frames[0].verdict).toBe('not-checked');
   });
-  it('partial evidence: cap reached => not-checked, never adopted', async () => {
+  it('an unavailable map leaves read frames not-checked, never adopted', async () => {
     const r = await classifyFrames({
-      links: [{ fileKey: 'F', nodeId: '0:1', url: 'u' }], libraryFileKey: LIB, cap: 0,
-      readNodes: async () => resp({ '0:1': { document: page, components } }), lookupComponentFile: lookupFor({ k1: LIB }), sleep: noSleep,
+      links: [{ fileKey: 'F', nodeId: '0:1', url: 'u' }], library: okLib({ library_map_version: 1 }),
+      readNodes: async () => resp({ '0:1': { document: page, components } }), candidates: noCandidates, sleep: noSleep,
     });
     expect(r.frames.every((f) => f.verdict === 'not-checked')).toBe(true);
+    expect(r.frames.map((f) => f.name)).toEqual(['Frame 1:1', 'Frame 1:3']);
   });
 });
 

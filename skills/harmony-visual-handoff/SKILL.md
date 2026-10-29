@@ -114,11 +114,20 @@ are **B-1201's**; the stored record, `design_artefact` (schema_version 1), is **
 
 **Adopt first (B-1320).** When the ticket already links a designer's Figma frames, adopt them before composing
 anything. Run `node "${CLAUDE_PLUGIN_ROOT}/dist/bin/harmony.js" design adopt-check --task <ticket>` (read-only, REST
-only, zero MCP calls). For each frame with verdict `adopted` (every instance comes from the workspace library),
+only, zero MCP calls; add `--url <figma-link>`, repeatable, to check given links instead of the ticket's). The check
+reads the workspace's saved library map and its ambiguous-name candidates, never a Figma component lookup: an
+instance is library-built when its component key is in the saved map, or is one of the candidates stored for its
+bare name (nested icons). A name-only match is off-library ("drawn from another copy of the library"): the name
+matches the workspace library but the component key does not. A missing, empty, out-of-date or errored map leaves
+every frame `not-checked`; the output says which, and refreshing the map is the fix. The output gives a verdict
+per frame and per instance. For each frame with verdict `adopted` (every instance comes from the workspace library),
 compose **no options**: attach live REST previews, build the artefact with `assembleAdoptedArtefact`
 (`src/tools/figma-adopt.ts`; every node `human-in-tool`, `mcp_call_count` 0, no `version_id`), and ask **"Adopt these
 frames as drawn?"** as the brief decision; the accept records them as the ticket's design, and the content
-fingerprint is taken at accept as for composed designs. State every frame's verdict on the brief with its reason:
+fingerprint is taken at accept as for composed designs. For EVERY frame given a verdict, adopted or not, attach its
+live REST preview to the ticket and list it in `frame.designer_frames` (`id`, `name`, `file_key`, `verdict`,
+`reason`, `preview_attachment_id`, `preview_filename`), so the reviewer sees each frame inline above the decision.
+State every frame's verdict on the brief with its reason:
 adopted / off-library / not covering the decision (your judgment, from the frame against the decision) / unreadable /
 not checked. A `not-checked` frame is never adopted. Compose only the uncovered part, from library instances, in the
 working file: on a page for the ticket, or, when the ticket's page already holds the designer's frames, on a
