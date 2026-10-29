@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { planComposition, CallBudget, limited, waitForVersionAfter, nextThrottleDelay, THROTTLE_BACKOFF, MCP_CALL_CAP, checkPreviewSet, NO_PREVIEW_NOTE } from './figma-composition.js';
+import { buildComposeCall, planComposition, CallBudget, limited, waitForVersionAfter, nextThrottleDelay, THROTTLE_BACKOFF, MCP_CALL_CAP, checkPreviewSet, NO_PREVIEW_NOTE } from './figma-composition.js';
 
 // SYNTHETIC fixtures. The real recorded use_figma fixture from the 2026-10-27 live proof is in
 // __fixtures__/figma-composition.live-2026-10-27.json, exercised by figma-composition.recorded.test.ts.
@@ -131,5 +131,30 @@ describe('checkPreviewSet', () => {
   });
   it('an empty plan is never complete', () => {
     expect(checkPreviewSet({ plannedFrameIds: [], composedFrameIds: [], images: {} }).complete).toBe(false);
+  });
+});
+
+describe('working-file composition (B-1325)', () => {
+  const T = 'AbCdEfGhIjKlMnOpQrStUv';
+  const L = 'LiBrArYkEyLiBrArYkEyLi';
+  const opts = [{ name: 'A', recommended: true, components: ['Card'], provenance: [] }];
+  it('planner refuses a library target', () => {
+    expect(() => planComposition({ ticket: 'B-9', options: opts, componentMap, targetFileKey: L, libraryFileKey: L })).toThrow(/library/);
+    expect(() => planComposition({ ticket: 'B-9', options: opts, componentMap, targetFileKey: T, libraryFileKey: L })).not.toThrow();
+  });
+  it('call builder refuses the library and cannot be skipped', () => {
+    const plan = planComposition({ ticket: 'B-9', options: opts, componentMap });
+    expect(() => buildComposeCall(plan, { targetFileKey: L, libraryFileKey: L, visualId: 'B-9', title: 'T' })).toThrow(/library/);
+  });
+  it('script finds-or-creates the ticket page and switches exactly once', () => {
+    const plan = planComposition({ ticket: 'B-9', options: opts, componentMap });
+    const call = buildComposeCall(plan, { targetFileKey: T, libraryFileKey: L, visualId: 'B-9', title: 'Design tool' });
+    expect(call.fileKey).toBe(T);
+    expect(call.pageName).toBe('B-9 \u00b7 Design tool');
+    expect(call.script).toContain('startsWith("B-9 \u00b7 ")');
+    expect(call.script).toContain('figma.createPage()');
+    expect(call.script.match(/await figma\.setCurrentPageAsync\(page\)/g)).toHaveLength(1);
+    expect(call.frames).toEqual(plan.frames);
+    expect(plan.calls).toHaveLength(1);
   });
 });

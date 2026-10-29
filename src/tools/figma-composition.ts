@@ -1,3 +1,5 @@
+import { assertNotLibrary, ticketPageName, ticketPagePrefix } from './figma-working-file.js';
+
 // B-1203 — pure planner for composing UX/UI option screens and flows in Figma. No network: it produces
 // the ordered use_figma call plan; the skill executes it. See skills/harmony-visual-handoff/SKILL.md 3c.
 //
@@ -63,6 +65,12 @@ export type PlanInput = {
   ticket: string;
   componentMap: ComponentMap;
   cap?: number;
+  /** B-1325: the file the leg will write to (the project working file) and the workspace library file. When both are given the planner refuses a library target. */
+  targetFileKey?: string;
+  libraryFileKey?: string;
+  /** B-1325: ticket visual id and title, used for the ticket page. */
+  visualId?: string;
+  title?: string;
 } & ({ options: OptionInput[]; flow?: undefined } | { flow: FlowStepInput[]; options?: undefined });
 
 function noteLines(notes: ProvenanceNote[]): string[] {
@@ -70,6 +78,7 @@ function noteLines(notes: ProvenanceNote[]): string[] {
 }
 
 export function planComposition(input: PlanInput): CompositionPlan {
+  if (input.targetFileKey !== undefined) assertNotLibrary(input.targetFileKey, input.libraryFileKey);
   const unmapped = new Set<string>();
   const resolve = (components: string[]) =>
     components.flatMap((c) => {
@@ -236,4 +245,37 @@ export function nextThrottleDelay(opts: {
     ? ra * 1000
     : baseMs * 2 ** Math.max(0, opts.attempt - 1);
   return { retry: true, delayMs: Math.max(1, Math.ceil(ra !== undefined && Number.isFinite(ra) && ra > 0 ? raw : Math.min(maxMs,raw))) };
+}
+
+export interface ComposeCall {
+  tool: 'use_figma';
+  purpose: 'compose';
+  /** The file the call writes to: always the project working file, never the library. */
+  fileKey: string;
+  pageName: string;
+  /** Plugin-API script body: finds the ticket page by prefix, else creates it, switches once, builds frames there. */
+  script: string;
+  frames: PlannedFrame[];
+}
+
+/**
+ * B-1325: the ONLY way to turn a plan into a use_figma compose call. The library check lives here so it cannot be
+ * skipped, and the script finds-or-creates the ticket page `<visual id> · <short title>`.
+ */
+export function buildComposeCall(
+  plan: CompositionPlan,
+  target: { targetFileKey: string; libraryFileKey?: string | null; visualId: string; title: string },
+): ComposeCall {
+  assertNotLibrary(target.targetFileKey, target.libraryFileKey);
+  const pageName = ticketPageName(target.visualId, target.title);
+  const prefix = ticketPagePrefix(target.visualId);
+  const script = [
+    'await figma.loadAllPagesAsync();',
+    `let page = figma.root.children.find((p) => p.name.startsWith(${JSON.stringify(prefix)}));`,
+    `if (!page) { page = figma.createPage(); page.name = ${JSON.stringify(pageName)}; }`,
+    'await figma.setCurrentPageAsync(page);',
+    `const planned = ${JSON.stringify(plan.frames)};`,
+    '// build each planned frame on `page` (library INSTANCES via importComponentByKeyAsync), then return { frameIds }',
+  ].join('\n');
+  return { tool: 'use_figma', purpose: 'compose', fileKey: target.targetFileKey, pageName, script, frames: plan.frames };
 }

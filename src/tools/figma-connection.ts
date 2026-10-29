@@ -8,7 +8,7 @@
 
 export type FigmaConnection =
   | { state: 'unconnected' }
-  | { state: 'connected'; fileKey?: string; componentMapId?: string }
+  | { state: 'connected'; libraryFileKey?: string; workingFileKey?: string | null; componentMapId?: string }
   | { state: 'failing'; reason: string };
 
 /** The port B-1201 will implement over its stored connection. */
@@ -27,7 +27,7 @@ export const defaultFigmaConnectionReader: FigmaConnectionReader = {
       if(meta.state==='disconnected')return {state:'unconnected'};
       const {assertFigmaReady,readMountedFigmaToken}=await import('../agents/design-tools/figma.js');
       assertFigmaReady(meta,Date.now());readMountedFigmaToken();
-      return {state:'connected',fileKey:meta.library_file_key,componentMapId:String(meta.generation)};
+      return {state:'connected',libraryFileKey:meta.library_file_key,workingFileKey:meta.working_file_key??null,componentMapId:String(meta.generation)};
     } catch {return {state:'failing',reason:'Figma needs reconnection or the token-only mount is unavailable'};}
   },
 };

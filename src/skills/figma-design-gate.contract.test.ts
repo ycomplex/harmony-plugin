@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { readSkill, referencedHarmonyTools } from './skill-contract.js';
 import { registerTools } from '../tools/index.js';
 import { defaultFigmaConnectionReader, resolveFigmaRoute, figmaBehavioursEnabled } from '../tools/figma-connection.js';
@@ -26,7 +26,9 @@ const figmaPath = section(handoff, '### 3c. Figma path (B-1203)', '### 4. Iterat
 
 describe('B-1203 preflight is inert today', () => {
   it('the default reader resolves unconnected, so every Figma-gated behaviour is off', async () => {
+    vi.stubEnv('HARMONY_FIGMA_CONTEXT_B64', '');
     const route = resolveFigmaRoute(await defaultFigmaConnectionReader.read());
+    vi.unstubAllEnvs();
     expect(route).toBe('html');
     expect(figmaBehavioursEnabled(route)).toBe(false);
   });
@@ -231,5 +233,42 @@ describe('B-1320 adopt a designer\'s frames', () => {
     expect(clarifyItem).toContain('design adopt-check --task <ticket> --links-only');
     expect(clarifyItem).toMatch(/does not exist when a designer's\s+design is already attached/);
     expect(clarifyItem).toMatch(/as if the preflight\s+resolved to `html` for this item/);
+  });
+});
+
+describe('B-1325: per-project Figma working file', () => {
+  const wf = section(handoff, '#### Working file (B-1325)', 'Figma path (planner:');
+  it('visual-handoff resolves the working file, composes only there, never the library', () => {
+    expect(wf).toContain('working-file resolve');
+    expect(wf).toMatch(/`ready`/);
+    expect(wf).toMatch(/`refuse`/);
+    expect(wf).toMatch(/`ask`/);
+    expect(wf).toMatch(/never the library/);
+    expect(wf).toMatch(/Never create a file, never choose one yourself/);
+    expect(wf).toContain('<visual id> · ');
+    expect(wf).toContain('setCurrentPageAsync');
+  });
+  it('save is called only after an answered round and always records the exchange id', () => {
+    expect(wf).toContain('working-file validate');
+    expect(wf).toMatch(/working-file save --file <key> --task <ticket> --exchange <exchange id>/);
+    expect(wf).toMatch(/only after an answered round/);
+    expect(wf).toMatch(/always records the exchange id/);
+  });
+  it('degradations and the marker comment', () => {
+    expect(wf).toContain('FIGMA-WORKING-FILE-SET');
+    expect(wf).toContain('rpc-absent');
+    expect(wf).toContain('not-owner');
+    expect(wf).toMatch(/THIS LEG ONLY/);
+    expect(wf).toMatch(/Design tool panel/);
+  });
+  it('reads of earlier designs keep the record file_key; step 3 composes only in the working file', () => {
+    expect(wf).toMatch(/stored on that design record/);
+    expect(figmaPath).toMatch(/working file/);
+  });
+  it('clarify and design-decide point at the working file rule', () => {
+    expect(clarifyItem).toContain('working-file resolve');
+    expect(clarifyItem).toMatch(/never write to the library file/);
+    expect(design).toContain('Working file (B-1325)');
+    expect(designCheck).toContain('Working file (B-1325)');
   });
 });
