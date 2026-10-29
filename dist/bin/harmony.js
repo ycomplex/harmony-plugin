@@ -72640,13 +72640,18 @@ import { readFileSync as readFileSync19 } from "node:fs";
 // src/tools/design-read.ts
 var isObj = (v2) => typeof v2 === "object" && v2 !== null && !Array.isArray(v2);
 var str2 = (v2) => typeof v2 === "string" && v2.trim() ? v2 : null;
+function designHolder(slot) {
+  return isObj(slot.content) && (isObj(slot.content.design_artefact) || Array.isArray(slot.content.nodes)) ? slot.content : slot;
+}
 function findArtefact(slot) {
-  if (isObj(slot.design_artefact)) return slot.design_artefact;
-  if (Array.isArray(slot.nodes)) return slot;
+  const holder = designHolder(slot);
+  if (isObj(holder.design_artefact)) return holder.design_artefact;
+  if (Array.isArray(holder.nodes)) return holder;
   return null;
 }
 function readAcceptedDrift(slot, artefact) {
-  for (const src of [slot.drift, slot.acceptance_drift, slot.drift_observation, artefact.drift]) {
+  const holder = designHolder(slot);
+  for (const src of [holder.drift, holder.acceptance_drift, holder.drift_observation, slot.drift, slot.acceptance_drift, slot.drift_observation, artefact.drift]) {
     const word = isObj(src) ? src.observation ?? src.drift ?? src.status : src;
     if (word === "changed" || word === "unchanged" || word === "unchecked") return word;
   }
@@ -72699,7 +72704,7 @@ function readAcceptedDesign(fieldValues) {
       fileUrl: str2(artefact.file_url),
       screens,
       skippedNodes,
-      sourceBriefId: str2(slot.source_brief_id) ?? str2(artefact.source_brief_id),
+      sourceBriefId: str2(designHolder(slot).source_brief_id) ?? str2(slot.source_brief_id) ?? str2(artefact.source_brief_id),
       acceptedDrift: readAcceptedDrift(slot, artefact),
       fingerprint: readFingerprint(fieldValues)
     };

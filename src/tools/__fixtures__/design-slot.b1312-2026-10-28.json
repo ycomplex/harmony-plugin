@@ -1,0 +1,42 @@
+{
+  "content": {
+    "drift": { "status": "unchecked", "checked_at": "2026-10-28T16:50:57.632Z" },
+    "accepted_at": "2026-10-28T16:49:48.011911+00:00",
+    "design_artefact": {
+      "tool": "figma",
+      "nodes": [
+        {
+          "id": "10:74",
+          "name": "B-1312 · 1. Decisions tab",
+          "caption": "Decisions opens first: labelled search, Scope, Review and Changed since beside the entries they filter, grouped by type.",
+          "preview_filename": "B-1312-design-10-74-v2415453148397313316.png",
+          "preview_attachment_id": "c4cc041a-5789-4451-b33b-70bb9a4a5348"
+        },
+        {
+          "id": "10:143",
+          "name": "B-1312 · 2. Terms tab",
+          "caption": "Definitions and entities together, with one search that also finds retired names; replaces Definitions only.",
+          "preview_filename": "B-1312-design-10-143-v2415453148397313316.png",
+          "preview_attachment_id": "6c5446b2-f6d1-4a01-996f-aa5e30f473e3"
+        },
+        {
+          "id": "10:188",
+          "name": "B-1312 · 3. Feature accounts tab",
+          "caption": "Feature accounts with their own search and the Refresh accounts action.",
+          "preview_filename": "B-1312-design-10-188-v2415453148397313316.png",
+          "preview_attachment_id": "42c46518-3ba0-421e-aeab-ae3175659efb"
+        }
+      ],
+      "file_key": "cE0x2i7UkD7X73p8WwnCzy",
+      "file_url": "https://www.figma.com/design/cE0x2i7UkD7X73p8WwnCzy",
+      "version_id": "2415453148397313316",
+      "composed_at": "2026-10-28T16:46:33.430Z",
+      "mcp_call_count": 0,
+      "schema_version": 1,
+      "provenance_notes": "real | tab-to-section mapping, controls and links | Decisions = knowledge entries; Terms = definitions + entities; Feature accounts = current accounts\nreal | view toggle look | drawn to match the Conductors view toggle, library icons\nreal | Feature accounts description | confirmed by the founder\nillustrative | counts, list rows, badges, account names | sample data\nhuman-in-tool | page subtitle (all three tabs) | removed by the designer in Figma\nhuman-in-tool | Decisions description | reworded by the designer in Figma\nhuman-in-tool | Terms description | reworded by the designer in Figma\nhuman-in-tool | 10:74, 10:143, 10:188 and their contents | moved up when the subtitle was removed (layout only)"
+    },
+    "source_brief_id": "5a3c02f3-c865-4ee4-bfb7-53dcb9fa58ea"
+  },
+  "ratified_at": "2026-10-28T16:50:57Z",
+  "ratified_by": "design"
+}

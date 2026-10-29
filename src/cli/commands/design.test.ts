@@ -103,6 +103,37 @@ describe('harmony design fingerprint compare', () => {
   });
 });
 
+// B-1327: the same commands on a slot stored the way the writer really stores it (copied from B-1312).
+const realFv = (extra: N = {}) => ({ other: 'kept', gate_slots: { design: JSON.parse(readFileSync(fileURLToPath(new URL('../../tools/__fixtures__/design-slot.b1312-2026-10-28.json', import.meta.url)), 'utf8')) }, ...extra });
+
+describe('B-1327: fingerprint take and compare on a real-shape slot', () => {
+  // The live Figma fixture holds frame 25:205, so point the real slot's one-screen variant at it.
+  const oneScreen = () => {
+    const fv = realFv();
+    const art = (fv.gate_slots.design as N).content.design_artefact as N;
+    art.nodes = [{ ...(art.nodes as N[])[0], id: FRAME }];
+    return fv;
+  };
+  it('take reports taken for the real shape, with accepted_at from the slot ratified_at', async () => {
+    const h = harness(oneScreen());
+    const out = await fingerprintTake('B-1', h.deps);
+    expect(out).toMatchObject({ command: 'take', status: 'taken', frames: 1, wrote: true });
+    expect(h.writes[0]).toMatchObject({ status: 'taken', accepted_at: '2026-10-28T16:50:57Z' });
+  });
+  it('compare reports unchanged while the file has not moved', async () => {
+    const first = harness(oneScreen());
+    await fingerprintTake('B-1', first.deps);
+    const h = harness({ ...oneScreen(), design_fingerprint: first.writes[0] });
+    expect(await fingerprintCompare('B-1', 'plan', h.deps)).toMatchObject({ command: 'compare', status: 'unchanged', wrote: true });
+  });
+  it('the unmodified real slot (three screens) is read, not skipped as no-accepted-design', async () => {
+    const h = harness(realFv());
+    const out = await fingerprintTake('B-1', h.deps);
+    expect(out).toMatchObject({ command: 'take', wrote: true });
+    expect(out.reason).not.toBe('no-accepted-design');
+  });
+});
+
 describe('readFigmaToken', () => {
   it('env first, then the secrets file, else undefined; never reads the file when the env is set', () => {
     const read = vi.fn(() => ' filetoken \n');
