@@ -46,7 +46,7 @@ import {
 } from '../../tools/conduction-record.js';
 import { RunConfigSchema, type RunConfig } from '../../config/run-config.js';
 import { getProjectConductionDefaults, fillRunConfigDefaults } from '../../config/conduction-defaults.js';
-import { assertRunConfigRuntime } from '../../config/runtime-validation.js';
+import { assertRunConfigPolicy, assertRunConfigRuntime } from '../../config/runtime-validation.js';
 import { resolveUnparkRunConfig, mergeRunConfig } from '../../tools/unpark-inheritance.js';
 import { hasAdapter, listAdapterIds } from '../../agents/registry.js';
 import { runCommand } from '../run-command.js';
@@ -145,6 +145,8 @@ export function registerConductCommand(program: Command): void {
             const filledRunConfig = fillRunConfigDefaults(callerRunConfig, defaults);
             // B-1147: refuse an unknown runtime, or a model that runtime cannot run.
             await assertRunConfigRuntime(ctx.client, filledRunConfig);
+            // B-1346: refuse a model outside a non-empty workspace model policy, before any run exists.
+            await assertRunConfigPolicy(ctx.client, ctx.projectId, filledRunConfig);
 
             return await createConduction(ctx.client, {
               task_id: taskId,

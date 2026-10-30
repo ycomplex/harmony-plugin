@@ -28,6 +28,7 @@ import {
   catalogEntriesForAgent,
   DEFAULT_AGENT_ADAPTER,
   entryModelId,
+  entryProvider,
   findModelEntry,
   normalizeModelId,
   getAgentAdapter,
@@ -42,6 +43,7 @@ import {
   type RunConfig,
 } from '../../config/run-config.js';
 import { resolveGatePhase } from '../../daemon/gate-phase.js';
+import { fetchCatalogPrice } from '../../tools/catalog-pricing.js';
 import { getAuthenticatedContext } from '../auth.js';
 
 /** B-892: the run_config `resolve-gate` should resolve THIS gate's model from — the live
@@ -184,6 +186,30 @@ export function registerModelCommands(program: Command): void {
       const { entries } = await resolveModelCatalog(client);
       for (const entry of catalogEntriesForAgent(entries, opts.agent ?? DEFAULT_AGENT_ADAPTER)) {
         console.log(entryModelId(entry));
+      }
+    });
+
+  model
+    .command('list')
+    .description(
+      'B-1346: print every active catalog offer of --agent, one tab-separated line each: model id, ' +
+        'runtime, provider, and input / cached-input / output USD per million tokens ("not captured" ' +
+        'when the catalog has no price). A header line comes first. Always exits 0.',
+    )
+    .option('--agent <id>', 'Agent runtime whose offers to list', DEFAULT_AGENT_ADAPTER)
+    .action(async (opts: { agent?: string }) => {
+      const agent = opts.agent ?? DEFAULT_AGENT_ADAPTER;
+      const client = await getCatalogClient();
+      const { entries } = await resolveModelCatalog(client);
+      const price = (v: unknown): string =>
+        typeof v === 'number' && Number.isFinite(v) ? String(v) : 'not captured';
+      console.log(['model', 'runtime', 'provider', 'input_usd_per_mtok', 'cached_input_usd_per_mtok', 'output_usd_per_mtok'].join('\t'));
+      for (const entry of catalogEntriesForAgent(entries, agent)) {
+        const modelId = entryModelId(entry);
+        const p = await fetchCatalogPrice(client, modelId, agent);
+        console.log(
+          [modelId, agent, entryProvider(entry), price(p?.input_per_mtok), price(p?.cached_input_per_mtok), price(p?.output_per_mtok)].join('\t'),
+        );
       }
     });
 
