@@ -23,6 +23,8 @@
 //  - `modelUsage` was `{}` in that observation. It is treated here as OPTIONAL ENRICHMENT that
 //    nothing depends on — never a required field.
 
+import type { CatalogRowPrice } from './catalog-pricing.js';
+
 /** The nested `usage` object of a result envelope. Every field optional: a CLI version that stops
  *  reporting one must degrade to "not measured", never to a wrong number. */
 export interface ClaudeResultUsage {
@@ -94,7 +96,11 @@ export interface ModelPricing {
  *      usage cannot say which side of that line each request fell on — so it stays unpriced.
  *    - Claude Sonnet 4.6 and older Sonnets ($3/$15) are not matched by `sonnet-5`.
  *  Cache writes are 1.25x (5m) / 2x (1h) the input rate on every row; cache READS are not a uniform
- *  multiplier (0.1x generally, 0.05x on Opus 5.5, 0.025x on Fable 5.1), so each row states its own. */
+ *  multiplier (0.1x generally, 0.05x on Opus 5.5, 0.025x on Fable 5.1), so each row states its own.
+ *
+ *  B-1179: this table is now the one-release FALLBACK behind the model-catalog row's own prices
+ *  (src/tools/catalog-pricing.ts), consulted only when the row carries none. Retire it once the prod
+ *  catalog rows carry prices. */
 export const MODEL_PRICING: Readonly<Record<string, ModelPricing>> = {
   'opus-5-5': {
     input_per_mtok: 4,
@@ -134,6 +140,20 @@ export const MODEL_PRICING: Readonly<Record<string, ModelPricing>> = {
     cache_read_per_mtok: 1,
   },
 };
+
+/** B-1179: a catalog row's three prices as a Claude ModelPricing. The row's cached-input price is
+ *  the cache-READ rate; the two cache-WRITE rates are the published multiples of the input rate
+ *  (5m = 1.25x, 1h = 2x — see ModelPricing), so a row equal to a MODEL_PRICING row prices
+ *  identically to it. */
+export function rowToModelPricing(row: CatalogRowPrice): ModelPricing {
+  return {
+    input_per_mtok: row.input_per_mtok,
+    output_per_mtok: row.output_per_mtok,
+    cache_write_1h_per_mtok: 2 * row.input_per_mtok,
+    cache_write_5m_per_mtok: 1.25 * row.input_per_mtok,
+    cache_read_per_mtok: row.cached_input_per_mtok,
+  };
+}
 
 /** MODEL_PRICING's keys, longest first, so the most specific row wins. */
 const PRICING_KEYS_BY_SPECIFICITY = Object.keys(MODEL_PRICING).sort((x, y) => y.length - x.length);
@@ -225,7 +245,10 @@ export interface CodexPricing {
  *  (tracked as B-1176). One row per model, so the <= 272K rates are used. A model the page did not
  *  list has NO row (never a from-memory rate): it stays UNPRICED (cost 'unknown'). Keyed by the EXACT
  *  model id (an optional `codex:` catalog prefix is stripped, case-insensitive) — never a substring
- *  match, so an unlisted sibling is not priced at another model's rate. */
+ *  match, so an unlisted sibling is not priced at another model's rate.
+ *
+ *  B-1179: like MODEL_PRICING, now the one-release FALLBACK behind the model-catalog row's own prices
+ *  (src/tools/catalog-pricing.ts). Retire it once the prod catalog rows carry prices. */
 export const CODEX_PRICING: Readonly<Record<string, CodexPricing>> = {
   'gpt-6.1-sol': { input_per_mtok: 2.0, cached_input_per_mtok: 0.1, output_per_mtok: 10 },
   // B-1175: the two GPT-6 siblings the catalog now offers beside Sol (Luna: "most efficient";
@@ -246,12 +269,16 @@ export function resolveCodexPricing(model: string | null | undefined): CodexPric
 
 /** B-1149: one Codex invocation's equivalent cost from its OWN usage (already de-cumulated on a resumed
  *  thread). Null when the model is unpriced or nothing was measured. The cached count is clamped to
- *  the input count so a malformed figure can never price negative input. */
+ *  the input count so a malformed figure can never price negative input.
+ *
+ *  B-1179: priced from the catalog `rowPrice` when one is given (its fields are CodexPricing's), else
+ *  from CODEX_PRICING. */
 export function deriveCodexCostUsd(
   usage: { inputTokens: number | null; cacheReadInputTokens: number | null; outputTokens: number | null } | null,
   model: string | null | undefined,
+  rowPrice?: CatalogRowPrice | null,
 ): number | null {
-  const pricing = resolveCodexPricing(model);
+  const pricing: CodexPricing | null = rowPrice ?? resolveCodexPricing(model);
   if (!pricing || !usage) return null;
   const measured = [usage.inputTokens, usage.cacheReadInputTokens, usage.outputTokens].some((v) => typeof v === 'number');
   if (!measured) return null;
@@ -264,15 +291,19 @@ export function deriveCodexCostUsd(
 /** The ONE cost-resolution rule, so no caller re-decides it: PREFER the CLI's own
  *  `total_cost_usd` (`'cli'`); fall back to the derived figure when the CLI's is absent OR ZERO
  *  (a zero from the CLI means "not billed through this channel", not "this invocation was free");
- *  `'unknown'` with a null cost when neither is available. */
+ *  `'unknown'` with a null cost when neither is available.
+ *
+ *  B-1179: the derived figure is priced from the catalog `rowPrice` when one is given, else from
+ *  MODEL_PRICING. The CLI's own figure still wins over both. */
 export function resolveCost(
   parsed: ParsedClaudeResult,
   model: string | null | undefined,
+  rowPrice?: CatalogRowPrice | null,
 ): { total_cost_usd: number | null; cost_source: 'cli' | 'derived' | 'unknown' } {
   if (typeof parsed.cli_cost_usd === 'number' && parsed.cli_cost_usd > 0) {
     return { total_cost_usd: parsed.cli_cost_usd, cost_source: 'cli' };
   }
-  const derived = deriveCostUsd(parsed, resolvePricing(model));
+  const derived = deriveCostUsd(parsed, rowPrice ? rowToModelPricing(rowPrice) : resolvePricing(model));
   if (derived !== null) return { total_cost_usd: derived, cost_source: 'derived' };
   return { total_cost_usd: null, cost_source: 'unknown' };
 }
