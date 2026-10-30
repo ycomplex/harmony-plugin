@@ -230,6 +230,9 @@ function makeWorld(opts: WorldOptions = {}): World {
     '    printf \'%s\\n\' "$v" ;;',
     '  *"JSON.parse(s).agent"*) printf \'%s\' "${STUB_ADAPTER:-}" ;;', // B-1076: the launcher's adapter probe
     '  *"figma context"*) printf \'%s\' \'{"state":"disconnected"}\'; exit 0 ;;',
+    // B-1178: `harmony agent provider`, and the helper's fact parse run on the REAL node.
+    '  *"agent provider"*) [ -n "${STUB_PROVIDER_JSON:-}" ] && printf \'%s\' "$STUB_PROVIDER_JSON"; exit "${STUB_PROVIDER_RC:-0}" ;;',
+    `  *"f.env_key"*) exec ${JSON.stringify(process.execPath)} "$@" ;;`,
     '  *mint-installation-token.mjs*)',
     '    echo "mint" >> "$STUB_LOGS/order.log"',
     '    out=""; prev=""',
@@ -1052,5 +1055,70 @@ describe.skipIf(!BASH_AVAILABLE)('docker-host-worker-launch.sh — the Codex ada
     expect(joined).not.toContain('codex');
     expect(joined).not.toContain('HARMONY_CODEX_AUTH_FILE');
     expect(log(world, 'ssh.log')).not.toContain('codex-auth');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// B-1178: a Codex offer on a non-OpenAI provider runs on the key file ~/.harmony/provider-keys/<name>
+// (HARMONY_PROVIDER_KEY_DIR overrides), shipped inside run.env over ssh stdin — never argv, never a log —
+// with no login cache at all. A missing key file refuses before the host is woken.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+describe.skipIf(!BASH_AVAILABLE)('docker-host-worker-launch.sh — B-1178 provider API key legs', () => {
+  const KEY_SENTINEL = 'sk-or-KEY-SENTINEL-must-only-reach-run-env-7c1d';
+  const CODEX_RC = Buffer.from('{"agent":{"adapter":"codex"}}').toString('base64');
+  const args = [CONDUCTION_ID, TICKET, CODEX_RC, 'qwen/qwen-9'];
+  const OR = JSON.stringify({ agent: 'codex', model: 'qwen/qwen-9', provider: 'openrouter', env_key: 'OPENROUTER_API_KEY', secret: 'harmony-provider-openrouter-key', base_url: 'https://openrouter.ai/api/v1', context_window_tokens: null });
+  const keyDir = (w: World, write = true) => {
+    const d = join(w.dir, 'provider-keys');
+    mkdirSync(d, { recursive: true });
+    if (write) writeFileSync(join(d, 'openrouter'), `${KEY_SENTINEL}\n`, { mode: 0o600 });
+    return d;
+  };
+  const env = (w: World, extra: Record<string, string> = {}) => ({ STUB_ADAPTER: 'codex', STUB_PROVIDER_JSON: OR, HARMONY_CODEX_PROVIDERS: 'openrouter', ...extra });
+
+  it('ships the key inside run.env only, names the provider, mounts no login cache, and leaves no local copy', () => {
+    const w = makeWorld();
+    const r = launch(w, env(w, { HARMONY_PROVIDER_KEY_DIR: keyDir(w), HARMONY_CODEX_AUTH_SRC: join(w.dir, 'no-auth.json') }), args);
+    expect(r.status, r.stderr).toBe(0);
+    expect(log(w, 'env-file-at-run')).toContain(`OPENROUTER_API_KEY=${KEY_SENTINEL}\n`);
+    const worker = dockerCalls(w).find((c) => c.includes('--privileged'))!;
+    expect(worker).toContain('HARMONY_CODEX_PROVIDER=openrouter');
+    expect(worker.join('\n')).not.toContain('codex-auth');
+    expect(worker.join('\n')).not.toContain('HARMONY_CODEX_AUTH_FILE');
+    for (const name of ['ssh-argv.log', 'ssh.log', 'docker.log', 'node.log', 'order.log']) expect(log(w, name)).not.toContain(KEY_SENTINEL);
+    expect(r.stderr + r.stdout).not.toContain(KEY_SENTINEL);
+    expect(existsSync(join(w.localRunDir, 'run.env.provider'))).toBe(false);
+    expect(readFileSync(join(w.localRunDir, 'run.env'), 'utf8')).not.toContain(KEY_SENTINEL);
+    expect(existsSync(join(w.remoteRunDir, 'run.env'))).toBe(false);
+  });
+
+  it('REFUSES — before waking the host — when the key file is missing, naming the path and the secret', () => {
+    const w = makeWorld();
+    const dir = keyDir(w, false);
+    const r = launch(w, env(w, { HARMONY_PROVIDER_KEY_DIR: dir }), args);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('docker-host-worker-launch: Refusing to start:');
+    expect(r.stderr).toContain(join(dir, 'openrouter'));
+    expect(r.stderr).toContain('harmony-provider-openrouter-key');
+    expect(r.stderr).toContain('no host woken, no worker launched');
+    expect(log(w, 'ssh.log')).toBe('');
+    expect(dockerCalls(w)).toEqual([]);
+    expect(log(w, 'node.log')).not.toContain('mint-installation-token');
+  });
+
+  it('REFUSES a provider not in the providers list, before the host is woken', () => {
+    const w = makeWorld();
+    const r = launch(w, env(w, { HARMONY_PROVIDER_KEY_DIR: keyDir(w), HARMONY_CODEX_PROVIDERS: '' }), args);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('.harmony/conductor.json');
+    expect(log(w, 'ssh.log')).toBe('');
+  });
+
+  it('an OpenAI offer (no answer from the catalog) still needs and ships the login cache, exactly as before', () => {
+    const w = makeWorld();
+    const r = launch(w, { STUB_ADAPTER: 'codex', HARMONY_CODEX_AUTH_SRC: join(w.dir, 'absent.json') }, [CONDUCTION_ID, TICKET, CODEX_RC, '']);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('login-cache file is missing');
   });
 });

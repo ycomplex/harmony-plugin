@@ -601,6 +601,53 @@ case "$MODE" in
     # empty) and the CURRENT_MODEL, from `harmony agent argv`'s NUL-separated output — the only
     # encoding that survives a prompt with spaces, quotes or newlines. A refusal (unknown/malformed
     # adapter) or an empty answer ends the leg: there is no hand-assembled fallback command.
+    # --- B-1178: the Codex offer's model provider, resolved once per model. -------------------------
+    # `harmony agent provider` reads the live catalog row of CURRENT_MODEL (an inactive row still answers —
+    # the run named it). openai, a model the catalog does not know, or no reachable catalog: nothing changes
+    # (no table, no flag — the launch is exactly what it was before B-1178), unless the launcher named a
+    # provider for this leg (HARMONY_CODEX_PROVIDER), which then stands. Any other provider: `agent
+    # render-provider` re-renders config.toml with its [model_providers.<name>] table and context window —
+    # refusing unless that provider's key is mounted and the login cache is not — and `agent argv` gets
+    # `--provider`, which puts `-c model_provider=<name>` on exec AND on exec resume (the B-1148 in-place
+    # switch). A provider this build does not know, or one that differs from the launcher's, ends the leg.
+    B1178_PROVIDER_FOR_MODEL="__unresolved__"
+    CODEX_PROVIDER_ARGS=()
+    _b1178_codex_provider() {
+      [ "${AGENT_ID:-claude-code}" = "codex" ] || return 0
+      [ "$CURRENT_MODEL" != "$B1178_PROVIDER_FOR_MODEL" ] || return 0
+      B1178_PROVIDER_FOR_MODEL="$CURRENT_MODEL"
+      CODEX_PROVIDER_ARGS=()
+      local facts="" err_file rc=0 provider="" window="" window_args=()
+      if [ -n "$CURRENT_MODEL" ]; then
+        err_file="$(mktemp)"
+        facts="$(node "$PLUGIN_DIR/dist/bin/harmony.js" agent provider --agent codex --model "$CURRENT_MODEL" --json 2>"$err_file")" || rc=$?
+        if [ "$rc" -eq 2 ]; then
+          cat "$err_file" >&2
+          rm -f "$err_file"
+          echo "B-1178: model '$CURRENT_MODEL' names a provider this plugin does not know — no worker launched." >&2
+          exit 1
+        fi
+        rm -f "$err_file"
+        if [ "$rc" -eq 0 ] && [ -n "$facts" ]; then
+          provider="$(printf '%s' "$facts" | jq -r '.provider // ""' 2>/dev/null || true)"
+          window="$(printf '%s' "$facts" | jq -r '.context_window_tokens // ""' 2>/dev/null || true)"
+        fi
+      fi
+      [ -n "$provider" ] || provider="${HARMONY_CODEX_PROVIDER:-openai}"
+      if [ -n "${HARMONY_CODEX_PROVIDER:-}" ] && [ "$provider" != "$HARMONY_CODEX_PROVIDER" ]; then
+        echo "B-1178: Refusing to start: this leg was launched for provider '$HARMONY_CODEX_PROVIDER' but model '$CURRENT_MODEL' is served by '$provider' — no worker launched." >&2
+        exit 1
+      fi
+      [ "$provider" != "openai" ] || return 0
+      if [ -n "$window" ]; then window_args=(--context-window "$window"); fi
+      node "$PLUGIN_DIR/dist/bin/harmony.js" agent render-provider --plugin-dir "$PLUGIN_DIR" --provider "$provider" "${window_args[@]}" || {
+        echo "B-1178: \`harmony agent render-provider\` refused (see stderr above) — no worker launched." >&2
+        exit 1
+      }
+      CODEX_PROVIDER_ARGS=(--provider "$provider")
+      echo "B-1178: model '$CURRENT_MODEL' runs on provider '$provider' (its API key; no login cache)." >&2
+    }
+
     AGENT_ARGV=()
     _agent_argv() {
       local resume_args=() model_args=() argv_file tok
@@ -610,10 +657,11 @@ case "$MODE" in
       if [ -n "$CURRENT_MODEL" ]; then
         model_args=(--model "$CURRENT_MODEL")
       fi
+      if [ "${AGENT_ID:-claude-code}" = "codex" ]; then _b1178_codex_provider; fi
       AGENT_ARGV=()
       argv_file="$(mktemp)"
       if ! node "$PLUGIN_DIR/dist/bin/harmony.js" agent argv \
-        --plugin-dir "$PLUGIN_DIR" --prompt "$PROMPT" "${resume_args[@]}" "${model_args[@]}" \
+        --plugin-dir "$PLUGIN_DIR" --prompt "$PROMPT" "${resume_args[@]}" "${model_args[@]}" ${CODEX_PROVIDER_ARGS[@]+"${CODEX_PROVIDER_ARGS[@]}"} \
         -- "${EXTRA_HEADLESS_FLAGS_BASE[@]}" >"$argv_file"; then
         rm -f "$argv_file"
         echo "B-1077: \`harmony agent argv\` refused or failed (see stderr above) — no worker launched." >&2

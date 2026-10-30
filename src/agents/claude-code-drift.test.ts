@@ -141,8 +141,9 @@ function envProblems(cloudLaunch: string, dockerHost: string): string[] {
   const body = envFileBody(cloudLaunch);
   if (!body) return ['write_exec_env_file() not found'];
   // B-1076: the Codex login-cache PATH variable is forwarded only for a Codex run (codex-drift.test.ts
-  // pins its gate) — never part of a Claude leg's env.
-  const shell = [...new Set([...body.matchAll(/printf '([A-Z_]+):/g)].map((m) => m[1]))].filter((n) => n !== 'HARMONY_CODEX_AUTH_FILE').sort();
+  // pins its gate) — never part of a Claude leg's env. B-1178: so is the provider NAME.
+  const codexOnly = ['HARMONY_CODEX_AUTH_FILE', 'HARMONY_CODEX_PROVIDER'];
+  const shell = [...new Set([...body.matchAll(/printf '([A-Z_]+):/g)].map((m) => m[1]))].filter((n) => !codexOnly.includes(n)).sort();
   const adapter = [...A.env.allowlist].sort();
   if (JSON.stringify(shell) !== JSON.stringify(adapter)) p.push(`env allowlist: shell [${shell}] ≠ adapter [${adapter}]`);
   if (!dockerHost.includes('--env-file \\"$REMOTE_RUN/run.env\\"')) p.push('docker-host no longer passes the minted run.env');

@@ -23,7 +23,10 @@ next() {  # $1 = seq json env var, $2 = counter name -> prints the response for 
 case "$all" in
   "get secret "*)
     name="${args[2]}"
-    case ",${STUB_MISSING_SECRETS:-}," in *",$name,"*) exit 1 ;; esac
+    # B-1178: kubectl's own error text for the three ways a secret read fails.
+    case ",${STUB_FORBIDDEN_SECRETS:-}," in *",$name,"*) echo "Error from server (Forbidden): secrets \"$name\" is forbidden: User \"system:serviceaccount:harmony-conductor:harmony-conductor\" cannot get resource \"secrets\" in API group \"\" in the namespace \"harmony-legs\"" >&2; exit 1 ;; esac
+    case ",${STUB_ERROR_SECRETS:-}," in *",$name,"*) echo "Unable to connect to the server: dial tcp 10.0.0.1:443: i/o timeout" >&2; exit 1 ;; esac
+    case ",${STUB_MISSING_SECRETS:-}," in *",$name,"*) echo "Error from server (NotFound): secrets \"$name\" not found" >&2; exit 1 ;; esac
     exit 0 ;;
   "get storageclass "*)
     echo "storageclass-read" >> "$STUB_LOGS/storageclass-reads"

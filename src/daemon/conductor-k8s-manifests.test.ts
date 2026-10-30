@@ -199,7 +199,8 @@ describe('ServiceAccount, ConfigMap and RBAC', () => {
     expect(new Set(rule('secrets').verbs)).toEqual(new Set(['create', 'patch', 'delete']));
     const named = rule('secrets', true);
     expect(named.verbs).toEqual(['get']);
-    expect(named.resourceNames).toEqual(['harmony-worker-secrets', 'harmony-codex-auth']);
+    // B-1178: get also reaches the OpenRouter key's Secret (the launcher checks it exists before a provider leg).
+    expect(named.resourceNames).toEqual(['harmony-worker-secrets', 'harmony-codex-auth', 'harmony-provider-openrouter-key']);
     expect(rule('pods').resources).toEqual(['pods', 'pods/log']);
     expect(rule('pods').verbs).toEqual(['get', 'list']);
     expect(rule('events').verbs).toEqual(['get', 'list']);

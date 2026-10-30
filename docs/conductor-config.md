@@ -61,11 +61,12 @@ at boot (a change is logged as `restart needed`).
 | `model_policy.per_gate` | map gate -> model alias | none | project | **hot** |
 | `log_shipping` | boolean | unset = ship when `gcp.project` is named | project | **hot** (read live by the log shipper, see [Conductor logs](#conductor-logs-b-1174)) |
 | `agents` | non-empty list of strings | `["claude-code","codex"]` | project | restart |
+| `providers` | non-empty list of Codex model-provider **names** (`src/agents/codex-providers.ts`: `openrouter`, `deepseek`) | unset = only OpenAI offers may launch | project | launch env (`HARMONY_CODEX_PROVIDERS`, comma-joined) |
 | `target` | `"prod"` \| `"staging"` \| `"custom"` | unset (the worker's own default) | project | launch env (`HARMONY_TARGET`) |
 | `supabase_url` | string; **only with `target: "custom"`** | unset | project | launch env (`HARMONY_SUPABASE_URL`) |
 | `repos` | list of `{ url, ref?, path, meta_repo_role?, is_plugin? }` (the B-814 entry list, unchanged) | unset (the three-slot default) | project | launch env (`HARMONY_REPOS_JSON`) |
 | `agent_flags` | map adapter id -> flag string; only `claude-code` is wired | unset | project | launch env (`CLAUDE_HEADLESS_FLAGS`) |
-| `profiles.cloud`, `profiles.gke` | `{ max_workers?, agents?, required_tools? }` on top of the built-in template; **no other profile name, no custom template** | none | project | restart |
+| `profiles.cloud`, `profiles.gke` | `{ max_workers?, agents?, providers?, required_tools? }` on top of the built-in template; **no other profile name, no custom template** | none | project | restart |
 | `config_repo` | `"owner/name"` | none (no default repo) | host | start |
 | `config_ref` | string | `main` | host | start |
 | `plugin_dir` | path | required (both profiles launch from the host's plugin checkout) | host | launch env |
@@ -78,7 +79,12 @@ at boot (a change is logged as `restart needed`).
 `harmony config get env` / `repos`, which is also what `scripts/mint-installation-token.mjs` reads to compose each
 leg's env file. Every built-in profile listed under `profiles` gets an entry in the merged config (so a host that
 switches profile finds both templates); the top-level `profile` picks the active one, and a top-level
-`concurrency.max_workers` / `agents` still applies to the active profile when its own block does not set one.
+`concurrency.max_workers` / `agents` / `providers` still applies to the active profile when its own block does not set one.
+
+`providers` (B-1178) lists the non-OpenAI model providers a Codex leg may run on, by name; each provider's API
+key lives in the secret `harmony-provider-<name>-key` (names only here, values nowhere). A Codex run whose
+catalog offer names a provider that is not listed is refused at launch, naming the provider and this file; an
+OpenAI offer never needs the list. Setup: `container/README.md`, "Provider API key runbook".
 When `config get` is unusable (CLI missing, non-zero exit, timeout, empty output) and `deployment.json` exists,
 the mint script uses that file's `env` and `repos` directly and logs **one** line to stderr; a leg never launches
 with a silently smaller env. On a legacy host (only `deployment.json` + `daemon.env`) the env file is

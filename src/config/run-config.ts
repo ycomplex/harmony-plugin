@@ -508,6 +508,12 @@ export interface ModelCatalogEntry {
   /** Which deployment profiles ('prod' / 'staging') pin this row as their default, when the
    *  column exists. */
   pinned_default_profiles?: string[] | null;
+  /** B-1178: which model provider serves this row (src/agents/codex-providers.ts). Absent (the column
+   *  predates the migration on this project) or null reads as the runtime's default — see entryProvider. */
+  provider?: string | null;
+  /** B-1178: the model's context window in tokens, when the catalog knows it. Absent or null means
+   *  "omit model_context_window" from a Codex provider config. */
+  context_window_tokens?: number | null;
 }
 
 /** B-1147: a catalog row's agent — 'claude-code' for any row predating the agent column. */
@@ -520,6 +526,20 @@ export function entryModelId(entry: ModelCatalogEntry): string {
   return entry.model_id || entry.alias;
 }
 
+/** B-1178: the provider each runtime means when a row names none (or the column is absent). */
+export const DEFAULT_PROVIDER_BY_AGENT: Readonly<Record<string, string>> = {
+  'claude-code': 'anthropic',
+  codex: 'openai',
+};
+
+/** B-1178: a catalog row's model provider — its `provider` when that is a non-empty string, else the
+ *  runtime's default (`openai` for codex rows, `anthropic` for claude-code rows). Until the column lands on
+ *  a project every row reads as its default, so every leg launches exactly as before (AC6). */
+export function entryProvider(entry: ModelCatalogEntry): string {
+  if (typeof entry.provider === 'string' && entry.provider !== '') return entry.provider;
+  return DEFAULT_PROVIDER_BY_AGENT[entryAgent(entry)] ?? DEFAULT_PROVIDER_BY_AGENT[DEFAULT_AGENT_ADAPTER];
+}
+
 /** B-1147: the catalog rows that run on `agent`. */
 export function catalogEntriesForAgent(
   entries: readonly ModelCatalogEntry[],
@@ -528,15 +548,25 @@ export function catalogEntriesForAgent(
   return entries.filter((entry) => entryAgent(entry) === agent);
 }
 
+/** B-1178: the explicit-name opt-in. A run that NAMES an inactive offer still launches (AC7): inactive
+ *  only hides a row from lists and dialogs. Only the explicit-name paths pass it (isAllowedModelAlias,
+ *  getModelContextBudgetBytes, `model normalize`, runtime-validation, `harmony agent provider`); every list
+ *  and default path stays active-only. */
+export interface CatalogReadOptions {
+  includeInactive?: boolean;
+}
+
 /** B-1185: match either spelling only within active rows of the selected runtime.
- * Unknown values pass through for the caller's existing refusal; never strip a prefix. */
+ * Unknown values pass through for the caller's existing refusal; never strip a prefix.
+ * B-1178: `{ includeInactive: true }` also matches an `active === false` row — explicit names only. */
 export function findModelEntry(
   model: string,
   entries: readonly ModelCatalogEntry[],
   agent: string = DEFAULT_AGENT_ADAPTER,
+  opts: CatalogReadOptions = {},
 ): ModelCatalogEntry | undefined {
   return catalogEntriesForAgent(entries, agent).find(
-    (entry) => entry.active && (entry.alias === model || entryModelId(entry) === model),
+    (entry) => (entry.active || opts.includeInactive === true) && (entry.alias === model || entryModelId(entry) === model),
   );
 }
 
@@ -544,8 +574,9 @@ export function normalizeModelId(
   model: string,
   entries: readonly ModelCatalogEntry[],
   agent: string = DEFAULT_AGENT_ADAPTER,
+  opts: CatalogReadOptions = {},
 ): string {
-  const entry = findModelEntry(model, entries, agent);
+  const entry = findModelEntry(model, entries, agent, opts);
   return entry ? entryModelId(entry) : model;
 }
 
@@ -668,31 +699,33 @@ const DEFAULT_MODEL_CONTEXT_BUDGET_BYTES = 60 * 1024 * 1024;
  *  since a reachable-but-empty catalog can never satisfy the pinned-default invariant either). */
 export async function fetchModelCatalog(
   client: SupabaseClient | null | undefined,
+  opts: CatalogReadOptions = {},
 ): Promise<ModelCatalogEntry[] | null> {
   if (!client) return null;
   try {
     // B-1147: select the runtime columns first; on an undefined-column error (the web migration
     // has not landed on this project yet — prod until promote) re-select the pre-B-1147 shape and
     // label every row claude-code with model_id = alias.
+    // B-1178: a NEW top rung also selects provider and context_window_tokens; on a missing-column
+    // error it falls through to the rungs below, unchanged. `includeInactive` (explicit-name callers
+    // only) drops the active filter on every rung.
     type CatalogRead = { data: unknown; error: { code?: string; message?: string } | null };
-    let { data, error }: CatalogRead = await client
-      .from('model_catalog')
-      .select(
-        'alias, label, context_budget_bytes, active, verified_at, agent, model_id, underlying_model, capabilities, pinned_default_profiles',
-      )
-      .eq('active', true);
+    const read = async (cols: string): Promise<CatalogRead> => {
+      const query = client.from('model_catalog').select(cols);
+      return (await (opts.includeInactive ? query : query.eq('active', true))) as CatalogRead;
+    };
+    const B1147_COLS =
+      'alias, label, context_budget_bytes, active, verified_at, agent, model_id, underlying_model, capabilities, pinned_default_profiles';
+    let { data, error }: CatalogRead = await read(`${B1147_COLS}, provider, context_window_tokens`);
     if (error && isMissingCatalogColumnError(error)) {
-      // pinned_default_profiles may predate the runtime columns or not exist at all — try without it.
-      ({ data, error } = (await client
-        .from('model_catalog')
-        .select('alias, label, context_budget_bytes, active, verified_at, agent, model_id, underlying_model, capabilities')
-        .eq('active', true)) as CatalogRead);
+      ({ data, error } = await read(B1147_COLS));
     }
     if (error && isMissingCatalogColumnError(error)) {
-      ({ data, error } = (await client
-        .from('model_catalog')
-        .select('alias, label, context_budget_bytes, active, verified_at')
-        .eq('active', true)) as CatalogRead);
+      // pinned_default_profiles may predate the runtime columns or not exist at all — try without it.
+      ({ data, error } = await read('alias, label, context_budget_bytes, active, verified_at, agent, model_id, underlying_model, capabilities'));
+    }
+    if (error && isMissingCatalogColumnError(error)) {
+      ({ data, error } = await read('alias, label, context_budget_bytes, active, verified_at'));
     }
     if (error) {
       console.error(
@@ -726,8 +759,9 @@ export async function fetchModelCatalog(
  *  cannot distinguish from "no rows yet" on its own. */
 export async function resolveModelCatalog(
   client: SupabaseClient | null | undefined,
+  opts: CatalogReadOptions = {},
 ): Promise<{ entries: readonly ModelCatalogEntry[]; source: 'live' | 'fallback' }> {
-  const live = await fetchModelCatalog(client);
+  const live = await fetchModelCatalog(client, opts);
   if (live && live.length > 0) return { entries: live, source: 'live' };
   if (live && live.length === 0) {
     console.error(
@@ -751,9 +785,10 @@ export async function isAllowedModelAlias(
   client?: SupabaseClient | null,
   agent: string = DEFAULT_AGENT_ADAPTER,
 ): Promise<boolean> {
-  const { entries } = await resolveModelCatalog(client);
+  // B-1178: an explicit name — an inactive row still passes (inactive only hides it from lists).
+  const { entries } = await resolveModelCatalog(client, { includeInactive: true });
   // B-1185: accept catalog aliases and runtime ids within the selected runtime.
-  return !!findModelEntry(alias, entries, agent);
+  return !!findModelEntry(alias, entries, agent, { includeInactive: true });
 }
 
 /** B-881: per-model resumable-session-SIZE budget, in BYTES — the narrowed session-resume guard's
@@ -775,12 +810,13 @@ export async function getModelContextBudgetBytes(
   client?: SupabaseClient | null,
   agent?: string,
 ): Promise<number> {
-  const { entries } = await resolveModelCatalog(client);
+  // B-1178: an explicit name — an inactive row's budget still applies.
+  const { entries } = await resolveModelCatalog(client, { includeInactive: true });
   // B-1148: with an agent, match that runtime's rows on their runtime-native model id (a Codex
   // rollout is weighed against the Codex row's budget, never a Claude row). Without one the
   // pre-B-1148 alias match is unchanged.
   const found = agent
-    ? findModelEntry(alias, entries, agent)
+    ? findModelEntry(alias, entries, agent, { includeInactive: true })
     : entries.find((entry) => entry.alias === alias);
   return found?.context_budget_bytes ?? DEFAULT_MODEL_CONTEXT_BUDGET_BYTES;
 }

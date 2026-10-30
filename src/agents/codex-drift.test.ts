@@ -29,6 +29,7 @@ import {
   CODEX_CD_FLAG,
   CODEX_JSON_FLAG,
   CODEX_AUTH_FILE_ENV,
+  CODEX_PROVIDER_ENV,
   CODEX_MODEL_FLAG,
   CODEX_MCP_ENV_VARS,
   codexAdapter as A,
@@ -157,10 +158,14 @@ function envProblems(cloudLaunch: string): string[] {
   // B-1076: the ONE launcher-forwarded name outside the shared per-leg allowlist is the login-cache
   // PATH variable (the adapter's credential env), forwarded only for a Codex run — conformance keeps a
   // credential env out of the allowlist, so it is subtracted here and its CODEX_RUN gate is pinned.
+  // B-1178: the gate also requires the openai provider (a provider leg runs on its key, never the cache),
+  // and the provider NAME (HARMONY_CODEX_PROVIDER) is the second Codex-only name, pinned the same way.
   const credVar = CODEX_AUTH_FILE_ENV;
+  const providerVar = CODEX_PROVIDER_ENV;
   const p: string[] = [];
-  if (!new RegExp(`if \\[ "\\$\\{CODEX_RUN:-0\\}" = "1" \\]; then\\n\\s*printf '${credVar}:`).test(body)) p.push(`${credVar} is not forwarded behind the CODEX_RUN gate`);
-  const shell = [...new Set([...body.matchAll(/printf '([A-Z_]+):/g)].map((m) => m[1]))].filter((n) => n !== credVar).sort();
+  if (!new RegExp(`if \\[ "\\$\\{CODEX_RUN:-0\\}" = "1" \\] && \\[ "\\$\\{CODEX_PROVIDER:-openai\\}" = "openai" \\]; then\\n\\s*printf '${credVar}:`).test(body)) p.push(`${credVar} is not forwarded behind the CODEX_RUN + openai-provider gate`);
+  if (!new RegExp(`if \\[ "\\$\\{CODEX_RUN:-0\\}" = "1" \\] && \\[ "\\$\\{CODEX_PROVIDER:-openai\\}" != "openai" \\]; then\\n\\s*printf '${providerVar}:`).test(body)) p.push(`${providerVar} is not forwarded behind the CODEX_RUN + provider gate`);
+  const shell = [...new Set([...body.matchAll(/printf '([A-Z_]+):/g)].map((m) => m[1]))].filter((n) => n !== credVar && n !== providerVar).sort();
   const adapter = [...A.env.allowlist].sort();
   if (JSON.stringify(shell) !== JSON.stringify(adapter)) p.push(`env allowlist: shell [${shell}] ≠ adapter [${adapter}]`);
   return p;

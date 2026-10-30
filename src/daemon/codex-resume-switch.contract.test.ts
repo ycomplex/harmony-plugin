@@ -31,6 +31,14 @@ function makePluginShim(dir: string): string {
     `const fs = require('node:fs');
 const argv = process.argv.slice(2);
 const log = process.env.FAKE_MODEL_LOG; if (log) fs.appendFileSync(log, argv.join(' ') + '\\n');
+// B-1178: \`agent provider\` reads the live catalog — stubbed from FAKE_PROVIDERS ({model: facts}); a model
+// absent from it exits 1 (unknown / no catalog), exactly what the real CLI does with no login.
+if (argv[0] === 'agent' && argv[1] === 'provider') {
+  const facts = JSON.parse(process.env.FAKE_PROVIDERS || '{}')[argv[argv.indexOf('--model') + 1]];
+  if (facts === 'UNKNOWN_PROVIDER') { console.error("harmony agent provider: unknown Codex model provider 'martian'"); process.exit(2); }
+  if (!facts) process.exit(1);
+  console.log(JSON.stringify(facts)); process.exit(0);
+}
 if (argv[0] === 'agent') {
   const r = require('node:child_process').spawnSync(process.execPath, [${JSON.stringify(REAL_CLI)}, ...argv], { stdio: 'inherit' });
   process.exit(r.status ?? 1);
@@ -229,6 +237,81 @@ describe.skipIf(!CAPABLE)('provision.sh B-1148: Codex model, resume and switch (
     const r = runBlock({ AGENT_ID: 'codex', RUN_CONFIG: CODEX_RC_OFF, FAKE_PINNED: 'gpt-a', FAKE_CODEX_MODELS: 'gpt-a', FAKE_SWITCH_TO: 'claude-opus-5' });
     expect(r.argv).toHaveLength(1);
     expect(r.stderr).toContain('NOT in the canonical allowlist');
+  });
+});
+
+describe.skipIf(!CAPABLE)('provision.sh B-1178: a non-OpenAI offer (shell level, stub catalog, real agent CLI)', () => {
+  const OR = (model: string, window: number | null = 262144) => ({ agent: 'codex', model, provider: 'openrouter', env_key: 'OPENROUTER_API_KEY', secret: 'harmony-provider-openrouter-key', base_url: 'https://openrouter.ai/api/v1', context_window_tokens: window });
+  const OPENAI = (model: string) => ({ agent: 'codex', model, provider: 'openai', env_key: null, secret: null, base_url: null, context_window_tokens: null });
+  const KEY = 'sk-or-provision-never-printed';
+  const config = (home: string) => (existsSync(join(home, '.codex', 'config.toml')) ? readFileSync(join(home, '.codex', 'config.toml'), 'utf8') : '');
+
+  it('AC1/AC3: the cold exec carries -c model_provider=openrouter beside -m, and config.toml gains the provider table + window', () => {
+    const r = runBlock({ AGENT_ID: 'codex', RUN_CONFIG: CODEX_RC_OFF, FAKE_PINNED: 'qwen/qwen-9', FAKE_PROVIDERS: JSON.stringify({ 'qwen/qwen-9': OR('qwen/qwen-9') }), OPENROUTER_API_KEY: KEY, HARMONY_CODEX_PROVIDER: 'openrouter' });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.argv).toHaveLength(1);
+    expect(r.argv[0]).toContain(' | -m | qwen/qwen-9 | -c | model_provider=openrouter | ');
+    expect(config(r.home)).toContain('[model_providers.openrouter]');
+    expect(config(r.home)).toContain('model_context_window = 262144');
+    expect(r.stderr).toContain("model 'qwen/qwen-9' runs on provider 'openrouter'");
+    expect(r.stderr + r.stdout + config(r.home)).not.toContain(KEY);
+  });
+
+  it('AC3: a per-gate switch on the same provider resumes in place with -c model_provider on exec resume too', () => {
+    const r = runBlock({
+      AGENT_ID: 'codex', RUN_CONFIG: CODEX_RC_OFF, FAKE_PINNED: 'qwen/a', FAKE_CODEX_MODELS: 'qwen/a,qwen/b', FAKE_SWITCH_TO: 'qwen/b', FAKE_NEW_THREAD: 'thr-or',
+      FAKE_PROVIDERS: JSON.stringify({ 'qwen/a': OR('qwen/a', 100000), 'qwen/b': OR('qwen/b', 200000) }), OPENROUTER_API_KEY: KEY,
+    });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.argv).toHaveLength(2);
+    expect(r.argv[0]).toContain(' | -m | qwen/a | -c | model_provider=openrouter | ');
+    expect(r.argv[1]).toMatch(/^codex \| exec \| resume \| thr-or \| .* \| -m \| qwen\/b \| -c \| model_provider=openrouter \| /);
+    expect(r.stderr).toContain("model switch to 'qwen/b' — switched in place");
+    // re-rendered for the new model's window
+    expect(config(r.home)).toContain('model_context_window = 200000');
+  });
+
+  it('AC2/AC6: an openai offer — or a model the catalog does not know — launches exactly as before (no -c, no config rewrite)', () => {
+    for (const providers of [{ 'gpt-a': OPENAI('gpt-a') }, {}]) {
+      const r = runBlock({ AGENT_ID: 'codex', RUN_CONFIG: CODEX_RC_OFF, FAKE_PINNED: 'gpt-a', FAKE_PROVIDERS: JSON.stringify(providers) });
+      expect(r.status, r.stderr).toBe(0);
+      expect(r.argv[0]).not.toContain('model_provider');
+      expect(r.argv[0]).not.toContain(' | -c | ');
+      expect(config(r.home)).toBe('');
+    }
+  });
+
+  it('AC4: the provider key not mounted ⇒ no codex invocation, the secret named', () => {
+    const r = runBlock({ AGENT_ID: 'codex', RUN_CONFIG: CODEX_RC_OFF, FAKE_PINNED: 'qwen/qwen-9', FAKE_PROVIDERS: JSON.stringify({ 'qwen/qwen-9': OR('qwen/qwen-9') }) });
+    expect(r.status).toBe(1);
+    expect(r.argv).toHaveLength(0);
+    expect(r.stderr).toContain('harmony-provider-openrouter-key');
+  });
+
+  it('AC5: the login cache beside the provider key ⇒ refused before any invocation', () => {
+    const r = runBlock({ AGENT_ID: 'codex', RUN_CONFIG: CODEX_RC_OFF, FAKE_PINNED: 'qwen/qwen-9', FAKE_PROVIDERS: JSON.stringify({ 'qwen/qwen-9': OR('qwen/qwen-9') }), OPENROUTER_API_KEY: KEY, HARMONY_CODEX_AUTH_FILE: '/home/worker/.codex-auth-src/auth.json' });
+    expect(r.status).toBe(1);
+    expect(r.argv).toHaveLength(0);
+    expect(r.stderr).toContain('HARMONY_CODEX_AUTH_FILE');
+    expect(r.stderr).not.toContain(KEY);
+  });
+
+  it('a provider this build does not know, or one that differs from the launcher\'s, ends the leg before any invocation', () => {
+    const unknown = runBlock({ AGENT_ID: 'codex', RUN_CONFIG: CODEX_RC_OFF, FAKE_PINNED: 'alien/1', FAKE_PROVIDERS: JSON.stringify({ 'alien/1': 'UNKNOWN_PROVIDER' }) });
+    expect(unknown.status).toBe(1);
+    expect(unknown.argv).toHaveLength(0);
+    expect(unknown.stderr).toContain("'martian'");
+    const mismatch = runBlock({ AGENT_ID: 'codex', RUN_CONFIG: CODEX_RC_OFF, FAKE_PINNED: 'gpt-a', FAKE_PROVIDERS: JSON.stringify({ 'gpt-a': OPENAI('gpt-a') }), HARMONY_CODEX_PROVIDER: 'openrouter', OPENROUTER_API_KEY: KEY });
+    expect(mismatch.status).toBe(1);
+    expect(mismatch.argv).toHaveLength(0);
+    expect(mismatch.stderr).toContain("launched for provider 'openrouter'");
+  });
+
+  it('no catalog in the worker: the launcher-named provider stands (no window)', () => {
+    const r = runBlock({ AGENT_ID: 'codex', RUN_CONFIG: CODEX_RC_OFF, FAKE_PINNED: 'qwen/qwen-9', OPENROUTER_API_KEY: KEY, HARMONY_CODEX_PROVIDER: 'openrouter' });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.argv[0]).toContain(' | -c | model_provider=openrouter | ');
+    expect(config(r.home)).not.toContain('model_context_window');
   });
 });
 

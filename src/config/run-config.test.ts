@@ -527,9 +527,10 @@ describe('B-881: getModelContextBudgetBytes (no client — degrade-only fallback
   });
 });
 
-/** Stands in for the one call shape fetchModelCatalog makes:
+/** Stands in for the two call shapes fetchModelCatalog makes:
  *  `client.from('model_catalog').select(cols).eq('active', true)` — awaited directly (no
- *  `.maybeSingle()`/`.single()` terminator, since this is a multi-row select). */
+ *  `.maybeSingle()`/`.single()` terminator, since this is a multi-row select) — and, B-1178's
+ *  explicit-name read, `client.from('model_catalog').select(cols)` awaited with no active filter. */
 function fakeCatalogClient(result: { data: unknown; error: unknown } | 'throws'): SupabaseClient {
   const chain: Record<string, unknown> = {};
   chain.select = () => chain;
@@ -537,6 +538,8 @@ function fakeCatalogClient(result: { data: unknown; error: unknown } | 'throws')
     if (result === 'throws') throw new Error('transport exploded');
     return Promise.resolve(result);
   };
+  chain.then = (ok: (v: unknown) => unknown, bad: (e: unknown) => unknown) =>
+    (result === 'throws' ? Promise.reject(new Error('transport exploded')) : Promise.resolve(result)).then(ok, bad);
   return { from: () => chain } as unknown as SupabaseClient;
 }
 
