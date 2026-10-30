@@ -58,6 +58,13 @@ fires — without this check there is no substrate backstop. Then
 progress). Propose which sub-tracks this ticket *requires* (a backend-only ticket has no UX/UI track —
 state-machine §5); the human can override.
 
+**A linked designer frame always gets the UX/UI track (B-1320).** Before you propose any track as
+`not-required`, run `node "${CLAUDE_PLUGIN_ROOT}/dist/bin/harmony.js" design adopt-check --task <ticket> --links-only`
+(read-only, one JSON line). When it reports a readable Figma frame link on the ticket (description or comments), the
+UX/UI track is **required**, even when the layout looks settled: the track is what runs the adopt check
+(`harmony-visual-handoff` 3c "Adopt first"). Never mark UX/UI `not-required` while such a frame is unjudged. If the
+check cannot run (no Figma connection, command unavailable), say so on the brief rather than declaring the track away.
+
 To know which required sub-tracks are already **Accepted for THIS ticket**, use the ticket-scoped read —
 **not** `query_knowledge`, which has no ticket filter (it returns no `source_task_id`):
 

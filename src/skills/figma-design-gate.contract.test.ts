@@ -247,6 +247,14 @@ describe('B-1320 adopt a designer\'s frames', () => {
   });
 });
 
+describe('B-1320: a linked designer frame always gets the UX/UI track', () => {
+  it('design-decide requires UX/UI when adopt-check --links-only reports a readable frame link', () => {
+    expect(design).toContain('A linked designer frame always gets the UX/UI track (B-1320)');
+    expect(design).toContain('design adopt-check --task <ticket> --links-only');
+    expect(design).toMatch(/Never mark UX\/UI `not-required` while such a frame is unjudged/);
+  });
+});
+
 describe('B-1325: per-project Figma working file', () => {
   const wf = section(handoff, '#### Working file (B-1325)', 'Figma path (planner:');
   it('visual-handoff resolves the working file, composes only there, never the library', () => {
