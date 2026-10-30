@@ -238,7 +238,9 @@ when read directly (§2) — the subscriber exists precisely so you never have t
   - **Re-arm on every expiry, and know the residual.** Between an expiry you did not notice and
     the next event the seat is blind. That is a far smaller hole than no wake at all, but it is not
     zero: re-read the shepherded rows whenever you are invoked for any other reason, including a
-    human message about something else. (A background `until grep -qE <pattern> <file>; do sleep
+    human message about something else, and **every time the subscriber restarts** — a restart
+    wrapper's sleep and a dropped channel are both windows where a pause can land unprinted (a
+    release brief landed in one on 2026-10-30 and was found only by the re-read). (A background `until grep -qE <pattern> <file>; do sleep
     5; done` also wakes you — it exits on the first match — and has no expiry, but it is single-shot
     and must be re-armed after every wake.)
 - **Adding a ticket mid-session**: same-session re-invocation is a **piggyback by design** (§2) —
@@ -256,7 +258,13 @@ when read directly (§2) — the subscriber exists precisely so you never have t
   nothing has happened — re-check the board once if you're unsure, but a quiet subscriber on a
   quiet ticket set is the expected steady state, not a failure to diagnose.
 - **CI runs get their own until-loop polls** (`until status == completed; sleep 30`), one per
-  run, background — they are not this watch's job.
+  run, background — they are not this watch's job. **A poll must not swallow its probe's errors.**
+  Run the probe command once in the foreground and read its output before backgrounding it; never
+  send its stderr to `/dev/null`; on a non-zero exit, print the error and exit; print a line per
+  stage (CI done, deploy run found, deploy done) as each is reached; and give the loop a timeout.
+  A poll whose `--jq` filter was malformed failed on every pass with its stderr discarded, so it
+  printed nothing for twenty minutes after the deploy had finished — silence that looks exactly like
+  "still waiting" (2026-10-30).
 - **After a resolve, expect the wake within a couple of seconds**, not a minute — a wake that
   doesn't come is worth one manual re-read of the row and the pending-event marker before
   suspecting the subscriber.
