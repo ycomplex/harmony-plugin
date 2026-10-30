@@ -68162,7 +68162,34 @@ function getAdapter(id) {
   return adapter;
 }
 
+// src/config/model-policy.ts
+var UNRESTRICTED = () => ({ allowed: [] });
+async function getWorkspaceModelPolicy(client, projectId) {
+  if (!client) return UNRESTRICTED();
+  const { data, error: error2 } = await client.from("projects").select("workspace:workspaces!projects_workspace_id_fkey(model_policy)").eq("id", projectId).maybeSingle();
+  if (error2) {
+    if (isMissingCatalogColumnError(error2)) return UNRESTRICTED();
+    throw new Error(error2.message ?? String(error2));
+  }
+  const row = data;
+  const ws = Array.isArray(row?.workspace) ? row?.workspace[0] : row?.workspace;
+  const policy = ws?.model_policy;
+  if (!policy || typeof policy !== "object") return UNRESTRICTED();
+  const list = policy.allowed_aliases;
+  if (!Array.isArray(list)) return UNRESTRICTED();
+  const allowed = list.filter((v2) => typeof v2 === "string" && v2.trim() !== "");
+  return { allowed };
+}
+
 // src/config/runtime-validation.ts
+function requestedModels(runConfig) {
+  const requested = [];
+  if (runConfig.model?.default) requested.push(runConfig.model.default);
+  for (const value of Object.values(runConfig.model?.per_gate ?? {})) {
+    if (typeof value === "string" && value) requested.push(value);
+  }
+  return requested;
+}
 async function assertRunConfigRuntime(client, runConfig) {
   if (!runConfig) return;
   const selection = getAgentAdapter(runConfig);
@@ -68173,11 +68200,7 @@ async function assertRunConfigRuntime(client, runConfig) {
       `Unknown agent runtime '${adapter}' \u2014 available runtimes: ${listAdapterIds().join(", ")}`
     );
   }
-  const requested = [];
-  if (runConfig.model?.default) requested.push(runConfig.model.default);
-  for (const value of Object.values(runConfig.model?.per_gate ?? {})) {
-    if (typeof value === "string" && value) requested.push(value);
-  }
+  const requested = requestedModels(runConfig);
   if (requested.length === 0) return;
   const { entries } = await resolveModelCatalog(client, { includeInactive: true });
   const available = catalogEntriesForAgent(entries, adapter).filter((entry) => entry.active).map((entry) => entryModelId(entry));
@@ -68185,6 +68208,36 @@ async function assertRunConfigRuntime(client, runConfig) {
   if (bad.length > 0) {
     throw new Error(
       `Model${bad.length > 1 ? "s" : ""} ${bad.map((m) => `'${m}'`).join(", ")} not available on runtime '${adapter}' \u2014 available models for '${adapter}': ${available.length > 0 ? available.join(", ") : "(none in the catalog)"}`
+    );
+  }
+}
+function stripAgentPrefix(model, agent) {
+  const trimmed = model.trim();
+  const prefix = `${agent}:`;
+  return trimmed.toLowerCase().startsWith(prefix.toLowerCase()) ? trimmed.slice(prefix.length) : trimmed;
+}
+async function assertRunConfigPolicy(client, projectId, runConfig) {
+  if (!runConfig) return;
+  const requested = requestedModels(runConfig);
+  if (requested.length === 0) return;
+  const { allowed } = await getWorkspaceModelPolicy(client, projectId);
+  if (allowed.length === 0) return;
+  const selection = getAgentAdapter(runConfig);
+  if (!selection.ok) throw new Error(selection.error);
+  const adapter = selection.adapter;
+  const { entries } = await resolveModelCatalog(client, { includeInactive: true });
+  const resolve8 = (model) => findModelEntry(model, entries, adapter, { includeInactive: true });
+  const allowedRows = new Set(allowed.map(resolve8).filter((entry) => entry !== void 0));
+  const allowedRaw = new Set(allowed.map((entry) => stripAgentPrefix(entry, adapter)));
+  const isAllowed = (model) => {
+    const row = resolve8(model);
+    if (row && allowedRows.has(row)) return true;
+    return allowedRaw.has(stripAgentPrefix(model, adapter));
+  };
+  const bad = [...new Set(requested.filter((model) => !isAllowed(model)))];
+  if (bad.length > 0) {
+    throw new Error(
+      `Model${bad.length > 1 ? "s" : ""} ${bad.map((m) => `'${m}'`).join(", ")} ${bad.length > 1 ? "are" : "is"} not allowed by this workspace's model policy \u2014 allowed: ${allowed.join(", ")}`
     );
   }
 }
@@ -68259,6 +68312,7 @@ function registerConductCommand(program3) {
           const defaults3 = await getProjectConductionDefaults(ctx.client, ctx.projectId);
           const filledRunConfig = fillRunConfigDefaults(callerRunConfig, defaults3);
           await assertRunConfigRuntime(ctx.client, filledRunConfig);
+          await assertRunConfigPolicy(ctx.client, ctx.projectId, filledRunConfig);
           return await createConduction(ctx.client, {
             task_id: taskId,
             mode: "controlled",
@@ -71132,6 +71186,42 @@ function registerConductorLogsCommand(program3, makeDeps = defaultLogsDeps) {
   });
 }
 
+// src/tools/catalog-pricing.ts
+var warn = (msg) => console.error(`harmony leg-cost: WARNING \u2014 ${msg}`);
+var stripCodexPrefix = (s) => s.trim().replace(/^codex:/i, "");
+var isPrice = (v2) => typeof v2 === "number" && Number.isFinite(v2) && v2 >= 0;
+function matchRow(rows, model, runtime) {
+  const inRuntime = rows.filter((row) => (row.agent || DEFAULT_AGENT_ADAPTER) === runtime);
+  const byAlias = inRuntime.filter((row) => row.alias === model);
+  if (byAlias.length > 0) return byAlias.length === 1 ? byAlias[0] : null;
+  const id = stripCodexPrefix(model);
+  const byId = inRuntime.filter(
+    (row) => typeof row.model_id === "string" && stripCodexPrefix(row.model_id) === id || typeof row.alias === "string" && stripCodexPrefix(row.alias) === id
+  );
+  return byId.length === 1 ? byId[0] : null;
+}
+async function fetchCatalogPrice(client, model, runtime) {
+  if (!client || !model) return null;
+  try {
+    const { data, error: error2 } = await client.from("model_catalog").select("alias, model_id, agent, input_usd_per_mtok, cached_input_usd_per_mtok, output_usd_per_mtok");
+    if (error2) {
+      warn(
+        isMissingCatalogColumnError(error2) ? `model_catalog has no price columns on this board yet (${error2.message ?? error2.code}); pricing from the in-code tables` : `could not read model_catalog prices (${error2.message ?? String(error2)}); pricing from the in-code tables`
+      );
+      return null;
+    }
+    if (!Array.isArray(data)) return null;
+    const row = matchRow(data, model, runtime || DEFAULT_AGENT_ADAPTER);
+    if (!row) return null;
+    const { input_usd_per_mtok: input, cached_input_usd_per_mtok: cached2, output_usd_per_mtok: output } = row;
+    if (!isPrice(input) || !isPrice(cached2) || !isPrice(output)) return null;
+    return { input_per_mtok: input, cached_input_per_mtok: cached2, output_per_mtok: output };
+  } catch (err) {
+    warn(`reading model_catalog prices threw (${err instanceof Error ? err.message : String(err)}); pricing from the in-code tables`);
+    return null;
+  }
+}
+
 // src/cli/commands/model.ts
 async function resolveGateRunConfig() {
   const conductionId = getConductionId();
@@ -71209,6 +71299,22 @@ function registerModelCommands(program3) {
     const { entries } = await resolveModelCatalog(client);
     for (const entry of catalogEntriesForAgent(entries, opts.agent ?? DEFAULT_AGENT_ADAPTER)) {
       console.log(entryModelId(entry));
+    }
+  });
+  model.command("list").description(
+    'B-1346: print every active catalog offer of --agent, one tab-separated line each: model id, runtime, provider, and input / cached-input / output USD per million tokens ("not captured" when the catalog has no price). A header line comes first. Always exits 0.'
+  ).option("--agent <id>", "Agent runtime whose offers to list", DEFAULT_AGENT_ADAPTER).action(async (opts) => {
+    const agent = opts.agent ?? DEFAULT_AGENT_ADAPTER;
+    const client = await getCatalogClient();
+    const { entries } = await resolveModelCatalog(client);
+    const price = (v2) => typeof v2 === "number" && Number.isFinite(v2) ? String(v2) : "not captured";
+    console.log(["model", "runtime", "provider", "input_usd_per_mtok", "cached_input_usd_per_mtok", "output_usd_per_mtok"].join("	"));
+    for (const entry of catalogEntriesForAgent(entries, agent)) {
+      const modelId = entryModelId(entry);
+      const p = await fetchCatalogPrice(client, modelId, agent);
+      console.log(
+        [modelId, agent, entryProvider(entry), price(p?.input_per_mtok), price(p?.cached_input_per_mtok), price(p?.output_per_mtok)].join("	")
+      );
     }
   });
   model.command("running-model").description(
@@ -71842,42 +71948,6 @@ function registerAgentCommands(program3) {
 
 // src/cli/commands/leg-cost.ts
 import { readFileSync as readFileSync16 } from "node:fs";
-
-// src/tools/catalog-pricing.ts
-var warn = (msg) => console.error(`harmony leg-cost: WARNING \u2014 ${msg}`);
-var stripCodexPrefix = (s) => s.trim().replace(/^codex:/i, "");
-var isPrice = (v2) => typeof v2 === "number" && Number.isFinite(v2) && v2 >= 0;
-function matchRow(rows, model, runtime) {
-  const inRuntime = rows.filter((row) => (row.agent || DEFAULT_AGENT_ADAPTER) === runtime);
-  const byAlias = inRuntime.filter((row) => row.alias === model);
-  if (byAlias.length > 0) return byAlias.length === 1 ? byAlias[0] : null;
-  const id = stripCodexPrefix(model);
-  const byId = inRuntime.filter(
-    (row) => typeof row.model_id === "string" && stripCodexPrefix(row.model_id) === id || typeof row.alias === "string" && stripCodexPrefix(row.alias) === id
-  );
-  return byId.length === 1 ? byId[0] : null;
-}
-async function fetchCatalogPrice(client, model, runtime) {
-  if (!client || !model) return null;
-  try {
-    const { data, error: error2 } = await client.from("model_catalog").select("alias, model_id, agent, input_usd_per_mtok, cached_input_usd_per_mtok, output_usd_per_mtok");
-    if (error2) {
-      warn(
-        isMissingCatalogColumnError(error2) ? `model_catalog has no price columns on this board yet (${error2.message ?? error2.code}); pricing from the in-code tables` : `could not read model_catalog prices (${error2.message ?? String(error2)}); pricing from the in-code tables`
-      );
-      return null;
-    }
-    if (!Array.isArray(data)) return null;
-    const row = matchRow(data, model, runtime || DEFAULT_AGENT_ADAPTER);
-    if (!row) return null;
-    const { input_usd_per_mtok: input, cached_input_usd_per_mtok: cached2, output_usd_per_mtok: output } = row;
-    if (!isPrice(input) || !isPrice(cached2) || !isPrice(output)) return null;
-    return { input_per_mtok: input, cached_input_per_mtok: cached2, output_per_mtok: output };
-  } catch (err) {
-    warn(`reading model_catalog prices threw (${err instanceof Error ? err.message : String(err)}); pricing from the in-code tables`);
-    return null;
-  }
-}
 
 // src/tools/leg-cost-record.ts
 var LEG_COST_COLS = "id, conduction_id, task_id, leg_key, gate, model, invocation_index, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_creation_1h_input_tokens, cache_creation_5m_input_tokens, thinking_tokens, total_cost_usd, cost_source, num_turns, duration_ms, duration_api_ms, session_id, is_error, service_tier, created_at";

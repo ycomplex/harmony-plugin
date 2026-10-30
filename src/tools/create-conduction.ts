@@ -30,7 +30,7 @@ import {
 } from './conduction-record.js';
 import { RunConfigSchema, type RunConfig } from '../config/run-config.js';
 import { getProjectConductionDefaults, fillRunConfigDefaults } from '../config/conduction-defaults.js';
-import { assertRunConfigRuntime } from '../config/runtime-validation.js';
+import { assertRunConfigPolicy, assertRunConfigRuntime } from '../config/runtime-validation.js';
 import { resolveUnparkRunConfig } from './unpark-inheritance.js';
 
 export interface CreateConductionArgs {
@@ -93,6 +93,8 @@ export async function createConduction(
   const filledRunConfig = fillRunConfigDefaults(runConfig, defaults);
   // B-1147: refuse an unknown runtime, or a model that runtime cannot run.
   await assertRunConfigRuntime(client, filledRunConfig);
+  // B-1346: refuse a model outside a non-empty workspace model policy, before any run exists.
+  await assertRunConfigPolicy(client, projectId, filledRunConfig);
 
   try {
     // B-964: a no-op when the ticket isn't Parked; refuses cleanly (TicketParkedError) when it IS

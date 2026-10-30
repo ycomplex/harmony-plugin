@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   assertNotExcluded: vi.fn(),
   reviveParkedTicketIfNeeded: vi.fn(),
   getProjectConductionDefaults: vi.fn(),
+  getWorkspaceModelPolicy: vi.fn(),
 }));
 
 vi.mock('../auth.js', () => ({ getAuthenticatedContext: mocks.getAuthenticatedContext }));
@@ -47,6 +48,11 @@ class ExitSentinel extends Error {
     super(`process.exit(${code})`);
   }
 }
+
+// B-1346: the workspace model-policy read is covered by model-policy.test.ts; here it is mocked
+// (defaults to no policy = unrestricted) so the fake client is never queried for it, while the REAL
+// assertRunConfigPolicy runs against the fallback catalog.
+vi.mock('../../config/model-policy.js', () => ({ getWorkspaceModelPolicy: mocks.getWorkspaceModelPolicy }));
 
 // B-1274: the unpark-inheritance read is covered by unpark-inheritance.test.ts; here it is a
 // passthrough so this suite's fake client is never queried.
@@ -87,6 +93,7 @@ beforeEach(() => {
   // B-964: a no-op by default, exactly like a non-Parked ticket.
   mocks.reviveParkedTicketIfNeeded.mockResolvedValue(undefined);
   mocks.getProjectConductionDefaults.mockResolvedValue({});
+  mocks.getWorkspaceModelPolicy.mockResolvedValue({ allowed: [] });
   logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
   errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
   exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
@@ -365,5 +372,44 @@ describe('harmony conduct <ticket> --agent (B-1147)', () => {
     await run(['conduct', 'B-696']);
     const call = mocks.createConduction.mock.calls[0][1] as { run_config?: unknown };
     expect(call.run_config).toEqual({ agent: { adapter: 'codex' } });
+  });
+});
+
+// B-1346 — a non-empty workspace model policy refuses a run naming a model outside it, before any
+// conduction is created; no policy leaves behaviour unchanged.
+describe('harmony conduct <ticket> — workspace model policy (B-1346)', () => {
+  it('refuses --model outside a non-empty policy, naming the allowed set, and creates nothing', async () => {
+    mocks.getWorkspaceModelPolicy.mockResolvedValue({ allowed: ['claude-opus-5', 'claude-sonnet-5'] });
+    await expect(run(['conduct', 'B-696', '--model', 'claude-haiku-5-5'])).rejects.toBeInstanceOf(ExitSentinel);
+    expect(mocks.createConduction).not.toHaveBeenCalled();
+    expect(mocks.getWorkspaceModelPolicy).toHaveBeenCalledWith(ctx.client, 'proj-1');
+    const printed = errSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(printed).toContain(
+      "Model 'claude-haiku-5-5' is not allowed by this workspace's model policy — allowed: claude-opus-5, claude-sonnet-5",
+    );
+  });
+
+  it('refuses a project Conduction default model outside the policy the same way', async () => {
+    mocks.getWorkspaceModelPolicy.mockResolvedValue({ allowed: ['claude-opus-5'] });
+    mocks.getProjectConductionDefaults.mockResolvedValue({ model: 'claude-sonnet-5' });
+    await expect(run(['conduct', 'B-696'])).rejects.toBeInstanceOf(ExitSentinel);
+    expect(mocks.createConduction).not.toHaveBeenCalled();
+    const printed = errSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(printed).toContain(
+      "Model 'claude-sonnet-5' is not allowed by this workspace's model policy — allowed: claude-opus-5",
+    );
+  });
+
+  it('accepts --model inside the policy', async () => {
+    mocks.getWorkspaceModelPolicy.mockResolvedValue({ allowed: ['claude-opus-5', 'claude-sonnet-5'] });
+    await run(['conduct', 'B-696', '--model', 'claude-sonnet-5']);
+    const call = mocks.createConduction.mock.calls[0][1] as { run_config?: unknown };
+    expect(call.run_config).toEqual({ model: { default: 'claude-sonnet-5' } });
+  });
+
+  it('with no policy, any catalog model is accepted (unchanged behaviour)', async () => {
+    await run(['conduct', 'B-696', '--model', 'claude-haiku-5-5']);
+    const call = mocks.createConduction.mock.calls[0][1] as { run_config?: unknown };
+    expect(call.run_config).toEqual({ model: { default: 'claude-haiku-5-5' } });
   });
 });

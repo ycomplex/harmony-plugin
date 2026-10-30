@@ -55838,7 +55838,34 @@ function hasAdapter(id) {
   return ADAPTERS.has(id);
 }
 
+// src/config/model-policy.ts
+var UNRESTRICTED = () => ({ allowed: [] });
+async function getWorkspaceModelPolicy(client, projectId) {
+  if (!client) return UNRESTRICTED();
+  const { data, error: error2 } = await client.from("projects").select("workspace:workspaces!projects_workspace_id_fkey(model_policy)").eq("id", projectId).maybeSingle();
+  if (error2) {
+    if (isMissingCatalogColumnError(error2)) return UNRESTRICTED();
+    throw new Error(error2.message ?? String(error2));
+  }
+  const row = data;
+  const ws = Array.isArray(row?.workspace) ? row?.workspace[0] : row?.workspace;
+  const policy = ws?.model_policy;
+  if (!policy || typeof policy !== "object") return UNRESTRICTED();
+  const list = policy.allowed_aliases;
+  if (!Array.isArray(list)) return UNRESTRICTED();
+  const allowed = list.filter((v) => typeof v === "string" && v.trim() !== "");
+  return { allowed };
+}
+
 // src/config/runtime-validation.ts
+function requestedModels(runConfig) {
+  const requested = [];
+  if (runConfig.model?.default) requested.push(runConfig.model.default);
+  for (const value of Object.values(runConfig.model?.per_gate ?? {})) {
+    if (typeof value === "string" && value) requested.push(value);
+  }
+  return requested;
+}
 async function assertRunConfigRuntime(client, runConfig) {
   if (!runConfig) return;
   const selection = getAgentAdapter(runConfig);
@@ -55849,11 +55876,7 @@ async function assertRunConfigRuntime(client, runConfig) {
       `Unknown agent runtime '${adapter}' \u2014 available runtimes: ${listAdapterIds().join(", ")}`
     );
   }
-  const requested = [];
-  if (runConfig.model?.default) requested.push(runConfig.model.default);
-  for (const value of Object.values(runConfig.model?.per_gate ?? {})) {
-    if (typeof value === "string" && value) requested.push(value);
-  }
+  const requested = requestedModels(runConfig);
   if (requested.length === 0) return;
   const { entries } = await resolveModelCatalog(client, { includeInactive: true });
   const available = catalogEntriesForAgent(entries, adapter).filter((entry) => entry.active).map((entry) => entryModelId(entry));
@@ -55861,6 +55884,36 @@ async function assertRunConfigRuntime(client, runConfig) {
   if (bad.length > 0) {
     throw new Error(
       `Model${bad.length > 1 ? "s" : ""} ${bad.map((m) => `'${m}'`).join(", ")} not available on runtime '${adapter}' \u2014 available models for '${adapter}': ${available.length > 0 ? available.join(", ") : "(none in the catalog)"}`
+    );
+  }
+}
+function stripAgentPrefix(model, agent) {
+  const trimmed = model.trim();
+  const prefix = `${agent}:`;
+  return trimmed.toLowerCase().startsWith(prefix.toLowerCase()) ? trimmed.slice(prefix.length) : trimmed;
+}
+async function assertRunConfigPolicy(client, projectId, runConfig) {
+  if (!runConfig) return;
+  const requested = requestedModels(runConfig);
+  if (requested.length === 0) return;
+  const { allowed } = await getWorkspaceModelPolicy(client, projectId);
+  if (allowed.length === 0) return;
+  const selection = getAgentAdapter(runConfig);
+  if (!selection.ok) throw new Error(selection.error);
+  const adapter = selection.adapter;
+  const { entries } = await resolveModelCatalog(client, { includeInactive: true });
+  const resolve2 = (model) => findModelEntry(model, entries, adapter, { includeInactive: true });
+  const allowedRows = new Set(allowed.map(resolve2).filter((entry) => entry !== void 0));
+  const allowedRaw = new Set(allowed.map((entry) => stripAgentPrefix(entry, adapter)));
+  const isAllowed = (model) => {
+    const row = resolve2(model);
+    if (row && allowedRows.has(row)) return true;
+    return allowedRaw.has(stripAgentPrefix(model, adapter));
+  };
+  const bad = [...new Set(requested.filter((model) => !isAllowed(model)))];
+  if (bad.length > 0) {
+    throw new Error(
+      `Model${bad.length > 1 ? "s" : ""} ${bad.map((m) => `'${m}'`).join(", ")} ${bad.length > 1 ? "are" : "is"} not allowed by this workspace's model policy \u2014 allowed: ${allowed.join(", ")}`
     );
   }
 }
@@ -55905,6 +55958,7 @@ async function createConduction2(client, projectId, userId, args) {
   const defaults = await getProjectConductionDefaults(client, projectId);
   const filledRunConfig = fillRunConfigDefaults(runConfig, defaults);
   await assertRunConfigRuntime(client, filledRunConfig);
+  await assertRunConfigPolicy(client, projectId, filledRunConfig);
   try {
     await reviveParkedTicketIfNeeded(client, projectId, userId, taskId, {
       unpark: args.unpark,
