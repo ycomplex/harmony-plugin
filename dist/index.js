@@ -55029,6 +55029,15 @@ var MODEL_PRICING = {
     cache_read_per_mtok: 1
   }
 };
+function rowToModelPricing(row) {
+  return {
+    input_per_mtok: row.input_per_mtok,
+    output_per_mtok: row.output_per_mtok,
+    cache_write_1h_per_mtok: 2 * row.input_per_mtok,
+    cache_write_5m_per_mtok: 1.25 * row.input_per_mtok,
+    cache_read_per_mtok: row.cached_input_per_mtok
+  };
+}
 var PRICING_KEYS_BY_SPECIFICITY = Object.keys(MODEL_PRICING).sort((x, y) => y.length - x.length);
 function resolvePricing(model) {
   if (!model) return null;
@@ -55054,11 +55063,11 @@ function deriveCostUsd(parsed, pricing) {
   const usd = ((parsed.input_tokens ?? 0) * pricing.input_per_mtok + (parsed.output_tokens ?? 0) * pricing.output_per_mtok + (parsed.cache_read_input_tokens ?? 0) * pricing.cache_read_per_mtok + write1h * pricing.cache_write_1h_per_mtok + write5m * pricing.cache_write_5m_per_mtok) / MTOK;
   return usd;
 }
-function resolveCost(parsed, model) {
+function resolveCost(parsed, model, rowPrice) {
   if (typeof parsed.cli_cost_usd === "number" && parsed.cli_cost_usd > 0) {
     return { total_cost_usd: parsed.cli_cost_usd, cost_source: "cli" };
   }
-  const derived = deriveCostUsd(parsed, resolvePricing(model));
+  const derived = deriveCostUsd(parsed, rowPrice ? rowToModelPricing(rowPrice) : resolvePricing(model));
   if (derived !== null) return { total_cost_usd: derived, cost_source: "derived" };
   return { total_cost_usd: null, cost_source: "unknown" };
 }

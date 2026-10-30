@@ -255,3 +255,48 @@ describe('resolveCost — which figure the row actually carries', () => {
     });
   });
 });
+
+describe('B-1179: resolveCost priced from the catalog row', () => {
+  /** The observed envelope with the CLI cost removed, so the derived figure is what the row carries.
+   *  Its usage has input, output, a cache read and BOTH cache-write buckets. */
+  function uncliParsed() {
+    const raw = JSON.parse(envelope()) as Record<string, unknown>;
+    delete raw.total_cost_usd;
+    return parseClaudeResultJson(JSON.stringify(raw))!;
+  }
+
+  it.each([
+    ['claude-opus-5-5', { input_per_mtok: 4, cached_input_per_mtok: 0.2, output_per_mtok: 20 }],
+    ['claude-opus-5', { input_per_mtok: 5, cached_input_per_mtok: 0.5, output_per_mtok: 25 }],
+    ['claude-sonnet-5', { input_per_mtok: 2, cached_input_per_mtok: 0.2, output_per_mtok: 10 }],
+    ['claude-fable-5-1', { input_per_mtok: 10, cached_input_per_mtok: 0.25, output_per_mtok: 50 }],
+  ])('%s: a row equal to MODEL_PRICING derives the IDENTICAL cost (5m write = 1.25x input, 1h = 2x)', (model, row) => {
+    const parsed = uncliParsed();
+    const fromTable = resolveCost(parsed, model);
+    const fromRow = resolveCost(parsed, model, row);
+    expect(fromTable.cost_source).toBe('derived');
+    expect(fromRow.cost_source).toBe('derived');
+    expect(fromRow.total_cost_usd).toBeCloseTo(fromTable.total_cost_usd!, 12);
+  });
+
+  it('a row with different prices beats the table', () => {
+    const cost = resolveCost(uncliParsed(), 'claude-opus-5', { input_per_mtok: 1, cached_input_per_mtok: 0.1, output_per_mtok: 3 });
+    // 1000×1 + 2000×3 + 3000×0.1 + 400×(2×1) + 500×(1.25×1), all /1e6
+    expect(cost).toEqual({ total_cost_usd: expect.closeTo((1000 + 6000 + 300 + 800 + 625) / 1_000_000, 12), cost_source: 'derived' });
+  });
+
+  it("the CLI's own cost still wins over a row", () => {
+    const parsed = parseClaudeResultJson(envelope())!;
+    expect(resolveCost(parsed, 'claude-opus-5', { input_per_mtok: 1, cached_input_per_mtok: 0.1, output_per_mtok: 3 })).toEqual({
+      total_cost_usd: 1.25,
+      cost_source: 'cli',
+    });
+  });
+
+  it('a model with no table entry is unknown/null without a row (never 0), and derived WITH one', () => {
+    expect(resolveCost(uncliParsed(), 'claude-haiku-5-5', null)).toEqual({ total_cost_usd: null, cost_source: 'unknown' });
+    const cost = resolveCost(uncliParsed(), 'claude-haiku-5-5', { input_per_mtok: 1, cached_input_per_mtok: 0.1, output_per_mtok: 5 });
+    expect(cost.cost_source).toBe('derived');
+    expect(cost.total_cost_usd).toBeCloseTo((1000 * 1 + 2000 * 5 + 3000 * 0.1 + 400 * 2 + 500 * 1.25) / 1_000_000, 12);
+  });
+});

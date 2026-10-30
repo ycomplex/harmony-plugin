@@ -14826,7 +14826,7 @@ var require_cell = __commonJS({
 // node_modules/cli-table3/src/layout-manager.js
 var require_layout_manager = __commonJS({
   "node_modules/cli-table3/src/layout-manager.js"(exports, module) {
-    var { warn: warn3, debug } = require_debug();
+    var { warn: warn4, debug } = require_debug();
     var Cell = require_cell();
     var { ColSpanCell, RowSpanCell } = Cell;
     (function() {
@@ -14959,7 +14959,7 @@ var require_layout_manager = __commonJS({
               let cell2 = new Cell(opts);
               cell2.x = opts.x;
               cell2.y = opts.y;
-              warn3(`Missing cell at ${cell2.y}-${cell2.x}.`);
+              warn4(`Missing cell at ${cell2.y}-${cell2.x}.`);
               insertCell(cell2, table[y2]);
             }
           }
@@ -16804,7 +16804,7 @@ var require_log = __commonJS({
       if (logLevel === "debug")
         console.log(...messages);
     }
-    function warn3(logLevel, warning) {
+    function warn4(logLevel, warning) {
       if (logLevel === "debug" || logLevel === "warn") {
         if (typeof node_process.emitWarning === "function")
           node_process.emitWarning(warning);
@@ -16813,7 +16813,7 @@ var require_log = __commonJS({
       }
     }
     exports.debug = debug;
-    exports.warn = warn3;
+    exports.warn = warn4;
   }
 });
 
@@ -67250,6 +67250,15 @@ var MODEL_PRICING = {
     cache_read_per_mtok: 1
   }
 };
+function rowToModelPricing(row) {
+  return {
+    input_per_mtok: row.input_per_mtok,
+    output_per_mtok: row.output_per_mtok,
+    cache_write_1h_per_mtok: 2 * row.input_per_mtok,
+    cache_write_5m_per_mtok: 1.25 * row.input_per_mtok,
+    cache_read_per_mtok: row.cached_input_per_mtok
+  };
+}
 var PRICING_KEYS_BY_SPECIFICITY = Object.keys(MODEL_PRICING).sort((x2, y2) => y2.length - x2.length);
 function resolvePricing(model) {
   if (!model) return null;
@@ -67290,8 +67299,8 @@ function resolveCodexPricing(model) {
   const id = model.trim().toLowerCase().replace(/^codex:/, "");
   return Object.prototype.hasOwnProperty.call(CODEX_PRICING, id) ? CODEX_PRICING[id] : null;
 }
-function deriveCodexCostUsd(usage, model) {
-  const pricing = resolveCodexPricing(model);
+function deriveCodexCostUsd(usage, model, rowPrice) {
+  const pricing = rowPrice ?? resolveCodexPricing(model);
   if (!pricing || !usage) return null;
   const measured = [usage.inputTokens, usage.cacheReadInputTokens, usage.outputTokens].some((v2) => typeof v2 === "number");
   if (!measured) return null;
@@ -67300,11 +67309,11 @@ function deriveCodexCostUsd(usage, model) {
   const output = Math.max(0, usage.outputTokens ?? 0);
   return ((input - cached2) * pricing.input_per_mtok + cached2 * pricing.cached_input_per_mtok + output * pricing.output_per_mtok) / MTOK;
 }
-function resolveCost(parsed, model) {
+function resolveCost(parsed, model, rowPrice) {
   if (typeof parsed.cli_cost_usd === "number" && parsed.cli_cost_usd > 0) {
     return { total_cost_usd: parsed.cli_cost_usd, cost_source: "cli" };
   }
-  const derived = deriveCostUsd(parsed, resolvePricing(model));
+  const derived = deriveCostUsd(parsed, rowPrice ? rowToModelPricing(rowPrice) : resolvePricing(model));
   if (derived !== null) return { total_cost_usd: derived, cost_source: "derived" };
   return { total_cost_usd: null, cost_source: "unknown" };
 }
@@ -68457,7 +68466,7 @@ function writeSnapshot(path4, snap) {
 }
 async function refreshProjectFile(input) {
   const warnings = [];
-  const warn3 = (m) => {
+  const warn4 = (m) => {
     warnings.push(m);
     try {
       input.warn?.(m);
@@ -68482,12 +68491,12 @@ async function refreshProjectFile(input) {
     });
     if (res.status === "not-modified") return { outcome: "unchanged", warnings };
     if (res.status === "error") {
-      warn3(`conductor config refresh failed (${res.code}): ${res.message}; ${existing ? "keeping the last-good snapshot" : "no snapshot exists yet"}`);
+      warn4(`conductor config refresh failed (${res.code}): ${res.message}; ${existing ? "keeping the last-good snapshot" : "no snapshot exists yet"}`);
       return { outcome: "unreachable", warnings };
     }
     const v2 = validateProjectFileText(`conductor.json (${ref})`, res.text);
     if (!v2.ok) {
-      warn3(`conductor config on ${input.repo}@${ref} is invalid; ${existing ? "keeping the last-good snapshot" : "no snapshot exists yet"}:
+      warn4(`conductor config on ${input.repo}@${ref} is invalid; ${existing ? "keeping the last-good snapshot" : "no snapshot exists yet"}:
 ${new ConductorConfigError(v2.issues).message}`);
       return { outcome: "kept-last-good", warnings };
     }
@@ -68502,7 +68511,7 @@ ${new ConductorConfigError(v2.issues).message}`);
     });
     return { outcome: "updated", warnings };
   } catch (err) {
-    warn3(`conductor config refresh failed unexpectedly: ${err instanceof Error ? err.message : String(err)}; the last-good snapshot is untouched`);
+    warn4(`conductor config refresh failed unexpectedly: ${err instanceof Error ? err.message : String(err)}; the last-good snapshot is untouched`);
     return { outcome: "unreachable", warnings };
   }
 }
@@ -71608,6 +71617,42 @@ function registerAgentCommands(program3) {
 // src/cli/commands/leg-cost.ts
 import { readFileSync as readFileSync16 } from "node:fs";
 
+// src/tools/catalog-pricing.ts
+var warn = (msg) => console.error(`harmony leg-cost: WARNING \u2014 ${msg}`);
+var stripCodexPrefix = (s) => s.trim().replace(/^codex:/i, "");
+var isPrice = (v2) => typeof v2 === "number" && Number.isFinite(v2) && v2 >= 0;
+function matchRow(rows, model, runtime) {
+  const inRuntime = rows.filter((row) => (row.agent || DEFAULT_AGENT_ADAPTER) === runtime);
+  const byAlias = inRuntime.filter((row) => row.alias === model);
+  if (byAlias.length > 0) return byAlias.length === 1 ? byAlias[0] : null;
+  const id = stripCodexPrefix(model);
+  const byId = inRuntime.filter(
+    (row) => typeof row.model_id === "string" && stripCodexPrefix(row.model_id) === id || typeof row.alias === "string" && stripCodexPrefix(row.alias) === id
+  );
+  return byId.length === 1 ? byId[0] : null;
+}
+async function fetchCatalogPrice(client, model, runtime) {
+  if (!client || !model) return null;
+  try {
+    const { data, error: error2 } = await client.from("model_catalog").select("alias, model_id, agent, input_usd_per_mtok, cached_input_usd_per_mtok, output_usd_per_mtok");
+    if (error2) {
+      warn(
+        isMissingCatalogColumnError(error2) ? `model_catalog has no price columns on this board yet (${error2.message ?? error2.code}); pricing from the in-code tables` : `could not read model_catalog prices (${error2.message ?? String(error2)}); pricing from the in-code tables`
+      );
+      return null;
+    }
+    if (!Array.isArray(data)) return null;
+    const row = matchRow(data, model, runtime || DEFAULT_AGENT_ADAPTER);
+    if (!row) return null;
+    const { input_usd_per_mtok: input, cached_input_usd_per_mtok: cached2, output_usd_per_mtok: output } = row;
+    if (!isPrice(input) || !isPrice(cached2) || !isPrice(output)) return null;
+    return { input_per_mtok: input, cached_input_per_mtok: cached2, output_per_mtok: output };
+  } catch (err) {
+    warn(`reading model_catalog prices threw (${err instanceof Error ? err.message : String(err)}); pricing from the in-code tables`);
+    return null;
+  }
+}
+
 // src/tools/leg-cost-record.ts
 var LEG_COST_COLS = "id, conduction_id, task_id, leg_key, gate, model, invocation_index, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_creation_1h_input_tokens, cache_creation_5m_input_tokens, thinking_tokens, total_cost_usd, cost_source, num_turns, duration_ms, duration_api_ms, session_id, is_error, service_tier, created_at";
 var RUNTIME_COLS = ["runtime", "credential_kind", "cost_regime"];
@@ -71626,7 +71671,7 @@ function isNamedColumnError(err, cols) {
   if (!cols.some((c) => text4.includes(c))) return false;
   return e.code === "42703" || e.code === "PGRST204" || e.code === "PGRST200" || /column|schema cache|does not exist|not found|unknown/.test(text4);
 }
-function warn(message) {
+function warn2(message) {
   console.error(`harmony leg-cost: WARNING \u2014 ${message}`);
 }
 var errText = (err) => err?.message ?? String(err);
@@ -71635,7 +71680,7 @@ async function resolveLegCostContext(client, conductionId) {
   try {
     const { data, error: error2 } = await client.from("conductions").select("task_id, tasks(workflow_state, workflow_activity)").eq("id", conductionId).maybeSingle();
     if (error2) {
-      warn(`could not read conduction ${conductionId} for leg-cost context (${errText(error2)})`);
+      warn2(`could not read conduction ${conductionId} for leg-cost context (${errText(error2)})`);
       return null;
     }
     if (!data) return null;
@@ -71646,7 +71691,7 @@ async function resolveLegCostContext(client, conductionId) {
       workflow_activity: row.tasks?.workflow_activity ?? null
     };
   } catch (err) {
-    warn(`reading conduction ${conductionId} for leg-cost context threw (${errText(err)})`);
+    warn2(`reading conduction ${conductionId} for leg-cost context threw (${errText(err)})`);
     return null;
   }
 }
@@ -71698,12 +71743,12 @@ async function recordLegCost(client, args) {
     let { error: error2 } = await client.from("conduction_leg_costs").insert({ ...row, ...runtimeFields, ...refusalFields });
     for (let attempt = 0; attempt < 2 && error2; attempt += 1) {
       if (Object.keys(refusalFields).length > 0 && isRefusalColumnError(error2)) {
-        warn(
+        warn2(
           `the leg-cost row was rejected for the B-1149 refusal columns (${errText(error2)}); retrying without refusal_kind/refusal_resets_at \u2014 expected until the web migration is promoted.`
         );
         refusalFields = {};
       } else if (withRuntime && isRuntimeColumnError(error2)) {
-        warn(
+        warn2(
           `the leg-cost row was rejected for the B-1078 runtime columns (${errText(error2)}); retrying without runtime/credential_kind/cost_regime \u2014 expected until the web migration is promoted.`
         );
         withRuntime = false;
@@ -71713,14 +71758,14 @@ async function recordLegCost(client, args) {
       ({ error: error2 } = await client.from("conduction_leg_costs").insert({ ...row, ...withRuntime ? runtimeFields : {}, ...refusalFields }));
     }
     if (error2) {
-      warn(
+      warn2(
         `the leg-cost row was not written (${errText(error2)}). This is the EXPECTED shape while harmony-web's conduction_leg_costs migration has not yet landed on this environment's Supabase project (B-383 prod-before-promote) \u2014 the leg itself is unaffected.`
       );
       return false;
     }
     return true;
   } catch (err) {
-    warn(`writing the leg-cost row threw (${errText(err)}) \u2014 the leg itself is unaffected`);
+    warn2(`writing the leg-cost row threw (${errText(err)}) \u2014 the leg itself is unaffected`);
     return false;
   }
 }
@@ -71729,14 +71774,14 @@ async function sumPriorSessionUsage(client, args) {
   try {
     const { data, error: error2 } = await client.from("conduction_leg_costs").select("input_tokens, cache_read_input_tokens, output_tokens").eq("conduction_id", args.conduction_id).eq("session_id", args.session_id);
     if (error2) {
-      warn(`could not read earlier rows for session ${args.session_id} (${errText(error2)}); recording the cumulative figure`);
+      warn2(`could not read earlier rows for session ${args.session_id} (${errText(error2)}); recording the cumulative figure`);
       return null;
     }
     const rows = data ?? [];
     const sum = (k) => rows.reduce((a3, r) => a3 + (typeof r[k] === "number" ? r[k] : 0), 0);
     return { input_tokens: sum("input_tokens"), cache_read_input_tokens: sum("cache_read_input_tokens"), output_tokens: sum("output_tokens") };
   } catch (err) {
-    warn(`reading earlier rows for session ${args.session_id} threw (${errText(err)})`);
+    warn2(`reading earlier rows for session ${args.session_id} threw (${errText(err)})`);
     return null;
   }
 }
@@ -71839,7 +71884,7 @@ function registerLegCostCommands(program3) {
     console.log(resolveGatePhase(context?.workflow_state, context?.workflow_activity) ?? "");
   });
   legCost.command("record").description(
-    "Record ONE claude invocation's cost from its captured `--output-format json` stdout. Parses the result envelope (keyed on `is_error`, NOT `subtype` \u2014 an errored run still reports subtype 'success'), resolves the cost (the CLI's own total_cost_usd, else the derived price-table figure, else 'unknown'), and inserts one conduction_leg_costs row. Always exits 0 and NEVER throws: a missing conduction id, an unparseable capture, an unreachable board or a not-yet-migrated table all degrade to \"nothing recorded\" with one stderr WARNING. The leg is never affected."
+    "Record ONE claude invocation's cost from its captured `--output-format json` stdout. Parses the result envelope (keyed on `is_error`, NOT `subtype` \u2014 an errored run still reports subtype 'success'), resolves the cost (the CLI's own total_cost_usd, else the derived figure from the catalog row price or the price table, else 'unknown'), and inserts one conduction_leg_costs row. Always exits 0 and NEVER throws: a missing conduction id, an unparseable capture, an unreachable board or a not-yet-migrated table all degrade to \"nothing recorded\" with one stderr WARNING. The leg is never affected."
   ).requiredOption("--file <path>", "The file this invocation's stdout was captured to").requiredOption("--gate <gate>", "The gate that was running when the invocation STARTED (see `resolve-gate`)").requiredOption("--leg-key <key>", "The worker-generated key grouping this leg's invocations").option("--model <alias>", "The model alias this invocation actually launched with").option("--invocation-index <n>", "This invocation's 0-based position within the leg").option("--conduction-id <id>", "The conduction to record against; defaults to this worker's HARMONY_CONDUCTION_ID").option("--runtime <id>", "B-1078: override the derived runtime (adapter id)").option("--credential-kind <kind>", "B-1078: override the derived credential kind (a CredentialMode)").option("--cost-regime <regime>", "B-1078: must agree with the credential-derived regime, else ignored with a warning").option("--duration-ms <n>", "B-1149: wall-clock duration of the invocation, measured by the worker (used when the capture carries none \u2014 Codex)").action(
     async (opts) => {
       const conductionId = opts.conductionId ?? getConductionId();
@@ -71871,10 +71916,11 @@ function registerLegCostCommands(program3) {
         const prior = await sumPriorSessionUsage(client, { conduction_id: conductionId, session_id: adapterRec.sessionId });
         usage = ownUsageDelta(usage, prior);
       }
+      const rowPrice = model && client ? await fetchCatalogPrice(client, model, facts.runtime) : null;
       let cost;
-      if (parsed) cost = resolveCost(parsed, model);
+      if (parsed) cost = resolveCost(parsed, model, rowPrice);
       else {
-        const codexCost = adapterRec ? deriveCodexCostUsd(usage, model) : null;
+        const codexCost = adapterRec ? deriveCodexCostUsd(usage, model, rowPrice) : null;
         cost = codexCost !== null ? { total_cost_usd: codexCost, cost_source: "derived" } : { total_cost_usd: null, cost_source: "unknown" };
       }
       const refusal = adapterRec ? adapterRec.refusal ?? null : parseClaudeRefusal(captured);
@@ -71917,7 +71963,7 @@ import { readFileSync as readFileSync17 } from "node:fs";
 
 // src/tools/leg-output-record.ts
 var LEG_OUTPUT_TAIL_BYTES = 64 * 1024;
-function warn2(message) {
+function warn3(message) {
   console.error(`harmony leg-output: WARNING \u2014 ${message}`);
 }
 var errText2 = (err) => err?.message ?? String(err);
@@ -71950,14 +71996,14 @@ async function recordLegOutput(client, args) {
     if (args.captured_at) row.captured_at = args.captured_at;
     const { error: error2 } = await client.from("conduction_leg_output").insert(row);
     if (error2) {
-      warn2(
+      warn3(
         `the ${args.source} output row was not written (${errText2(error2)}). This is the EXPECTED shape while harmony-web's conduction_leg_output migration has not yet landed on this environment's Supabase project (B-383 prod-before-promote) \u2014 the leg itself is unaffected.`
       );
       return false;
     }
     return true;
   } catch (err) {
-    warn2(`writing the ${args.source} output row threw (${errText2(err)}) \u2014 the leg itself is unaffected`);
+    warn3(`writing the ${args.source} output row threw (${errText2(err)}) \u2014 the leg itself is unaffected`);
     return false;
   }
 }

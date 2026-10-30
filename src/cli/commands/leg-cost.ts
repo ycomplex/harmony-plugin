@@ -33,6 +33,7 @@ import {
 import { resolveLaunchAdapter } from '../../agents/launch-routing.js';
 import { resolveGatePhase } from '../../daemon/gate-phase.js';
 import { deriveCodexCostUsd, parseClaudeResultJson, resolveCost } from '../../tools/claude-result-parse.js';
+import { fetchCatalogPrice } from '../../tools/catalog-pricing.js';
 import { ownUsageDelta, recordLegCost, resolveLegCostContext, sumPriorSessionUsage } from '../../tools/leg-cost-record.js';
 import { parseClaudeRefusal } from '../../agents/claude-code.js';
 import type { Refusal } from '../../agents/refusal.js';
@@ -184,7 +185,7 @@ export function registerLegCostCommands(program: Command): void {
       "Record ONE claude invocation's cost from its captured `--output-format json` stdout. Parses " +
         'the result envelope (keyed on `is_error`, NOT `subtype` — an errored run still reports ' +
         "subtype 'success'), resolves the cost (the CLI's own total_cost_usd, else the derived " +
-        "price-table figure, else 'unknown'), and inserts one conduction_leg_costs row. Always " +
+        "figure from the catalog row price or the price table, else 'unknown'), and inserts one conduction_leg_costs row. Always " +
         'exits 0 and NEVER throws: a missing conduction id, an unparseable capture, an ' +
         'unreachable board or a not-yet-migrated table all degrade to "nothing recorded" with one ' +
         'stderr WARNING. The leg is never affected.',
@@ -261,12 +262,17 @@ export function registerLegCostCommands(program: Command): void {
           const prior = await sumPriorSessionUsage(client, { conduction_id: conductionId, session_id: adapterRec.sessionId });
           usage = ownUsageDelta(usage, prior);
         }
-        // B-1149: a Codex row's equivalent cost from its own usage × the dated CODEX_PRICING rates
-        // ('derived'); an unpriced model stays null/'unknown'. Claude's resolution is unchanged.
+        // B-1179: the price comes from the model's catalog row when it carries all three prices, else
+        // from the in-code tables (CODEX_PRICING / MODEL_PRICING); an unpriced model stays
+        // null/'unknown', never 0. One read per invocation. fetchCatalogPrice never throws, and a
+        // failed read (no price columns before B-1177, an unreachable board) only means "no row
+        // price" — the row below is written in every case. Claude's own CLI cost still wins first.
+        // B-1149: a Codex row's cost is derived from its OWN usage.
+        const rowPrice = model && client ? await fetchCatalogPrice(client, model, facts.runtime) : null;
         let cost: { total_cost_usd: number | null; cost_source: 'cli' | 'derived' | 'unknown' };
-        if (parsed) cost = resolveCost(parsed, model);
+        if (parsed) cost = resolveCost(parsed, model, rowPrice);
         else {
-          const codexCost = adapterRec ? deriveCodexCostUsd(usage, model) : null;
+          const codexCost = adapterRec ? deriveCodexCostUsd(usage, model, rowPrice) : null;
           cost = codexCost !== null ? { total_cost_usd: codexCost, cost_source: 'derived' } : { total_cost_usd: null, cost_source: 'unknown' };
         }
         // B-1149: the adapter's refusal verdict (Codex via its telemetry; Claude via its envelope).
