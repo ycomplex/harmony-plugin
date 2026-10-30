@@ -188,15 +188,6 @@ for that reason — it proceeds with the brief as composed. The cap holds even w
 persists; a second lint-driven recompose in the same leg for the same lineage is exactly the
 behavior this rule forbids.
 
-**Do not recompose onto a brief that has already been answered (B-1320).** The first compose is live to the
-reader the moment it returns, so a seat or human can accept it in the seconds before the lint-driven
-recompose. Observed on B-1328 (2026-10-30): a decompose accept landed at 12:02:52 and the leg's
-`lint-self-review` recompose followed at 12:03:10, re-sending a brief that was already decided. So re-read the
-task (`get_task`, view `meta`) immediately before the lint-driven recompose. If the active brief is no longer the
-one you composed, if `pending_acceptance_event_id` is set, or if `workflow_state` has moved, skip the recompose:
-the answer stands, and the warning is not worth re-opening a decided gate. A warning that would have been fixed
-by the recompose is simply carried.
-
 **A residual warning past the cap is never a human-facing concern.** `lint.warnings` is a
 diagnostic returned to the calling agent only — it was never part of the brief's rendered `content`,
 and this rule does not change that. It is also never grounds to end the turn, file a

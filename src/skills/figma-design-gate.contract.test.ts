@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { readSharedDoc, readSkill, referencedHarmonyTools } from './skill-contract.js';
+import { readSkill, referencedHarmonyTools } from './skill-contract.js';
 import { registerTools } from '../tools/index.js';
 import { defaultFigmaConnectionReader, resolveFigmaRoute, figmaBehavioursEnabled } from '../tools/figma-connection.js';
 import { MCP_CALL_CAP } from '../tools/figma-composition.js';
@@ -252,11 +252,6 @@ describe('B-1320: a linked designer frame always gets the UX/UI track', () => {
     expect(design).toContain('A linked designer frame always gets the UX/UI track (B-1320)');
     expect(design).toContain('design adopt-check --task <ticket> --links-only');
     expect(design).toMatch(/Never mark UX\/UI `not-required` while such a frame is unjudged/);
-  });
-  it('brief-authoring tells a lint-driven recompose to re-read the task first, so it never re-sends an answered brief', () => {
-    const authoring = readSharedDoc('brief-authoring');
-    expect(authoring).toContain('Do not recompose onto a brief that has already been answered (B-1320)');
-    expect(authoring).toMatch(/re-read the\s+task/);
   });
 });
 
