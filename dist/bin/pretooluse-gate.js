@@ -21540,9 +21540,11 @@ var ModelPolicySchema = external_exports.object({ default: external_exports.stri
 var TargetSchema = external_exports.enum(["prod", "staging", "custom"]);
 var AGENT_FLAG_ENV = { "claude-code": "CLAUDE_HEADLESS_FLAGS" };
 var AgentFlagsSchema = external_exports.object({ "claude-code": external_exports.string().min(1).optional() }).strict();
+var ProvidersSchema = external_exports.array(external_exports.string().min(1)).min(1);
 var ProfileOverrideSchema = external_exports.object({
   max_workers: external_exports.number().int().min(0).optional(),
   agents: external_exports.array(external_exports.string().min(1)).min(1).optional(),
+  providers: ProvidersSchema.optional(),
   required_tools: RequiredToolsSchema.optional()
 }).strict();
 var ProfilesSchema = external_exports.object({ cloud: ProfileOverrideSchema.optional(), gke: ProfileOverrideSchema.optional() }).strict();
@@ -21558,6 +21560,8 @@ var projectShape = {
   /** Absent means "ship when gcp.project is named"; `false` switches shipping off. */
   log_shipping: external_exports.boolean().optional(),
   agents: external_exports.array(external_exports.string().min(1)).min(1).optional(),
+  /** B-1178: the Codex model providers legs may run on (-> env.HARMONY_CODEX_PROVIDERS). */
+  providers: ProvidersSchema.optional(),
   /** B-1183: which Supabase project the worker talks to (-> env.HARMONY_TARGET). */
   target: TargetSchema.optional(),
   /** B-1183: only with target "custom" (-> env.HARMONY_SUPABASE_URL). */
@@ -22108,6 +22112,8 @@ function launchEnvFromMerged(merged) {
   put2("HARMONY_GKE_POLL_S", g?.poll_s);
   put2("HARMONY_GKE_JOB_TTL_S", g?.job_ttl_s);
   put2("HARMONY_GKE_IMAGE", merged.images?.worker);
+  const providers = (merged.profile ? merged.profiles?.[merged.profile]?.providers : void 0) ?? merged.providers;
+  if (providers?.length) put2("HARMONY_CODEX_PROVIDERS", providers.join(","));
   put2("HARMONY_CLOUD_RUN_REGION", merged.gcp?.region);
   put2("HARMONY_CLOUD_RUN_JOB", merged.cloud_run?.job);
   put2("CLOUDSDK_CORE_PROJECT", merged.gcp?.project);

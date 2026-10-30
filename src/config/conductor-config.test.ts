@@ -725,3 +725,39 @@ describe('production-first guidance', () => {
     expect(issue?.fix).toContain('staging');
   });
 });
+
+describe('B-1178 providers: the Codex model providers legs may run on (names only)', () => {
+  const text = (extra: Record<string, unknown>) => JSON.stringify({ ...gkeProject, ...extra });
+  const issues = (extra: Record<string, unknown>) => {
+    const r = validateProjectFileText('conductor.json', text(extra));
+    return r.ok ? [] : r.issues;
+  };
+
+  it('accepts providers at the top level and in a profile block, beside agents', () => {
+    expect(validateProjectFileText('conductor.json', text({ agents: ['claude-code', 'codex'], providers: ['openrouter'] })).ok).toBe(true);
+    expect(validateProjectFileText('conductor.json', text({ profiles: { gke: { agents: ['codex'], providers: ['openrouter', 'deepseek'] } } })).ok).toBe(true);
+    expect(HostFileSchema.safeParse({ version: 1, providers: ['openrouter'] }).success).toBe(true);
+  });
+
+  it('refuses an empty list, an empty name and a non-string; unknown keys are still rejected', () => {
+    expect(issues({ providers: [] })[0]).toMatchObject({ key: 'providers' });
+    expect(issues({ providers: [''] }).length).toBeGreaterThan(0);
+    expect(issues({ providers: [7] }).length).toBeGreaterThan(0);
+    expect(issues({ provider: ['openrouter'] })[0]).toMatchObject({ key: 'provider', problem: 'unknown key' });
+    expect(issues({ profiles: { gke: { provider_keys: ['x'] } } })[0]).toMatchObject({ key: 'profiles.gke.provider_keys', problem: 'unknown key' });
+  });
+
+  it('reaches the launch scripts as HARMONY_CODEX_PROVIDERS; the active profile block wins like agents; absent = unset', () => {
+    expect(launchEnvFromMerged(mergeLayers({ ...gkeProject, providers: ['openrouter'] })).HARMONY_CODEX_PROVIDERS).toBe('openrouter');
+    expect(
+      launchEnvFromMerged(mergeLayers({ ...gkeProject, providers: ['deepseek'], profiles: { gke: { providers: ['openrouter', 'deepseek'] } } })).HARMONY_CODEX_PROVIDERS,
+    ).toBe('openrouter,deepseek');
+    // another profile's block does not apply to the active one
+    expect(launchEnvFromMerged(mergeLayers({ ...gkeProject, providers: ['deepseek'], profiles: { cloud: { providers: ['openrouter'] } } })).HARMONY_CODEX_PROVIDERS).toBe('deepseek');
+    expect('HARMONY_CODEX_PROVIDERS' in launchEnvFromMerged(mergeLayers(gkeProject))).toBe(false);
+  });
+
+  it('a host file list replaces the project list (arrays are replaced, not concatenated)', () => {
+    expect(mergeLayers({ ...gkeProject, providers: ['deepseek'] }, { providers: ['openrouter'] }).providers).toEqual(['openrouter']);
+  });
+});

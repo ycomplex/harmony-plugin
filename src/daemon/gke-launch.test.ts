@@ -68,6 +68,8 @@ writeFileSync(out, (process.env.STUB_CHANNEL_ENV || '') + 'GIT_TOKEN=${SECRET_VA
   // `harmony config get <key>` stub
   writeFileSync(
     join(plugin, 'dist/bin/harmony.js'),
+    // B-1178: \`agent provider\` answers from STUB_PROVIDER_JSON / STUB_PROVIDER_RC (default: no answer = openai).
+    `if(process.argv[2] === "agent" && process.argv[3] === "provider") { require("fs").appendFileSync(process.env.STUB_LOGS + "/provider-calls", process.argv.slice(2).join(" ") + "\\n"); if (process.env.STUB_PROVIDER_JSON) process.stdout.write(process.env.STUB_PROVIDER_JSON); if (process.env.STUB_PROVIDER_RC === "2") process.stderr.write("unknown Codex model provider 'martian'"); process.exit(Number(process.env.STUB_PROVIDER_RC || 0)); } ` +
     `if(process.argv[2] === "figma" && process.argv[3] === "context") { process.stdout.write(process.env.STUB_FIGMA_CONTEXT || '{"state":"disconnected"}'); process.exit(0); } const k = process.argv[4]; if (k === 'worker_image' && process.env.STUB_WORKER_IMAGE) process.stdout.write(process.env.STUB_WORKER_IMAGE);\n`,
   );
   const kubectl = readFileSync(STUB_KUBECTL, 'utf8');
@@ -683,5 +685,111 @@ describe.skipIf(!CAPABLE)('B-1267 bounded worker startup', () => {
     const w = makeWorld({ HARMONY_GKE_STARTUP_TIMEOUT_S: timeout });
     expect(launch(w).status).toBe(1);
     expect(minted(w)).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// B-1178: a Codex offer on a non-OpenAI provider — the providers list, the key Secret pre-check (through the
+// KUBECTL array as built), and the secretKeyRef the Job binds. Every refusal: non-zero, no Job created.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+describe.skipIf(!CAPABLE)('gke-worker-launch.sh — B-1178 provider API key legs (EXECUTED against a stub kubectl)', () => {
+  const OR = JSON.stringify({ agent: 'codex', model: 'qwen/qwen-9', provider: 'openrouter', env_key: 'OPENROUTER_API_KEY', secret: 'harmony-provider-openrouter-key', base_url: 'https://openrouter.ai/api/v1', context_window_tokens: 262144 });
+  const OPENAI = JSON.stringify({ agent: 'codex', model: 'gpt-6.1-sol', provider: 'openai', env_key: null, secret: null, base_url: null, context_window_tokens: null });
+  const providerEnv = (extra: Record<string, string> = {}) => ({ STUB_PROVIDER_JSON: OR, HARMONY_CODEX_PROVIDERS: 'openrouter', ...extra });
+  const created = (w: World) => verbs(w).filter((c) => c.includes('create -f -') || c.includes('apply -f -'));
+
+  it('a listed provider with its Secret present: the Job binds OPENROUTER_API_KEY from the Secret, mounts no login cache, and names the provider', () => {
+    const w = makeWorld({ ...seq([COMPLETE], [CLEAN_POD]), ...providerEnv() });
+    const r = launch(w, {}, CODEX_RC);
+    expect(r.status, r.stderr).toBe(0);
+    const spec = JSON.parse(read(w, 'job.json')).spec.template.spec;
+    expect(spec.containers[0].env).toEqual([
+      { name: 'OPENROUTER_API_KEY', valueFrom: { secretKeyRef: { name: 'harmony-provider-openrouter-key', key: 'OPENROUTER_API_KEY' } } },
+    ]);
+    expect(spec.volumes.map((v: { name: string }) => v.name)).not.toContain('codex-auth');
+    expect(read(w, 'envfile-copy')).toContain('HARMONY_CODEX_PROVIDER=openrouter');
+    expect(read(w, 'envfile-copy')).not.toContain('HARMONY_CODEX_AUTH_FILE');
+    // the login-cache Secret is not a precondition of a provider leg
+    expect(verbs(w).some((c) => c.includes('get secret harmony-codex-auth'))).toBe(false);
+    expect(read(w, 'provider-calls')).toContain('agent provider --agent codex --model some-model --json');
+  });
+
+  it('the pre-check is `kubectl -n <ns> get secret <name>` exactly: no --request-timeout, --context or --kubeconfig (B-1267), also in a remote pod', () => {
+    for (const extra of [{}, { HARMONY_CONDUCTOR_REMOTE: '1', HARMONY_GKE_CONTEXT: 'gke_p_l_c' }]) {
+      const w = makeWorld({ ...seq([COMPLETE], [CLEAN_POD]), ...providerEnv(extra) });
+      expect(launch(w, {}, CODEX_RC).status).toBe(0);
+      const check = calls(w).find((c) => c.includes('harmony-provider-openrouter-key'));
+      expect(check).toEqual(['-n', 'harmony-legs', 'get', 'secret', 'harmony-provider-openrouter-key']);
+      for (const flag of ['--request-timeout', '--context', '--kubeconfig']) expect(check!.some((a) => a.startsWith(flag))).toBe(false);
+    }
+  });
+
+  it('REFUSES a provider not in the providers list — before any kubectl call, naming the provider and .harmony/conductor.json', () => {
+    for (const listed of ['', 'deepseek']) {
+      const w = makeWorld(providerEnv({ HARMONY_CODEX_PROVIDERS: listed }));
+      const r = launch(w, {}, CODEX_RC);
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain("gke-worker-launch: Refusing to start: model 'some-model' runs on provider 'openrouter'");
+      expect(r.stderr).toContain('.harmony/conductor.json');
+      expect(r.stderr).toMatch(/— no Job created\n?$/);
+      expect(calls(w)).toEqual([]);
+      expect(minted(w)).toBe(false);
+    }
+  });
+
+  it('REFUSES on Forbidden with the RBAC fix — no Job created', () => {
+    const w = makeWorld(providerEnv({ STUB_FORBIDDEN_SECRETS: 'harmony-provider-openrouter-key' }));
+    const r = launch(w, {}, CODEX_RC);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('the conductor cannot read secret harmony-legs/harmony-provider-openrouter-key');
+    expect(r.stderr).toContain('re-apply container/conductor/k8s/rbac-legs.yaml');
+    expect(r.stderr).toContain('no Job created');
+    expect(created(w)).toEqual([]);
+    expect(minted(w)).toBe(false);
+  });
+
+  it('REFUSES on NotFound naming the missing secret harmony-provider-<name>-key — no Job created', () => {
+    const w = makeWorld(providerEnv({ STUB_MISSING_SECRETS: 'harmony-provider-openrouter-key' }));
+    const r = launch(w, {}, CODEX_RC);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('secret harmony-provider-openrouter-key (the openrouter key, OPENROUTER_API_KEY) is missing in namespace harmony-legs');
+    expect(r.stderr).toContain('no Job created');
+    expect(created(w)).toEqual([]);
+  });
+
+  it('REFUSES on any other read error, naming it — no Job created', () => {
+    const w = makeWorld(providerEnv({ STUB_ERROR_SECRETS: 'harmony-provider-openrouter-key' }));
+    const r = launch(w, {}, CODEX_RC);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('could not check secret harmony-legs/harmony-provider-openrouter-key (Unable to connect to the server');
+    expect(created(w)).toEqual([]);
+  });
+
+  it('REFUSES a provider this build does not know (agent provider exit 2) before any kubectl call', () => {
+    const w = makeWorld({ STUB_PROVIDER_RC: '2' });
+    const r = launch(w, {}, CODEX_RC);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("'martian'");
+    expect(calls(w)).toEqual([]);
+  });
+
+  it('an openai offer (or an unknown model / no catalog) launches exactly as before: login cache, no env binding', () => {
+    for (const extra of [{ STUB_PROVIDER_JSON: OPENAI }, { STUB_PROVIDER_RC: '1' }, {}]) {
+      const w = makeWorld({ ...seq([COMPLETE], [CLEAN_POD]), ...extra });
+      expect(launch(w, {}, CODEX_RC).status).toBe(0);
+      const spec = JSON.parse(read(w, 'job.json')).spec.template.spec;
+      expect(spec.containers[0].env).toBeUndefined();
+      expect(spec.volumes).toContainEqual({ name: 'codex-auth', secret: { secretName: 'harmony-codex-auth' } });
+      expect(read(w, 'envfile-copy')).toContain('HARMONY_CODEX_AUTH_FILE=/home/worker/.codex-auth-src/auth.json');
+      expect(read(w, 'envfile-copy')).not.toContain('HARMONY_CODEX_PROVIDER');
+    }
+  });
+
+  it('a Claude run never asks for a provider', () => {
+    const w = makeWorld({ ...seq([COMPLETE], [CLEAN_POD]), ...providerEnv() });
+    expect(launch(w).status).toBe(0);
+    expect(read(w, 'provider-calls')).toBe('');
+    expect(JSON.parse(read(w, 'job.json')).spec.template.spec.containers[0].env).toBeUndefined();
   });
 });

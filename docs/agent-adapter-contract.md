@@ -16,7 +16,8 @@ B-1076). An adapter is pure data and pure functions. It never spawns anything.
 | `src/agents/conformance.ts` | `runConformance(adapter)` → one `{seam, number, pass, problems[]}` per seam |
 | `src/agents/runtime-command-guard.ts` | Detects source that builds a `claude`/`codex` command itself |
 | `src/agents/launch-routing.ts` | B-1077 worker-side routing: run_config → adapter, launch command, credential verdict, NUL argv encoding |
-| `src/cli/commands/agent.ts` | `harmony agent resolve / binary / check-credentials / argv / render / capability` — what `provision.sh` and the skills call |
+| `src/agents/codex-providers.ts` | B-1178 Codex model-provider registry: `openrouter`, `deepseek` (base URL, key env var, secret name `harmony-provider-<name>-key`); `openai` = no provider block |
+| `src/cli/commands/agent.ts` | `harmony agent resolve / binary / check-credentials / argv / render / render-provider / provider / capability` — what `provision.sh`, the launchers and the skills call |
 | `src/daemon/agent-eligibility.ts` | B-1077 fire-time check: adapter registered AND on the profile's `agents` list, else park |
 
 **The routing seam is live (B-1077): the adapter performs the launch.** `container/provision.sh`
@@ -81,17 +82,18 @@ spike that is still **BLOCKED** on a live plan login, is in `docs/codex-phase0-f
 | # | Seam | Codex |
 |---|---|---|
 | 1 | **launch** | `codex`; probe `codex --version` (the image smoke gate runs the same) |
-| 2 | **auth** | `login-cache` only (plan-included), carried by the **non-secret path variable** `HARMONY_CODEX_AUTH_FILE`; `resolveCredential` is env-only and never opens the file. `OPENAI_API_KEY`, `CODEX_API_KEY` or `CODEX_ACCESS_TOKEN` set beside it, or alone, is **refused** (no metered fallback, B-934) |
-| 3 | **headless** | `exec --json --cd <plugin parent> --add-dir <plugin> --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust [-m <model>] <flags> <prompt>`. Resume is `exec resume <id> --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust [-m …] <prompt>` (resume accepts neither `--cd` nor `--add-dir`; the cwd carries the root). Exit 0 = the leg completed, non-zero fails it. A leading `/harmony-plugin:<skill>` in the prompt becomes `$harmony-plugin:<skill>` |
+| 2 | **auth** | `login-cache` (plan-included) and, since B-1178, `api-key` (metered, derived). An OpenAI offer runs on the login cache, carried by the **non-secret path variable** `HARMONY_CODEX_AUTH_FILE`; `resolveCredential` is env-only and never opens the file. `OPENAI_API_KEY`, `CODEX_API_KEY` or `CODEX_ACCESS_TOKEN` set beside it, or alone, is **refused** (no metered fallback, B-934). An offer whose catalog row names a non-OpenAI `provider` runs on that provider's key (`OPENROUTER_API_KEY`, …, the `api-key` row names the first); the leg's provider arrives as an argument or `HARMONY_CODEX_PROVIDER` (a name), else it is inferred from the env. The login cache or an OpenAI key beside a provider key is **refused**, and a missing key refuses naming the secret `harmony-provider-<name>-key` |
+| 3 | **headless** | `exec --json --cd <plugin parent> --add-dir <plugin> --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust [-m <model>] <flags> <prompt>`. Resume is `exec resume <id> --json --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust [-m …] <prompt>` (resume accepts neither `--cd` nor `--add-dir`; the cwd carries the root). B-1178: a non-OpenAI offer adds `-c model_provider=<name>` after `-m` on BOTH (`HeadlessInput.modelProvider`); never a `[profiles.*]` table or `--profile`. Exit 0 = the leg completed, non-zero fails it. A leading `/harmony-plugin:<skill>` in the prompt becomes `$harmony-plugin:<skill>` |
 | 4 | **session** | `$HOME/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<thread-id>.jsonl`, mounted per conduction; resume is the `resume` subcommand. The thread id comes from the `thread.started` event, the rollout glob is the version-pinned fallback |
 | 5 | **instructions** | ONE generated `AGENTS.md` at the workspace root: workspace + plugin + web `CLAUDE.md`, each under a source header, then a short Codex overlay (with each skill's unenforced `forbid:` rules, B-1150); `project_doc_max_bytes` raised to 262,144. `$CODEX_HOME/hooks.json` is rendered from the canonical hooks (B-1150) |
 | 6 | **skills** | `<workspace>/.agents/skills` symlinked to the plugin's `skills/`; no agent files |
-| 7 | **mcp** | `config.toml` rendered from `HARMONY_MCP_CONNECTION` with `required = true`, `startup_timeout_sec = 60`, `tool_timeout_sec = 600`, `default_tools_approval_mode = "auto"` and an explicit `env_vars` list; `approval_policy = "never"` |
-| 8 | **env** | The same eleven per-leg vars as Claude (the launch scripts serve both); standing: `HARMONY_API_TOKEN` and the path variable |
+| 7 | **mcp** | `config.toml` rendered from `HARMONY_MCP_CONNECTION` with `required = true`, `startup_timeout_sec = 60`, `tool_timeout_sec = 600`, `default_tools_approval_mode = "auto"` and an explicit `env_vars` list; `approval_policy = "never"`. B-1178: for a non-OpenAI offer `harmony agent render-provider` re-renders it with `model_context_window` (when the catalog knows it) and a `[model_providers.<name>]` table (`name`, `base_url`, `env_key`, `wire_api = "responses"`); for OpenAI the file is byte-identical |
+| 8 | **env** | The same eleven per-leg vars as Claude (the launch scripts serve both); standing: `HARMONY_API_TOKEN`, the path variable and (B-1178) every registered provider's key variable. `HARMONY_CODEX_PROVIDER` is forwarded only for a Codex run, like the path variable |
 | 9 | **capabilities** | `subagents` false; `modelSwitch` true since B-1148 (a switch resumes the thread with `-m`); `hooks` true since B-1150 (the same Stop / PreToolUse / SessionStart hooks); `skills`, `mcp`, `resume`, `structuredOutput` true. Skill classes: one envelope, `forbid:` declared unenforced |
 | 10 | **telemetry** | The `--json` JSONL stream: `thread.started` → session id, a terminal `turn.completed` / `turn.failed` → `isError` (keyed on `turn.failed` only: the hook-trust flag's `error` items are not errors); regime derived (`plan-included`), `costUsd` null. `parseCodexUsage` reads the last `turn.completed` usage (cumulative on a resumed thread — `harmony leg-cost record` subtracts the thread's earlier rows, B-1149). `numTurns` = model-initiated items; `refusal` from the run-level `error` / `turn.failed` events |
 
-`contract.ts` was **not** changed. Because `HeadlessInput` carries no working directory, the root is derived
+B-1076 did **not** change `contract.ts`; B-1178 added one optional field, `HeadlessInput.modelProvider`, which only
+the Codex adapter reads. Because `HeadlessInput` carries no working directory, the root is derived
 from the plugin checkout's parent, and the plugin dir is passed as `--add-dir` so it appears in argv.
 
 **What reads the capability map.** `harmony agent capability <name>` prints `true`/`false` for the leg's
@@ -102,6 +104,15 @@ adapter. `skills/start-work` builds in the root thread when `subagents` is false
 Codex files above and **copies** the mounted login cache to `~/.codex/auth.json` (mode 600). Nothing prints
 or reads that file; `src/agents/codex-auth-file.test.ts` scans every script and source for a read, a cat or
 a log of it. `provision.sh` still has no Codex command in it: the launch is `harmony agent argv`.
+
+**Provider offers (B-1178).** A `model_catalog` row may name a `provider` (absent or null = `openai` for a
+Codex row, `anthropic` for a Claude row; `entryProvider` in `src/config/run-config.ts`) and a
+`context_window_tokens`. Until the column lands on a project the catalog read falls through to the B-1147
+rungs and every leg launches as before. `harmony agent provider --model <m> [--field …|--json]` answers for an
+**explicitly named** model, inactive rows included (inactive only hides a row from lists); the launchers use it
+to refuse, before any Job or execution, a provider missing from the `providers` list in
+`.harmony/conductor.json` or a key secret they cannot confirm (`container/README.md`, "Provider API key
+runbook"), and `provision.sh` uses it to run `agent render-provider` and pass `agent argv --provider`.
 
 **Conductor.** The conductor refuses to **boot** a profile whose `agents` list names an unregistered adapter
 (`src/daemon/config.ts`, both profile routes; the message names the registered adapters), and refuses at

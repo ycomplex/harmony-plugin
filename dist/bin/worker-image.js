@@ -4109,9 +4109,11 @@ var ConcurrencySchema = external_exports.object({ max_workers: external_exports.
 var ModelPolicySchema = external_exports.object({ default: external_exports.string().min(1).optional(), per_gate: external_exports.record(external_exports.string().min(1)).optional() }).strict();
 var TargetSchema = external_exports.enum(["prod", "staging", "custom"]);
 var AgentFlagsSchema = external_exports.object({ "claude-code": external_exports.string().min(1).optional() }).strict();
+var ProvidersSchema = external_exports.array(external_exports.string().min(1)).min(1);
 var ProfileOverrideSchema = external_exports.object({
   max_workers: external_exports.number().int().min(0).optional(),
   agents: external_exports.array(external_exports.string().min(1)).min(1).optional(),
+  providers: ProvidersSchema.optional(),
   required_tools: RequiredToolsSchema.optional()
 }).strict();
 var ProfilesSchema = external_exports.object({ cloud: ProfileOverrideSchema.optional(), gke: ProfileOverrideSchema.optional() }).strict();
@@ -4127,6 +4129,8 @@ var projectShape = {
   /** Absent means "ship when gcp.project is named"; `false` switches shipping off. */
   log_shipping: external_exports.boolean().optional(),
   agents: external_exports.array(external_exports.string().min(1)).min(1).optional(),
+  /** B-1178: the Codex model providers legs may run on (-> env.HARMONY_CODEX_PROVIDERS). */
+  providers: ProvidersSchema.optional(),
   /** B-1183: which Supabase project the worker talks to (-> env.HARMONY_TARGET). */
   target: TargetSchema.optional(),
   /** B-1183: only with target "custom" (-> env.HARMONY_SUPABASE_URL). */

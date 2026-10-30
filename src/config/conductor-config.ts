@@ -125,10 +125,16 @@ const AgentFlagsSchema = z.object({ 'claude-code': z.string().min(1).optional() 
 
 /** B-1183: per-profile overrides on top of the built-in template. Only the built-in names are keys: a
  *  custom launch template has no home in the project file. */
+/** B-1178: the non-OpenAI model providers a Codex leg may run on (src/agents/codex-providers.ts names).
+ *  Names only — each provider's key lives in the secret `harmony-provider-<name>-key`. Absent = only OpenAI
+ *  offers launch; a listed name the registry does not know is refused at launch. */
+const ProvidersSchema = z.array(z.string().min(1)).min(1);
+
 const ProfileOverrideSchema = z
   .object({
     max_workers: z.number().int().min(0).optional(),
     agents: z.array(z.string().min(1)).min(1).optional(),
+    providers: ProvidersSchema.optional(),
     required_tools: RequiredToolsSchema.optional(),
   })
   .strict();
@@ -149,6 +155,8 @@ const projectShape = {
   /** Absent means "ship when gcp.project is named"; `false` switches shipping off. */
   log_shipping: z.boolean().optional(),
   agents: z.array(z.string().min(1)).min(1).optional(),
+  /** B-1178: the Codex model providers legs may run on (-> env.HARMONY_CODEX_PROVIDERS). */
+  providers: ProvidersSchema.optional(),
   /** B-1183: which Supabase project the worker talks to (-> env.HARMONY_TARGET). */
   target: TargetSchema.optional(),
   /** B-1183: only with target "custom" (-> env.HARMONY_SUPABASE_URL). */
@@ -912,6 +920,10 @@ export function launchEnvFromMerged(merged: ConductorConfig): Record<string, str
   put('HARMONY_GKE_POLL_S', g?.poll_s);
   put('HARMONY_GKE_JOB_TTL_S', g?.job_ttl_s);
   put('HARMONY_GKE_IMAGE', merged.images?.worker);
+  // B-1178: the active profile's providers (its own block wins over the top level, exactly like `agents`),
+  // comma-joined for the launch scripts; absent = only OpenAI offers may launch.
+  const providers = (merged.profile ? merged.profiles?.[merged.profile]?.providers : undefined) ?? merged.providers;
+  if (providers?.length) put('HARMONY_CODEX_PROVIDERS', providers.join(','));
   put('HARMONY_CLOUD_RUN_REGION', merged.gcp?.region);
   put('HARMONY_CLOUD_RUN_JOB', merged.cloud_run?.job);
   put('CLOUDSDK_CORE_PROJECT', merged.gcp?.project);

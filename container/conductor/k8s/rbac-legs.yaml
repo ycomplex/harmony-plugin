@@ -10,7 +10,9 @@
 #             Job's deletion garbage-collects it. The per-leg name (leg-<id>-<epoch>-env) is dynamic, so these
 #             three verbs cannot be limited by resourceNames. That also reaches the two base Secrets by name in this
 #             namespace; the exposure is bounded to harmony-legs and noted for the release brief.
-#             get is limited to the two named base Secrets (the launcher only checks they exist).
+#             get is limited to the named Secrets the launcher only checks exist: the two base ones and (B-1178)
+#             each provider key's Secret, harmony-provider-<name>-key — only openrouter is mounted today; adding
+#             a provider adds its name here and re-applies this file.
 #   serviceaccounts  get, the leg's own account only (the launcher refuses to start without it)
 #   pods, pods/log   get/list (the launcher reads a failed leg's pod; the sweep skips mounted claims)
 # Not granted: storageclasses (cluster-scoped; the Deployment sets HARMONY_GKE_STORAGE_CLASS instead, so the
@@ -32,7 +34,7 @@ rules:
     verbs: ['create', 'patch', 'delete']
   - apiGroups: ['']
     resources: ['secrets']
-    resourceNames: ['harmony-worker-secrets', 'harmony-codex-auth']
+    resourceNames: ['harmony-worker-secrets', 'harmony-codex-auth', 'harmony-provider-openrouter-key']
     verbs: ['get']
   - apiGroups: ['']
     resources: ['serviceaccounts']

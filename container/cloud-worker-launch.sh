@@ -147,6 +147,22 @@ fi
 : "${HARMONY_TRANSCRIPT_GCS_MOUNT_ROOT:=/mnt/harmony-transcripts}"
 export CLOUDSDK_CORE_PROJECT CLOUDSDK_CORE_ACCOUNT
 
+# --- B-1178: which model provider the Codex offer runs on. openai (and every non-Codex run) changes
+# nothing below. Another provider runs on its API key: the JOB must bind <ENV_KEY> from the Secret Manager
+# secret harmony-provider-<name>-key (`--update-secrets`), and the leg gets HARMONY_CODEX_PROVIDER instead of
+# the login-cache path. Checked before anything is minted, locked, updated or executed.
+CODEX_PROVIDER="openai"
+CODEX_PROVIDER_ENV_KEY=""
+CODEX_PROVIDER_SECRET=""
+# Set when an OpenAI Codex leg runs on a job that ALSO binds a provider key (every execution sees the job's
+# secret env): the leg is told it is an openai one, so its credential check ignores that key.
+CODEX_PROVIDER_DECLARED=""
+if [ "$CODEX_RUN" = "1" ]; then
+  # shellcheck source=codex-provider-launch.sh
+  . "$(dirname "${BASH_SOURCE[0]}")/codex-provider-launch.sh"
+  codex_provider_context cloud-worker-launch "$MODEL" "no execution started"
+fi
+
 # --- B-1076: a Codex run needs the login-cache secret mounted on the JOB definition. ---------------
 # Checked BEFORE anything is minted, locked, updated or executed: without the mount the worker's
 # `harmony agent render` refuses after a full cold start, so refusing here costs nothing. The parse is
@@ -161,10 +177,20 @@ if [ "$CODEX_RUN" = "1" ]; then
     echo "cloud-worker-launch: Refusing to start: this run selects the codex adapter and 'gcloud run jobs describe $HARMONY_CLOUD_RUN_JOB' failed (exit $JOB_DESCRIBE_EXIT), so the login-cache secret mount cannot be confirmed — no execution started" >&2
     exit 1
   fi
-  SECRET_MOUNTED="$(printf '%s' "$JOB_DESCRIBE_JSON" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{let ok=false;try{const j=JSON.parse(d);const t=(((j.spec||{}).template||{}).spec||{}).template||{};const ps=t.spec||{};const secretVols=new Set((ps.volumes||[]).filter(v=>v&&v.secret).map(v=>v.name));for(const c of ps.containers||[])for(const m of c.volumeMounts||[])if(m&&secretVols.has(m.name)&&String(m.mountPath).replace(/\/+$/,"")===process.argv[1])ok=true}catch{}process.stdout.write(ok?"yes":"no")})' "$CODEX_SECRET_MOUNT_DIR" 2>/dev/null || true)"
-  if [ "$SECRET_MOUNTED" != "yes" ]; then
-    echo "cloud-worker-launch: Refusing to start: this run selects the codex adapter but Cloud Run job $HARMONY_CLOUD_RUN_JOB has no secret volume mounted at $CODEX_SECRET_MOUNT_DIR — mount the login-cache secret first (container/README.md \"Codex credential runbook\", Cloud). No execution started" >&2
-    exit 1
+  # B-1178: the job's secret-bound env, as "<ENV>=<secret>" lines (names only; a literal value is never read).
+  JOB_SECRET_ENV="$(printf '%s' "$JOB_DESCRIBE_JSON" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const out=[];try{const j=JSON.parse(d);const ps=((((j.spec||{}).template||{}).spec||{}).template||{}).spec||{};for(const c of ps.containers||[])for(const e of c.env||[]){const r=e&&e.valueFrom&&e.valueFrom.secretKeyRef;if(r&&typeof e.name==="string"&&typeof r.name==="string")out.push(e.name+"="+r.name)}}catch{}process.stdout.write(out.join("\n"))})' 2>/dev/null || true)"
+  if [ "$CODEX_PROVIDER" != "openai" ]; then
+    if ! printf '%s\n' "$JOB_SECRET_ENV" | grep -qxF "$CODEX_PROVIDER_ENV_KEY=$CODEX_PROVIDER_SECRET"; then
+      echo "cloud-worker-launch: Refusing to start: this run's model is served by provider '$CODEX_PROVIDER' but Cloud Run job $HARMONY_CLOUD_RUN_JOB does not bind $CODEX_PROVIDER_ENV_KEY from secret $CODEX_PROVIDER_SECRET — run 'gcloud run jobs update $HARMONY_CLOUD_RUN_JOB --update-secrets=$CODEX_PROVIDER_ENV_KEY=$CODEX_PROVIDER_SECRET:latest' (container/README.md \"Provider API key runbook\", Cloud). No execution started" >&2
+      exit 1
+    fi
+  else
+    SECRET_MOUNTED="$(printf '%s' "$JOB_DESCRIBE_JSON" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{let ok=false;try{const j=JSON.parse(d);const t=(((j.spec||{}).template||{}).spec||{}).template||{};const ps=t.spec||{};const secretVols=new Set((ps.volumes||[]).filter(v=>v&&v.secret).map(v=>v.name));for(const c of ps.containers||[])for(const m of c.volumeMounts||[])if(m&&secretVols.has(m.name)&&String(m.mountPath).replace(/\/+$/,"")===process.argv[1])ok=true}catch{}process.stdout.write(ok?"yes":"no")})' "$CODEX_SECRET_MOUNT_DIR" 2>/dev/null || true)"
+    if [ "$SECRET_MOUNTED" != "yes" ]; then
+      echo "cloud-worker-launch: Refusing to start: this run selects the codex adapter but Cloud Run job $HARMONY_CLOUD_RUN_JOB has no secret volume mounted at $CODEX_SECRET_MOUNT_DIR — mount the login-cache secret first (container/README.md \"Codex credential runbook\", Cloud). No execution started" >&2
+      exit 1
+    fi
+    if printf '%s\n' "$JOB_SECRET_ENV" | grep -q '=harmony-provider-.*-key$'; then CODEX_PROVIDER_DECLARED="openai"; fi
   fi
 fi
 
@@ -418,8 +444,14 @@ write_exec_env_file() {
       fi
       # B-1076: a Codex leg's login-cache PATH (never the secret) — the job's secret volume puts the file
       # there; provision.sh's `harmony agent render` copies it into ~/.codex.
-      if [ "${CODEX_RUN:-0}" = "1" ]; then
+      # B-1178: a provider leg gets its provider's NAME instead (its key is the job's secret env).
+      if [ "${CODEX_RUN:-0}" = "1" ] && [ "${CODEX_PROVIDER:-openai}" = "openai" ]; then
         printf 'HARMONY_CODEX_AUTH_FILE: "%s"\n' "$CODEX_AUTH_CONTAINER_PATH"
+      fi
+      if [ "${CODEX_RUN:-0}" = "1" ] && [ "${CODEX_PROVIDER:-openai}" != "openai" ]; then
+        printf 'HARMONY_CODEX_PROVIDER: "%s"\n' "$CODEX_PROVIDER"
+      elif [ -n "${CODEX_PROVIDER_DECLARED:-}" ]; then
+        printf 'HARMONY_CODEX_PROVIDER: "%s"\n' "$CODEX_PROVIDER_DECLARED"
       fi
     } > "$file"
   )

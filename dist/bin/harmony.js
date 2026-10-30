@@ -9430,8 +9430,8 @@ var require_GoTrueAdminApi = __commonJS({
           return await (0, fetch_1._request)(this.fetch, "POST", `${this.url}/admin/custom-providers`, {
             body: params,
             headers: this.headers,
-            xform: (provider) => {
-              return { data: provider, error: null };
+            xform: (provider2) => {
+              return { data: provider2, error: null };
             }
           });
         } catch (error2) {
@@ -9450,8 +9450,8 @@ var require_GoTrueAdminApi = __commonJS({
         try {
           return await (0, fetch_1._request)(this.fetch, "GET", `${this.url}/admin/custom-providers/${identifier}`, {
             headers: this.headers,
-            xform: (provider) => {
-              return { data: provider, error: null };
+            xform: (provider2) => {
+              return { data: provider2, error: null };
             }
           });
         } catch (error2) {
@@ -9476,8 +9476,8 @@ var require_GoTrueAdminApi = __commonJS({
           return await (0, fetch_1._request)(this.fetch, "PUT", `${this.url}/admin/custom-providers/${identifier}`, {
             body: params,
             headers: this.headers,
-            xform: (provider) => {
-              return { data: provider, error: null };
+            xform: (provider2) => {
+              return { data: provider2, error: null };
             }
           });
         } catch (error2) {
@@ -11451,11 +11451,11 @@ var require_GoTrueClient = __commonJS({
        */
       async signInWithIdToken(credentials) {
         try {
-          const { options, provider, token, access_token, nonce } = credentials;
+          const { options, provider: provider2, token, access_token, nonce } = credentials;
           const res = await (0, fetch_1._request)(this.fetch, "POST", `${this.url}/token?grant_type=id_token`, {
             headers: this.headers,
             body: {
-              provider,
+              provider: provider2,
               id_token: token,
               access_token,
               nonce,
@@ -12318,12 +12318,12 @@ var require_GoTrueClient = __commonJS({
             const { error: sessionError, data: { session } } = result;
             if (sessionError)
               throw sessionError;
-            const { options, provider, token, access_token, nonce } = credentials;
+            const { options, provider: provider2, token, access_token, nonce } = credentials;
             const res = await (0, fetch_1._request)(this.fetch, "POST", `${this.url}/token?grant_type=id_token`, {
               headers: this.headers,
               jwt: (_a2 = session === null || session === void 0 ? void 0 : session.access_token) !== null && _a2 !== void 0 ? _a2 : void 0,
               body: {
-                provider,
+                provider: provider2,
                 id_token: token,
                 access_token,
                 nonce,
@@ -12416,17 +12416,17 @@ var require_GoTrueClient = __commonJS({
         const isValidSession = typeof maybeSession === "object" && maybeSession !== null && "access_token" in maybeSession && "refresh_token" in maybeSession && "expires_at" in maybeSession;
         return isValidSession;
       }
-      async _handleProviderSignIn(provider, options) {
-        const url2 = await this._getUrlForProvider(`${this.url}/authorize`, provider, {
+      async _handleProviderSignIn(provider2, options) {
+        const url2 = await this._getUrlForProvider(`${this.url}/authorize`, provider2, {
           redirectTo: options.redirectTo,
           scopes: options.scopes,
           queryParams: options.queryParams
         });
-        this._debug("#_handleProviderSignIn()", "provider", provider, "options", options, "url", url2);
+        this._debug("#_handleProviderSignIn()", "provider", provider2, "options", options, "url", url2);
         if ((0, helpers_1.isBrowser)() && !options.skipBrowserRedirect) {
           window.location.assign(url2);
         }
-        return { data: { provider, url: url2 }, error: null };
+        return { data: { provider: provider2, url: url2 }, error: null };
       }
       /**
        * Recovers the session from LocalStorage and refreshes the token
@@ -12799,8 +12799,8 @@ var require_GoTrueClient = __commonJS({
        * @param options.scopes A space-separated list of scopes granted to the OAuth application.
        * @param options.queryParams An object of key-value pairs containing query parameters granted to the OAuth application.
        */
-      async _getUrlForProvider(url2, provider, options) {
-        const urlParams = [`provider=${encodeURIComponent(provider)}`];
+      async _getUrlForProvider(url2, provider2, options) {
+        const urlParams = [`provider=${encodeURIComponent(provider2)}`];
         if (options === null || options === void 0 ? void 0 : options.redirectTo) {
           urlParams.push(`redirect_to=${encodeURIComponent(options.redirectTo)}`);
         }
@@ -42223,9 +42223,11 @@ var ModelPolicySchema = external_exports.object({ default: external_exports.stri
 var TargetSchema = external_exports.enum(["prod", "staging", "custom"]);
 var AGENT_FLAG_ENV = { "claude-code": "CLAUDE_HEADLESS_FLAGS" };
 var AgentFlagsSchema = external_exports.object({ "claude-code": external_exports.string().min(1).optional() }).strict();
+var ProvidersSchema = external_exports.array(external_exports.string().min(1)).min(1);
 var ProfileOverrideSchema = external_exports.object({
   max_workers: external_exports.number().int().min(0).optional(),
   agents: external_exports.array(external_exports.string().min(1)).min(1).optional(),
+  providers: ProvidersSchema.optional(),
   required_tools: RequiredToolsSchema.optional()
 }).strict();
 var ProfilesSchema = external_exports.object({ cloud: ProfileOverrideSchema.optional(), gke: ProfileOverrideSchema.optional() }).strict();
@@ -42241,6 +42243,8 @@ var projectShape = {
   /** Absent means "ship when gcp.project is named"; `false` switches shipping off. */
   log_shipping: external_exports.boolean().optional(),
   agents: external_exports.array(external_exports.string().min(1)).min(1).optional(),
+  /** B-1178: the Codex model providers legs may run on (-> env.HARMONY_CODEX_PROVIDERS). */
+  providers: ProvidersSchema.optional(),
   /** B-1183: which Supabase project the worker talks to (-> env.HARMONY_TARGET). */
   target: TargetSchema.optional(),
   /** B-1183: only with target "custom" (-> env.HARMONY_SUPABASE_URL). */
@@ -42797,6 +42801,8 @@ function launchEnvFromMerged(merged) {
   put2("HARMONY_GKE_POLL_S", g?.poll_s);
   put2("HARMONY_GKE_JOB_TTL_S", g?.job_ttl_s);
   put2("HARMONY_GKE_IMAGE", merged.images?.worker);
+  const providers = (merged.profile ? merged.profiles?.[merged.profile]?.providers : void 0) ?? merged.providers;
+  if (providers?.length) put2("HARMONY_CODEX_PROVIDERS", providers.join(","));
   put2("HARMONY_CLOUD_RUN_REGION", merged.gcp?.region);
   put2("HARMONY_CLOUD_RUN_JOB", merged.cloud_run?.job);
   put2("CLOUDSDK_CORE_PROJECT", merged.gcp?.project);
@@ -45533,16 +45539,24 @@ function entryAgent(entry) {
 function entryModelId(entry) {
   return entry.model_id || entry.alias;
 }
+var DEFAULT_PROVIDER_BY_AGENT = {
+  "claude-code": "anthropic",
+  codex: "openai"
+};
+function entryProvider(entry) {
+  if (typeof entry.provider === "string" && entry.provider !== "") return entry.provider;
+  return DEFAULT_PROVIDER_BY_AGENT[entryAgent(entry)] ?? DEFAULT_PROVIDER_BY_AGENT[DEFAULT_AGENT_ADAPTER];
+}
 function catalogEntriesForAgent(entries, agent = DEFAULT_AGENT_ADAPTER) {
   return entries.filter((entry) => entryAgent(entry) === agent);
 }
-function findModelEntry(model, entries, agent = DEFAULT_AGENT_ADAPTER) {
+function findModelEntry(model, entries, agent = DEFAULT_AGENT_ADAPTER, opts = {}) {
   return catalogEntriesForAgent(entries, agent).find(
-    (entry) => entry.active && (entry.alias === model || entryModelId(entry) === model)
+    (entry) => (entry.active || opts.includeInactive === true) && (entry.alias === model || entryModelId(entry) === model)
   );
 }
-function normalizeModelId(model, entries, agent = DEFAULT_AGENT_ADAPTER) {
-  const entry = findModelEntry(model, entries, agent);
+function normalizeModelId(model, entries, agent = DEFAULT_AGENT_ADAPTER, opts = {}) {
+  const entry = findModelEntry(model, entries, agent, opts);
   return entry ? entryModelId(entry) : model;
 }
 function isMissingCatalogColumnError(error2) {
@@ -45616,17 +45630,23 @@ for (const pinned of Object.values(PINNED_DEFAULT_MODEL_BY_PROFILE[DEFAULT_AGENT
   }
 }
 var DEFAULT_MODEL_CONTEXT_BUDGET_BYTES = 60 * 1024 * 1024;
-async function fetchModelCatalog(client) {
+async function fetchModelCatalog(client, opts = {}) {
   if (!client) return null;
   try {
-    let { data, error: error2 } = await client.from("model_catalog").select(
-      "alias, label, context_budget_bytes, active, verified_at, agent, model_id, underlying_model, capabilities, pinned_default_profiles"
-    ).eq("active", true);
+    const read = async (cols) => {
+      const query = client.from("model_catalog").select(cols);
+      return await (opts.includeInactive ? query : query.eq("active", true));
+    };
+    const B1147_COLS = "alias, label, context_budget_bytes, active, verified_at, agent, model_id, underlying_model, capabilities, pinned_default_profiles";
+    let { data, error: error2 } = await read(`${B1147_COLS}, provider, context_window_tokens`);
     if (error2 && isMissingCatalogColumnError(error2)) {
-      ({ data, error: error2 } = await client.from("model_catalog").select("alias, label, context_budget_bytes, active, verified_at, agent, model_id, underlying_model, capabilities").eq("active", true));
+      ({ data, error: error2 } = await read(B1147_COLS));
     }
     if (error2 && isMissingCatalogColumnError(error2)) {
-      ({ data, error: error2 } = await client.from("model_catalog").select("alias, label, context_budget_bytes, active, verified_at").eq("active", true));
+      ({ data, error: error2 } = await read("alias, label, context_budget_bytes, active, verified_at, agent, model_id, underlying_model, capabilities"));
+    }
+    if (error2 && isMissingCatalogColumnError(error2)) {
+      ({ data, error: error2 } = await read("alias, label, context_budget_bytes, active, verified_at"));
     }
     if (error2) {
       console.error(
@@ -45647,8 +45667,8 @@ async function fetchModelCatalog(client) {
     return null;
   }
 }
-async function resolveModelCatalog(client) {
-  const live = await fetchModelCatalog(client);
+async function resolveModelCatalog(client, opts = {}) {
+  const live = await fetchModelCatalog(client, opts);
   if (live && live.length > 0) return { entries: live, source: "live" };
   if (live && live.length === 0) {
     console.error(
@@ -45658,12 +45678,12 @@ async function resolveModelCatalog(client) {
   return { entries: MODEL_CATALOG_FALLBACK, source: "fallback" };
 }
 async function isAllowedModelAlias(alias, client, agent = DEFAULT_AGENT_ADAPTER) {
-  const { entries } = await resolveModelCatalog(client);
-  return !!findModelEntry(alias, entries, agent);
+  const { entries } = await resolveModelCatalog(client, { includeInactive: true });
+  return !!findModelEntry(alias, entries, agent, { includeInactive: true });
 }
 async function getModelContextBudgetBytes(alias, client, agent) {
-  const { entries } = await resolveModelCatalog(client);
-  const found = agent ? findModelEntry(alias, entries, agent) : entries.find((entry) => entry.alias === alias);
+  const { entries } = await resolveModelCatalog(client, { includeInactive: true });
+  const found = agent ? findModelEntry(alias, entries, agent, { includeInactive: true }) : entries.find((entry) => entry.alias === alias);
   return found?.context_budget_bytes ?? DEFAULT_MODEL_CONTEXT_BUDGET_BYTES;
 }
 var DEFAULT_MODEL_HANDOFF_FILENAME = "model-handoff-request.json";
@@ -52047,22 +52067,22 @@ async function parseErrorResponse(input) {
     return new ServerError(errorMessage2);
   }
 }
-async function auth(provider, options) {
+async function auth(provider2, options) {
   try {
-    return await authInternal(provider, options);
+    return await authInternal(provider2, options);
   } catch (error2) {
     if (error2 instanceof InvalidClientError || error2 instanceof UnauthorizedClientError) {
-      await provider.invalidateCredentials?.("all");
-      return await authInternal(provider, options);
+      await provider2.invalidateCredentials?.("all");
+      return await authInternal(provider2, options);
     } else if (error2 instanceof InvalidGrantError) {
-      await provider.invalidateCredentials?.("tokens");
-      return await authInternal(provider, options);
+      await provider2.invalidateCredentials?.("tokens");
+      return await authInternal(provider2, options);
     }
     throw error2;
   }
 }
-async function authInternal(provider, { serverUrl, authorizationCode, scope, resourceMetadataUrl, fetchFn }) {
-  const cachedState = await provider.discoveryState?.();
+async function authInternal(provider2, { serverUrl, authorizationCode, scope, resourceMetadataUrl, fetchFn }) {
+  const cachedState = await provider2.discoveryState?.();
   let resourceMetadata;
   let authorizationServerUrl;
   let metadata;
@@ -52081,7 +52101,7 @@ async function authInternal(provider, { serverUrl, authorizationCode, scope, res
       }
     }
     if (metadata !== cachedState.authorizationServerMetadata || resourceMetadata !== cachedState.resourceMetadata) {
-      await provider.saveDiscoveryState?.({
+      await provider2.saveDiscoveryState?.({
         authorizationServerUrl: String(authorizationServerUrl),
         resourceMetadataUrl: effectiveResourceMetadataUrl?.toString(),
         resourceMetadata,
@@ -52093,22 +52113,22 @@ async function authInternal(provider, { serverUrl, authorizationCode, scope, res
     authorizationServerUrl = serverInfo.authorizationServerUrl;
     metadata = serverInfo.authorizationServerMetadata;
     resourceMetadata = serverInfo.resourceMetadata;
-    await provider.saveDiscoveryState?.({
+    await provider2.saveDiscoveryState?.({
       authorizationServerUrl: String(authorizationServerUrl),
       resourceMetadataUrl: effectiveResourceMetadataUrl?.toString(),
       resourceMetadata,
       authorizationServerMetadata: metadata
     });
   }
-  const resource = await selectResourceURL(serverUrl, provider, resourceMetadata);
-  const resolvedScope = scope || resourceMetadata?.scopes_supported?.join(" ") || provider.clientMetadata.scope;
-  let clientInformation = await Promise.resolve(provider.clientInformation());
+  const resource = await selectResourceURL(serverUrl, provider2, resourceMetadata);
+  const resolvedScope = scope || resourceMetadata?.scopes_supported?.join(" ") || provider2.clientMetadata.scope;
+  let clientInformation = await Promise.resolve(provider2.clientInformation());
   if (!clientInformation) {
     if (authorizationCode !== void 0) {
       throw new Error("Existing OAuth client information is required when exchanging an authorization code");
     }
     const supportsUrlBasedClientId = metadata?.client_id_metadata_document_supported === true;
-    const clientMetadataUrl = provider.clientMetadataUrl;
+    const clientMetadataUrl = provider2.clientMetadataUrl;
     if (clientMetadataUrl && !isHttpsUrl(clientMetadataUrl)) {
       throw new InvalidClientMetadataError(`clientMetadataUrl must be a valid HTTPS URL with a non-root pathname, got: ${clientMetadataUrl}`);
     }
@@ -52117,33 +52137,33 @@ async function authInternal(provider, { serverUrl, authorizationCode, scope, res
       clientInformation = {
         client_id: clientMetadataUrl
       };
-      await provider.saveClientInformation?.(clientInformation);
+      await provider2.saveClientInformation?.(clientInformation);
     } else {
-      if (!provider.saveClientInformation) {
+      if (!provider2.saveClientInformation) {
         throw new Error("OAuth client information must be saveable for dynamic registration");
       }
       const fullInformation = await registerClient(authorizationServerUrl, {
         metadata,
-        clientMetadata: provider.clientMetadata,
+        clientMetadata: provider2.clientMetadata,
         scope: resolvedScope,
         fetchFn
       });
-      await provider.saveClientInformation(fullInformation);
+      await provider2.saveClientInformation(fullInformation);
       clientInformation = fullInformation;
     }
   }
-  const nonInteractiveFlow = !provider.redirectUrl;
+  const nonInteractiveFlow = !provider2.redirectUrl;
   if (authorizationCode !== void 0 || nonInteractiveFlow) {
-    const tokens2 = await fetchToken(provider, authorizationServerUrl, {
+    const tokens2 = await fetchToken(provider2, authorizationServerUrl, {
       metadata,
       resource,
       authorizationCode,
       fetchFn
     });
-    await provider.saveTokens(tokens2);
+    await provider2.saveTokens(tokens2);
     return "AUTHORIZED";
   }
-  const tokens = await provider.tokens();
+  const tokens = await provider2.tokens();
   if (tokens?.refresh_token) {
     try {
       const newTokens = await refreshAuthorization(authorizationServerUrl, {
@@ -52151,10 +52171,10 @@ async function authInternal(provider, { serverUrl, authorizationCode, scope, res
         clientInformation,
         refreshToken: tokens.refresh_token,
         resource,
-        addClientAuthentication: provider.addClientAuthentication,
+        addClientAuthentication: provider2.addClientAuthentication,
         fetchFn
       });
-      await provider.saveTokens(newTokens);
+      await provider2.saveTokens(newTokens);
       return "AUTHORIZED";
     } catch (error2) {
       if (!(error2 instanceof OAuthError) || error2 instanceof ServerError) {
@@ -52163,17 +52183,17 @@ async function authInternal(provider, { serverUrl, authorizationCode, scope, res
       }
     }
   }
-  const state = provider.state ? await provider.state() : void 0;
+  const state = provider2.state ? await provider2.state() : void 0;
   const { authorizationUrl, codeVerifier } = await startAuthorization(authorizationServerUrl, {
     metadata,
     clientInformation,
     state,
-    redirectUrl: provider.redirectUrl,
+    redirectUrl: provider2.redirectUrl,
     scope: resolvedScope,
     resource
   });
-  await provider.saveCodeVerifier(codeVerifier);
-  await provider.redirectToAuthorization(authorizationUrl);
+  await provider2.saveCodeVerifier(codeVerifier);
+  await provider2.redirectToAuthorization(authorizationUrl);
   return "REDIRECT";
 }
 function isHttpsUrl(value) {
@@ -52186,10 +52206,10 @@ function isHttpsUrl(value) {
     return false;
   }
 }
-async function selectResourceURL(serverUrl, provider, resourceMetadata) {
+async function selectResourceURL(serverUrl, provider2, resourceMetadata) {
   const defaultResource = resourceUrlFromServerUrl(serverUrl);
-  if (provider.validateResourceURL) {
-    return await provider.validateResourceURL(defaultResource, resourceMetadata?.resource);
+  if (provider2.validateResourceURL) {
+    return await provider2.validateResourceURL(defaultResource, resourceMetadata?.resource);
   }
   if (!resourceMetadata) {
     return void 0;
@@ -52461,28 +52481,28 @@ async function refreshAuthorization(authorizationServerUrl, { metadata, clientIn
   });
   return { refresh_token: refreshToken, ...tokens };
 }
-async function fetchToken(provider, authorizationServerUrl, { metadata, resource, authorizationCode, fetchFn } = {}) {
-  const scope = provider.clientMetadata.scope;
+async function fetchToken(provider2, authorizationServerUrl, { metadata, resource, authorizationCode, fetchFn } = {}) {
+  const scope = provider2.clientMetadata.scope;
   let tokenRequestParams;
-  if (provider.prepareTokenRequest) {
-    tokenRequestParams = await provider.prepareTokenRequest(scope);
+  if (provider2.prepareTokenRequest) {
+    tokenRequestParams = await provider2.prepareTokenRequest(scope);
   }
   if (!tokenRequestParams) {
     if (!authorizationCode) {
       throw new Error("Either provider.prepareTokenRequest() or authorizationCode is required");
     }
-    if (!provider.redirectUrl) {
+    if (!provider2.redirectUrl) {
       throw new Error("redirectUrl is required for authorization_code flow");
     }
-    const codeVerifier = await provider.codeVerifier();
-    tokenRequestParams = prepareAuthorizationCodeRequest(authorizationCode, codeVerifier, provider.redirectUrl);
+    const codeVerifier = await provider2.codeVerifier();
+    tokenRequestParams = prepareAuthorizationCodeRequest(authorizationCode, codeVerifier, provider2.redirectUrl);
   }
-  const clientInformation = await provider.clientInformation();
+  const clientInformation = await provider2.clientInformation();
   return executeTokenRequest(authorizationServerUrl, {
     metadata,
     tokenRequestParams,
     clientInformation: clientInformation ?? void 0,
-    addClientAuthentication: provider.addClientAuthentication,
+    addClientAuthentication: provider2.addClientAuthentication,
     resource,
     fetchFn
   });
@@ -59507,7 +59527,7 @@ async function authorizeFigma() {
   let info;
   let tokens;
   let verifier = "";
-  const provider = {
+  const provider2 = {
     redirectUrl: "http://localhost:1457/callback",
     clientMetadata: {
       client_name: "Harmony workspace Figma",
@@ -59553,13 +59573,13 @@ ${url2.href}
     }
     return response;
   };
-  await auth(provider, { serverUrl, scope: "mcp:connect", fetchFn });
+  await auth(provider2, { serverUrl, scope: "mcp:connect", fetchFn });
   if (!tokens) {
     const code = parseFigmaRedirect(
       await secretPrompt("Paste the final redirect URL (hidden): "),
       state
     );
-    await auth(provider, {
+    await auth(provider2, {
       serverUrl,
       scope: "mcp:connect",
       authorizationCode: code,
@@ -67633,8 +67653,38 @@ var claudeCodeAdapter = {
 
 // src/agents/codex.ts
 import { posix as path3 } from "node:path";
+
+// src/agents/codex-providers.ts
+var CODEX_DEFAULT_PROVIDER = "openai";
+function providerSecretName(name) {
+  return `harmony-provider-${name}-key`;
+}
+function provider(name, displayName, baseUrl, envKey) {
+  return { name, displayName, baseUrl, envKey, wireApi: "responses", secretName: providerSecretName(name) };
+}
+var CODEX_PROVIDERS = [
+  provider("openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
+  provider("deepseek", "DeepSeek", "https://api.deepseek.com", "DEEPSEEK_API_KEY")
+];
+var CODEX_PROVIDER_ENV_KEYS = CODEX_PROVIDERS.map((p) => p.envKey);
+function isDefaultCodexProvider(name) {
+  return name === void 0 || name === null || name === "" || name === CODEX_DEFAULT_PROVIDER;
+}
+function lookupCodexProvider(name) {
+  const found = CODEX_PROVIDERS.find((p) => p.name === name);
+  if (found) return { ok: true, provider: found };
+  const known = [CODEX_DEFAULT_PROVIDER, ...CODEX_PROVIDERS.map((p) => p.name)].join(", ");
+  if (isDefaultCodexProvider(name)) {
+    return { ok: false, error: `'${CODEX_DEFAULT_PROVIDER}' is the default provider (login cache), not a registry entry` };
+  }
+  return { ok: false, error: `unknown Codex model provider '${name}' \u2014 registered providers: ${known}` };
+}
+
+// src/agents/codex.ts
 var CODEX_AUTH_FILE_ENV = "HARMONY_CODEX_AUTH_FILE";
 var CODEX_REFUSED_CREDENTIAL_ENV = ["OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"];
+var CODEX_PROVIDER_ENV = "HARMONY_CODEX_PROVIDER";
+var CODEX_CONFIG_FLAG = "-c";
 var CODEX_AUTH_FILE_NAME = "auth.json";
 var CODEX_DEFAULT_PLUGIN_ROOT = "/workspace/workspace/plugin";
 var CODEX_EXEC_SUBCOMMAND = "exec";
@@ -67668,7 +67718,47 @@ function present2(env2, name) {
   return typeof v2 === "string" && v2 !== "";
 }
 var LOGIN_HOWTO = `On the conductor host run 'CODEX_HOME=~/.harmony/codex-automation codex login --device-auth' once, then mount that auth.json into the worker (container/README.md "Codex credential runbook").`;
-function resolveCodexCredential(env2) {
+function resolveCodexCredential(env2, provider2) {
+  let name = provider2;
+  if (name === void 0 && present2(env2, CODEX_PROVIDER_ENV)) name = env2[CODEX_PROVIDER_ENV];
+  if (name === void 0) {
+    const keyed = CODEX_PROVIDERS.filter((p) => present2(env2, p.envKey));
+    if (keyed.length > 0 && present2(env2, CODEX_AUTH_FILE_ENV)) {
+      return {
+        ok: false,
+        error: `${CODEX_AUTH_FILE_ENV} (the login cache) and ${keyed.map((p) => p.envKey).join(" and ")} are both set \u2014 one Codex leg runs on the login cache OR one provider's API key, never both (B-934: no silent fallback between regimes). Mount only the credential the run's offer needs.`
+      };
+    }
+    if (keyed.length > 1) {
+      return {
+        ok: false,
+        error: `${keyed.map((p) => p.envKey).join(" and ")} are all set and the leg names no provider (${CODEX_PROVIDER_ENV}) \u2014 refusing to pick one.`
+      };
+    }
+    name = keyed.length === 1 ? keyed[0].name : void 0;
+  }
+  if (isDefaultCodexProvider(name)) return resolveLoginCache(env2);
+  const found = lookupCodexProvider(name);
+  if (!found.ok) return { ok: false, error: found.error };
+  return resolveProviderKey(env2, found.provider);
+}
+function resolveProviderKey(env2, p) {
+  const conflicting = [CODEX_AUTH_FILE_ENV, ...CODEX_REFUSED_CREDENTIAL_ENV].filter((n) => present2(env2, n));
+  if (conflicting.length > 0) {
+    return {
+      ok: false,
+      error: `${conflicting.join(" and ")} ${conflicting.length > 1 ? "are" : "is"} set beside the ${p.displayName} key (${p.envKey}) \u2014 a ${p.name} leg runs on ${p.envKey} alone (B-934: no silent fallback between regimes). Unset ${conflicting.join(" and ")}.`
+    };
+  }
+  if (!present2(env2, p.envKey)) {
+    return {
+      ok: false,
+      error: `this leg runs a ${p.name} offer but ${p.envKey} is not set \u2014 mount the secret ${p.secretName} as ${p.envKey} (container/README.md "Provider API key runbook").`
+    };
+  }
+  return { ok: true, credential: "api-key" };
+}
+function resolveLoginCache(env2) {
   const refused = CODEX_REFUSED_CREDENTIAL_ENV.filter((n) => present2(env2, n));
   if (refused.length > 0) {
     return {
@@ -67686,6 +67776,7 @@ function codexPrompt(prompt) {
   const m = /^\/([A-Za-z0-9_-]+:[A-Za-z0-9_-]+)(?=\s|$)/.exec(prompt);
   return m ? `$${m[1]}${prompt.slice(m[0].length)}` : prompt;
 }
+var PROVIDER_NAME_RE = /^[a-z0-9][a-z0-9_-]*$/;
 function buildCodexArgv(input) {
   const extra = [...input.extraFlags ?? []];
   const resume = input.resumeSessionId;
@@ -67698,6 +67789,11 @@ function buildCodexArgv(input) {
     argv.push(CODEX_ADD_DIR_FLAG, input.pluginDir, CODEX_BYPASS_FLAG, CODEX_HOOK_TRUST_FLAG);
   }
   if (input.model) argv.push(CODEX_MODEL_FLAG, input.model);
+  if (!isDefaultCodexProvider(input.modelProvider)) {
+    const name = input.modelProvider;
+    if (!PROVIDER_NAME_RE.test(name)) throw new Error(`invalid model provider name '${name}'`);
+    argv.push(CODEX_CONFIG_FLAG, `model_provider=${name}`);
+  }
   argv.push(...extra);
   argv.push(codexPrompt(input.prompt));
   return argv;
@@ -67714,12 +67810,16 @@ function tomlStringArray(a3) {
 function renderCodexConfig(connection, opts = {}) {
   const root = opts.pluginRoot ?? CODEX_DEFAULT_PLUGIN_ROOT;
   const args = connection.args.map((a3) => a3.split(PLUGIN_ROOT_PLACEHOLDER).join(root));
+  const p = opts.provider ?? null;
+  const window2 = p && typeof opts.contextWindowTokens === "number" && Number.isInteger(opts.contextWindowTokens) && opts.contextWindowTokens > 0 ? opts.contextWindowTokens : null;
   const lines = [
     "# Generated by `harmony agent render` (B-1076) from the canonical MCP connection. Do not edit.",
     "# approval_policy never: an unattended worker must never wait on an approval UI.",
     'approval_policy = "never"',
     "# The aggregated AGENTS.md is larger than Codex's 32 KiB default, which TRUNCATES silently.",
     `project_doc_max_bytes = ${CODEX_PROJECT_DOC_MAX_BYTES}`,
+    // TOML: root keys must precede every table.
+    ...window2 !== null ? [`# B-1178: the ${p.name} offer's context window, from the model catalog.`, `model_context_window = ${window2}`] : [],
     "",
     `[mcp_servers.${connection.name}]`,
     `command = ${tomlString(connection.command)}`,
@@ -67732,6 +67832,17 @@ function renderCodexConfig(connection, opts = {}) {
     `env_vars = ${tomlStringArray(CODEX_MCP_ENV_VARS)}`,
     ""
   ];
+  if (p) {
+    lines.push(
+      `# B-1178: the ${p.displayName} provider; the key is read from ${p.envKey} (secret ${p.secretName}).`,
+      `[model_providers.${p.name}]`,
+      `name = ${tomlString(p.displayName)}`,
+      `base_url = ${tomlString(p.baseUrl)}`,
+      `env_key = ${tomlString(p.envKey)}`,
+      `wire_api = ${tomlString(p.wireApi)}`,
+      ""
+    );
+  }
   return { fileName: "config.toml", content: lines.join("\n") };
 }
 var CODEX_WORKER_OVERLAY = [
@@ -67923,11 +68034,13 @@ var codexAdapter = {
   // 1. launch — `codex --version` (the image's smoke gate runs the same probe).
   launch: { binary: "codex", probeArgv: ["codex", "--version"] },
   // 2. auth — the login-cache file, addressed by a non-secret path variable. Plan-included (B-934).
+  //    B-1178: or a non-OpenAI provider's API key (metered, derived — never chosen). The api-key row names
+  //    the first registered provider's variable; each provider reads its own (src/agents/codex-providers.ts).
   auth: {
-    acceptedCredentials: ["login-cache"],
-    credentialEnv: { "login-cache": CODEX_AUTH_FILE_ENV },
+    acceptedCredentials: ["login-cache", "api-key"],
+    credentialEnv: { "login-cache": CODEX_AUTH_FILE_ENV, "api-key": CODEX_PROVIDERS[0].envKey },
     primaryCredential: "login-cache",
-    resolveCredential: resolveCodexCredential
+    resolveCredential: (env2) => resolveCodexCredential(env2)
   },
   // 3. headless — `codex exec --json --cd <root> … <prompt>`; exit 0 = the leg completed, any other
   //    exit fails it (verified: a failed turn exits 1 with a turn.failed event). The exit code is
@@ -67983,7 +68096,9 @@ var codexAdapter = {
       // B-1149: optional test hook (quota | rate-limit only), inert when unset.
       "HARMONY_TEST_FORCE_REFUSAL"
     ],
-    standingSecrets: ["HARMONY_API_TOKEN", CODEX_AUTH_FILE_ENV]
+    // B-1178: every registered provider's key is a standing secret too (bound to the job / pod, never
+    // forwarded through the per-leg allowlist).
+    standingSecrets: ["HARMONY_API_TOKEN", CODEX_AUTH_FILE_ENV, ...CODEX_PROVIDER_ENV_KEYS]
   },
   // 9. capabilities — Codex has subagents, but this adapter builds in the root thread (B-1076). Hooks ARE
   //    used since B-1150: the same Stop / PreToolUse / SessionStart hooks, written to $CODEX_HOME/hooks.json
@@ -68064,9 +68179,9 @@ async function assertRunConfigRuntime(client, runConfig) {
     if (typeof value === "string" && value) requested.push(value);
   }
   if (requested.length === 0) return;
-  const { entries } = await resolveModelCatalog(client);
-  const available = catalogEntriesForAgent(entries, adapter).map((entry) => entryModelId(entry));
-  const bad = [...new Set(requested.filter((model) => !findModelEntry(model, entries, adapter)))];
+  const { entries } = await resolveModelCatalog(client, { includeInactive: true });
+  const available = catalogEntriesForAgent(entries, adapter).filter((entry) => entry.active).map((entry) => entryModelId(entry));
+  const bad = [...new Set(requested.filter((model) => !findModelEntry(model, entries, adapter, { includeInactive: true })))];
   if (bad.length > 0) {
     throw new Error(
       `Model${bad.length > 1 ? "s" : ""} ${bad.map((m) => `'${m}'`).join(", ")} not available on runtime '${adapter}' \u2014 available models for '${adapter}': ${available.length > 0 ? available.join(", ") : "(none in the catalog)"}`
@@ -71064,8 +71179,9 @@ function registerModelCommands(program3) {
     process.exit(ok ? 0 : 1);
   });
   model.command("normalize").description("Print the runtime model id for a catalog alias or id; pass through unchanged if the live catalog is unavailable or the name is unknown.").argument("<model>").option("--agent <id>", "Agent runtime whose active rows to match", DEFAULT_AGENT_ADAPTER).option("--offered-only", "Print nothing for an unoffered name when the live catalog is reachable").action(async (model2, opts) => {
-    const { entries, source } = await resolveModelCatalog(await getCatalogClient());
-    console.log(source === "live" && opts.offeredOnly && !findModelEntry(model2, entries, opts.agent) ? "" : source === "live" ? normalizeModelId(model2, entries, opts.agent) : model2);
+    const explicit = { includeInactive: true };
+    const { entries, source } = await resolveModelCatalog(await getCatalogClient(), explicit);
+    console.log(source === "live" && opts.offeredOnly && !findModelEntry(model2, entries, opts.agent, explicit) ? "" : source === "live" ? normalizeModelId(model2, entries, opts.agent, explicit) : model2);
   });
   model.command("context-budget").description(
     "Print <alias>'s resumable-session-size budget in bytes, from the live catalog (falling back to the embedded degrade-only list, then a conservative default for an alias absent from either \u2014 always exits 0)."
@@ -71437,7 +71553,7 @@ function provisionCodex(input) {
   writeFileSync9(agentsMdPath, agentsMd);
   const skillsLink = linkSkills(workspaceDir, input.pluginDir);
   excludeFromGit(workspaceDir, ["AGENTS.md", ".agents/"]);
-  const authInstalledAt = installAuth(input.authFile, codexHome);
+  const authInstalledAt = input.authFile === void 0 ? null : installAuth(input.authFile, codexHome);
   return {
     configPath,
     hooksPath,
@@ -71447,6 +71563,18 @@ function provisionCodex(input) {
     skillsLink,
     authInstalledAt
   };
+}
+function renderCodexProviderConfig(input) {
+  const codexHome = resolve7(input.codexHome);
+  mkdirSync6(codexHome, { recursive: true });
+  const config2 = renderCodexConfig(HARMONY_MCP_CONNECTION, {
+    pluginRoot: resolve7(input.pluginDir),
+    provider: input.provider,
+    contextWindowTokens: input.contextWindowTokens ?? null
+  });
+  const configPath = join15(codexHome, config2.fileName);
+  writeFileSync9(configPath, config2.content, { mode: 420 });
+  return configPath;
 }
 
 // src/cli/commands/agent.ts
@@ -71489,6 +71617,45 @@ function adapterOrRefuse() {
   if (!resolved.ok) refuse(`${resolved.error} (run_config.agent.adapter; no fallback to the default adapter).`);
   return resolved.adapter;
 }
+function describeOfferProvider(entry, agent) {
+  const provider2 = entryProvider(entry);
+  const window2 = typeof entry.context_window_tokens === "number" ? entry.context_window_tokens : null;
+  const base2 = { agent, model: entryModelId(entry), provider: provider2, context_window_tokens: window2 };
+  if (agent !== "codex" || isDefaultCodexProvider(provider2)) {
+    return { ok: true, value: { ...base2, env_key: null, secret: null, base_url: null } };
+  }
+  const found = lookupCodexProvider(provider2);
+  if (!found.ok) return { ok: false, error: `model '${base2.model}': ${found.error}` };
+  return { ok: true, value: { ...base2, env_key: found.provider.envKey, secret: found.provider.secretName, base_url: found.provider.baseUrl } };
+}
+var PROVIDER_FIELDS = ["provider", "env-key", "secret", "context-window", "base-url"];
+function providerField(v2, field) {
+  switch (field) {
+    case "provider":
+      return v2.provider;
+    case "env-key":
+      return v2.env_key ?? "";
+    case "secret":
+      return v2.secret ?? "";
+    case "context-window":
+      return v2.context_window_tokens === null ? "" : String(v2.context_window_tokens);
+    case "base-url":
+      return v2.base_url ?? "";
+  }
+}
+async function catalogClient() {
+  try {
+    return (await getAuthenticatedContext()).client;
+  } catch {
+    return null;
+  }
+}
+function providerOrRefuse(name) {
+  if (isDefaultCodexProvider(name)) return null;
+  const found = lookupCodexProvider(name);
+  if (!found.ok) refuse(found.error);
+  return found.provider;
+}
 function registerAgentCommands(program3) {
   const agent = program3.command("agent").description(
     "B-1077 agent-adapter routing accessor \u2014 the ONE place container/provision.sh learns which agent runtime this leg runs and how to launch it (run_config.agent.adapter \u2192 src/agents/registry.ts). Never hand-assemble the launch in bash."
@@ -71528,17 +71695,21 @@ function registerAgentCommands(program3) {
       return;
     }
     const authFile = process.env[CODEX_AUTH_FILE_ENV];
-    if (!authFile) refuse(`${CODEX_AUTH_FILE_ENV} is not set.`);
+    const providerKeyLeg = !authFile && (() => {
+      const v2 = resolveCodexCredential(process.env);
+      return v2.ok && v2.credential === "api-key";
+    })();
+    if (!authFile && !providerKeyLeg) refuse(`${CODEX_AUTH_FILE_ENV} is not set.`);
     try {
       const r = provisionCodex({
         pluginDir: opts.pluginDir,
         workspaceDir: opts.workspace,
         codexHome: opts.codexHome || process.env.CODEX_HOME || join16(homedir6(), ".codex"),
-        authFile,
+        authFile: authFile || void 0,
         extraRepoPaths: opts.extraRepo
       });
       console.error(
-        `harmony agent render: codex config ${r.configPath}; AGENTS.md ${r.agentsMdPath} (${r.agentsMdBytes} bytes from ${r.sources.join(", ")}); skills ${r.skillsLink}; login cache installed at ${r.authInstalledAt}`
+        `harmony agent render: codex config ${r.configPath}; AGENTS.md ${r.agentsMdPath} (${r.agentsMdBytes} bytes from ${r.sources.join(", ")}); skills ${r.skillsLink}; ` + (r.authInstalledAt ? `login cache installed at ${r.authInstalledAt}` : "no login cache (a provider API-key leg)")
       );
     } catch (err) {
       if (err instanceof MissingHookScriptError) await postMissingHookComment(err);
@@ -71547,16 +71718,71 @@ function registerAgentCommands(program3) {
   });
   agent.command("argv").description(
     "Print the full launch command (the adapter's binary, then its headless argv) as NUL-terminated elements. Read in bash with: while IFS= read -r -d '' t; do a+=(\"$t\"); done. Upstream flags (CLAUDE_HEADLESS_FLAGS) go after `--`, already word-split."
-  ).requiredOption("--plugin-dir <dir>", "The plugin checkout the agent loads").requiredOption("--prompt <prompt>", "The headless prompt").option("--resume <session-id>", "Resume this session id").option("--model <alias>", "Launch on this model alias").argument("[extra...]", "Upstream flags, passed through in order (put them after `--`)").action((extra, opts) => {
+  ).requiredOption("--plugin-dir <dir>", "The plugin checkout the agent loads").requiredOption("--prompt <prompt>", "The headless prompt").option("--resume <session-id>", "Resume this session id").option("--model <alias>", "Launch on this model alias").option("--provider <name>", "B-1178: the offer's model provider (from `agent provider`); a non-default one adds `-c model_provider=<name>`").argument("[extra...]", "Upstream flags, passed through in order (put them after `--`)").action((extra, opts) => {
     const adapter = adapterOrRefuse();
+    const provider2 = adapter.id === "codex" ? providerOrRefuse(opts.provider || void 0) : null;
     const argv = buildLaunchCommand(adapter, {
       pluginDir: opts.pluginDir,
       prompt: opts.prompt,
       resumeSessionId: opts.resume || void 0,
       model: opts.model || void 0,
+      ...provider2 ? { modelProvider: provider2.name } : {},
       extraFlags: extra ?? []
     });
     process.stdout.write(encodeNulArgv(argv));
+  });
+  agent.command("provider").description(
+    "B-1178: print the model provider that serves --model (the live catalog row, matched by its alias or model id; an inactive row still answers \u2014 the run named it). `openai` / `anthropic` when the row names none. --field prints one fact for the launchers; --json prints all of them (names only, never a value). Exit 1 on an unknown model (or no reachable catalog), 2 on a provider this build does not know."
+  ).requiredOption("--model <model>", "The model the leg runs on (catalog alias or model id)").option("--agent <id>", "Agent runtime whose catalog rows to match", "codex").option("--field <field>", `One of: ${PROVIDER_FIELDS.join(", ")}`, "provider").option("--json", "Print every fact as one JSON object").action(async (opts) => {
+    if (!PROVIDER_FIELDS.includes(opts.field)) {
+      console.error(`harmony agent provider: unknown --field '${opts.field}' \u2014 expected one of: ${PROVIDER_FIELDS.join(", ")}`);
+      process.exit(1);
+    }
+    const explicit = { includeInactive: true };
+    const { entries, source } = await resolveModelCatalog(await catalogClient(), explicit);
+    const entry = findModelEntry(opts.model, entries, opts.agent, explicit);
+    if (!entry) {
+      console.error(
+        `harmony agent provider: model '${opts.model}' is not in the ${source === "live" ? "live" : "embedded fallback"} model catalog for runtime '${opts.agent}'`
+      );
+      process.exit(1);
+    }
+    const described = describeOfferProvider(entry, opts.agent);
+    if (!described.ok) {
+      console.error(`harmony agent provider: ${described.error}`);
+      process.exit(2);
+    }
+    const v2 = described.value;
+    process.stdout.write(opts.json ? `${JSON.stringify(v2)}
+` : `${providerField(v2, opts.field)}
+`);
+  });
+  agent.command("render-provider").description(
+    `B-1178: re-render the Codex config.toml for the leg's offer \u2014 the [model_providers.<name>] table and the model's context window for a non-OpenAI provider; for openai the plain config. Checks the credential for that provider first: its key must be mounted and the login cache must not be (names only). Exit 1 with "Refusing to start: \u2026" on any problem.`
+  ).requiredOption("--plugin-dir <dir>", "The plugin checkout").requiredOption("--provider <name>", "The offer's provider (from `agent provider`)").option("--context-window <tokens>", "The offer's context window in tokens (from `agent provider --field context-window`)").option("--codex-home <dir>", "The worker CODEX_HOME (default: $CODEX_HOME or ~/.codex)").action((opts) => {
+    const adapter = adapterOrRefuse();
+    if (adapter.id !== "codex") refuse(`${adapter.displayName} has no model-provider config.`);
+    const provider2 = providerOrRefuse(opts.provider);
+    const verdict = resolveCodexCredential(process.env, provider2 ? provider2.name : "openai");
+    if (!verdict.ok) refuse(`Codex: ${verdict.error}`);
+    let window2 = null;
+    if (opts.contextWindow !== void 0 && opts.contextWindow !== "") {
+      if (!/^[1-9][0-9]*$/.test(opts.contextWindow)) refuse(`--context-window must be a positive integer, got '${opts.contextWindow}'.`);
+      window2 = Number(opts.contextWindow);
+    }
+    try {
+      const path4 = renderCodexProviderConfig({
+        pluginDir: opts.pluginDir,
+        codexHome: opts.codexHome || process.env.CODEX_HOME || join16(homedir6(), ".codex"),
+        provider: provider2,
+        contextWindowTokens: window2
+      });
+      console.error(
+        `harmony agent render-provider: codex config ${path4} (provider ${provider2 ? provider2.name : "openai"}${provider2 && window2 !== null ? `, model_context_window ${window2}` : ""})`
+      );
+    } catch (err) {
+      refuse(`Codex provider config failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   });
   agent.command("thread-id").description(
     "Print the Codex thread id parsed from a codex `--json` stdout capture (its thread.started event) and exit 0; print nothing and exit 1 when the capture has none or is unreadable."

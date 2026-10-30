@@ -128,9 +128,11 @@ export function registerModelCommands(program: Command): void {
     .option('--agent <id>', 'Agent runtime whose active rows to match', DEFAULT_AGENT_ADAPTER)
     .option('--offered-only', 'Print nothing for an unoffered name when the live catalog is reachable')
     .action(async (model: string, opts: { agent?: string; offeredOnly?: boolean }) => {
-      const { entries, source } = await resolveModelCatalog(await getCatalogClient());
-      console.log(source === 'live' && opts.offeredOnly && !findModelEntry(model, entries, opts.agent)
-        ? '' : source === 'live' ? normalizeModelId(model, entries, opts.agent) : model);
+      // B-1178: an explicit name — an inactive offer still normalizes and still counts as offered (AC7).
+      const explicit = { includeInactive: true };
+      const { entries, source } = await resolveModelCatalog(await getCatalogClient(), explicit);
+      console.log(source === 'live' && opts.offeredOnly && !findModelEntry(model, entries, opts.agent, explicit)
+        ? '' : source === 'live' ? normalizeModelId(model, entries, opts.agent, explicit) : model);
     });
 
   model
