@@ -62,6 +62,20 @@ harmony_config() {
 REPOS_JSON="$(harmony_config repos)"
 CONFIG_WORKER_IMAGE="$(harmony_config worker_image)"
 
+# --- B-1178: a Codex offer on a non-OpenAI model provider runs on that provider's API key, from the
+# Kubernetes Secret harmony-provider-<name>-key, instead of the login cache. Resolved before any kubectl
+# call; an OpenAI offer (or any non-Codex run) leaves every step below exactly as it was.
+CODEX_PROVIDER="openai"
+CODEX_PROVIDER_ENV_KEY=""
+CODEX_PROVIDER_SECRET=""
+if [ "$CODEX_RUN" = "1" ]; then
+  # shellcheck source=../codex-provider-launch.sh
+  . "$HERE/../codex-provider-launch.sh"
+  codex_provider_context gke-worker-launch "$MODEL" "no Job created"
+fi
+CODEX_LOGIN_CACHE_RUN=0
+if [ "$CODEX_RUN" = "1" ] && [ "$CODEX_PROVIDER" = "openai" ]; then CODEX_LOGIN_CACHE_RUN=1; fi
+
 : "${HARMONY_GKE_NAMESPACE:=harmony-legs}"
 : "${HARMONY_GKE_BASE_SECRET:=harmony-worker-secrets}"
 : "${HARMONY_GKE_CODEX_SECRET:=harmony-codex-auth}"
@@ -118,9 +132,27 @@ if ! "${KUBECTL[@]}" get serviceaccount "$HARMONY_GKE_SERVICE_ACCOUNT" >/dev/nul
   echo "gke-worker-launch: Refusing to start: Kubernetes service account $HARMONY_GKE_NAMESPACE/$HARMONY_GKE_SERVICE_ACCOUNT (the Workload Identity identity that reaches the transcript bucket) is missing or unreadable — no Job created" >&2
   exit 1
 fi
-if [ "$CODEX_RUN" = "1" ] && ! "${KUBECTL[@]}" get secret "$HARMONY_GKE_CODEX_SECRET" >/dev/null 2>&1; then
+if [ "$CODEX_LOGIN_CACHE_RUN" = "1" ] && ! "${KUBECTL[@]}" get secret "$HARMONY_GKE_CODEX_SECRET" >/dev/null 2>&1; then
   echo "gke-worker-launch: Refusing to start: this run selects the codex adapter but secret $HARMONY_GKE_NAMESPACE/$HARMONY_GKE_CODEX_SECRET (the login cache) is missing — no Job created" >&2
   exit 1
+fi
+# B-1178: the provider key's Secret must exist AND be readable by this conductor. The read goes through the
+# KUBECTL array as built (namespace only): a --request-timeout / --context / --kubeconfig here would drop the
+# remote conductor pod's in-cluster credentials (B-1267). kubectl's own error text tells the cases apart.
+if [ "$CODEX_PROVIDER" != "openai" ]; then
+  PROVIDER_SECRET_ERR="$(mktemp)"
+  if ! "${KUBECTL[@]}" get secret "$CODEX_PROVIDER_SECRET" >/dev/null 2>"$PROVIDER_SECRET_ERR"; then
+    if grep -qi 'forbidden' "$PROVIDER_SECRET_ERR"; then
+      echo "gke-worker-launch: Refusing to start: the conductor cannot read secret $HARMONY_GKE_NAMESPACE/$CODEX_PROVIDER_SECRET (the $CODEX_PROVIDER key; Forbidden) — re-apply container/conductor/k8s/rbac-legs.yaml — no Job created" >&2
+    elif grep -qiE 'NotFound|not found' "$PROVIDER_SECRET_ERR"; then
+      echo "gke-worker-launch: Refusing to start: secret $CODEX_PROVIDER_SECRET (the $CODEX_PROVIDER key, $CODEX_PROVIDER_ENV_KEY) is missing in namespace $HARMONY_GKE_NAMESPACE (container/README.md \"Provider API key runbook\") — no Job created" >&2
+    else
+      echo "gke-worker-launch: Refusing to start: could not check secret $HARMONY_GKE_NAMESPACE/$CODEX_PROVIDER_SECRET ($(head -c 200 "$PROVIDER_SECRET_ERR" | tr '\n' ' ')) — no Job created" >&2
+    fi
+    rm -f "$PROVIDER_SECRET_ERR"
+    exit 1
+  fi
+  rm -f "$PROVIDER_SECRET_ERR"
 fi
 
 . "$HERE/../figma/launch-context.sh"
@@ -162,7 +194,9 @@ fi
       if [ -n "$v" ]; then echo "$k=$v"; fi
     done
     if [ -n "$REPOS_JSON" ]; then echo "HARMONY_REPOS_JSON=$(printf '%s' "$REPOS_JSON" | base64 | tr -d '\n')"; fi
-    if [ "$CODEX_RUN" = "1" ]; then echo "HARMONY_CODEX_AUTH_FILE=$CODEX_AUTH_CONTAINER_PATH"; fi
+    if [ "$CODEX_LOGIN_CACHE_RUN" = "1" ]; then echo "HARMONY_CODEX_AUTH_FILE=$CODEX_AUTH_CONTAINER_PATH"; fi
+    # B-1178: a provider leg names its provider (a NAME); the key itself is bound from its Secret by the Job.
+    if [ "$CODEX_PROVIDER" != "openai" ]; then echo "HARMONY_CODEX_PROVIDER=$CODEX_PROVIDER"; fi
   } > "$LEG_ENV_FILE"
 )
 
@@ -211,8 +245,9 @@ render() {  # $1 = what: pvc | job
   CONDUCTION_ID="$CONDUCTION_ID" IMAGE="$WORKER_IMAGE_REF" CPU="$HARMONY_GKE_CPU" MEM="$HARMONY_GKE_MEMORY" \
   DISK="$HARMONY_GKE_TICKET_DISK" SC="$HARMONY_GKE_STORAGE_CLASS" DEADLINE="$HARMONY_GKE_DEADLINE_S" \
   JOB_TTL_S="$HARMONY_GKE_JOB_TTL_S" \
-  BASE_SECRET="$HARMONY_GKE_BASE_SECRET" FIGMA_SECRET="$FIGMA_SECRET" CODEX_RUN="$CODEX_RUN" CODEX_SECRET="$HARMONY_GKE_CODEX_SECRET" \
+  BASE_SECRET="$HARMONY_GKE_BASE_SECRET" FIGMA_SECRET="$FIGMA_SECRET" CODEX_RUN="$CODEX_LOGIN_CACHE_RUN" CODEX_SECRET="$HARMONY_GKE_CODEX_SECRET" \
   CODEX_DIR="$CODEX_SECRET_MOUNT_DIR" TROOT="$TRANSCRIPT_MOUNT_ROOT" \
+  PROVIDER_ENV_KEY="$CODEX_PROVIDER_ENV_KEY" PROVIDER_SECRET="$CODEX_PROVIDER_SECRET" \
   TRANSCRIPT_BUCKET="$HARMONY_GKE_TRANSCRIPT_BUCKET" SERVICE_ACCOUNT="$HARMONY_GKE_SERVICE_ACCOUNT" \
   node "$HERE/gke-render-leg.mjs"
 }

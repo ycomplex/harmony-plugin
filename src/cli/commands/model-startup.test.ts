@@ -21,7 +21,7 @@ beforeAll(async () => {
     outfile: join(dir, 'dist/bin/harmony.js'), bundle: true, platform: 'node', format: 'esm',
     banner: { js: "import{createRequire}from'node:module';const require=createRequire(import.meta.url);" },
     plugins: [{ name: 'catalog-fixture', setup(b) {
-      b.onLoad({ filter: /src\/cli\/auth\.ts$/ }, () => ({ loader: 'ts', contents: `export async function getAuthenticatedContext(){return {client:{from(){const q={select(){return q},eq(){return Promise.resolve(process.env.CATALOG_DOWN ? {data:null,error:{message:'offline'}} : {data:[{alias:'codex:gpt-6.1-sol',model_id:'gpt-6.1-sol',agent:'codex',active:true}],error:null})}};return q}}}}` }));
+      b.onLoad({ filter: /src\/cli\/auth\.ts$/ }, () => ({ loader: 'ts', contents: `export async function getAuthenticatedContext(){return {client:{from(){const r=()=>Promise.resolve(process.env.CATALOG_DOWN ? {data:null,error:{message:'offline'}} : {data:[{alias:'codex:gpt-6.1-sol',model_id:'gpt-6.1-sol',agent:'codex',active:true}],error:null});const q={select(){return q},eq(){return r()},then(a,b){return r().then(a,b)}};return q}}}}` }));
     } }],
   });
 });

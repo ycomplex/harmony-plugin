@@ -15,9 +15,23 @@
 //
 // Exit contract (every subcommand): 0 = go, stdout carries the answer; 1 = refuse, stdout EMPTY and
 // a "Refusing to start: …" line on stderr.
+//
+// B-1178: `provider` is the one subcommand that reads the board — the live model catalog, best-effort, to
+// say which provider serves an EXPLICITLY named model (inactive rows included). The launchers and
+// provision.sh call it; `render-provider` and `argv --provider` then stay offline. Its exit codes: 0 = the
+// model is known (stdout carries the answer); 1 = unknown model or no catalog (the caller treats the leg as
+// an OpenAI one, exactly as before B-1178); 2 = the row names a provider this build does not know (refuse).
 
 import { Command } from 'commander';
-import { getRunConfig, type RunConfig } from '../../config/run-config.js';
+import {
+  getRunConfig,
+  entryModelId,
+  entryProvider,
+  findModelEntry,
+  resolveModelCatalog,
+  type ModelCatalogEntry,
+  type RunConfig,
+} from '../../config/run-config.js';
 import {
   REFUSAL_PREFIX,
   buildLaunchCommand,
@@ -32,9 +46,11 @@ import {
   buildCodexThreadRecord,
   parseCodexThreadId,
   parseCodexThreadRecord,
+  resolveCodexCredential,
 } from '../../agents/codex.js';
+import { isDefaultCodexProvider, lookupCodexProvider, type CodexProvider } from '../../agents/codex-providers.js';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { MissingHookScriptError, provisionCodex } from '../../agents/codex-provision.js';
+import { MissingHookScriptError, provisionCodex, renderCodexProviderConfig } from '../../agents/codex-provision.js';
 import { getAuthenticatedContext } from '../auth.js';
 import { addComment } from '../../tools/comments.js';
 import { homedir } from 'node:os';
@@ -95,6 +111,71 @@ interface ArgvOpts {
   prompt: string;
   resume?: string;
   model?: string;
+  provider?: string;
+}
+
+/** B-1178: what `harmony agent provider` reports for one catalog row. Names only — never a value. */
+export interface OfferProvider {
+  agent: string;
+  model: string;
+  provider: string;
+  /** Null for the runtime's default provider (no key: the login cache / subscription). */
+  env_key: string | null;
+  secret: string | null;
+  base_url: string | null;
+  context_window_tokens: number | null;
+}
+
+/** B-1178: the provider facts for a resolved catalog row. `ok: false` when the row names a provider this
+ *  build's registry does not know (the caller refuses; never a silent default). */
+export function describeOfferProvider(
+  entry: ModelCatalogEntry,
+  agent: string,
+): { ok: true; value: OfferProvider } | { ok: false; error: string } {
+  const provider = entryProvider(entry);
+  const window = typeof entry.context_window_tokens === 'number' ? entry.context_window_tokens : null;
+  const base = { agent, model: entryModelId(entry), provider, context_window_tokens: window };
+  if (agent !== 'codex' || isDefaultCodexProvider(provider)) {
+    return { ok: true, value: { ...base, env_key: null, secret: null, base_url: null } };
+  }
+  const found = lookupCodexProvider(provider);
+  if (!found.ok) return { ok: false, error: `model '${base.model}': ${found.error}` };
+  return { ok: true, value: { ...base, env_key: found.provider.envKey, secret: found.provider.secretName, base_url: found.provider.baseUrl } };
+}
+
+const PROVIDER_FIELDS = ['provider', 'env-key', 'secret', 'context-window', 'base-url'] as const;
+type ProviderField = (typeof PROVIDER_FIELDS)[number];
+
+function providerField(v: OfferProvider, field: ProviderField): string {
+  switch (field) {
+    case 'provider':
+      return v.provider;
+    case 'env-key':
+      return v.env_key ?? '';
+    case 'secret':
+      return v.secret ?? '';
+    case 'context-window':
+      return v.context_window_tokens === null ? '' : String(v.context_window_tokens);
+    case 'base-url':
+      return v.base_url ?? '';
+  }
+}
+
+/** B-1178: best-effort authenticated client for the catalog read (null = the embedded fallback). */
+async function catalogClient() {
+  try {
+    return (await getAuthenticatedContext()).client;
+  } catch {
+    return null;
+  }
+}
+
+/** B-1178: a non-default provider name from a CLI flag, or null for the default; refuses an unknown one. */
+function providerOrRefuse(name: string | undefined): CodexProvider | null {
+  if (isDefaultCodexProvider(name)) return null;
+  const found = lookupCodexProvider(name as string);
+  if (!found.ok) refuse(found.error);
+  return found.provider;
 }
 
 export function registerAgentCommands(program: Command): void {
@@ -170,19 +251,26 @@ export function registerAgentCommands(program: Command): void {
         return;
       }
       const authFile = process.env[CODEX_AUTH_FILE_ENV];
-      if (!authFile) refuse(`${CODEX_AUTH_FILE_ENV} is not set.`);
+      // B-1178: a leg on a provider's API key has no login cache to install; any other missing path refuses
+      // exactly as before.
+      const providerKeyLeg = !authFile && (() => {
+        const v = resolveCodexCredential(process.env);
+        return v.ok && v.credential === 'api-key';
+      })();
+      if (!authFile && !providerKeyLeg) refuse(`${CODEX_AUTH_FILE_ENV} is not set.`);
       try {
         const r = provisionCodex({
           pluginDir: opts.pluginDir,
           workspaceDir: opts.workspace,
           codexHome: opts.codexHome || process.env.CODEX_HOME || join(homedir(), '.codex'),
-          authFile: authFile as string,
+          authFile: authFile || undefined,
           extraRepoPaths: opts.extraRepo,
         });
         // Paths and counts only — never the credential file's content.
         console.error(
           `harmony agent render: codex config ${r.configPath}; AGENTS.md ${r.agentsMdPath} (${r.agentsMdBytes} bytes from ` +
-            `${r.sources.join(', ')}); skills ${r.skillsLink}; login cache installed at ${r.authInstalledAt}`,
+            `${r.sources.join(', ')}); skills ${r.skillsLink}; ` +
+            (r.authInstalledAt ? `login cache installed at ${r.authInstalledAt}` : 'no login cache (a provider API-key leg)'),
         );
       } catch (err) {
         if (err instanceof MissingHookScriptError) await postMissingHookComment(err);
@@ -201,17 +289,96 @@ export function registerAgentCommands(program: Command): void {
     .requiredOption('--prompt <prompt>', 'The headless prompt')
     .option('--resume <session-id>', 'Resume this session id')
     .option('--model <alias>', 'Launch on this model alias')
+    .option('--provider <name>', "B-1178: the offer's model provider (from `agent provider`); a non-default one adds `-c model_provider=<name>`")
     .argument('[extra...]', 'Upstream flags, passed through in order (put them after `--`)')
     .action((extra: string[], opts: ArgvOpts) => {
       const adapter = adapterOrRefuse();
+      const provider = adapter.id === 'codex' ? providerOrRefuse(opts.provider || undefined) : null;
       const argv = buildLaunchCommand(adapter, {
         pluginDir: opts.pluginDir,
         prompt: opts.prompt,
         resumeSessionId: opts.resume || undefined,
         model: opts.model || undefined,
+        ...(provider ? { modelProvider: provider.name } : {}),
         extraFlags: extra ?? [],
       });
       process.stdout.write(encodeNulArgv(argv));
+    });
+
+  // --- B-1178: the offer's model provider ---------------------------------------------------------------
+
+  agent
+    .command('provider')
+    .description(
+      "B-1178: print the model provider that serves --model (the live catalog row, matched by its alias or model " +
+        "id; an inactive row still answers — the run named it). `openai` / `anthropic` when the row names none. " +
+        '--field prints one fact for the launchers; --json prints all of them (names only, never a value). Exit 1 ' +
+        'on an unknown model (or no reachable catalog), 2 on a provider this build does not know.',
+    )
+    .requiredOption('--model <model>', 'The model the leg runs on (catalog alias or model id)')
+    .option('--agent <id>', 'Agent runtime whose catalog rows to match', 'codex')
+    .option('--field <field>', `One of: ${PROVIDER_FIELDS.join(', ')}`, 'provider')
+    .option('--json', 'Print every fact as one JSON object')
+    .action(async (opts: { model: string; agent: string; field: string; json?: boolean }) => {
+      if (!(PROVIDER_FIELDS as readonly string[]).includes(opts.field)) {
+        console.error(`harmony agent provider: unknown --field '${opts.field}' — expected one of: ${PROVIDER_FIELDS.join(', ')}`);
+        process.exit(1);
+      }
+      const explicit = { includeInactive: true };
+      const { entries, source } = await resolveModelCatalog(await catalogClient(), explicit);
+      const entry = findModelEntry(opts.model, entries, opts.agent, explicit);
+      if (!entry) {
+        console.error(
+          `harmony agent provider: model '${opts.model}' is not in the ${source === 'live' ? 'live' : 'embedded fallback'} model catalog for runtime '${opts.agent}'`,
+        );
+        process.exit(1);
+      }
+      const described = describeOfferProvider(entry as ModelCatalogEntry, opts.agent);
+      if (!described.ok) {
+        console.error(`harmony agent provider: ${described.error}`);
+        process.exit(2);
+      }
+      const v = (described as { ok: true; value: OfferProvider }).value;
+      process.stdout.write(opts.json ? `${JSON.stringify(v)}\n` : `${providerField(v, opts.field as ProviderField)}\n`);
+    });
+
+  agent
+    .command('render-provider')
+    .description(
+      "B-1178: re-render the Codex config.toml for the leg's offer — the [model_providers.<name>] table and the " +
+        "model's context window for a non-OpenAI provider; for openai the plain config. Checks the credential for " +
+        'that provider first: its key must be mounted and the login cache must not be (names only). Exit 1 with ' +
+        '"Refusing to start: …" on any problem.',
+    )
+    .requiredOption('--plugin-dir <dir>', 'The plugin checkout')
+    .requiredOption('--provider <name>', "The offer's provider (from `agent provider`)")
+    .option('--context-window <tokens>', "The offer's context window in tokens (from `agent provider --field context-window`)")
+    .option('--codex-home <dir>', 'The worker CODEX_HOME (default: $CODEX_HOME or ~/.codex)')
+    .action((opts: { pluginDir: string; provider: string; contextWindow?: string; codexHome?: string }) => {
+      const adapter = adapterOrRefuse();
+      if (adapter.id !== 'codex') refuse(`${adapter.displayName} has no model-provider config.`);
+      const provider = providerOrRefuse(opts.provider);
+      const verdict = resolveCodexCredential(process.env, provider ? provider.name : 'openai');
+      if (!verdict.ok) refuse(`Codex: ${verdict.error}`);
+      let window: number | null = null;
+      if (opts.contextWindow !== undefined && opts.contextWindow !== '') {
+        if (!/^[1-9][0-9]*$/.test(opts.contextWindow)) refuse(`--context-window must be a positive integer, got '${opts.contextWindow}'.`);
+        window = Number(opts.contextWindow);
+      }
+      try {
+        const path = renderCodexProviderConfig({
+          pluginDir: opts.pluginDir,
+          codexHome: opts.codexHome || process.env.CODEX_HOME || join(homedir(), '.codex'),
+          provider,
+          contextWindowTokens: window,
+        });
+        console.error(
+          `harmony agent render-provider: codex config ${path} (provider ${provider ? provider.name : 'openai'}` +
+            `${provider && window !== null ? `, model_context_window ${window}` : ''})`,
+        );
+      } catch (err) {
+        refuse(`Codex provider config failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
     });
 
   // --- B-1148: the Codex thread file (resume + in-place model switch) ---------------------------------

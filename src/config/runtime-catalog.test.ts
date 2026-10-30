@@ -5,8 +5,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
+  entryProvider,
   fetchModelCatalog,
+  findModelEntry,
+  getModelContextBudgetBytes,
   getModelForGate,
+  resolveModelCatalog,
   getPinnedDefaultModel,
   isAllowedModelAlias,
   isMissingCatalogColumnError,
@@ -21,10 +25,13 @@ const PROD_ENV = { HARMONY_SUPABASE_URL: 'https://eioxsunvhakmelhanmnn.supabase.
 const STAGING_ENV = { HARMONY_SUPABASE_URL: 'https://meqkdgncdzromunylyxf.supabase.co' };
 
 /** A fake client whose successive `.select(cols)` calls each resolve to the next result, recording
- *  the selected column lists. */
+ *  the selected column lists and whether each read filtered to active rows (`.eq`) or — B-1178's
+ *  explicit-name read — was awaited with no filter. */
 function sequencedClient(results: Array<{ data: unknown; error: unknown }>) {
   const selects: string[] = [];
+  const filters: Array<'active' | 'none'> = [];
   let i = 0;
+  const next = () => Promise.resolve(results[Math.min(i++, results.length - 1)]);
   const client = {
     from: () => {
       const chain: Record<string, unknown> = {};
@@ -32,11 +39,18 @@ function sequencedClient(results: Array<{ data: unknown; error: unknown }>) {
         selects.push(cols);
         return chain;
       };
-      chain.eq = () => Promise.resolve(results[Math.min(i++, results.length - 1)]);
+      chain.eq = () => {
+        filters.push('active');
+        return next();
+      };
+      chain.then = (ok: (v: unknown) => unknown, bad: (e: unknown) => unknown) => {
+        filters.push('none');
+        return next().then(ok, bad);
+      };
       return chain;
     },
   } as unknown as SupabaseClient;
-  return { client, selects };
+  return { client, selects, filters };
 }
 
 const oldShapeRow = {
@@ -87,12 +101,14 @@ describe('B-1147 fetchModelCatalog tolerant read', () => {
     'falls back to the old column set on %s and labels every row claude-code with model_id = alias',
     async (code) => {
       const missing = { data: null, error: { code, message: 'column does not exist' } };
-      const { client, selects } = sequencedClient([missing, missing, { data: [oldShapeRow], error: null }]);
+      // B-1178: four rungs now — provider/context_window_tokens on top, then the three B-1147 rungs.
+      const { client, selects } = sequencedClient([missing, missing, missing, { data: [oldShapeRow], error: null }]);
       const rows = await fetchModelCatalog(client);
       expect(rows).toEqual([{ ...oldShapeRow, agent: 'claude-code', model_id: 'claude-opus-5' }]);
-      expect(selects).toHaveLength(3);
+      expect(selects).toHaveLength(4);
       expect(selects[0]).toMatch(/\bagent\b/);
-      expect(selects[2]).toBe('alias, label, context_budget_bytes, active, verified_at');
+      expect(selects[0]).toMatch(/\bprovider\b.*\bcontext_window_tokens\b/);
+      expect(selects[3]).toBe('alias, label, context_budget_bytes, active, verified_at');
     },
   );
 
@@ -262,12 +278,97 @@ describe('B-1185 catalog spelling equivalence', () => {
     for (const model of ['unknown', 'codex:unknown', 'claude-opus-5']) {
       expect(getModelForGate({ agent: { adapter: 'codex' }, model: { default: model } }, 'build', PROD_ENV, [codexRow, claudeRow])).toBe(model);
     }
+    // B-1178 (AC7) reverses B-1185 here: a run that NAMES an inactive offer still launches — inactive only
+    // hides it from lists and dialogs — so isAllowedModelAlias accepts it. Its normalization in
+    // getModelForGate (the daemon's active-only catalog) is unchanged above.
     const { client } = sequencedClient([{ data: [{ ...codexRow, active: false }], error: null }]);
-    await expect(isAllowedModelAlias(codexRow.alias, client, 'codex')).resolves.toBe(false);
+    await expect(isAllowedModelAlias(codexRow.alias, client, 'codex')).resolves.toBe(true);
   });
 
   it('preserves bare gpt-6-luna and explicit values without catalog data', () => {
     expect(getModelForGate({ agent: { adapter: 'codex' }, model: { default: 'gpt-6-luna' } }, 'build', PROD_ENV, [codexRow])).toBe('gpt-6-luna');
     expect(getModelForGate({ agent: { adapter: 'codex' }, model: { default: codexRow.alias } }, 'build', PROD_ENV)).toBe(codexRow.alias);
+  });
+});
+
+describe('B-1178 catalog: provider and context_window_tokens (a new top rung, then the existing ladder)', () => {
+  const providerRow: ModelCatalogEntry = { ...codexRow, alias: 'codex:or-x', model_id: 'or/x', provider: 'openrouter', context_window_tokens: 262144 };
+
+  it('selects provider and context_window_tokens on the top rung and keeps them on the rows', async () => {
+    const { client, selects, filters } = sequencedClient([{ data: [providerRow, claudeRow], error: null }]);
+    const rows = await fetchModelCatalog(client);
+    expect(selects).toEqual([
+      'alias, label, context_budget_bytes, active, verified_at, agent, model_id, underlying_model, capabilities, pinned_default_profiles, provider, context_window_tokens',
+    ]);
+    expect(filters).toEqual(['active']);
+    expect(rows?.[0]).toMatchObject({ provider: 'openrouter', context_window_tokens: 262144 });
+  });
+
+  it.each([
+    ['provider absent', 'column model_catalog.provider does not exist'],
+    ['context_window_tokens absent', 'column model_catalog.context_window_tokens does not exist'],
+    ['both absent', "Could not find the 'context_window_tokens' column of 'model_catalog' in the schema cache"],
+  ])('%s: falls through to the B-1147 rung unchanged (AC6)', async (_label, message) => {
+    const { client, selects } = sequencedClient([{ data: null, error: { code: '42703', message } }, { data: [codexRow], error: null }]);
+    const rows = await fetchModelCatalog(client);
+    expect(selects).toHaveLength(2);
+    expect(selects[1]).toBe('alias, label, context_budget_bytes, active, verified_at, agent, model_id, underlying_model, capabilities, pinned_default_profiles');
+    expect(rows).toEqual([codexRow]);
+    // no provider column on this project ⇒ the codex row reads as openai: the leg launches exactly as today
+    expect(entryProvider(rows![0])).toBe('openai');
+  });
+
+  it('entryProvider: a named provider wins; null, empty or absent default per runtime', () => {
+    expect(entryProvider(providerRow)).toBe('openrouter');
+    expect(entryProvider({ ...codexRow, provider: null })).toBe('openai');
+    expect(entryProvider({ ...codexRow, provider: '' })).toBe('openai');
+    expect(entryProvider(codexRow)).toBe('openai');
+    expect(entryProvider({ ...claudeRow, provider: null })).toBe('anthropic');
+    expect(entryProvider(oldShapeRow as ModelCatalogEntry)).toBe('anthropic');
+  });
+
+  it('a null context_window_tokens is carried as null (omit model_context_window)', async () => {
+    const { client } = sequencedClient([{ data: [{ ...providerRow, context_window_tokens: null }], error: null }]);
+    expect((await fetchModelCatalog(client))?.[0].context_window_tokens).toBeNull();
+  });
+});
+
+describe('B-1178 explicitly named inactive offers (AC7)', () => {
+  const inactive: ModelCatalogEntry = { ...codexRow, alias: 'codex:old', model_id: 'gpt-old', active: false, context_budget_bytes: 4321 };
+
+  it('includeInactive drops the active filter on every rung; the default read keeps it', async () => {
+    const a = sequencedClient([{ data: [codexRow], error: null }]);
+    await fetchModelCatalog(a.client);
+    expect(a.filters).toEqual(['active']);
+    const missing = { data: null, error: { code: '42703', message: 'column does not exist' } };
+    const b = sequencedClient([missing, missing, { data: [codexRow, inactive], error: null }]);
+    await resolveModelCatalog(b.client, { includeInactive: true });
+    expect(b.filters).toEqual(['none', 'none', 'none']);
+  });
+
+  it('findModelEntry matches an inactive row only in explicit-name mode', () => {
+    expect(findModelEntry('gpt-old', [codexRow, inactive], 'codex')).toBeUndefined();
+    expect(findModelEntry('gpt-old', [codexRow, inactive], 'codex', { includeInactive: true })).toBe(inactive);
+  });
+
+  it('isAllowedModelAlias and getModelContextBudgetBytes accept the named inactive row', async () => {
+    const one = sequencedClient([{ data: [codexRow, inactive], error: null }]);
+    await expect(isAllowedModelAlias('gpt-old', one.client, 'codex')).resolves.toBe(true);
+    expect(one.filters).toEqual(['none']);
+    const two = sequencedClient([{ data: [codexRow, inactive], error: null }]);
+    await expect(getModelContextBudgetBytes('gpt-old', two.client, 'codex')).resolves.toBe(4321);
+  });
+
+  it("runtime-validation accepts a run naming the inactive offer; its refusal lists active offers only", async () => {
+    const ok = sequencedClient([{ data: [codexRow, inactive], error: null }]);
+    await expect(assertRunConfigRuntime(ok.client, { agent: { adapter: 'codex' }, model: { default: 'gpt-old' } })).resolves.toBeUndefined();
+    const bad = sequencedClient([{ data: [codexRow, inactive], error: null }]);
+    const err = await assertRunConfigRuntime(bad.client, { agent: { adapter: 'codex' }, model: { default: 'nope' } }).catch((e: Error) => e.message);
+    expect(err).toContain('available models for \'codex\': gpt-6.1-sol');
+    expect(err).not.toContain('gpt-old');
+  });
+
+  it('the pinned default ignores an inactive row pinned for the profile (active-only)', () => {
+    expect(getPinnedDefaultModel('codex', 'prod', [{ ...inactive, pinned_default_profiles: ['prod'] }])).toBeNull();
   });
 });

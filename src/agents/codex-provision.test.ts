@@ -254,3 +254,78 @@ describe('harmony agent … against the Codex adapter (real CLI)', () => {
     expect(existsSync(join(ws, 'AGENTS.md'))).toBe(false);
   });
 });
+
+// --- B-1178: a provider-key leg, against the real built CLI --------------------------------------------------
+
+describe('B-1178 harmony agent … for a non-OpenAI offer (real CLI)', () => {
+  const codexEnv = (extra: Record<string, string> = {}) => ({ HARMONY_RUN_CONFIG_JSON: CODEX_RC, ...extra });
+  const KEY_VALUE = 'sk-or-must-never-be-printed-41ab';
+
+  it('check-credentials: a provider key alone is api-key; beside the login cache it REFUSES (AC5), naming both, echoing neither', () => {
+    const ok = cli(['agent', 'check-credentials'], codexEnv({ OPENROUTER_API_KEY: KEY_VALUE, HARMONY_CODEX_PROVIDER: 'openrouter' }));
+    expect(ok.status).toBe(0);
+    expect(ok.stdout.toString()).toBe('api-key\n');
+    const mixed = cli(['agent', 'check-credentials'], codexEnv({ OPENROUTER_API_KEY: KEY_VALUE, HARMONY_CODEX_AUTH_FILE: auth }));
+    expect(mixed.status).toBe(1);
+    expect(mixed.stderr).toContain('Refusing to start:');
+    expect(mixed.stderr).toContain('HARMONY_CODEX_AUTH_FILE');
+    expect(mixed.stderr).toContain('OPENROUTER_API_KEY');
+    expect(mixed.stderr).not.toContain(KEY_VALUE);
+  });
+
+  it('render on a provider key installs no login cache and says so', () => {
+    const r = cli(['agent', 'render', '--plugin-dir', plugin, '--workspace', ws, '--codex-home', home], codexEnv({ OPENROUTER_API_KEY: KEY_VALUE, HARMONY_CODEX_PROVIDER: 'openrouter' }));
+    expect(r.status).toBe(0);
+    expect(r.stderr).toContain('no login cache (a provider API-key leg)');
+    expect(r.stderr).not.toContain(KEY_VALUE);
+    expect(existsSync(join(home, 'auth.json'))).toBe(false);
+    expect(existsSync(join(ws, 'AGENTS.md'))).toBe(true);
+  });
+
+  it('render-provider writes the provider table and context window, never the key value', () => {
+    const r = cli(['agent', 'render-provider', '--plugin-dir', plugin, '--codex-home', home, '--provider', 'openrouter', '--context-window', '262144'], codexEnv({ OPENROUTER_API_KEY: KEY_VALUE }));
+    expect(r.status).toBe(0);
+    const config = readFileSync(join(home, 'config.toml'), 'utf8');
+    expect(config).toContain('[model_providers.openrouter]');
+    expect(config).toContain('env_key = "OPENROUTER_API_KEY"');
+    expect(config).toContain('model_context_window = 262144');
+    expect(config).not.toContain(KEY_VALUE);
+    expect(r.stderr).not.toContain(KEY_VALUE);
+  });
+
+  it('AC4: render-provider refuses when the provider key is not mounted, naming harmony-provider-<name>-key', () => {
+    const r = cli(['agent', 'render-provider', '--plugin-dir', plugin, '--codex-home', home, '--provider', 'openrouter'], codexEnv());
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('Refusing to start:');
+    expect(r.stderr).toContain('harmony-provider-openrouter-key');
+    expect(existsSync(join(home, 'config.toml'))).toBe(false);
+  });
+
+  it('AC5: render-provider refuses the login cache beside the provider key', () => {
+    const r = cli(['agent', 'render-provider', '--plugin-dir', plugin, '--codex-home', home, '--provider', 'openrouter'], codexEnv({ OPENROUTER_API_KEY: KEY_VALUE, HARMONY_CODEX_AUTH_FILE: auth }));
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('HARMONY_CODEX_AUTH_FILE');
+  });
+
+  it('render-provider refuses an unknown provider and a malformed context window', () => {
+    expect(cli(['agent', 'render-provider', '--plugin-dir', plugin, '--codex-home', home, '--provider', 'martian'], codexEnv()).stderr).toContain("'martian'");
+    const bad = cli(['agent', 'render-provider', '--plugin-dir', plugin, '--codex-home', home, '--provider', 'openrouter', '--context-window', '12k'], codexEnv({ OPENROUTER_API_KEY: KEY_VALUE }));
+    expect(bad.status).toBe(1);
+    expect(bad.stderr).toContain('--context-window');
+  });
+
+  it('AC3: argv --provider adds -c model_provider=<name> on exec and on exec resume; openai adds nothing', () => {
+    const base = ['agent', 'argv', '--plugin-dir', '/workspace/workspace/plugin', '--prompt', 'P', '--model', 'qwen/qwen-9'];
+    const cold = decodeNulArgv(cli([...base, '--provider', 'openrouter', '--'], codexEnv()).stdout.toString());
+    expect(cold.slice(-5)).toEqual(['-m', 'qwen/qwen-9', '-c', 'model_provider=openrouter', 'P']);
+    const resumed = decodeNulArgv(cli([...base, '--resume', 'thr-1', '--provider', 'openrouter', '--'], codexEnv()).stdout.toString());
+    expect(resumed.slice(0, 4)).toEqual(['codex', 'exec', 'resume', 'thr-1']);
+    expect(resumed.slice(-5)).toEqual(['-m', 'qwen/qwen-9', '-c', 'model_provider=openrouter', 'P']);
+    const openai = decodeNulArgv(cli([...base, '--provider', 'openai', '--'], codexEnv()).stdout.toString());
+    expect(openai).toEqual(decodeNulArgv(cli([...base, '--'], codexEnv()).stdout.toString()));
+    expect(openai).not.toContain('-c');
+    const unknown = cli([...base, '--provider', 'martian', '--'], codexEnv());
+    expect(unknown.status).toBe(1);
+    expect(unknown.stdout.length).toBe(0);
+  });
+});

@@ -62,6 +62,9 @@ export interface HeadlessInput {
   prompt: string;
   resumeSessionId?: string;
   model?: string;
+  /** B-1178: the catalog offer's model provider (src/agents/codex-providers.ts). Absent or the runtime's
+   *  default = no provider flag. Only the Codex adapter reads it. */
+  modelProvider?: string;
   /** Upstream-supplied flags (provision.sh's CLAUDE_HEADLESS_FLAGS), passed through in order. */
   extraFlags?: readonly string[];
 }

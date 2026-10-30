@@ -40,9 +40,13 @@ export async function assertRunConfigRuntime(
   }
   if (requested.length === 0) return;
 
-  const { entries } = await resolveModelCatalog(client);
-  const available = catalogEntriesForAgent(entries, adapter).map((entry) => entryModelId(entry));
-  const bad = [...new Set(requested.filter((model) => !findModelEntry(model, entries, adapter)))];
+  // B-1178: the run NAMES these models, so an inactive offer is still accepted (AC7); the "available"
+  // list in the refusal stays active-only, like every other list.
+  const { entries } = await resolveModelCatalog(client, { includeInactive: true });
+  const available = catalogEntriesForAgent(entries, adapter)
+    .filter((entry) => entry.active)
+    .map((entry) => entryModelId(entry));
+  const bad = [...new Set(requested.filter((model) => !findModelEntry(model, entries, adapter, { includeInactive: true })))];
   if (bad.length > 0) {
     throw new Error(
       `Model${bad.length > 1 ? 's' : ''} ${bad.map((m) => `'${m}'`).join(', ')} not available on runtime '${adapter}' — ` +

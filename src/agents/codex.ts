@@ -14,12 +14,20 @@
 // opens the file; no script in this repo reads, cats or logs it (codex-auth-file.test.ts pins that).
 // An API key (OPENAI_API_KEY / CODEX_API_KEY) beside it is refused, not preferred — no metered
 // fallback (B-934).
+//
+// B-1178: an offer whose catalog row names a NON-OpenAI provider (src/agents/codex-providers.ts) runs on
+// that provider's metered API key instead — `api-key`, from the provider's own env var (OPENROUTER_API_KEY,
+// …), mounted from the secret `harmony-provider-<name>-key`. The leg's provider reaches the auth seam as an
+// explicit argument or as HARMONY_CODEX_PROVIDER (a NAME the launcher sets); with neither it is inferred
+// from which credential env is present, and the login cache beside a provider key is a config error.
+// OpenAI offers keep the login-cache path above exactly (argv and config byte-identical).
 
 import { posix as path } from 'node:path';
 import type { AgentAdapter, CredentialResolution, HeadlessInput, McpConnection, SkillCapabilityProjection, TelemetryUsage } from './contract.js';
 import { PLUGIN_ROOT_PLACEHOLDER } from './contract.js';
 import { classProblems, forbiddenClasses, forbiddenTool, type CapabilityClass } from './capabilities.js';
 import { deriveCostRegime } from './credentials.js';
+import { CODEX_PROVIDERS, CODEX_PROVIDER_ENV_KEYS, isDefaultCodexProvider, lookupCodexProvider, type CodexProvider } from './codex-providers.js';
 import { absoluteResetTime, forcedRefusal, resetFromText, resetsInSeconds, type Refusal } from './refusal.js';
 
 // --- constants the scripts and tests share ------------------------------------------------------------
@@ -29,6 +37,11 @@ export const CODEX_AUTH_FILE_ENV = 'HARMONY_CODEX_AUTH_FILE';
 /** Credentials whose presence is a config error beside (or instead of) the login cache: metered
  *  and token credentials Codex would silently prefer over, or fall back to, the cache. */
 export const CODEX_REFUSED_CREDENTIAL_ENV: readonly string[] = ['OPENAI_API_KEY', 'CODEX_API_KEY', 'CODEX_ACCESS_TOKEN'];
+/** B-1178: the non-secret env var naming the leg's model provider, set by the launcher for a provider leg
+ *  (and for an OpenAI leg on a Cloud Run job that also binds a provider key). Never a credential. */
+export const CODEX_PROVIDER_ENV = 'HARMONY_CODEX_PROVIDER';
+/** B-1178: `-c model_provider=<name>` — a config override accepted by `exec` and `exec resume` alike. */
+export const CODEX_CONFIG_FLAG = '-c';
 
 /** Where the worker's Codex home lives (CODEX_HOME's default); sessions are mounted per conduction. */
 export const CODEX_HOME_DIR = '/home/worker/.codex';
@@ -92,7 +105,62 @@ const LOGIN_HOWTO =
   `On the conductor host run 'CODEX_HOME=~/.harmony/codex-automation codex login --device-auth' once, ` +
   `then mount that auth.json into the worker (container/README.md "Codex credential runbook").`;
 
-function resolveCodexCredential(env: Readonly<Record<string, string | undefined>>): CredentialResolution {
+/** B-1178: the Codex credential verdict for one leg. `provider` is the offer's provider (absent →
+ *  HARMONY_CODEX_PROVIDER → inferred from the env). `openai` is today's login-cache path exactly; any other
+ *  provider needs its own key and refuses the login cache or an OpenAI key beside it. Names only — never a
+ *  value — in every message. Never throws. */
+export function resolveCodexCredential(env: Readonly<Record<string, string | undefined>>, provider?: string): CredentialResolution {
+  let name = provider;
+  if (name === undefined && present(env, CODEX_PROVIDER_ENV)) name = env[CODEX_PROVIDER_ENV];
+  if (name === undefined) {
+    // No provider said: infer it from the credential env, and refuse an ambiguous one (B-934).
+    const keyed = CODEX_PROVIDERS.filter((p) => present(env, p.envKey));
+    if (keyed.length > 0 && present(env, CODEX_AUTH_FILE_ENV)) {
+      return {
+        ok: false,
+        error:
+          `${CODEX_AUTH_FILE_ENV} (the login cache) and ${keyed.map((p) => p.envKey).join(' and ')} are both set — one Codex leg runs on ` +
+          `the login cache OR one provider's API key, never both (B-934: no silent fallback between regimes). Mount only the ` +
+          `credential the run's offer needs.`,
+      };
+    }
+    if (keyed.length > 1) {
+      return {
+        ok: false,
+        error: `${keyed.map((p) => p.envKey).join(' and ')} are all set and the leg names no provider (${CODEX_PROVIDER_ENV}) — refusing to pick one.`,
+      };
+    }
+    name = keyed.length === 1 ? keyed[0].name : undefined;
+  }
+  if (isDefaultCodexProvider(name)) return resolveLoginCache(env);
+  const found = lookupCodexProvider(name as string);
+  if (!found.ok) return { ok: false, error: found.error };
+  return resolveProviderKey(env, found.provider);
+}
+
+function resolveProviderKey(env: Readonly<Record<string, string | undefined>>, p: CodexProvider): CredentialResolution {
+  const conflicting = [CODEX_AUTH_FILE_ENV, ...CODEX_REFUSED_CREDENTIAL_ENV].filter((n) => present(env, n));
+  if (conflicting.length > 0) {
+    // AC5: the login cache (or an OpenAI credential) beside a provider key is a config error.
+    return {
+      ok: false,
+      error:
+        `${conflicting.join(' and ')} ${conflicting.length > 1 ? 'are' : 'is'} set beside the ${p.displayName} key (${p.envKey}) — a ` +
+        `${p.name} leg runs on ${p.envKey} alone (B-934: no silent fallback between regimes). Unset ${conflicting.join(' and ')}.`,
+    };
+  }
+  if (!present(env, p.envKey)) {
+    return {
+      ok: false,
+      error:
+        `this leg runs a ${p.name} offer but ${p.envKey} is not set — mount the secret ${p.secretName} as ${p.envKey} ` +
+        `(container/README.md "Provider API key runbook").`,
+    };
+  }
+  return { ok: true, credential: 'api-key' };
+}
+
+function resolveLoginCache(env: Readonly<Record<string, string | undefined>>): CredentialResolution {
   const refused = CODEX_REFUSED_CREDENTIAL_ENV.filter((n) => present(env, n));
   if (refused.length > 0) {
     // Names only — never a value. B-934: an API key / access token beside the login cache is a config
@@ -123,6 +191,9 @@ export function codexPrompt(prompt: string): string {
   return m ? `$${m[1]}${prompt.slice(m[0].length)}` : prompt;
 }
 
+/** A provider name is a bare TOML key (it is spliced into `-c model_provider=<name>` and a table header). */
+const PROVIDER_NAME_RE = /^[a-z0-9][a-z0-9_-]*$/;
+
 function buildCodexArgv(input: HeadlessInput): string[] {
   const extra = [...(input.extraFlags ?? [])];
   const resume = input.resumeSessionId;
@@ -139,6 +210,13 @@ function buildCodexArgv(input: HeadlessInput): string[] {
     argv.push(CODEX_ADD_DIR_FLAG, input.pluginDir, CODEX_BYPASS_FLAG, CODEX_HOOK_TRUST_FLAG);
   }
   if (input.model) argv.push(CODEX_MODEL_FLAG, input.model);
+  // B-1178: a non-OpenAI offer names its provider beside -m on BOTH exec and exec resume, so an in-place
+  // switch on the same provider keeps it. Never a [profiles.*] table or --profile.
+  if (!isDefaultCodexProvider(input.modelProvider)) {
+    const name = input.modelProvider as string;
+    if (!PROVIDER_NAME_RE.test(name)) throw new Error(`invalid model provider name '${name}'`);
+    argv.push(CODEX_CONFIG_FLAG, `model_provider=${name}`);
+  }
   argv.push(...extra);
   argv.push(codexPrompt(input.prompt));
   return argv;
@@ -164,19 +242,28 @@ function tomlStringArray(a: readonly string[]): string {
 }
 
 /** Render the worker's Codex `config.toml` from the ONE canonical connection. `pluginRoot` resolves
- *  the `{pluginRoot}` placeholder (Codex's config has no variable expansion). */
+ *  the `{pluginRoot}` placeholder (Codex's config has no variable expansion).
+ *  B-1178: for a non-OpenAI `provider` it also writes `model_context_window` (when known) and a
+ *  `[model_providers.<name>]` table — the leg selects it with `-c model_provider=<name>`. For OpenAI (or
+ *  no provider) the output is byte-identical to before, and a context window is ignored. */
 export function renderCodexConfig(
   connection: McpConnection,
-  opts: { pluginRoot?: string } = {},
+  opts: { pluginRoot?: string; provider?: CodexProvider | null; contextWindowTokens?: number | null } = {},
 ): { fileName: string; content: string } {
   const root = opts.pluginRoot ?? CODEX_DEFAULT_PLUGIN_ROOT;
   const args = connection.args.map((a) => a.split(PLUGIN_ROOT_PLACEHOLDER).join(root));
+  const p = opts.provider ?? null;
+  const window = p && typeof opts.contextWindowTokens === 'number' && Number.isInteger(opts.contextWindowTokens) && opts.contextWindowTokens > 0
+    ? opts.contextWindowTokens
+    : null;
   const lines = [
     '# Generated by `harmony agent render` (B-1076) from the canonical MCP connection. Do not edit.',
     '# approval_policy never: an unattended worker must never wait on an approval UI.',
     'approval_policy = "never"',
     '# The aggregated AGENTS.md is larger than Codex\'s 32 KiB default, which TRUNCATES silently.',
     `project_doc_max_bytes = ${CODEX_PROJECT_DOC_MAX_BYTES}`,
+    // TOML: root keys must precede every table.
+    ...(window !== null ? [`# B-1178: the ${p!.name} offer's context window, from the model catalog.`, `model_context_window = ${window}`] : []),
     '',
     `[mcp_servers.${connection.name}]`,
     `command = ${tomlString(connection.command)}`,
@@ -189,6 +276,17 @@ export function renderCodexConfig(
     `env_vars = ${tomlStringArray(CODEX_MCP_ENV_VARS)}`,
     '',
   ];
+  if (p) {
+    lines.push(
+      `# B-1178: the ${p.displayName} provider; the key is read from ${p.envKey} (secret ${p.secretName}).`,
+      `[model_providers.${p.name}]`,
+      `name = ${tomlString(p.displayName)}`,
+      `base_url = ${tomlString(p.baseUrl)}`,
+      `env_key = ${tomlString(p.envKey)}`,
+      `wire_api = ${tomlString(p.wireApi)}`,
+      '',
+    );
+  }
   return { fileName: 'config.toml', content: lines.join('\n') };
 }
 
@@ -500,11 +598,13 @@ export const codexAdapter: AgentAdapter = {
   launch: { binary: 'codex', probeArgv: ['codex', '--version'] },
 
   // 2. auth — the login-cache file, addressed by a non-secret path variable. Plan-included (B-934).
+  //    B-1178: or a non-OpenAI provider's API key (metered, derived — never chosen). The api-key row names
+  //    the first registered provider's variable; each provider reads its own (src/agents/codex-providers.ts).
   auth: {
-    acceptedCredentials: ['login-cache'],
-    credentialEnv: { 'login-cache': CODEX_AUTH_FILE_ENV },
+    acceptedCredentials: ['login-cache', 'api-key'],
+    credentialEnv: { 'login-cache': CODEX_AUTH_FILE_ENV, 'api-key': CODEX_PROVIDERS[0].envKey },
     primaryCredential: 'login-cache',
-    resolveCredential: resolveCodexCredential,
+    resolveCredential: (env) => resolveCodexCredential(env),
   },
 
   // 3. headless — `codex exec --json --cd <root> … <prompt>`; exit 0 = the leg completed, any other
@@ -566,7 +666,9 @@ export const codexAdapter: AgentAdapter = {
       // B-1149: optional test hook (quota | rate-limit only), inert when unset.
       'HARMONY_TEST_FORCE_REFUSAL',
     ],
-    standingSecrets: ['HARMONY_API_TOKEN', CODEX_AUTH_FILE_ENV],
+    // B-1178: every registered provider's key is a standing secret too (bound to the job / pod, never
+    // forwarded through the per-leg allowlist).
+    standingSecrets: ['HARMONY_API_TOKEN', CODEX_AUTH_FILE_ENV, ...CODEX_PROVIDER_ENV_KEYS],
   },
 
   // 9. capabilities — Codex has subagents, but this adapter builds in the root thread (B-1076). Hooks ARE

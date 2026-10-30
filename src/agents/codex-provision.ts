@@ -13,7 +13,10 @@
 //                                    (+ B-1150: each skill's `forbid:` classes as prose rules)
 //   <workspace>/.agents/skills     — symlink to <plugin>/skills (Codex discovers .agents/skills)
 //   <codexHome>/auth.json          — copy-in of the mounted login cache (mode 0600), when it is not
-//                                    already at that path
+//                                    already at that path. B-1178: skipped for a provider-key leg (no
+//                                    login cache at all)
+// B-1178: `harmony agent render-provider` later re-renders <codexHome>/config.toml for a non-OpenAI offer
+// (renderCodexProviderConfig below): the provider table and the model's context window.
 // and excludes the two generated workspace paths from git status via .git/info/exclude.
 
 import {
@@ -37,6 +40,7 @@ import { join, resolve } from 'node:path';
 import { HARMONY_MCP_CONNECTION } from './contract.js';
 import { capabilitiesFromSkillMd, parseCapabilities, type CapabilityClass } from './capabilities.js';
 import { hookScriptPaths, renderCodexHooks } from './hooks.js';
+import type { CodexProvider } from './codex-providers.js';
 import {
   CODEX_AUTH_FILE_NAME,
   CODEX_SKILLS_LINK,
@@ -56,8 +60,9 @@ export interface CodexProvisionInput {
   workspaceDir: string;
   /** The worker's CODEX_HOME. */
   codexHome: string;
-  /** Path of the mounted login-cache file (HARMONY_CODEX_AUTH_FILE). */
-  authFile: string;
+  /** Path of the mounted login-cache file (HARMONY_CODEX_AUTH_FILE). B-1178: absent for a leg that runs on a
+   *  provider's API key — nothing is installed then. */
+  authFile?: string;
   /** Extra repo paths (HARMONY_REPOS_JSON's `.path`s), whose CLAUDE.md is appended after plugin's. */
   extraRepoPaths?: readonly string[];
 }
@@ -69,7 +74,8 @@ export interface CodexProvisionResult {
   agentsMdBytes: number;
   sources: string[];
   skillsLink: string;
-  authInstalledAt: string;
+  /** B-1178: null when the leg runs on a provider key (no login cache). */
+  authInstalledAt: string | null;
 }
 
 function isFile(p: string): boolean {
@@ -234,7 +240,7 @@ export function provisionCodex(input: CodexProvisionInput): CodexProvisionResult
   const skillsLink = linkSkills(workspaceDir, input.pluginDir);
   excludeFromGit(workspaceDir, ['AGENTS.md', '.agents/']);
 
-  const authInstalledAt = installAuth(input.authFile, codexHome);
+  const authInstalledAt = input.authFile === undefined ? null : installAuth(input.authFile, codexHome);
 
   return {
     configPath,
@@ -245,4 +251,25 @@ export function provisionCodex(input: CodexProvisionInput): CodexProvisionResult
     skillsLink,
     authInstalledAt,
   };
+}
+
+/** B-1178: re-render <codexHome>/config.toml for the leg's offer — the provider table and the model's
+ *  context window for a non-OpenAI provider; for OpenAI (provider null) exactly what provisionCodex wrote.
+ *  Touches nothing else (AGENTS.md, hooks and the skills link stay as rendered). */
+export function renderCodexProviderConfig(input: {
+  pluginDir: string;
+  codexHome: string;
+  provider: CodexProvider | null;
+  contextWindowTokens?: number | null;
+}): string {
+  const codexHome = resolve(input.codexHome);
+  mkdirSync(codexHome, { recursive: true });
+  const config = renderCodexConfig(HARMONY_MCP_CONNECTION, {
+    pluginRoot: resolve(input.pluginDir),
+    provider: input.provider,
+    contextWindowTokens: input.contextWindowTokens ?? null,
+  });
+  const configPath = join(codexHome, config.fileName);
+  writeFileSync(configPath, config.content, { mode: 0o644 });
+  return configPath;
 }

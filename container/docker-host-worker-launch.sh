@@ -50,7 +50,26 @@ CODEX_AUTH_CONTAINER_PATH="/home/worker/.codex-auth-src/auth.json"   # provision
 # run_config arrives as base64 JSON from the conductor (or raw JSON from a manual invocation): accept both.
 ADAPTER_PROBE="$(node -e 'let s=process.argv[1];try{JSON.parse(s)}catch{try{s=Buffer.from(s,"base64").toString("utf8")}catch{}}try{const a=JSON.parse(s).agent;process.stdout.write(a&&typeof a.adapter==="string"?a.adapter:"")}catch{}' "$RUN_CONFIG_JSON" 2>/dev/null || true)"
 if [ "$ADAPTER_PROBE" = "codex" ]; then CODEX_RUN=1; fi
+# B-1178: a Codex offer on a non-OpenAI model provider runs on that provider's API key instead of the login
+# cache. The key is ONE file per provider on this machine — ${HARMONY_PROVIDER_KEY_DIR:-~/.harmony/provider-keys}/<name>
+# — whose bytes go only into the private run.env shipped over ssh's stdin (never argv, never echoed).
+CODEX_PROVIDER="openai"
+CODEX_PROVIDER_ENV_KEY=""
+CODEX_PROVIDER_SECRET=""
+CODEX_PROVIDER_KEY_FILE=""
 if [ "$CODEX_RUN" = "1" ]; then
+  # shellcheck source=container/codex-provider-launch.sh
+  . "$(dirname "${BASH_SOURCE[0]}")/codex-provider-launch.sh"
+  codex_provider_context docker-host-worker-launch "$MODEL" "no host woken, no worker launched"
+fi
+if [ "$CODEX_RUN" = "1" ] && [ "$CODEX_PROVIDER" != "openai" ]; then
+  CODEX_PROVIDER_KEY_FILE="${HARMONY_PROVIDER_KEY_DIR:-$HOME/.harmony/provider-keys}/$CODEX_PROVIDER"
+  if [ ! -s "$CODEX_PROVIDER_KEY_FILE" ]; then
+    echo "docker-host-worker-launch: Refusing to start: this run's model is served by provider '$CODEX_PROVIDER' but its key file is missing or empty at $CODEX_PROVIDER_KEY_FILE (the value of secret $CODEX_PROVIDER_SECRET; container/README.md \"Provider API key runbook\") — no host woken, no worker launched" >&2
+    exit 1
+  fi
+fi
+if [ "$CODEX_RUN" = "1" ] && [ "$CODEX_PROVIDER" = "openai" ]; then
   # The login cache is minted ONCE on this machine (container/README.md "Codex credential runbook") and
   # only its existence is checked here — this script never opens, prints or hashes it.
   CODEX_AUTH_SRC="${HARMONY_CODEX_AUTH_SRC:-$HOME/.harmony/codex-automation/auth.json}"
@@ -61,6 +80,14 @@ if [ "$CODEX_RUN" = "1" ]; then
   for CODEX_REFUSED_VAR in OPENAI_API_KEY CODEX_API_KEY CODEX_ACCESS_TOKEN; do
     if [ -n "${!CODEX_REFUSED_VAR:-}" ]; then
       echo "docker-host-worker-launch: Refusing to start: $CODEX_REFUSED_VAR is set in the launcher's environment — a Codex leg runs on the plan-included login cache only (B-934: no metered fallback)" >&2
+      exit 1
+    fi
+  done
+fi
+if [ "$CODEX_RUN" = "1" ] && [ "$CODEX_PROVIDER" != "openai" ]; then
+  for CODEX_REFUSED_VAR in OPENAI_API_KEY CODEX_API_KEY CODEX_ACCESS_TOKEN; do
+    if [ -n "${!CODEX_REFUSED_VAR:-}" ]; then
+      echo "docker-host-worker-launch: Refusing to start: $CODEX_REFUSED_VAR is set in the launcher's environment — a $CODEX_PROVIDER leg runs on $CODEX_PROVIDER_ENV_KEY alone (B-934: no silent fallback between regimes)" >&2
       exit 1
     fi
   done
@@ -131,8 +158,11 @@ done
 # this is what removes it; removing it is also what tears down everything the leg started inside
 # its own engine. Best-effort and silent — it must never change this wrapper's exit code.
 CODEX_RM=""
-if [ "$CODEX_RUN" = "1" ]; then CODEX_RM=" \"$REMOTE_RUN/codex-auth.json\""; fi   # B-1076: the host copy of the login cache goes with the run
+if [ "$CODEX_RUN" = "1" ] && [ "$CODEX_PROVIDER" = "openai" ]; then CODEX_RM=" \"$REMOTE_RUN/codex-auth.json\""; fi   # B-1076: the host copy of the login cache goes with the run
+# B-1178: the local run.env copy that carries a provider key (step 4) never outlives the wrapper.
+PROVIDER_RUN_ENV="$RUN_DIR/run.env.provider"
 cleanup() {
+  rm -f "$PROVIDER_RUN_ENV"
   dh_ssh "rm -f \"$REMOTE_RUN/run.env\" \"$REMOTE_RUN/figma-access-token\" \"$REMOTE_RUN/figma-pat\"$CODEX_RM; docker rm $CONTAINER" </dev/null >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -158,7 +188,18 @@ FIGMA_MOUNTS=""
 CODEX_SESSIONS_MKDIR=""
 if [ "$CODEX_RUN" = "1" ]; then CODEX_SESSIONS_MKDIR="\"$REMOTE_RUN/codex-sessions\""; fi
 dh_ssh_setup /dev/null "umask 077; mkdir -p \"$REMOTE_RUN/projects\" \"$REMOTE_RUN/logs\" $CODEX_SESSIONS_MKDIR \"$DH_REMOTE_ROOT/.engine-volumes\" && chmod 700 \"$DH_REMOTE_ROOT\" \"$DH_REMOTE_ROOT/$TICKET\" \"$REMOTE_RUN\" && touch \"$DH_REMOTE_ROOT/.last-launch\" \"$DH_REMOTE_ROOT/.engine-volumes/$TICKET\""
-dh_ssh_setup "$ENV_FILE" "umask 077; cat > \"$REMOTE_RUN/run.env\""
+# B-1178: a provider leg's run.env additionally carries <ENV_KEY>=<the key file's bytes>, assembled in a
+# mode-600 local copy (stdin to stdin, never a variable or an argument), shipped the same way and removed.
+if [ -n "$CODEX_PROVIDER_KEY_FILE" ]; then
+  ( umask 077
+    { cat "$ENV_FILE"; printf '%s=' "$CODEX_PROVIDER_ENV_KEY"; tr -d '\r\n' < "$CODEX_PROVIDER_KEY_FILE"; printf '\n'; } > "$PROVIDER_RUN_ENV"
+  )
+  chmod 600 "$PROVIDER_RUN_ENV"
+  dh_ssh_setup "$PROVIDER_RUN_ENV" "umask 077; cat > \"$REMOTE_RUN/run.env\""
+  rm -f "$PROVIDER_RUN_ENV"
+else
+  dh_ssh_setup "$ENV_FILE" "umask 077; cat > \"$REMOTE_RUN/run.env\""
+fi
 if [ -n "$FIGMA_ACCESS_REF" ]; then
   FIGMA_TOKEN_DIR="$(mktemp -d)"
   if ! figma_read_tokens "$FIGMA_TOKEN_DIR"; then rm -rf "$FIGMA_TOKEN_DIR"; exit 1; fi
@@ -181,10 +222,14 @@ fi
 #     docs/codex-phase0-findings.md) and the image's chown step below hands the mount to `worker`.
 CODEX_MOUNTS=""
 CODEX_CHOWN=""
-if [ "$CODEX_RUN" = "1" ]; then
+if [ "$CODEX_RUN" = "1" ] && [ "$CODEX_PROVIDER" = "openai" ]; then
   dh_ssh_setup "$CODEX_AUTH_SRC" "umask 077; cat > \"$REMOTE_RUN/codex-auth.json\""
   CODEX_MOUNTS="-v \"$REMOTE_RUN/codex-sessions\":/home/worker/.codex/sessions -v \"$REMOTE_RUN/codex-auth.json\":$CODEX_AUTH_CONTAINER_PATH:ro -e HARMONY_CODEX_AUTH_FILE=$CODEX_AUTH_CONTAINER_PATH"
   CODEX_CHOWN="/r/codex-sessions /r/codex-auth.json"
+elif [ "$CODEX_RUN" = "1" ]; then
+  # B-1178: a provider leg — the sessions mount and the provider's NAME; its key rides run.env (step 4).
+  CODEX_MOUNTS="-v \"$REMOTE_RUN/codex-sessions\":/home/worker/.codex/sessions -e HARMONY_CODEX_PROVIDER=$CODEX_PROVIDER"
+  CODEX_CHOWN="/r/codex-sessions"
 fi
 
 # 4c. B-1149: forced-refusal test hook — optional, inert when unset; only the exact values quota|rate-limit

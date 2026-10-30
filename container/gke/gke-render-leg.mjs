@@ -52,6 +52,12 @@ export function renderLeg(e) {
     mounts.push({ name: 'codex-auth', mountPath: e.CODEX_DIR, readOnly: true });
     volumes.push({ name: 'codex-auth', secret: { secretName: e.CODEX_SECRET } });
   }
+  // B-1178: a Codex leg on a non-OpenAI provider gets that provider's key as ONE env var bound from its
+  // Secret (the Secret's key is the env var name) — named here, never valued.
+  const env = [];
+  if (e.PROVIDER_ENV_KEY && e.PROVIDER_SECRET) {
+    env.push({ name: e.PROVIDER_ENV_KEY, valueFrom: { secretKeyRef: { name: e.PROVIDER_SECRET, key: e.PROVIDER_ENV_KEY } } });
+  }
   if (e.FIGMA_SECRET) {
     mounts.push({ name: 'figma', mountPath: '/secrets/figma', readOnly: true });
     volumes.push({ name: 'figma', secret: { secretName: e.FIGMA_SECRET, defaultMode: 0o444, items: [{key:'access-token',path:'access-token'},{key:'pat',path:'pat'}] } });
@@ -101,6 +107,7 @@ export function renderLeg(e) {
             securityContext: { privileged: true },
             resources: { requests: { cpu: e.CPU, memory: e.MEM } },
             envFrom: [{ secretRef: { name: e.BASE_SECRET } }, { secretRef: { name: e.LEG_SECRET } }],
+            ...(env.length ? { env } : {}),
             volumeMounts: mounts,
           }],
           volumes,

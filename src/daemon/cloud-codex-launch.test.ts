@@ -63,6 +63,8 @@ function makeWorld(extra: Record<string, string> = {}): World {
     'echo "node $*" >> "$STUB_LOGS/node.log"',
     'case "$*" in',
     '  *"figma context"*) printf \'%s\' \'{"state":"disconnected"}\'; exit 0 ;;',
+    // B-1178: `harmony agent provider` (reached only when the plugin dir has a dist/ bundle).
+    '  *"agent provider"*) [ -n "${STUB_PROVIDER_JSON:-}" ] && printf \'%s\' "$STUB_PROVIDER_JSON"; exit "${STUB_PROVIDER_RC:-0}" ;;',
     '  *mint-installation-token.mjs*)',
     '    out=""; prev=""',
     '    for a in "$@"; do [ "$prev" = "--out" ] && out="$a"; prev="$a"; done',
@@ -196,5 +198,82 @@ describe.skipIf(!CAPABLE)('cloud-worker-launch.sh — the Codex adapter (B-1076,
   it('a metered variable does not touch a Claude run', () => {
     const w = makeWorld();
     expect(launch(w, SCRIPT, 'e30=', { OPENAI_API_KEY: 'sk-x' }).status).toBe(0);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// B-1178: a Codex offer on a non-OpenAI provider. The JOB must bind <ENV_KEY> from the secret
+// harmony-provider-<name>-key (valueFrom.secretKeyRef); absent ⇒ refusal naming the --update-secrets fix,
+// before anything is minted, updated or executed. The leg gets the provider's NAME, never the login cache.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+describe.skipIf(!CAPABLE)('cloud-worker-launch.sh — B-1178 provider API key legs (EXECUTED)', () => {
+  const OR = JSON.stringify({ agent: 'codex', model: 'some-model', provider: 'openrouter', env_key: 'OPENROUTER_API_KEY', secret: 'harmony-provider-openrouter-key', base_url: 'https://openrouter.ai/api/v1', context_window_tokens: null });
+  const OPENAI = JSON.stringify({ agent: 'codex', model: 'some-model', provider: 'openai', env_key: null, secret: null, base_url: null, context_window_tokens: null });
+  const jobDoc = (env: Array<Record<string, unknown>>, withCache = true) =>
+    JSON.stringify({
+      spec: { template: { spec: { template: { spec: {
+        containers: [{ image: 'x', env, volumeMounts: withCache ? [{ name: 'codex-auth', mountPath: '/home/worker/.codex-auth-src' }] : [] }],
+        volumes: withCache ? [{ name: 'codex-auth', secret: { secretName: 'harmony-codex-auth' } }] : [],
+      } } } } },
+    });
+  const BOUND = { name: 'OPENROUTER_API_KEY', valueFrom: { secretKeyRef: { name: 'harmony-provider-openrouter-key', key: 'latest' } } };
+  const withDist = (extra: Record<string, string> = {}) => {
+    const w = makeWorld(extra);
+    mkdirSync(join(w.dir, 'plugin', 'dist', 'bin'), { recursive: true });
+    writeFileSync(join(w.dir, 'plugin', 'dist', 'bin', 'harmony.js'), '// stub target\n');
+    return w;
+  };
+  const mutating = (w: World) => gcloudCalls(w).filter((c) => c[2] === 'update' || c[2] === 'execute');
+  const mintedHere = (w: World) => readFileSync(join(w.logs, 'node.log'), 'utf8').includes('mint-installation-token');
+
+  it('the job binds the key: the leg launches with HARMONY_CODEX_PROVIDER and no login-cache path', () => {
+    const w = withDist({ STUB_PROVIDER_JSON: OR, HARMONY_CODEX_PROVIDERS: 'openrouter', STUB_DESCRIBE_JSON: jobDoc([BOUND], false) });
+    const r = launch(w, SCRIPT, CODEX_RC);
+    expect(r.status, r.stderr).toBe(0);
+    expect(envFile(w)).toContain('HARMONY_CODEX_PROVIDER: "openrouter"');
+    expect(envFile(w)).not.toContain('HARMONY_CODEX_AUTH_FILE');
+    expect(envFile(w)).not.toContain('OPENROUTER_API_KEY');
+  });
+
+  it.each([
+    ['no env binding at all', []],
+    ['a literal value, not a secret ref', [{ name: 'OPENROUTER_API_KEY', value: 'x' }]],
+    ['bound from another secret', [{ name: 'OPENROUTER_API_KEY', valueFrom: { secretKeyRef: { name: 'some-other-secret', key: 'latest' } } }]],
+  ])('REFUSES when %s — naming the secret and the --update-secrets fix; nothing minted, updated or executed', (_l, env) => {
+    const w = withDist({ STUB_PROVIDER_JSON: OR, HARMONY_CODEX_PROVIDERS: 'openrouter', STUB_DESCRIBE_JSON: jobDoc(env as Array<Record<string, unknown>>) });
+    const r = launch(w, SCRIPT, CODEX_RC);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('cloud-worker-launch: Refusing to start:');
+    expect(r.stderr).toContain('harmony-provider-openrouter-key');
+    expect(r.stderr).toContain('--update-secrets=OPENROUTER_API_KEY=harmony-provider-openrouter-key:latest');
+    expect(r.stderr).not.toMatch(/value: 'x'|\bx\b"/);
+    expect(mutating(w)).toEqual([]);
+    expect(mintedHere(w)).toBe(false);
+  });
+
+  it('REFUSES a provider not in the providers list — before any gcloud call', () => {
+    const w = withDist({ STUB_PROVIDER_JSON: OR, STUB_DESCRIBE_JSON: jobDoc([BOUND]) });
+    const r = launch(w, SCRIPT, CODEX_RC);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("runs on provider 'openrouter', which is not in this conductor's providers list");
+    expect(r.stderr).toContain('.harmony/conductor.json');
+    expect(gcloudCalls(w)).toEqual([]);
+  });
+
+  it('an OpenAI Codex leg on a job that ALSO binds a provider key is told it is openai (its credential check then ignores the key)', () => {
+    const w = withDist({ STUB_PROVIDER_JSON: OPENAI, STUB_DESCRIBE_JSON: jobDoc([BOUND]) });
+    expect(launch(w, SCRIPT, CODEX_RC).status).toBe(0);
+    expect(envFile(w)).toContain('HARMONY_CODEX_AUTH_FILE: "/home/worker/.codex-auth-src/auth.json"');
+    expect(envFile(w)).toContain('HARMONY_CODEX_PROVIDER: "openai"');
+  });
+
+  it('AC2/AC6: an OpenAI Codex leg on a job binding no provider key launches exactly as before (same calls, same env file)', () => {
+    const before = makeWorld({ STUB_DESCRIBE_JSON: MOUNTED });
+    const after = withDist({ STUB_PROVIDER_JSON: OPENAI, STUB_DESCRIBE_JSON: MOUNTED });
+    expect(launch(before, SCRIPT, CODEX_RC).status).toBe(0);
+    expect(launch(after, SCRIPT, CODEX_RC).status).toBe(0);
+    expect(envFile(after)).toBe(envFile(before));
+    expect(gcloudCalls(after)).toEqual(gcloudCalls(before));
   });
 });

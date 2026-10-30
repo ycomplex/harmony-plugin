@@ -319,15 +319,15 @@ describe('B-892 harmony model resolve-gate — gate-boundary re-read of conducti
 // (or includes one the fallback list has never heard of) must be reflected exactly.
 // =================================================================================================
 
-/** Stands in for the one call shape fetchModelCatalog makes:
- *  `client.from('model_catalog').select(cols).eq('active', true)`. */
+/** Stands in for the two call shapes fetchModelCatalog makes:
+ *  `client.from('model_catalog').select(cols).eq('active', true)`, and — B-1178's explicit-name read —
+ *  `client.from('model_catalog').select(cols)` awaited directly (no active filter). */
 function fakeCatalogClient(result: { data: unknown; error: unknown } | 'throws'): SupabaseClient {
+  const settle = () => (result === 'throws' ? Promise.reject(new Error('transport exploded')) : Promise.resolve(result));
   const chain: Record<string, unknown> = {};
   chain.select = () => chain;
-  chain.eq = () => {
-    if (result === 'throws') return Promise.reject(new Error('transport exploded'));
-    return Promise.resolve(result);
-  };
+  chain.eq = () => settle();
+  chain.then = (ok: (v: unknown) => unknown, bad: (e: unknown) => unknown) => settle().then(ok, bad);
   return { from: () => chain } as unknown as SupabaseClient;
 }
 
@@ -504,5 +504,68 @@ describe('B-1185 runtime model normalization', () => {
       await run(['model', 'normalize', '--offered-only', '--agent', 'codex', model]);
       expect(logSpy).toHaveBeenLastCalledWith('');
     }
+  });
+});
+
+// =================================================================================================
+// B-1178: explicitly named inactive offers (AC7). A client that APPLIES the active filter the way
+// PostgREST does — `.eq('active', true)` returns only active rows, a bare awaited select returns all —
+// so the active-only paths are pinned against a catalog that actually holds an inactive row.
+// =================================================================================================
+
+function filteringCatalogClient(rows: Array<Record<string, unknown>>): SupabaseClient {
+  const chain: Record<string, unknown> = {};
+  chain.select = () => chain;
+  chain.eq = (col: string, val: unknown) => Promise.resolve({ data: rows.filter((r) => r[col] === val), error: null });
+  chain.then = (ok: (v: unknown) => unknown, bad: (e: unknown) => unknown) => Promise.resolve({ data: rows, error: null }).then(ok, bad);
+  return { from: () => chain } as unknown as SupabaseClient;
+}
+
+describe('B-1178 inactive offers: explicit names pass, lists and defaults stay active-only', () => {
+  const active = { alias: 'codex:gpt-6.1-sol', label: 'Sol', context_budget_bytes: 1000, active: true, verified_at: null, agent: 'codex', model_id: 'gpt-6.1-sol', pinned_default_profiles: [] };
+  const inactive = {
+    alias: 'codex:or-retired',
+    label: 'Retired',
+    context_budget_bytes: 5555,
+    active: false,
+    verified_at: null,
+    agent: 'codex',
+    model_id: 'or/retired',
+    provider: 'openrouter',
+    pinned_default_profiles: ['prod', 'staging'],
+  };
+  const stub = () =>
+    authMock.getAuthenticatedContext.mockResolvedValue({ client: filteringCatalogClient([active, inactive]), projectId: 'p', userId: 'u' });
+
+  it('check-alias accepts an inactive offer named explicitly', async () => {
+    stub();
+    await expect(run(['model', 'check-alias', '--agent', 'codex', 'or/retired'])).rejects.toThrow(ExitSentinel);
+    expect(logSpy).toHaveBeenCalledWith('true');
+    expect(exitSpy).toHaveBeenCalledWith(0);
+  });
+
+  it("context-budget weighs an inactive offer against its own row's budget", async () => {
+    stub();
+    await run(['model', 'context-budget', '--agent', 'codex', 'or/retired']);
+    expect(logSpy).toHaveBeenCalledWith('5555');
+  });
+
+  it('normalize --offered-only keeps an inactive offer the run named (so the worker launches on it)', async () => {
+    stub();
+    await run(['model', 'normalize', '--offered-only', '--agent', 'codex', 'codex:or-retired']);
+    expect(logSpy).toHaveBeenCalledWith('or/retired');
+  });
+
+  it('list-aliases prints active rows only — the inactive offer stays hidden', async () => {
+    stub();
+    await run(['model', 'list-aliases', '--agent', 'codex']);
+    expect(logSpy.mock.calls.map((c) => c[0])).toEqual(['gpt-6.1-sol']);
+  });
+
+  it('pinned-default never resolves to an inactive row, even one pinned for the profile', async () => {
+    vi.stubEnv('HARMONY_SUPABASE_URL', 'https://meqkdgncdzromunylyxf.supabase.co');
+    stub();
+    await run(['model', 'pinned-default', '--agent', 'codex']);
+    expect(logSpy).toHaveBeenCalledWith('');
   });
 });

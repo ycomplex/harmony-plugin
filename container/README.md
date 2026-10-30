@@ -1114,6 +1114,63 @@ gcloud run jobs update harmony-build-worker --region us-central1 \
 The cloud path is wired but has not run a live leg (`docs/codex-phase0-findings.md`, "Local-docker and
 cloud profiles").
 
+### Provider API key runbook (B-1178)
+
+A Codex offer whose `model_catalog` row names a non-OpenAI `provider` runs on **that provider's metered API
+key**, never the login cache (OpenAI offers keep the login cache exactly as above). One key per provider, kept
+in the Secret Manager secret **`harmony-provider-<name>-key`** and handed to the worker as the env var the
+registry names (`src/agents/codex-providers.ts`: `openrouter` → `OPENROUTER_API_KEY`, `deepseek` →
+`DEEPSEEK_API_KEY`). OpenRouter is the only provider mounted and proven; DeepSeek is registered only. Every
+command below names secrets; none prints a value. Run them as the project owner (`unset CLOUDSDK_CORE_ACCOUNT`).
+
+1. **Create the secret** from the key, typed at a silent prompt and piped in (never on a command line, never in
+   shell history, no trailing newline):
+
+   ```bash
+   read -rs KEY && printf '%s' "$KEY" | gcloud secrets create harmony-provider-openrouter-key --data-file=-; unset KEY
+   ```
+
+2. **gke** — sync it into the `harmony-legs` namespace as a Kubernetes Secret of the **same name** whose key is
+   the env var name, the way `container/gke/setup-cluster.sh`'s `sync_secret` does: the value goes only to a
+   mode-600 file in a private temp dir and through a pipe, and the rendered YAML is never printed:
+
+   ```bash
+   d="$(mktemp -d)" && chmod 700 "$d"
+   gcloud secrets versions access latest --secret=harmony-provider-openrouter-key > "$d/OPENROUTER_API_KEY"
+   kubectl -n harmony-legs create secret generic harmony-provider-openrouter-key \
+     --from-file=OPENROUTER_API_KEY="$d/OPENROUTER_API_KEY" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+   rm -rf "$d"
+   ```
+
+   Then re-apply `container/conductor/k8s/rbac-legs.yaml` (its `get` list names
+   `harmony-provider-openrouter-key`): the launcher checks the Secret exists before every provider leg and
+   refuses — no Job created — on Forbidden ("re-apply … rbac-legs.yaml") or NotFound ("secret … is missing").
+   The Job binds the key with `valueFrom.secretKeyRef`; no login cache is mounted.
+3. **Cloud Run** — let the worker runtime service account read it, and bind it on the job as an env var:
+
+   ```bash
+   gcloud secrets add-iam-policy-binding harmony-provider-openrouter-key \
+     --member=serviceAccount:harmony-worker@harmony-conductor.iam.gserviceaccount.com \
+     --role=roles/secretmanager.secretAccessor
+   gcloud run jobs update harmony-build-worker --region us-central1 \
+     --update-secrets=OPENROUTER_API_KEY=harmony-provider-openrouter-key:latest
+   ```
+
+   `--update-secrets`, never `--set-secrets` (see above). The launcher refuses a provider leg, no execution
+   started, when the job does not bind `OPENROUTER_API_KEY` from that secret, and prints this exact fix. The
+   binding reaches every execution of the job, so an OpenAI Codex leg on such a job is told it is an `openai`
+   one (`HARMONY_CODEX_PROVIDER`) and ignores the key.
+4. **docker-host** — put the key in a mode-600 file named after the provider on the conductor host:
+   `${HARMONY_PROVIDER_KEY_DIR:-~/.harmony/provider-keys}/openrouter`. The launcher refuses before waking the
+   host when it is missing; otherwise its bytes ride the private `run.env` over ssh's stdin (never argv, never
+   echoed) and are removed with the run.
+5. **Allow the provider**: add its name to `providers` in `.harmony/conductor.json` (top level, or a
+   `profiles.<name>` block — `docs/conductor-config.md`). A provider not listed is refused at launch.
+
+In the worker, `provision.sh` asks `harmony agent provider` for the leg's model, renders the provider table
+and context window into `~/.codex/config.toml` (`harmony agent render-provider`, which refuses a missing key or
+a login cache beside it) and passes `-c model_provider=<name>` on `codex exec` and `codex exec resume`.
+
 **Copy-in, not a read-write mount, and why.** It is unproven whether Codex rewrites `auth.json` when it
 refreshes the token, or whether refresh tokens rotate (single use). That needs a live plan login to
 establish (BLOCKED, `docs/codex-phase0-findings.md`). A copy is the safe default: a refresh inside a leg

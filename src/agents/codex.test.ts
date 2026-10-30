@@ -45,7 +45,8 @@ describe('1. launch', () => {
 describe('2. auth — login-cache file, never an API key', () => {
   const env = { [CODEX_AUTH_FILE_ENV]: '/home/worker/.codex/auth.json' };
   it('maps login-cache to a non-secret PATH variable and derives plan-included', () => {
-    expect(A.auth.acceptedCredentials).toEqual(['login-cache']);
+    // B-1178: api-key joins it for non-OpenAI provider offers (src/agents/codex-provider-leg.test.ts).
+    expect(A.auth.acceptedCredentials).toEqual(['login-cache', 'api-key']);
     expect(A.auth.credentialEnv['login-cache']).toBe('HARMONY_CODEX_AUTH_FILE');
     expect(deriveCostRegime('login-cache')).toBe('plan-included');
     expect(A.auth.resolveCredential(env)).toEqual({ ok: true, credential: 'login-cache' });
