@@ -1,6 +1,6 @@
 # Harmony Plugin for Claude Code
 
-> **Living · project · Tier 1** · verified against plugin 0.16.55 / web 34b7b3d on 2026-10-26 · **revise when:** versioning, the staging channel, a release rule or a plugin convention changes. Convention: harmony-workspace `docs/README.md` (B-1044).
+> **Living · project · Tier 1** · verified against plugin 0.16.76 / web 3ba820b on 2026-10-30 · **revise when:** versioning, the staging channel, a release rule or a plugin convention changes. Convention: harmony-workspace `docs/README.md` (B-1044).
 
 This is the Harmony plugin for Claude Code — an MCP server, CLI, and workflow skills for Harmony project management.
 
@@ -15,6 +15,7 @@ The `harmony` CLI provides the same functionality as the MCP server for direct t
 - **Conductor config (B-1170):** `harmony conductor config <migrate|doctor|sync>` — a project's conductor is configured by `.harmony/conductor.json` in its repo plus `~/.harmony/conductor-host.json`; reference in [`docs/conductor-config.md`](docs/conductor-config.md) **Conductor lifecycle (B-1171):** `harmony conductor <start|stop|restart|status>` — stop = no new launches (legs keep running, the next start adopts them), restart = stop + start + adopt, update = restart onto the channel's latest version; semantics, pre-flight and the nohup-to-launchd adoption sequence in [`docs/conductor-lifecycle.md`](docs/conductor-lifecycle.md)
 - **Remote conductor (B-1173):** a project's conductor can run as one pod on its own GKE cluster (`container/conductor/`), built per plugin version from `staging` and `prod`. `harmony conductor start|stop --remote` scales it from an operator machine; `status` reads the registry, so it works from any laptop holding a minimal host file; the web's Conductor panel shows it and its **Update** moves the Deployment to the channel's newest version tag (B-1172). Version tags are channel-qualified, `<version>-staging` / `<version>-prod` (B-1269), and the channel is the Deployment's `HARMONY_PLUGIN_POSTURE` (`prod` as shipped, `ack:staging` to track staging; B-1222). Merging builds an image; only an Update or restart deploys it. Setup, quotas and the ceiling: [`docs/remote-conductor-runbook.md`](docs/remote-conductor-runbook.md)
 - **Knowledge (v1.10):** `harmony knowledge …` carries the search, tag, definition, question, prose-index and source-value commands (`list --search`, `tag-release`, `publish-definition`, `questions`, `sync-prose`, `prose-sources`, `publish-values`, `source-inventory`, `compare-coverage`); `harmony record --scope product|deployment` scopes what a recorded walk writes (B-1275). Each contract is in `docs/` (index: [`docs/README.md`](docs/README.md))
+- **Figma (v1.11):** `harmony figma …` is a workspace's Figma connection: `connect` (`--claude-sign-in` makes a fresh sign-in in a throwaway pod, `--claude-credentials <file>` imports an isolated one; B-1314), `context` (alias `health`), `working-file resolve|validate|save` (the one file a design leg writes to; B-1325), `component [name]` (the saved library map; B-1321), and the leg-side `budget` and `install-worker`. `harmony design fingerprint take|compare` and `harmony design adopt-check` serve the design gate (B-1203, B-1320). Connections are off per environment until the founder enables them, and the hourly refresh job, never the CLI, refreshes a grant. Rollout: [`docs/figma-connection-rollout.md`](docs/figma-connection-rollout.md); a brief's design artefact: [`docs/design-artefact-contract.md`](docs/design-artefact-contract.md)
 - **Conductor logs (B-1174):** `harmony conductor logs --since <1h|30m|2d> [--source local|cloud] [--limit n]` reads the conductor's JSON-lines log (`~/.harmony/logs/conductor.log`) or Cloud Logging; setup and the `gcloud logging read` query are in [`docs/conductor-config.md`](docs/conductor-config.md#conductor-logs-b-1174)
 
 ### Quick start
@@ -199,7 +200,7 @@ harmony-plugin/
 ├── .mcp.json                    # MCP server config (stdio)
 ├── .harmony/                     # this repo's Harmony settings: project.yml (release steps), version-floor (B-1211), prose-sources.json (B-1240)
 ├── hooks/hooks.json             # SessionStart: auto-install + build, link-cli (harmony on PATH)
-├── container/                   # worker images, the cloud and gke launch scripts, the conductor pod (container/conductor/)
+├── container/                   # worker images, the cloud and gke launch scripts, the conductor pod (container/conductor/), the Figma refresh image (container/figma/)
 ├── docs/                        # contracts and operator guides: conductor config, lifecycle, remote runbook, the knowledge contracts
 ├── .github/workflows/           # ci.yml (PR gate + staging generation), prose-index.yml (re-indexes skills/ and docs/ on every push to main; skips with a warning without the `HARMONY_PROSE_INDEX_TOKEN` secret), skill-eval.yml
 ├── skills/                      # Workflow skills

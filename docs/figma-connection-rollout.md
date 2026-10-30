@@ -1,5 +1,7 @@
 # Workspace Figma: founder rollout (B-1201)
 
+> **Living · project · Tier 2** · verified against plugin 0.16.76 / web 3ba820b on 2026-10-30 · **revise when:** the connection switch, a Figma identity or secret slot, the refresh image's build or CronJobs, or the enable gate's proofs change. Convention: harmony-workspace `docs/README.md` (B-1044).
+
 Nothing here authorizes a promote, IAM change or cluster apply by a worker. Use placeholders for
 identifiers; never paste credentials into board comments. Run **staging first**, prove it, then prod.
 Keep the CronJob suspended and workspace connections disabled until prerequisites are complete.
@@ -59,9 +61,11 @@ Never probe, copy or refresh the shared spike secret `harmony-figma-mcp-auth`.
 
 ### Availability and evidence
 
-Per the founder's 2026-10-27 operator record, connections are **ON for staging only, OFF on prod**.
-The default-off mechanism below remains authoritative for a new environment. This records the
-founder's staging action, not a claim that the remaining rollout proofs passed. B-1314 releases on
+Read the switch's state live, never from a dated record: `harmony figma context` (the board's
+`figma_launch_context`) reports `connections_enabled` and `state` for the project it runs against.
+On 2026-10-30 the prod board read `connected`. The default-off mechanism below remains
+authoritative for a new environment. A `connected` reading is not a claim that the remaining
+rollout proofs passed. B-1314 releases on
 automated evidence; the founder performs the fresh disposable import/save/scheduled-refresh walk
 after merge as B-1201 proof (a). A one-off disposable refresh probe is not that end-to-end proof.
 
@@ -104,11 +108,11 @@ Record environment, proof outcomes and enabling time on B-1201. Do not unsuspend
 
 1. Create `harmony-figma-connect@harmony-conductor.iam.gserviceaccount.com`:
    `gcloud iam service-accounts create harmony-figma-connect --project harmony-conductor`.
-   Resolve `<PROJECT_NUMBER>` with `gcloud projects describe harmony-conductor --format='value(projectNumber)'`.
-   Bind `roles/secretmanager.secretVersionAdder` on the project with a condition
-   `resource.name.startsWith('projects/<PROJECT_NUMBER>/secrets/harmony-figma-ws-')`.
-   Use `gcloud projects add-iam-policy-binding harmony-conductor --member serviceAccount:<CONNECT_GSA>
-   --role roles/secretmanager.secretVersionAdder --condition <PREFIX_CONDITION>`.
+   Bind `roles/secretmanager.secretVersionAdder` on **each workspace slot**, not on the project, once step 2
+   has created it: `gcloud secrets add-iam-policy-binding <SLOT> --project harmony-conductor
+   --member serviceAccount:<CONNECT_GSA> --role roles/secretmanager.secretVersionAdder` for each of `-grant`,
+   `-pat` and `-access`. That is Harmony's live shape (read 2026-10-30): every slot carries the binding, and
+   the account has no project-level role.
    **No secretAccessor, secrets.create, Secret Manager Admin, Editor or IAM mutation permission.**
 2. Provision the v1.11 slots for each workspace with `gcloud secrets create <NAME> --replication-policy automatic`:
    `harmony-figma-ws-<workspace-uuid>-grant`, `-pat`, `-access`. Customers never do this.
@@ -147,9 +151,10 @@ Record environment, proof outcomes and enabling time on B-1201. Do not unsuspend
 
    1. Confirm the live image:
       `kubectl -n harmony-conductor get cronjob harmony-figma-refresh harmony-figma-refresh-prod -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.jobTemplate.spec.template.spec.containers[0].image}{"\n"}{end}'`.
-      The part before `@sha256:` is the repository. On 2026-10-29 both jobs showed
-      `us-central1-docker.pkg.dev/harmony-conductor/harmony-workers/harmony-figma-refresh@sha256:a0ec5db1…` (built from
-      prod 0.16.72), so the build's default `_IMAGE` is correct; override it only if this read ever differs.
+      The part before `@sha256:` is the repository. On 2026-10-30 both jobs had been repinned automatically by
+      their builds, to the `us-central1-docker.pkg.dev/harmony-conductor/harmony-workers/harmony-figma-refresh` digests
+      tagged `0.16.76-staging` and `0.16.76-prod`, so the build's default `_IMAGE` is correct; override it only if
+      this read ever differs.
    2. Create the dedicated build identity and give it only what the build needs:
       `gcloud iam service-accounts create harmony-figma-refresh-build --project harmony-conductor`, then
       - `gcloud projects add-iam-policy-binding harmony-conductor --member serviceAccount:harmony-figma-refresh-build@harmony-conductor.iam.gserviceaccount.com --role roles/logging.logWriter`
@@ -249,7 +254,7 @@ View/Collab or Starter is about 20/month. Library components are cached; only ow
 
 
 Library lifecycle, founder UX revision (2026-10-27): Settings displays the library read-only and says
-to change it with `harmony figma connect` (validated replacement). Save metadata changes only
+to change it with `harmony figma connect` (validated replacement). Save component map changes only
 component-name → repository-path mappings; Refresh library queues a re-read of the saved file by the
 refresher. No unvalidated library can be saved in Settings.
 
