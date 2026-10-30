@@ -261,9 +261,9 @@ when read directly (§2) — the subscriber exists precisely so you never have t
   run, background — they are not this watch's job. **A poll must not swallow its probe's errors.**
   Run the probe command once in the foreground and read its output before backgrounding it; never
   send its stderr to `/dev/null`; on a non-zero exit, print the error and exit; print a line per
-  stage (CI done, staging run found, deploy done) as each is reached; and give the loop a timeout.
+  stage (CI done, deploy run found, deploy done) as each is reached; and give the loop a timeout.
   A poll whose `--jq` filter was malformed failed on every pass with its stderr discarded, so it
-  printed nothing for twenty minutes after prod had finished — silence that looks exactly like
+  printed nothing for twenty minutes after the deploy had finished — silence that looks exactly like
   "still waiting" (2026-10-30).
 - **After a resolve, expect the wake within a couple of seconds**, not a minute — a wake that
   doesn't come is worth one manual re-read of the row and the pending-event marker before
