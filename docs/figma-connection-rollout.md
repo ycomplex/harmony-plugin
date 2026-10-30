@@ -63,9 +63,13 @@ Never probe, copy or refresh the shared spike secret `harmony-figma-mcp-auth`.
 
 Read the switch's state live, never from a dated record: `harmony figma context` (the board's
 `figma_launch_context`) reports `connections_enabled` and `state` for the project it runs against.
-On 2026-10-30 the prod board read `connected`. The default-off mechanism below remains
-authoritative for a new environment. A `connected` reading is not a claim that the remaining
-rollout proofs passed. B-1314 releases on
+On 2026-10-30 the prod board read `connected`.
+
+**Production was enabled by the founder on 2026-10-29, deliberately, before the enable gate below
+had fully passed.** The ledger at the end records what was proven, in use and by test, and what was
+not. **Figma connections require the gke launch profile** (founder, 2026-10-30): the Cloud Run and
+Docker-host launchers are out of scope for Figma, and their mount proofs are no longer owed. The
+default-off mechanism below remains authoritative for a new environment. B-1314 releases on
 automated evidence; the founder performs the fresh disposable import/save/scheduled-refresh walk
 after merge as B-1201 proof (a). A one-off disposable refresh probe is not that end-to-end proof.
 
@@ -76,7 +80,8 @@ enable production connections. The designer guide update follows the plugin and 
 
 ## Default-off switch and mandatory enable gate
 
-This release is DARK by founder decision (2026-10-27). The database switch is
+This release shipped DARK by founder decision (2026-10-27); production was enabled on 2026-10-29
+(*Availability and evidence* above). The database switch is
 `private.figma_rollout.connections_enabled`, seeded **false**, with no client write privileges.
 `figma_connections_enabled()` is the shared availability check. Off or unavailable means the UI
 has no connect controls; the CLI refuses before OAuth; the handler refuses before credential validation
@@ -92,8 +97,10 @@ Existing running legs may retain tokens; disabling prevents new launches, not re
 
 The enable gate is, in order: staging setup below; (a) disposable-grant rotation through the real
 refresher with crash/ambiguity and grant-before-access proof; (b) add-only allowed-prefix and denied
-read/create/outside-prefix checks; (c) actual GKE, Cloud Run and Docker-host token-only mounts,
-existing bindings, cleanup, disconnect and generation races. **All three are UNRUN at release.**
+read/create/outside-prefix checks; (c) the actual GKE token-only mount, existing bindings, cleanup,
+disconnect and generation races (Cloud Run and Docker-host are out of scope for Figma since
+2026-10-30). **All three were UNRUN at release**; production's enable on 2026-10-29 preceded them,
+by founder decision, and the ledger below records the evidence since.
 Use an isolated staging validation environment and disposable workspace/credentials for the candidate
 proofs, never a customer connection or the working spike grant. A founder may exercise the candidate
 on that isolated validation database; leave the deployed staging/production switch false until all
@@ -239,12 +246,16 @@ ambiguous standalone names go to `library_ambiguous`, which is never part of the
 - Claude static header: operator PASS, Code 2.1.310; fresh profile, exactly one whoami; bogus header rejected 401.
   Image `node:22-bookworm@sha256:63538dfe497cc29dfafdda25ada09b46db68a3f4cc205abf1f5d6bf0913f3384`.
 - Codex bearer: operator PASS on 0.164.0, same identity; image digest **not captured**. Not rerun due B-1306 shared login rotation.
-- Disposable OAuth rotation against this refresher: **unrun**. Never refresh the working spike grant as a probe.
+- Disposable OAuth rotation against this refresher: **unrun** as specified. Never refresh the working spike grant as a probe.
   Prove exactly one claim/POST, rotated full grant stored before access version, and timeout/crash fail-closed.
-- Handler add-only IAM: **unrun**. Prove allowed-prefix add and denied read/create/outside-prefix add.
-- GKE actual token-only mount and disconnect/generation race: **unrun**.
-- Cloud Run actual token-only mount and preserved pre-existing secret bindings: **unrun**.
-- Docker-host actual token-only read-only mount and cleanup: **unrun**.
+  In use: the real path works. B-1314 was Verified 2026-10-28 (an imported Claude Code sign-in plus this refresher), and
+  the hourly CronJobs have refreshed both boards since. The crash, timeout and ambiguity cases were never exercised.
+- Handler add-only IAM: **unrun** as a refusal test. Prove allowed-prefix add and denied read/create/outside-prefix add.
+  Shape read 2026-10-30: the connect account holds only `secretVersionAdder`, bound on each slot, with no project role.
+- GKE actual token-only mount: **works in use**. Every gke design leg on 2026-10-30 read Figma from `/secrets/figma`,
+  B-1328's adopt check included. The disconnect and generation race: **unrun**.
+- Cloud Run and Docker-host token-only mounts: **out of scope** (founder, 2026-10-30: Figma requires the gke launch
+  profile). The Cloud Run worker account has no accessor on the slots, so a `cloud` leg cannot mount them.
 
 Per-leg budgets live with persisted transcripts. Every MCP attempt reserves before calling, retries count,
 Retry-After is honored fully (bounded exponential fallback if absent), and persistent throttle files an
