@@ -9,6 +9,12 @@
 // undefined-column error. That is the EXPECTED shape until then, and it degrades to "no row price"
 // (one stderr warning line), never to a throw and never to a zero. The same holds for any other
 // failure: this read is best-effort, and `harmony leg-cost record` writes its row regardless.
+//
+// The price read deliberately includes INACTIVE rows: a row's price is a fact of the row regardless
+// of activation, and an explicitly named inactive offer can still launch a leg (B-1179 — the
+// OpenRouter offers run bake-off legs while still seeded active=false). matchRow's single-match rule
+// still guards duplicates across active and inactive rows alike. The activation-scoped reads
+// (list-aliases, the pinned defaults) live in src/config/run-config.ts and are unaffected.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { DEFAULT_AGENT_ADAPTER, isMissingCatalogColumnError } from '../config/run-config.js';
@@ -60,8 +66,10 @@ function matchRow(rows: readonly PricedCatalogRow[], model: string, runtime: str
 
 /** The catalog price of `model` on `runtime` (null runtime = 'claude-code'), or null when the
  *  catalog cannot say: no client, no model, a read error (a missing price column included), no
- *  single matching active row, or a row with any of its three prices unset. A null tells the caller
- *  to fall back to the in-code tables. NEVER THROWS. */
+ *  single matching row, or a row with any of its three prices unset. A null tells the caller to fall
+ *  back to the in-code tables. The read deliberately includes inactive rows, because an explicitly
+ *  named inactive offer can still launch (B-1179); activation-scoped reads such as list-aliases and
+ *  the pinned defaults are in run-config.ts and unaffected. NEVER THROWS. */
 export async function fetchCatalogPrice(
   client: SupabaseClient | null | undefined,
   model: string | null | undefined,
@@ -71,8 +79,7 @@ export async function fetchCatalogPrice(
   try {
     const { data, error } = (await client
       .from('model_catalog')
-      .select('alias, model_id, agent, input_usd_per_mtok, cached_input_usd_per_mtok, output_usd_per_mtok')
-      .eq('active', true)) as { data: unknown; error: { code?: string; message?: string } | null };
+      .select('alias, model_id, agent, input_usd_per_mtok, cached_input_usd_per_mtok, output_usd_per_mtok')) as { data: unknown; error: { code?: string; message?: string } | null };
     if (error) {
       warn(
         isMissingCatalogColumnError(error)

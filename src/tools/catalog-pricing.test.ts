@@ -6,7 +6,8 @@ import { fetchCatalogPrice } from './catalog-pricing.js';
 
 type Row = Record<string, unknown>;
 
-/** A hand-rolled client: `.from().select().eq()` resolves `{ data, error }`. Records what was asked. */
+/** A hand-rolled client: `.from().select()` resolves `{ data, error }` directly. Records what was
+ *  asked — including any `.eq()` filter, so a test can prove none (no active filter) was applied. */
 function fakeClient(result: { data: Row[] | null; error: unknown }) {
   const calls: { table?: string; columns?: string; eq?: [string, unknown] } = {};
   const client = {
@@ -15,12 +16,12 @@ function fakeClient(result: { data: Row[] | null; error: unknown }) {
       return {
         select(columns: string) {
           calls.columns = columns;
-          return {
+          return Object.assign(Promise.resolve(result), {
             eq(col: string, val: unknown) {
               calls.eq = [col, val];
               return Promise.resolve(result);
             },
-          };
+          });
         },
       };
     },
@@ -45,7 +46,7 @@ afterEach(() => {
 });
 
 describe('fetchCatalogPrice — row matching', () => {
-  it('reads active model_catalog rows with the three price columns, and prices an EXACT alias match', async () => {
+  it('reads model_catalog rows with the three price columns, and prices an EXACT alias match', async () => {
     const { client, calls } = fakeClient({
       data: [priced({ alias: 'claude-opus-5-5', model_id: 'claude-opus-5-5' }), priced({ alias: 'opus', model_id: 'opus', input_usd_per_mtok: 5 })],
       error: null,
@@ -57,8 +58,35 @@ describe('fetchCatalogPrice — row matching', () => {
     });
     expect(calls.table).toBe('model_catalog');
     expect(calls.columns).toBe('alias, model_id, agent, input_usd_per_mtok, cached_input_usd_per_mtok, output_usd_per_mtok');
-    expect(calls.eq).toEqual(['active', true]);
+    // B-1179: no activation filter on the price read.
+    expect(calls.eq).toBeUndefined();
     expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  it('prices a leg from an INACTIVE row — an explicitly named inactive offer still launches (B-1179)', async () => {
+    const row = {
+      agent: 'codex',
+      alias: 'codex:openrouter-offer',
+      model_id: 'openrouter/vendor/some-model',
+      active: false,
+      input_usd_per_mtok: 0.6,
+      cached_input_usd_per_mtok: 0.06,
+      output_usd_per_mtok: 2.4,
+    };
+    const want = { input_per_mtok: 0.6, cached_input_per_mtok: 0.06, output_per_mtok: 2.4 };
+    const byAlias = fakeClient({ data: [row], error: null });
+    expect(await fetchCatalogPrice(byAlias.client, 'codex:openrouter-offer', 'codex')).toEqual(want);
+    expect(byAlias.calls.eq).toBeUndefined();
+    expect(await fetchCatalogPrice(fakeClient({ data: [row], error: null }).client, 'openrouter/vendor/some-model', 'codex')).toEqual(want);
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
+
+  it('an inactive and an active row sharing a model_id are two matches — null, never a guess', async () => {
+    const data = [
+      { agent: 'codex', alias: 'codex:offer-old', model_id: 'shared/model', active: false, input_usd_per_mtok: 1, cached_input_usd_per_mtok: 0.1, output_usd_per_mtok: 2 },
+      { agent: 'codex', alias: 'codex:offer-new', model_id: 'shared/model', active: true, input_usd_per_mtok: 3, cached_input_usd_per_mtok: 0.3, output_usd_per_mtok: 6 },
+    ];
+    expect(await fetchCatalogPrice(fakeClient({ data, error: null }).client, 'shared/model', 'codex')).toBeNull();
   });
 
   it('matches by model_id with an optional, case-insensitive codex: prefix', async () => {
