@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   insertConduction: vi.fn(),
   reviveParkedTicketIfNeeded: vi.fn(),
   getProjectConductionDefaults: vi.fn(),
+  getWorkspaceModelPolicy: vi.fn(),
 }));
 
 vi.mock('./resolve-task-id.js', () => ({ resolveTaskId: mocks.resolveTaskId }));
@@ -43,6 +44,11 @@ vi.mock('../config/conduction-defaults.js', async (importOriginal) => {
     getProjectConductionDefaults: mocks.getProjectConductionDefaults,
   };
 });
+
+// B-1346: the workspace model-policy read is covered by model-policy.test.ts; here it is mocked
+// (defaults to no policy = unrestricted) so the fake client is never queried for it, while the REAL
+// assertRunConfigPolicy runs against the fallback catalog.
+vi.mock('../config/model-policy.js', () => ({ getWorkspaceModelPolicy: mocks.getWorkspaceModelPolicy }));
 
 // B-1274: the unpark-inheritance read is covered by unpark-inheritance.test.ts; here it is a
 // passthrough so these suites' fake clients are never queried.
@@ -71,6 +77,7 @@ beforeEach(() => {
   // about the revive path at all.
   mocks.reviveParkedTicketIfNeeded.mockResolvedValue(undefined);
   mocks.getProjectConductionDefaults.mockResolvedValue({});
+  mocks.getWorkspaceModelPolicy.mockResolvedValue({ allowed: [] });
 });
 
 describe('createConduction (create_conduction MCP tool handler)', () => {
@@ -365,5 +372,16 @@ describe('createConduction runtime guard (B-1147)', () => {
     await expect(createConduction(client, 'proj-1', 'user-1', { task_id: 'B-1' })).rejects.toThrow(
       /Unknown agent runtime 'gemini'/,
     );
+  });
+});
+
+describe('createConduction — workspace model policy (B-1346)', () => {
+  it('refuses a model outside a non-empty policy before any conduction is inserted', async () => {
+    mocks.getWorkspaceModelPolicy.mockResolvedValue({ allowed: ['claude-opus-5'] });
+    await expect(
+      createConduction(client, 'proj-1', 'user-7', { task_id: 'B-758', run_config: { model: { default: 'claude-sonnet-5' } } }),
+    ).rejects.toThrow("Model 'claude-sonnet-5' is not allowed by this workspace's model policy — allowed: claude-opus-5");
+    expect(mocks.getWorkspaceModelPolicy).toHaveBeenCalledWith(client, 'proj-1');
+    expect(mocks.insertConduction).not.toHaveBeenCalled();
   });
 });
