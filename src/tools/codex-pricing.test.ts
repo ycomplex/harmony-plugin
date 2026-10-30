@@ -39,3 +39,36 @@ describe('CODEX_PRICING / deriveCodexCostUsd', () => {
     expect(deriveCodexCostUsd({ inputTokens: 100, cacheReadInputTokens: 500, outputTokens: 0 }, 'gpt-5')).toBeCloseTo((100 * 0.125) / 1e6, 12);
   });
 });
+
+describe('B-1179: deriveCodexCostUsd priced from the catalog row', () => {
+  const usage = { inputTokens: 1_000_000, cacheReadInputTokens: 200_000, outputTokens: 100_000 };
+
+  it('Luna, Astra and Sol priced from a row equal to the table give the same numbers as the table', () => {
+    for (const id of ['gpt-6-luna', 'gpt-6-astra', 'gpt-6.1-sol']) {
+      expect(deriveCodexCostUsd(usage, `codex:${id}`, { ...CODEX_PRICING[id] })).toBeCloseTo(deriveCodexCostUsd(usage, id)!, 12);
+    }
+    // The B-1175 figures above: Luna 0.132, Astra 13.2; Sol 0.8×2 + 0.2×0.1 + 0.1×10 = 2.62
+    expect(deriveCodexCostUsd(usage, 'gpt-6-luna', { ...CODEX_PRICING['gpt-6-luna'] })).toBeCloseTo(0.132, 10);
+    expect(deriveCodexCostUsd(usage, 'gpt-6-astra', { ...CODEX_PRICING['gpt-6-astra'] })).toBeCloseTo(13.2, 10);
+    expect(deriveCodexCostUsd(usage, 'gpt-6.1-sol', { ...CODEX_PRICING['gpt-6.1-sol'] })).toBeCloseTo(2.62, 10);
+  });
+
+  it('an OpenRouter-style model with no table row is priced from its row by the same formula', () => {
+    const row = { input_per_mtok: 0.3, cached_input_per_mtok: 0.03, output_per_mtok: 1.2 };
+    expect(resolveCodexPricing('codex:openrouter/some-model')).toBeNull();
+    // 0.8 × 0.3 + 0.2 × 0.03 + 0.1 × 1.2 = 0.24 + 0.006 + 0.12 = 0.366
+    expect(deriveCodexCostUsd(usage, 'codex:openrouter/some-model', row)).toBeCloseTo(0.366, 10);
+  });
+
+  it('a row price changed between two calls changes the next result (a price change reaches the next leg)', () => {
+    const before = deriveCodexCostUsd(usage, 'gpt-6.1-sol', { input_per_mtok: 2, cached_input_per_mtok: 0.1, output_per_mtok: 10 });
+    const after = deriveCodexCostUsd(usage, 'gpt-6.1-sol', { input_per_mtok: 3, cached_input_per_mtok: 0.1, output_per_mtok: 10 });
+    expect(before).toBeCloseTo(2.62, 10);
+    expect(after).toBeCloseTo(0.8 * 3 + 0.2 * 0.1 + 0.1 * 10, 10);
+  });
+
+  it('no row and no table entry stays null (not captured)', () => {
+    expect(deriveCodexCostUsd(usage, 'codex:openrouter/some-model', null)).toBeNull();
+    expect(deriveCodexCostUsd(usage, 'codex:openrouter/some-model')).toBeNull();
+  });
+});

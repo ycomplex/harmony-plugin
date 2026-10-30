@@ -22,6 +22,15 @@ vi.mock('../../tools/leg-cost-record.js', () => ({
 }));
 const sumPriorSessionUsage = vi.fn(async (): Promise<unknown> => null);
 vi.mock('../auth.js', () => ({ getAuthenticatedContext: async () => ({ client: {} }) }));
+// B-1179: the catalog price read. By default it is the REAL fetchCatalogPrice, so every test above
+// the B-1179 block runs it against the `{}` client (no .from) and proves a broken read never stops
+// recording; the B-1179 tests below override one call's result.
+const fetchCatalogPrice = vi.fn();
+vi.mock('../../tools/catalog-pricing.js', async (importActual) => {
+  const actual = await importActual<typeof import('../../tools/catalog-pricing.js')>();
+  fetchCatalogPrice.mockImplementation(actual.fetchCatalogPrice);
+  return { fetchCatalogPrice: (...a: unknown[]) => (fetchCatalogPrice as (...x: unknown[]) => unknown)(...a) };
+});
 
 const { registerLegCostCommands, resolveAdapterTelemetry, resolveRuntimeFacts } = await import('./leg-cost.js');
 
@@ -186,5 +195,29 @@ describe('harmony leg-cost record — a Codex capture', () => {
     await record(['--file', f, '--gate', 'build', '--leg-key', 'leg-2', '--conduction-id', 'cond-2']);
     const row = (recordLegCost.mock.calls[0] as unknown[])[1] as Record<string, unknown>;
     expect(row).toMatchObject({ input_tokens: 1, output_tokens: 2, session_id: 's1', runtime: 'claude-code', total_cost_usd: 0.1, cost_source: 'cli' });
+  });
+});
+
+describe('B-1179: harmony leg-cost record — the catalog row price', () => {
+  const CODEX_RUN_ENV = { ...CODEX_ENV, HARMONY_RUN_CONFIG_JSON: CODEX_RC, HARMONY_RUN_CONFIG_PATH: undefined, CLAUDE_CODE_OAUTH_TOKEN: undefined, OPENAI_API_KEY: undefined, CODEX_API_KEY: undefined, CODEX_ACCESS_TOKEN: undefined, HARMONY_TEST_FORCE_REFUSAL: undefined };
+
+  it('a catalog row price is used for the recorded cost (derived), over the table', async () => {
+    setEnv(CODEX_RUN_ENV);
+    fetchCatalogPrice.mockResolvedValueOnce({ input_per_mtok: 3, cached_input_per_mtok: 0.3, output_per_mtok: 12 });
+    await record(['--file', FIXTURE, '--gate', 'build', '--leg-key', 'leg-8', '--conduction-id', 'cond-8', '--model', 'gpt-6.1-sol']);
+    expect(fetchCatalogPrice).toHaveBeenLastCalledWith(expect.anything(), 'gpt-6.1-sol', 'codex');
+    const row = (recordLegCost.mock.calls[0] as unknown[])[1] as Record<string, unknown>;
+    // (5400 − 4100) × 3 + 4100 × 0.3 + 610 × 12 = 3900 + 1230 + 7320 = 12450 per million = 0.01245
+    expect(row.total_cost_usd).toBeCloseTo(0.01245, 10);
+    expect(row.cost_source).toBe('derived');
+  });
+
+  it('no catalog row price records the table price exactly as before', async () => {
+    setEnv(CODEX_RUN_ENV);
+    fetchCatalogPrice.mockResolvedValueOnce(null);
+    await record(['--file', FIXTURE, '--gate', 'build', '--leg-key', 'leg-9', '--conduction-id', 'cond-9', '--model', 'gpt-6.1-sol']);
+    const row = (recordLegCost.mock.calls[0] as unknown[])[1] as Record<string, unknown>;
+    expect(row.total_cost_usd).toBeCloseTo(0.00911, 10);
+    expect(row.cost_source).toBe('derived');
   });
 });
