@@ -41,3 +41,14 @@ The knowledge contracts (v1.10 Knowledge):
 - `prose-indexing.md` (B-1240): opting a repository's skills and docs into search with `.harmony/prose-sources.json`
   and `harmony knowledge sync-prose`.
 - `source-values.md` (B-1241): publishing source-backed operator values, the source inventory and document coverage.
+
+The Figma design-tool adapter (v1.11 Design in the loop):
+
+- `figma-connection-rollout.md` (B-1201, B-1314, B-1337): the founder's rollout for workspace Figma connections,
+  with Harmony's own values: the default-off switch and its enable gate, the connect and refresh identities, the
+  per-workspace secret slots, the refresh image's build and CronJobs, and the proof ledger. A living document
+  (Tier 2, project; harmony-workspace `docs/README.md`).
+- `design-artefact-contract.md` (B-1202): a design brief's `design_artefact` manifest, how acceptance projects it
+  into the design gate slot, and the drift record (version pin or content fingerprint).
+- `figma-connection-build-proofs.md` (B-1201): the live build prerequisites the accepted plan required (native
+  runtime authentication, the refresh proof, slot permissions); an operator handoff, not evidence that a proof passed.
