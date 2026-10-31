@@ -67,3 +67,53 @@ it('validates settlement reports without requiring them on legacy release frames
   frame.settled_beyond_design[0].knowledge_entry_id = ' ';
   expect(() => validateBriefFrame(frame)).toThrow('knowledge_entry_id');
 });
+
+// B-1047 — a design frame's declared reach and its rules.
+describe('design reach and rules (B-1047)', () => {
+  const design = (over: Record<string, unknown> = {}) => ({
+    kind: 'design', track: 'technical-design', tracks: [{ track: 'technical-design', status: 'this-brief' }], reach: [], ...over,
+  });
+  const rule = (over: Record<string, unknown> = {}) => ({
+    ref: 'rule-a', operation: 'create', wording: 'Every list view paginates server-side.', domains: ['web'], surfaces: ['board'],
+    knowledge_scope: 'product', reach: 'this_surface', target_entry_id: null, expected_fingerprint: null, ...over,
+  });
+  const reference = rule({ operation: 'reference', target_entry_id: 'entry-7', expected_fingerprint: 'fp-7' });
+
+  it.each(['this_ticket_only', 'this_surface', 'this_product'])('accepts reach_level %s', (level) => {
+    const rules = level === 'this_ticket_only' ? [] : [rule()];
+    expect(() => validateBriefFrame(design({ reach_level: level, rules }), 'design')).not.toThrow();
+  });
+
+  it('refuses an unknown reach_level', () => {
+    expect(() => validateBriefFrame(design({ reach_level: 'this_team' }), 'design')).toThrow(/doc\.frame\.reach_level/);
+  });
+
+  it('a legacy design frame with no reach_level and no rules still validates', () => {
+    expect(() => validateBriefFrame(design(), 'design')).not.toThrow();
+  });
+
+  it.each(['this_surface', 'this_product'])('refuses %s with zero rules', (level) => {
+    expect(() => validateBriefFrame(design({ reach_level: level }), 'design')).toThrow(/must declare at least one rule/);
+    expect(() => validateBriefFrame(design({ reach_level: level, rules: [] }), 'design')).toThrow(/must declare at least one rule/);
+  });
+
+  it.each(['create', 'amend'])('refuses a this_ticket_only design that would %s a rule', (operation) => {
+    const r = rule({ operation, target_entry_id: 'entry-7', expected_fingerprint: 'fp-7' });
+    expect(() => validateBriefFrame(design({ reach_level: 'this_ticket_only', rules: [operation === 'create' ? rule() : r] }), 'design'))
+      .toThrow(/this_ticket_only design creates no rule/);
+  });
+
+  it('allows a this_ticket_only design to reference an existing rule', () => {
+    expect(() => validateBriefFrame(design({ reach_level: 'this_ticket_only', rules: [reference] }), 'design')).not.toThrow();
+  });
+
+  it.each(['amend', 'reference'])('%s requires target_entry_id and expected_fingerprint', (operation) => {
+    expect(() => validateBriefFrame(design({ reach_level: 'this_product', rules: [rule({ operation })] }), 'design'))
+      .toThrow(/must name target_entry_id and expected_fingerprint/);
+  });
+
+  it('refuses blank wording and rules with no declared reach_level', () => {
+    expect(() => validateBriefFrame(design({ reach_level: 'this_surface', rules: [rule({ wording: '  ' })] }), 'design')).toThrow(/wording/);
+    expect(() => validateBriefFrame(design({ rules: [rule()] }), 'design')).toThrow(/rules need a declared doc\.frame\.reach_level/);
+  });
+});

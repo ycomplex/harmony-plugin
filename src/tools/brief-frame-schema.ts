@@ -19,6 +19,16 @@ const sketch = object({
   preview_attachment_ids: strings, mcp_call_count: z.number(),
 });
 const floor = { floor_reviewed: strings.optional() };
+// B-1047 — a design's declared reach and the rules it creates, amends or references.
+export const REACH_LEVELS = ['this_ticket_only', 'this_surface', 'this_product'] as const;
+export const RULE_OPERATIONS = ['create', 'amend', 'reference'] as const;
+const designRule = object({
+  ref: z.string().trim().min(1), operation: z.enum(RULE_OPERATIONS), wording: z.string().trim().min(1),
+  domains: strings, surfaces: strings, knowledge_scope: z.enum(['product', 'deployment']),
+  reach: z.enum(['this_surface', 'this_product']),
+  target_entry_id: z.string().nullable().optional(), expected_fingerprint: z.string().nullable().optional(),
+  before: z.string().optional(),
+});
 export const briefFrameSchema = z.discriminatedUnion('kind', [
   object({ kind: z.literal('clarify'), solving: z.string(), in_scope: strings,
     not_solving: z.array(object({ item: z.string(), lands: z.string() })),
@@ -29,6 +39,7 @@ export const briefFrameSchema = z.discriminatedUnion('kind', [
   object({ kind: z.literal('design'), track,
     tracks: z.array(object({ track, status: z.enum(['accepted', 'this-brief', 'pending', 'not-required']), note: z.string().optional() })),
     reach: strings, not_reopened: strings.optional(),
+    reach_level: z.enum(REACH_LEVELS).optional(), rules: z.array(designRule).optional(),
     derisk: object({ run: strings, not_run: strings }).optional(), files_on_accept: strings.optional(),
     designer_frames: z.array(object({ id: z.string(), name: z.string(), file_key: z.string(),
       verdict: z.enum(['adopted', 'off-library', 'not-covering', 'unreadable', 'not-checked']), reason: z.string(),
@@ -56,6 +67,37 @@ export const briefFrameSchema = z.discriminatedUnion('kind', [
     bounded_accept: object({ open_ac_ids: strings, closes_when: z.string() }).optional() }),
 ]);
 
+/** B-1047 — the reach/rule refusals a design frame's shape alone cannot express. A frame with no
+ *  `reach_level` is legacy: it is only lint-warned (briefs.ts), so old briefs keep composing. */
+export function designRuleIssues(frame: { reach_level?: string; rules?: Array<Record<string, unknown>> }): string[] {
+  const issues: string[] = [];
+  const rules = frame.rules ?? [];
+  const level = frame.reach_level;
+  if ((level === 'this_surface' || level === 'this_product') && rules.length === 0) {
+    issues.push(`doc.frame.rules: a design whose reach_level is '${level}' must declare at least one rule (create, amend or reference) — a beyond-ticket design records its rule once, as a rule`);
+  }
+  const seen = new Set<string>();
+  rules.forEach((rule, i) => {
+    const at = `doc.frame.rules[${i}]`;
+    const op = rule.operation;
+    if (level === undefined) {
+      issues.push(`${at}: rules need a declared doc.frame.reach_level (this_ticket_only | this_surface | this_product)`);
+    } else if (level === 'this_ticket_only' && op !== 'reference') {
+      issues.push(`${at}: a this_ticket_only design creates no rule — only 'reference' rules are allowed, not '${String(op)}'`);
+    }
+    if ((op === 'amend' || op === 'reference') && (!rule.target_entry_id || !rule.expected_fingerprint)) {
+      issues.push(`${at}: an '${String(op)}' rule must name target_entry_id and expected_fingerprint`);
+    }
+    if (op === 'create' && (rule.target_entry_id || rule.expected_fingerprint)) {
+      issues.push(`${at}: a 'create' rule names no target_entry_id or expected_fingerprint`);
+    }
+    const ref = String(rule.ref);
+    if (seen.has(ref)) issues.push(`${at}: duplicate rule ref '${ref}'`);
+    seen.add(ref);
+  });
+  return issues;
+}
+
 export function validateBriefFrame(frame: unknown, expectedKind?: string): void {
   if (frame == null) return; // Optional frame; explicit null retains the existing clear behavior.
   const result = briefFrameSchema.safeParse(frame);
@@ -65,5 +107,9 @@ export function validateBriefFrame(frame: unknown, expectedKind?: string): void 
   }
   if (expectedKind && result.data.kind !== expectedKind) {
     throw new Error(`Invalid brief frame: doc.frame.kind must be '${expectedKind}', received '${result.data.kind}'`);
+  }
+  if (result.data.kind === 'design') {
+    const issues = designRuleIssues(result.data as Parameters<typeof designRuleIssues>[0]);
+    if (issues.length) throw new Error(`Invalid brief frame:\n${issues.map((i) => `- ${i}`).join('\n')}`);
   }
 }

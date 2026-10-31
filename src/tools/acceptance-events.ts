@@ -26,6 +26,7 @@ import { metadataCapable, type KnowledgeScope } from './knowledge-metadata.js';
 // `applyAcceptanceEventPayload`'s `substrate_absent_for` handling below, which degrades that narrower case
 // the same way: safely, never an opaque throw, never a call to `consume_acceptance_event`.
 
+import { createHash } from 'node:crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveTaskId } from './resolve-task-id.js';
 import { writeGateSlot } from './gate-slots.js';
@@ -102,7 +103,7 @@ export const DECISION_ONLY_LABEL_CONTRACT = {
  *  the `write_gate_slot` MCP tool. */
 export interface AcceptanceEventPayloadItem {
   scope?: KnowledgeScope;
-  write_kind: 'acceptance_criterion' | 'child_ticket' | 'checklist_item' | 'ac_transfer' | 'label_add' | 'knowledge_entry_content' | 'gate_slot' | 'supersede_decision' | 'implements_entities' | 'entity_link';
+  write_kind: 'acceptance_criterion' | 'child_ticket' | 'checklist_item' | 'ac_transfer' | 'label_add' | 'knowledge_entry_content' | 'gate_slot' | 'supersede_decision' | 'implements_entities' | 'entity_link' | 'rule_bundle';
   ref: string;
   content?: string;
   title?: string;
@@ -157,6 +158,23 @@ export interface AcceptanceEventPayloadItem {
   /** Optional kind selector, applied before ambiguity detection. New entities default to feature.
    * `kind` is the additive spelling; `entity_kind` remains supported for existing payloads. */
   entity_kind?: string;
+  /** `rule_bundle` only (B-1047) — the design's rule declarations, applied as ONE ledgered write by
+   *  `consume_rule_bundle_write` (bundle shape: briefs.ts `DesignRule` minus the display-only `before`).
+   *  The item's `decision_id` (above) names the design decision the rules cite. */
+  rules?: RuleBundleRule[];
+}
+
+/** B-1047 — one rule exactly as `consume_rule_bundle_write` validates it against the snapshotted payload. */
+export interface RuleBundleRule {
+  ref: string;
+  operation: 'create' | 'amend' | 'reference';
+  wording: string;
+  domains: string[];
+  surfaces: string[];
+  knowledge_scope: 'product' | 'deployment';
+  reach: 'this_surface' | 'this_product';
+  target_entry_id: string | null;
+  expected_fingerprint: string | null;
 }
 
 export interface PendingAcceptanceEvent {
@@ -295,7 +313,7 @@ export async function getPendingAcceptanceEvent(
   return (event as PendingAcceptanceEvent | null) ?? null;
 }
 
-const KNOWN_WRITE_KINDS = new Set(['acceptance_criterion', 'child_ticket', 'checklist_item', 'ac_transfer', 'label_add', 'knowledge_entry_content', 'gate_slot', 'supersede_decision', 'implements_entities', 'entity_link']);
+const KNOWN_WRITE_KINDS = new Set(['acceptance_criterion', 'child_ticket', 'checklist_item', 'ac_transfer', 'label_add', 'knowledge_entry_content', 'gate_slot', 'supersede_decision', 'implements_entities', 'entity_link', 'rule_bundle']);
 
 /** B-816 — the live snapshot shape from `resolve_brief` (which snapshots a brief's whole `doc` VERBATIM)
  *  is `event.payload.payload` (an array): B-810's `compose_brief` call sites author the structured
@@ -380,6 +398,21 @@ export interface ApplyPayloadResult {
    *  call `consumeAcceptanceEvent`, leave the event visibly pending, let a later retry (once the migration
    *  lands) pick up where this left off. */
   substrate_absent_for?: AcceptanceEventPayloadItem['write_kind'];
+}
+
+/** B-1047 — JSON with object keys sorted at every depth (arrays keep their order). */
+export function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    return `{${Object.keys(obj).filter((k) => obj[k] !== undefined).sort().map((k) => `${JSON.stringify(k)}:${canonicalJson(obj[k])}`).join(',')}}`;
+  }
+  return JSON.stringify(value ?? null);
+}
+
+/** B-1047 — `p_request_digest`: sha256 hex of the canonical JSON of `{ rules, decision_id }`. */
+export function ruleBundleDigest(bundle: { rules: RuleBundleRule[]; decision_id: string }): string {
+  return createHash('sha256').update(canonicalJson({ rules: bundle.rules, decision_id: bundle.decision_id })).digest('hex');
 }
 
 /** Internal-only signal (never escapes this module) distinguishing "the RPC for this write_kind does not
@@ -520,6 +553,11 @@ export async function applyAcceptanceEventPayload(
     // the previous round's. Running it after every AC/child/checklist write means a payload that fails
     // partway leaves the knowledge base untouched rather than promoting a decision whose materialization
     // never landed.
+    // B-1047 sits immediately BEFORE knowledge_entry_content: "preflight, apply the bundle, project the
+    // design, then consume". The bundle is one server-side transaction (a refusal rolls it back and
+    // throws here, so the design entry is never projected and the event stays pending with the blocker
+    // named); a retry finds the bundle's ledger row and skips it.
+    'rule_bundle',
     'knowledge_entry_content',
     // B-997 sits right after knowledge_entry_content, before supersede_decision: it lands the
     // already-resolved entity edge(s) a design/visual-handoff accept confirmed. Entity-NAME resolution
@@ -645,6 +683,22 @@ export async function applyAcceptanceEventPayload(
           throw new Error(error.message);
         }
         result = data as { applied?: boolean };
+      } else if (item.write_kind === 'rule_bundle') {
+        if (!Array.isArray(item.rules) || item.rules.length === 0) throw new Error(`rule_bundle item '${item.ref}' carries no rules — a bundle is derived from a design's declared rules and is never empty`);
+        if (!item.decision_id) throw new Error(`rule_bundle item '${item.ref}' names no decision_id`);
+        const bundle = { rules: item.rules, decision_id: item.decision_id };
+        const { data, error } = await client.rpc('consume_rule_bundle_write', {
+          p_event_id: event.id, p_external_ref: item.ref, p_bundle: bundle, p_request_digest: ruleBundleDigest(bundle),
+        });
+        if (error) {
+          // B-383 window: the registry migration reaches prod only at the next promote. Degrade SAFELY
+          // (payload-unrecognized, event pending). A refusal ('B-1047: …') is a real blocker and propagates.
+          if (isMissingRelationOrFunction(error)) throw new WriteKindSubstrateAbsentError('rule_bundle');
+          throw new Error(error.message);
+        }
+        const status = (data as { status?: string } | null)?.status;
+        if (status !== 'applied' && status !== 'already-applied') throw new Error(`consume_rule_bundle_write returned an unexpected status '${String(status)}' for '${item.ref}'`);
+        result = { applied: status === 'applied' };
       } else if (item.write_kind === 'gate_slot') {
         if (!item.gate?.trim()) throw new Error(`gate_slot item '${item.ref}' names no gate — the slot is keyed by the gate that ratified it`);
         // An EMPTY object is valid (the gate ratified an empty answer); a MISSING one is not — it would
