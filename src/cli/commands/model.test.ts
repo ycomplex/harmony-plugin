@@ -568,4 +568,47 @@ describe('B-1178 inactive offers: explicit names pass, lists and defaults stay a
     await run(['model', 'pinned-default', '--agent', 'codex']);
     expect(logSpy).toHaveBeenCalledWith('');
   });
+
+  // B-1349: the in-leg switch and gate resolution honour an explicitly named inactive offer.
+  it.each(['or/retired', 'codex:or-retired'])('request-switch accepts the inactive offer %s and writes its bare id', async (model) => {
+    stub();
+    const path = tempHandoffPath();
+    vi.stubEnv('HARMONY_MODEL_HANDOFF_PATH', path);
+    await run(['model', 'request-switch', '--agent', 'codex', model]);
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(JSON.parse(readFileSync(path, 'utf8')).requested_model).toBe('or/retired');
+  });
+
+  it('request-switch refuses an unknown alias, listing every row and marking the inactive one', async () => {
+    stub();
+    const path = tempHandoffPath();
+    vi.stubEnv('HARMONY_MODEL_HANDOFF_PATH', path);
+    await expect(run(['model', 'request-switch', '--agent', 'codex', 'codex:unknown'])).rejects.toThrow(ExitSentinel);
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(errSpy).toHaveBeenCalledWith(
+      "harmony model request-switch: 'codex:unknown' is not in the live model catalog for runtime 'codex' (gpt-6.1-sol, or/retired (inactive))",
+    );
+    expect(existsSync(path)).toBe(false);
+  });
+
+  it('request-switch refuses an inactive codex row requested for the claude-code runtime', async () => {
+    stub();
+    const path = tempHandoffPath();
+    vi.stubEnv('HARMONY_MODEL_HANDOFF_PATH', path);
+    await expect(run(['model', 'request-switch', '--agent', 'claude-code', 'or/retired'])).rejects.toThrow(ExitSentinel);
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(existsSync(path)).toBe(false);
+  });
+
+  it.each([
+    ['run-wide default', { default: 'codex:or-retired' }],
+    ['per-gate build', { default: 'gpt-6.1-sol', per_gate: { build: 'codex:or-retired' } }],
+  ])('resolve-gate normalizes an inactive offer named as the %s', async (_label, modelBlock) => {
+    stub();
+    vi.stubEnv('HARMONY_CONDUCTION_ID', '');
+    vi.stubEnv('HARMONY_RUN_CONFIG_PATH', '');
+    vi.stubEnv('HARMONY_RUN_CONFIG_JSON', Buffer.from(JSON.stringify({ agent: { adapter: 'codex' }, model: modelBlock })).toString('base64'));
+    await run(['model', 'resolve-gate', 'Planned']);
+    expect(logSpy).toHaveBeenLastCalledWith('or/retired');
+  });
 });
