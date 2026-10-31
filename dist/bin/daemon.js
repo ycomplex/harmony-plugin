@@ -34609,8 +34609,13 @@ function renderSlot(doc, gate) {
   const out = {};
   switch (gate) {
     case "design": {
-      if (frame.kind !== "design" || !frame.design_artefact) return null;
-      return { design_artefact: frame.design_artefact };
+      if (frame.kind !== "design") return null;
+      if (frame.design_artefact) return { design_artefact: frame.design_artefact };
+      if (frame.track === "ux-ui-design") return null;
+      const slot = { track: frame.track };
+      if (frame.tracks) slot.tracks = [...frame.tracks];
+      if (frame.reach) slot.reach = [...frame.reach];
+      return slot;
     }
     case "clarify": {
       if (frame.kind !== "clarify") return null;

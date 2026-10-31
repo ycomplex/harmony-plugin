@@ -608,6 +608,61 @@ describe('write_gate_slot — the release and verify accepts reach the same writ
   });
 });
 
+// ——— 9b. B-1324: a product-track design brief (no design_artefact) still reaches the design slot ————————
+
+describe('B-1324 — a product-track design frame without design_artefact projects through the slot paths', () => {
+  // Mirrors the frame shape B-1315's iteration-3 design brief carried: a product-design track, the
+  // sub-track ledger and the reach list, and NO design_artefact (product design has no Figma render).
+  const productDesignDoc = (): BriefDoc => ({
+    decide: 'Is this the product design we build?',
+    recommend: { text: 'Adopt the product design', confidence: 'high' },
+    items: [{ kind: 'decision', text: 'Accept the product design', recommendation: 'accept' }],
+    frame: {
+      kind: 'design',
+      track: 'product-design',
+      tracks: [
+        { track: 'product-design', status: 'this-brief' },
+        { track: 'ux-ui-design', status: 'not-required', note: 'no new surface' },
+      ],
+      reach: ['the conduct-flow design gate'],
+    },
+  });
+  const genericSlot = {
+    track: 'product-design',
+    tracks: [
+      { track: 'product-design', status: 'this-brief' },
+      { track: 'ux-ui-design', status: 'not-required', note: 'no new surface' },
+    ],
+    reach: ['the conduct-flow design gate'],
+  };
+
+  const gateSlotItem = (doc: BriefDoc) => (doc.payload ?? []).find((p) => p.write_kind === 'gate_slot');
+
+  it('withDerivedGateSlot derives a design gate_slot item carrying track / tracks / reach', () => {
+    const item = gateSlotItem(withDerivedGateSlot(productDesignDoc(), 'design-decision-draft'));
+    expect(item).toBeDefined();
+    expect(item).toMatchObject({ write_kind: 'gate_slot', gate: 'design', ref: 'slot-design' });
+    expect(item!.slot_content).toEqual(genericSlot);
+  });
+
+  it('write_gate_slot writes the design slot instead of reporting "no design frame"', async () => {
+    const client = makeClient({
+      fromResponses: {
+        briefs: [{ data: [{ id: 'brief-1315', doc: productDesignDoc(), reason: 'design-decision-draft' }] }],
+        pending_acceptance_events: [{ data: { id: 'evt-1315' } }],
+      },
+      rpcResponses: { consume_gate_slot_write: [{ data: { applied: true, result_id: 'B-1315' } }] },
+    });
+    const res = await writeGateSlotToolHandler(client, PROJECT_ID, { task_id: 'B-1315', gate: 'design' });
+    expect(res).toMatchObject({ gate: 'design', written: true, applied: true, brief_id: 'brief-1315' });
+    expect(res.reason).toBeUndefined();
+    const call = client.rpcCalls.find((c: { name: string }) => c.name === 'consume_gate_slot_write');
+    expect(call).toBeDefined();
+    expect(call.args).toMatchObject({ _event_id: 'evt-1315', _external_ref: 'slot-design', _gate: 'design' });
+    expect(call.args._content).toEqual(genericSlot);
+  });
+});
+
 // ——— 10. The pinned build_pr family ————————————————————————————————————————————————————————————————
 
 describe('pinBuildPrs — the divergent live build_pr shapes, pinned to one section shape', () => {
