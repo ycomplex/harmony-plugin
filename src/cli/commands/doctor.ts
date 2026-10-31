@@ -50,12 +50,11 @@
 // `pg-functions://postgres/<schema>/<function>` shape. Confirming the live value is explicitly
 // deferred to a human running this command at the ticket's verify gate.
 //
-// B-1300 SCOPE NOTE: the before-user-created Management-API field names
-// (`HOOK_BUC_ENABLED_KEY`/`HOOK_BUC_URI_KEY` below) follow the established `hook_<name>_enabled/_uri`
-// naming pattern and are UNVERIFIED against a live project — no `SUPABASE_ACCESS_TOKEN` in this
-// build's environment. They are named constants on purpose: the live read of a real project's auth
-// config that confirms them is a named seat/founder step (this command's release brief), and a wrong
-// key surfaces there, never as a silently-guessed parse.
+// B-1300 NOTE: the before-user-created Management-API field names (`HOOK_BUC_ENABLED_KEY`/
+// `HOOK_BUC_URI_KEY` below) follow the established `hook_<name>_enabled/_uri` naming pattern and are
+// confirmed by the Supabase Management API's published auth-config schema (verified at the build
+// gate). The whole-command live read against a real project (both halves together) remains a named
+// seat/founder step on this command's release brief.
 
 import { Command } from 'commander';
 import { getActiveProject } from '../config.js';
@@ -195,7 +194,7 @@ async function reportBeforeUserCreatedHalf(
     registration = 'cannot-determine';
     registrationDetail =
       `${HOOK_BUC_ENABLED_KEY} is missing or not a boolean in the auth-config response ` +
-      `(the B-1300 field name is UNVERIFIED — see this command's release brief).`;
+      `(expected ${HOOK_BUC_ENABLED_KEY} per the Management API auth-config schema).`;
   } else if (!rawEnabled) {
     registration = 'not-registered';
     registrationDetail = `${HOOK_BUC_ENABLED_KEY}=false, ${HOOK_BUC_URI_KEY}=${uriDisplay}`;
@@ -215,15 +214,19 @@ async function reportBeforeUserCreatedHalf(
   }
 
   // --- Function existence (Postgres catalog state) via the injected probe. A missing dep, a thrown
-  // --- network error, a non-200, or an unparseable body each degrade to CANNOT DETERMINE — the probe
-  // --- never fails the run and never touches the access-token half.
+  // --- network error, a non-2xx, or an unparseable body each degrade to CANNOT DETERMINE — the probe
+  // --- never fails the run and never touches the access-token half. The Management API's SQL query
+  // --- endpoint answers 201 (not 200) on success, so success is any 2xx.
   let functionExists: BucFunctionExists = 'cannot-determine';
+  let functionExistsDetail = '';
   if (deps.fetchFunctionExistence) {
     try {
       const probe = await deps.fetchFunctionExistence(projectRef, deps.accessToken as string);
-      if (probe.status === 200) {
+      if (probe.status >= 200 && probe.status < 300) {
         const parsed = parseRegprocedureExists(probe.body);
         functionExists = parsed === null ? 'cannot-determine' : parsed ? 'exists' : 'missing';
+      } else {
+        functionExistsDetail = ` (probe HTTP ${probe.status})`;
       }
     } catch {
       functionExists = 'cannot-determine';
@@ -263,7 +266,7 @@ async function reportBeforeUserCreatedHalf(
   } else {
     log(
       `harmony doctor auth-hook: before-user-created function existence CANNOT DETERMINE ` +
-        `(project ${projectRef}).`,
+        `(project ${projectRef})${functionExistsDetail}.`,
     );
   }
 
@@ -526,6 +529,7 @@ export function registerDoctorCommands(program: Command): void {
             },
             body: JSON.stringify({
               query: "SELECT to_regprocedure('public.before_user_created_hook(jsonb)')",
+              read_only: true,
             }),
           },
         );

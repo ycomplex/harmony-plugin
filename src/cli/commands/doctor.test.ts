@@ -368,7 +368,7 @@ describe('runDoctorAuthHookCommand — B-1300 before-user-created: probe never c
         ...overrides,
         fetchFunctionExistence: async () => {
           probeCalled = true;
-          return { status: 200, body: [{ to_regprocedure: 'before_user_created_hook(jsonb)' }] };
+          return { status: 201, body: [{ to_regprocedure: 'before_user_created_hook(jsonb)' }] };
         },
       });
       await runDoctorAuthHookCommand(deps);
@@ -390,7 +390,7 @@ describe('runDoctorAuthHookCommand — B-1300 before-user-created: registration 
         body: accessTokenRegisteredBody(bucRegistered),
       }),
       fetchFunctionExistence: async (): Promise<FunctionExistenceFetchResult> => ({
-        status: 200,
+        status: 201,
         body: [{ to_regprocedure: 'before_user_created_hook(jsonb)' }],
       }),
     });
@@ -403,6 +403,27 @@ describe('runDoctorAuthHookCommand — B-1300 before-user-created: registration 
     expect(deps.errorLines).toHaveLength(0);
   });
 
+  it('treats the Management API SQL endpoint\'s 201 (not 200) as the probe success shape', async () => {
+    const deps = baseDeps({
+      fetchAuthConfig: async (): Promise<AuthConfigFetchResult> => ({
+        status: 200,
+        body: accessTokenRegisteredBody(bucRegistered),
+      }),
+      // POST /v1/projects/<ref>/database/query answers 201 Created on success.
+      fetchFunctionExistence: async (): Promise<FunctionExistenceFetchResult> => ({
+        status: 201,
+        body: [{ to_regprocedure: 'before_user_created_hook(jsonb)' }],
+      }),
+    });
+    const code = await runDoctorAuthHookCommand(deps);
+    expect(code).toBe(0);
+    expect(deps.logLines.join('\n')).toContain(
+      'before-user-created function public.before_user_created_hook(jsonb) EXISTS',
+    );
+    expect(deps.logLines.join('\n')).not.toContain('CANNOT DETERMINE');
+    expect(deps.errorLines).toHaveLength(0);
+  });
+
   it('reports NOT REGISTERED + function MISSING when enabled=false and the probe returns null', async () => {
     const deps = baseDeps({
       fetchAuthConfig: async (): Promise<AuthConfigFetchResult> => ({
@@ -410,7 +431,7 @@ describe('runDoctorAuthHookCommand — B-1300 before-user-created: registration 
         body: accessTokenRegisteredBody({ [BUC_ENABLED]: false, [BUC_URI]: null }),
       }),
       fetchFunctionExistence: async (): Promise<FunctionExistenceFetchResult> => ({
-        status: 200,
+        status: 201,
         body: [{ to_regprocedure: null }],
       }),
     });
@@ -421,14 +442,14 @@ describe('runDoctorAuthHookCommand — B-1300 before-user-created: registration 
     expect(deps.errorLines).toHaveLength(0);
   });
 
-  it('reports registration CANNOT DETERMINE when the enabled key is missing (unverified field name)', async () => {
+  it('reports registration CANNOT DETERMINE when the enabled key is missing', async () => {
     const deps = baseDeps({
       fetchAuthConfig: async (): Promise<AuthConfigFetchResult> => ({
         status: 200,
         body: accessTokenRegisteredBody({}),
       }),
       fetchFunctionExistence: async (): Promise<FunctionExistenceFetchResult> => ({
-        status: 200,
+        status: 201,
         body: [{ to_regprocedure: 'before_user_created_hook(jsonb)' }],
       }),
     });
@@ -448,7 +469,7 @@ describe('runDoctorAuthHookCommand — B-1300 before-user-created: registration 
         }),
       }),
       fetchFunctionExistence: async (): Promise<FunctionExistenceFetchResult> => ({
-        status: 200,
+        status: 201,
         body: [{ to_regprocedure: 'before_user_created_hook(jsonb)' }],
       }),
     });
@@ -466,7 +487,7 @@ describe('runDoctorAuthHookCommand — B-1300 before-user-created: both mismatch
         body: accessTokenRegisteredBody({ [BUC_ENABLED]: true, [BUC_URI]: BUC_GOOD_URI }),
       }),
       fetchFunctionExistence: async (): Promise<FunctionExistenceFetchResult> => ({
-        status: 200,
+        status: 201,
         body: [{ to_regprocedure: null }],
       }),
     });
@@ -486,7 +507,7 @@ describe('runDoctorAuthHookCommand — B-1300 before-user-created: both mismatch
         body: accessTokenRegisteredBody({ [BUC_ENABLED]: false, [BUC_URI]: null }),
       }),
       fetchFunctionExistence: async (): Promise<FunctionExistenceFetchResult> => ({
-        status: 200,
+        status: 201,
         body: [{ to_regprocedure: 'before_user_created_hook(jsonb)' }],
       }),
     });
@@ -511,7 +532,7 @@ describe('runDoctorAuthHookCommand — B-1300 before-user-created: both mismatch
         },
       }),
       fetchFunctionExistence: async (): Promise<FunctionExistenceFetchResult> => ({
-        status: 200,
+        status: 201,
         body: [{ to_regprocedure: null }],
       }),
     });
@@ -569,7 +590,7 @@ describe('runDoctorAuthHookCommand — B-1300 before-user-created: probe failure
         body: accessTokenRegisteredBody(bucRegistered),
       }),
       fetchFunctionExistence: async (): Promise<FunctionExistenceFetchResult> => ({
-        status: 200,
+        status: 201,
         body: { not: 'an-array-of-rows' },
       }),
     });
@@ -602,7 +623,7 @@ describe('runDoctorAuthHookCommand — B-1300 before-user-created: ordering and 
         body: accessTokenRegisteredBody({ [BUC_ENABLED]: true, [BUC_URI]: BUC_GOOD_URI }),
       }),
       fetchFunctionExistence: async (): Promise<FunctionExistenceFetchResult> => ({
-        status: 200,
+        status: 201,
         body: [{ to_regprocedure: 'before_user_created_hook(jsonb)' }],
       }),
     });
@@ -621,11 +642,11 @@ describe('runDoctorAuthHookCommand — B-1300 before-user-created: ordering and 
     }> = [
       {
         buc: { [BUC_ENABLED]: true, [BUC_URI]: BUC_GOOD_URI },
-        probe: { status: 200, body: [{ to_regprocedure: 'before_user_created_hook(jsonb)' }] },
+        probe: { status: 201, body: [{ to_regprocedure: 'before_user_created_hook(jsonb)' }] },
       },
       {
         buc: { [BUC_ENABLED]: true, [BUC_URI]: BUC_GOOD_URI },
-        probe: { status: 200, body: [{ to_regprocedure: null }] },
+        probe: { status: 201, body: [{ to_regprocedure: null }] },
       },
       { buc: {}, probe: { status: 500, body: undefined } },
     ];
