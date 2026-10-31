@@ -238,11 +238,9 @@ export interface CodexPricing {
 
 /** Rates read from OpenAI's published pricing page, https://developers.openai.com/api/docs/pricing,
  *  fetched 2026-10-17 (gpt-6.1-sol and the gpt-5 rows) and 2026-10-19 (gpt-6-luna and gpt-6-astra,
- *  B-1175). Tier used: Standard, context <= 272K tokens; USD per 1M tokens. NOT modelled: the
- *  > 272K-context (long-context) rates — every GPT-6 model has one, e.g. gpt-6.1-sol: $4.00 / $0.20 /
- *  $15.00 — and the Fast / Batch / Flex tiers, so a derived cost is the Standard-tier (<= 272K)
- *  EQUIVALENT estimate and a leg whose context crossed the threshold is a known under-estimate
- *  (tracked as B-1176). One row per model, so the <= 272K rates are used. A model the page did not
+ *  B-1175). Tier used: Standard, context <= 272K tokens; USD per 1M tokens. Long-context prices are
+ *  stored per offer on the catalog row by B-1176; this in-code table remains Standard-only fallback.
+ *  Fast / Batch / Flex tiers are not modeled. A model the page did not
  *  list has NO row (never a from-memory rate): it stays UNPRICED (cost 'unknown'). Keyed by the EXACT
  *  model id (an optional `codex:` catalog prefix is stripped, case-insensitive) — never a substring
  *  match, so an unlisted sibling is not priced at another model's rate.
@@ -278,11 +276,19 @@ export function deriveCodexCostUsd(
   model: string | null | undefined,
   rowPrice?: CatalogRowPrice | null,
 ): number | null {
-  const pricing: CodexPricing | null = rowPrice ?? resolveCodexPricing(model);
+  const standardPricing: CodexPricing | null = rowPrice ?? resolveCodexPricing(model);
+  const inputTokens = Math.max(0, usage?.inputTokens ?? 0);
+  const pricing: CodexPricing | null = rowPrice &&
+    rowPrice.long_context_threshold_tokens !== null &&
+    rowPrice.long_context_threshold_tokens !== undefined &&
+    inputTokens > rowPrice.long_context_threshold_tokens &&
+    rowPrice.long_context_price
+    ? rowPrice.long_context_price
+    : standardPricing;
   if (!pricing || !usage) return null;
   const measured = [usage.inputTokens, usage.cacheReadInputTokens, usage.outputTokens].some((v) => typeof v === 'number');
   if (!measured) return null;
-  const input = Math.max(0, usage.inputTokens ?? 0);
+  const input = inputTokens;
   const cached = Math.min(input, Math.max(0, usage.cacheReadInputTokens ?? 0));
   const output = Math.max(0, usage.outputTokens ?? 0);
   return ((input - cached) * pricing.input_per_mtok + cached * pricing.cached_input_per_mtok + output * pricing.output_per_mtok) / MTOK;
