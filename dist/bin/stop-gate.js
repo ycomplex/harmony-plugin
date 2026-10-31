@@ -30,7 +30,7 @@ function isCleanRowShape(row, nonArchivedChildCount) {
 // src/daemon/waiting-on.ts
 var WAIT_CEILING_MS = 24 * 60 * 60 * 1e3;
 var WAIT_DEFAULT_RECHECK_MS = 15 * 60 * 1e3;
-var WAITING_ON_KINDS = ["ci", "pr-state", "human-step"];
+var WAITING_ON_KINDS = ["ci", "pr-state", "human-step", "model-handoff"];
 function validIso(v) {
   return typeof v === "string" && Number.isFinite(Date.parse(v));
 }

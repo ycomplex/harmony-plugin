@@ -40867,7 +40867,7 @@ function detectWake(baseline, current) {
 // src/daemon/waiting-on.ts
 var WAIT_CEILING_MS = 24 * 60 * 60 * 1e3;
 var WAIT_DEFAULT_RECHECK_MS = 15 * 60 * 1e3;
-var WAITING_ON_KINDS = ["ci", "pr-state", "human-step"];
+var WAITING_ON_KINDS = ["ci", "pr-state", "human-step", "model-handoff"];
 function validIso(v) {
   return typeof v === "string" && Number.isFinite(Date.parse(v));
 }
@@ -41431,6 +41431,7 @@ function exchangeKey(ex) {
 }
 function waitHoldActive(baseline, current, nowMs) {
   const w = liveWaitingOn(waitingOnFieldValues(current), { nowMs });
+  if (w?.kind === "model-handoff") return null;
   if (!w || nowMs >= waitResumeAtMs(w)) return null;
   if (baseline) {
     if (baseline.awaitingHumanInput === true && current.awaiting_human_input !== true) return null;
@@ -41511,7 +41512,8 @@ async function handleHeldConduction(deps, state, keeper, excluded, runtime, row)
     state.set(row.id, captureBaseline(current));
     return;
   }
-  const wake = detectWake(baseline, current);
+  const handoff = liveWaitingOn(waitingOnFieldValues(current), { nowMs: deps.now() });
+  const wake = handoff?.kind === "model-handoff" ? "agent-ball" : detectWake(baseline, current);
   if (wake === null) {
     state.set(row.id, captureBaseline(current));
     return;
@@ -42094,6 +42096,7 @@ function beginReapEscalation(deps, runtime, row, current, tracked, flag) {
 }
 async function fireLaunch(deps, state, keeper, runtime, row, preReadCurrent, retryCount) {
   const current = preReadCurrent ?? await deps.getTaskMeta(row.task_id);
+  const modelHandoff = liveWaitingOn(waitingOnFieldValues(current), { nowMs: deps.now() });
   const runConfig = row.run_config ?? {};
   if (isFastTrackBuildLeg(runConfig, current)) {
     const { admissible, report } = evaluateFastTrackAdmission(current.title ?? "", []);
@@ -42221,7 +42224,13 @@ async function fireLaunch(deps, state, keeper, runtime, row, preReadCurrent, ret
   const launch = deps.runCommand(
     renderTemplate(
       deps.config.profile.launch,
-      templateVars(gkeLaunch ? { ...row, worker_ref: workerRef ?? null } : row, current, deps.projectKey, deps.workerImage, deps.getModelPolicy?.(), catalog)
+      templateVars((() => {
+        const launchRow = gkeLaunch ? { ...row, worker_ref: workerRef ?? null } : row;
+        if (modelHandoff?.kind !== "model-handoff") return launchRow;
+        const config = launchRow.run_config ?? {};
+        const gate = resolveLegGate(config, current);
+        return gate ? { ...launchRow, run_config: { ...config, model: { ...config.model ?? {}, per_gate: { ...config.model?.per_gate ?? {}, [gate]: modelHandoff.ref } } } } : launchRow;
+      })(), current, deps.projectKey, deps.workerImage, deps.getModelPolicy?.(), catalog)
     ),
     {
       env: {
@@ -42236,6 +42245,14 @@ async function fireLaunch(deps, state, keeper, runtime, row, preReadCurrent, ret
     tracked.launchOutputTail = result.outputTail ?? null;
     tracked.launchOutputBytes = result.outputBytes ?? 0;
   });
+  if (modelHandoff?.kind === "model-handoff" && deps.clearModelHandoff) {
+    try {
+      const cleared = await deps.clearModelHandoff(row.task_id, modelHandoff);
+      if (!cleared) deps.log(`${label(row, current, deps.projectKey)}: model-handoff marker changed before it could be cleared`);
+    } catch (err) {
+      deps.log(`${label(row, current, deps.projectKey)}: could not clear model-handoff marker (${formatDaemonError(err)})`);
+    }
+  }
   const cancelDeadline = deps.startTimeout(deps.config.workerTimeoutMs, () => {
     deps.log(
       `${label(row, current, deps.projectKey)}: worker exceeded ${deps.config.workerTimeoutMs}ms \u2014 reaping`
@@ -42892,6 +42909,13 @@ ${err instanceof Error ? err.message : String(err)}
     sleep,
     listConductions: (args) => listConductions(client, args),
     getTaskMeta: async (taskId) => await getTask(client, projectId, { task_id: taskId, view: "meta" }),
+    clearModelHandoff: async (taskId, marker) => {
+      const task = await getTask(client, projectId, { task_id: taskId, view: "meta" });
+      const live = task.waiting_on;
+      if (live?.kind !== "model-handoff" || live.ref !== marker.ref || live.since !== marker.since) return false;
+      await updateTask(client, projectId, { task_id: taskId, field_values: { waiting_on: null } });
+      return true;
+    },
     countNonArchivedChildren: async (taskId) => {
       const children = await listSubtasks(client, projectId, { task_id: taskId });
       return children.filter((c) => !c.archived).length;

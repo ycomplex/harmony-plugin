@@ -230,6 +230,8 @@ export interface SchedulerDeps extends WriteRetryDeps {
   sleep(ms: number): Promise<void>;
   listConductions(args: { status?: ConductionStatus }): Promise<ConductionRecord[]>;
   getTaskMeta(taskId: string): Promise<DaemonTask>;
+  /** B-1050: clear the exact model-handoff marker after the relaunch command has been issued. */
+  clearModelHandoff?(taskId: string, marker: WaitingOn): Promise<boolean>;
   countNonArchivedChildren(taskId: string): Promise<number>;
   updateConduction(id: string, patch: ConductionPatch): Promise<ConductionRecord>;
   /** B-739: the LEASE-GUARDED write. Every post-claim write goes through this — `null` means the
@@ -1148,6 +1150,7 @@ export function waitHoldActive(
   nowMs: number,
 ): WaitingOn | null {
   const w = liveWaitingOn(waitingOnFieldValues(current), { nowMs });
+  if (w?.kind === 'model-handoff') return null;
   if (!w || nowMs >= waitResumeAtMs(w)) return null;
   if (baseline) {
     if (baseline.awaitingHumanInput === true && current.awaiting_human_input !== true) return null;
@@ -1284,7 +1287,8 @@ async function handleHeldConduction(
     state.set(row.id, captureBaseline(current));
     return;
   }
-  const wake = detectWake(baseline, current);
+  const handoff = liveWaitingOn(waitingOnFieldValues(current), { nowMs: deps.now() });
+  const wake = handoff?.kind === 'model-handoff' ? 'agent-ball' : detectWake(baseline, current);
   if (wake === null) {
     // B-691: ROLL the baseline on a no-wake pass — see watch.ts's own header for the defect class
     // this prevents.
@@ -2340,6 +2344,7 @@ async function fireLaunch(
   retryCount: number,
 ): Promise<void> {
   const current = preReadCurrent ?? (await deps.getTaskMeta(row.task_id));
+  const modelHandoff = liveWaitingOn(waitingOnFieldValues(current), { nowMs: deps.now() });
 
   // B-1073 (post-review wiring) — the fast-track ADMISSION CHECK, run BEFORE leg_started_at (and
   // B-1020's leg_count) are ever stamped: a fast-track conduction (run_config.fast_track, ticket
@@ -2548,7 +2553,13 @@ async function fireLaunch(
     .runCommand(
       renderTemplate(
         deps.config.profile.launch,
-        templateVars(gkeLaunch ? { ...row, worker_ref: workerRef ?? null } : row, current, deps.projectKey, deps.workerImage, deps.getModelPolicy?.(), catalog),
+        templateVars((() => {
+          const launchRow = gkeLaunch ? { ...row, worker_ref: workerRef ?? null } : row;
+          if (modelHandoff?.kind !== 'model-handoff') return launchRow;
+          const config = (launchRow.run_config ?? {}) as RunConfig;
+          const gate = resolveLegGate(config, current);
+          return gate ? { ...launchRow, run_config: { ...config, model: { ...(config.model ?? {}), per_gate: { ...(config.model?.per_gate ?? {}), [gate]: modelHandoff.ref } } } } : launchRow;
+        })(), current, deps.projectKey, deps.workerImage, deps.getModelPolicy?.(), catalog),
       ),
       {
         env: {
@@ -2568,6 +2579,18 @@ async function fireLaunch(
       tracked.launchOutputTail = result.outputTail ?? null;
       tracked.launchOutputBytes = result.outputBytes ?? 0;
     });
+
+  // B-1050: the launch command now contains the requested alias in its effective run_config, so the
+  // one-shot marker can be cleared. The production adapter checks marker identity; the worker-side
+  // pickup remains a recovery path if this best-effort clear fails.
+  if (modelHandoff?.kind === 'model-handoff' && deps.clearModelHandoff) {
+    try {
+      const cleared = await deps.clearModelHandoff(row.task_id, modelHandoff);
+      if (!cleared) deps.log(`${label(row, current, deps.projectKey)}: model-handoff marker changed before it could be cleared`);
+    } catch (err) {
+      deps.log(`${label(row, current, deps.projectKey)}: could not clear model-handoff marker (${formatDaemonError(err)})`);
+    }
+  }
 
   const cancelDeadline = deps.startTimeout(deps.config.workerTimeoutMs, () => {
     deps.log(

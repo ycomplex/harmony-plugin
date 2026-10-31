@@ -71779,6 +71779,11 @@ function registerModelCommands(program3) {
       process.exit(1);
       return;
     }
+    if (process.env.HARMONY_MODEL_HANDOFF_CONSUMER !== "1") {
+      console.error(`harmony model request-switch: WARNING \u2014 requested '${entryModelId(entry)}', continuing on '${process.env.HARMONY_MODEL || "the current model"}'; this worker has no model-handoff consumer`);
+      process.exit(2);
+      return;
+    }
     writeModelHandoffRequest(entryModelId(entry));
   });
   model.command("read-handoff").description(
