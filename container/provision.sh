@@ -709,6 +709,23 @@ case "$MODE" in
       fi
     }
 
+    # B-1353: snapshot the selected Codex rollout BEFORE each invocation. Request rows appended
+    # after this byte offset belong to this invocation, regardless of terminal cumulative totals.
+    B1353_REQUEST_FILE=""
+    B1353_REQUEST_OFFSET=0
+    _b1353_begin_request_slice() {
+      [ "${AGENT_ID:-claude-code}" = "codex" ] || return 0
+      local thread_id="${1:-}" f
+      [ -n "$thread_id" ] || return 0
+      for f in "$CODEX_SESSIONS_DIR"/*/*/*/rollout-*-${thread_id}.jsonl; do
+        [ -f "$f" ] || continue
+        B1353_REQUEST_FILE="$f"
+        B1353_REQUEST_OFFSET="$(stat -c '%s' "$f" 2>/dev/null || echo unknown)"
+        [[ "$B1353_REQUEST_OFFSET" =~ ^[0-9]+$ ]] || B1353_REQUEST_OFFSET=-1
+        return 0
+      done
+    }
+
     # --- B-772 round 2: bounded in-worker model-switch loop --------------------------------------
     # The WORKER (skills/harmony-conduct/SKILL.md step 1d), not this conductor-fired guess, is what
     # actually enforces which model a gate runs on: at step 1 of every gate the running session
@@ -840,16 +857,29 @@ case "$MODE" in
     # to belong to and therefore nothing to record. $1 = the capture file.
     _b916_record_invocation() {
       if [ -n "${HARMONY_CONDUCTION_ID:-}" ]; then
-        local model_args=() duration_args=()
+        local model_args=() duration_args=() usage_args=() error_args=() invocation_id="${LEG_KEY}:${INVOCATION_INDEX}" f invocation_exit="${2:-0}"
         if [ -n "$CURRENT_MODEL" ]; then
           model_args=(--model "$CURRENT_MODEL")
         fi
         if [ -n "${B1149_LAST_DURATION_MS:-}" ]; then
           duration_args=(--duration-ms "$B1149_LAST_DURATION_MS")
         fi
+        if [ "${AGENT_ID:-claude-code}" = "codex" ]; then
+          if [ -n "$B1353_REQUEST_FILE" ]; then
+            usage_args=(--request-usage-file "$B1353_REQUEST_FILE" --request-usage-offset "$B1353_REQUEST_OFFSET")
+          elif [ -n "$CODEX_CURRENT_THREAD" ]; then
+            for f in "$CODEX_SESSIONS_DIR"/*/*/*/rollout-*-${CODEX_CURRENT_THREAD}.jsonl; do
+              [ -f "$f" ] || continue
+              usage_args=(--request-usage-file "$f" --request-usage-offset 0)
+              break
+            done
+          fi
+          [ "$invocation_exit" -eq 0 ] || error_args=(--is-error)
+        fi
         node "$PLUGIN_DIR/dist/bin/harmony.js" leg-cost record \
           --file "$1" --gate "$LEG_GATE" --leg-key "$LEG_KEY" \
-          --invocation-index "$INVOCATION_INDEX" "${model_args[@]}" "${duration_args[@]}" >/dev/null 2>&1 || true
+          --invocation-index "$INVOCATION_INDEX" --invocation-id "$invocation_id" \
+          "${model_args[@]}" "${duration_args[@]}" "${usage_args[@]}" "${error_args[@]}" >/dev/null 2>&1 || true
       fi
       INVOCATION_INDEX=$((INVOCATION_INDEX + 1))
       rm -f "$1"
@@ -935,6 +965,7 @@ case "$MODE" in
         _agent_argv "$RESUME_SESSION_ID"
         RESUME_STDERR_FILE="$(mktemp)"
         RESUME_STDOUT_FILE="$(mktemp)"
+        _b1353_begin_request_slice "$RESUME_SESSION_ID"
         set +e
         _b772_run "${AGENT_ARGV[@]}" >"$RESUME_STDOUT_FILE" 2>"$RESUME_STDERR_FILE"
         RESUME_EXIT=$?
@@ -951,7 +982,7 @@ case "$MODE" in
         _b720_record_output "$RESUME_STDOUT_FILE" "$RESUME_STDERR_FILE"
         rm -f "$RESUME_STDERR_FILE"
         _b1148_record_thread "$RESUME_STDOUT_FILE"
-        _b916_record_invocation "$RESUME_STDOUT_FILE"
+        _b916_record_invocation "$RESUME_STDOUT_FILE" "$RESUME_EXIT"
         # B-1167: a stopped resume attempt is not a failed attach — no cold fallback, no further iteration.
         if _b1167_stop_requested "$RESUME_EXIT"; then
           LEG_EXIT="$(_b1167_stop_exit_code "$RESUME_EXIT")"
@@ -967,6 +998,8 @@ case "$MODE" in
           echo "B-718: --resume $RESUME_SESSION_ID failed to attach (exit $RESUME_EXIT; see stderr above) — falling back to a COLD start. Resume was attempted and degraded gracefully; this is expected to be rare — investigate the persisted transcript mount if it recurs." >&2
           _agent_argv ""
           FALLBACK_STDOUT_FILE="$(mktemp)"
+          B1353_REQUEST_FILE=""; B1353_REQUEST_OFFSET=0; INVOCATION_EXIT=0
+          _b1353_begin_request_slice ""
           set +e
           _b772_run "${AGENT_ARGV[@]}" >"$FALLBACK_STDOUT_FILE"
           INVOCATION_EXIT=$?
@@ -974,7 +1007,7 @@ case "$MODE" in
           _b916_echo_result "$FALLBACK_STDOUT_FILE"
           _b720_record_output "$FALLBACK_STDOUT_FILE"
           _b1148_record_thread "$FALLBACK_STDOUT_FILE"
-          _b916_record_invocation "$FALLBACK_STDOUT_FILE"
+          _b916_record_invocation "$FALLBACK_STDOUT_FILE" "$INVOCATION_EXIT"
           LEG_EXIT=$INVOCATION_EXIT
           # B-916: before this ticket a nonzero exit here ended the script on the spot, via `set -e`.
           # That is preserved EXACTLY — as an explicit exit taken only AFTER the capture above has
@@ -1000,6 +1033,8 @@ case "$MODE" in
         # boundary (this ticket's accepted design), so there is never a `--resume` on iteration 2+.
         _agent_argv ""
         COLD_STDOUT_FILE="$(mktemp)"
+        B1353_REQUEST_FILE=""; B1353_REQUEST_OFFSET=0; INVOCATION_EXIT=0
+        _b1353_begin_request_slice ""
         set +e
         _b772_run "${AGENT_ARGV[@]}" >"$COLD_STDOUT_FILE"
         INVOCATION_EXIT=$?
@@ -1007,7 +1042,7 @@ case "$MODE" in
         _b916_echo_result "$COLD_STDOUT_FILE"
         _b720_record_output "$COLD_STDOUT_FILE"
         _b1148_record_thread "$COLD_STDOUT_FILE"
-        _b916_record_invocation "$COLD_STDOUT_FILE"
+        _b916_record_invocation "$COLD_STDOUT_FILE" "$INVOCATION_EXIT"
         LEG_EXIT=$INVOCATION_EXIT
         # B-916: same preserved-`set -e` exit as the resume-fallback branch above — see its comment
         # (including why it names $INVOCATION_EXIT rather than $LEG_EXIT).

@@ -18,6 +18,7 @@
 // diagnostic nicety corrupting the thing it is meant to describe.
 
 import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { Command } from 'commander';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { getConductionId, getRunConfig, type RunConfig } from '../../config/run-config.js';
@@ -34,7 +35,8 @@ import { resolveLaunchAdapter } from '../../agents/launch-routing.js';
 import { resolveGatePhase } from '../../daemon/gate-phase.js';
 import { deriveCodexCostUsd, parseClaudeResultJson, resolveCost } from '../../tools/claude-result-parse.js';
 import { fetchCatalogPrice } from '../../tools/catalog-pricing.js';
-import { ownUsageDelta, recordLegCost, resolveLegCostContext, sumPriorSessionUsage } from '../../tools/leg-cost-record.js';
+import { recordLegCost, resolveLegCostContext } from '../../tools/leg-cost-record.js';
+import { parseCodexRequestUsage } from '../../agents/codex.js';
 import { parseClaudeRefusal } from '../../agents/claude-code.js';
 import type { Refusal } from '../../agents/refusal.js';
 import { getAuthenticatedContext } from '../auth.js';
@@ -200,6 +202,10 @@ export function registerLegCostCommands(program: Command): void {
     .option('--credential-kind <kind>', 'B-1078: override the derived credential kind (a CredentialMode)')
     .option('--cost-regime <regime>', 'B-1078: must agree with the credential-derived regime, else ignored with a warning')
     .option('--duration-ms <n>', "B-1149: wall-clock duration of the invocation, measured by the worker (used when the capture carries none — Codex)")
+    .option('--request-usage-file <path>', 'Codex rollout JSONL containing request records for this invocation')
+    .option('--request-usage-offset <n>', 'Byte offset captured before this invocation; defaults to zero')
+    .option('--invocation-id <key>', 'Stable invocation identity used as the idempotent cost-row UUID')
+    .option('--is-error', 'Mark an invocation failed when its runtime did not emit a terminal event')
     .action(
       async (opts: {
         file: string;
@@ -212,6 +218,10 @@ export function registerLegCostCommands(program: Command): void {
         credentialKind?: string;
         costRegime?: string;
         durationMs?: string;
+        requestUsageFile?: string;
+        requestUsageOffset?: string;
+        invocationId?: string;
+        isError?: boolean;
       }) => {
         const conductionId = opts.conductionId ?? getConductionId();
         if (!conductionId) {
@@ -255,12 +265,23 @@ export function registerLegCostCommands(program: Command): void {
         const client = await getClient();
         const context = await resolveLegCostContext(client, conductionId);
 
-        // B-1149: a resumed Codex thread reports CUMULATIVE usage — subtract what earlier rows of the
-        // same thread already recorded, so this row is the invocation's OWN usage.
+        // Codex terminal summaries can be cumulative. For cost recording, only the rollout's
+        // invocation-bounded request slice is trusted; a missing boundary stays unknown.
         let usage = adapterRec?.usage ?? null;
-        if (usage && adapterRec?.sessionId) {
-          const prior = await sumPriorSessionUsage(client, { conduction_id: conductionId, session_id: adapterRec.sessionId });
-          usage = ownUsageDelta(usage, prior);
+        if (facts.runtime === 'codex') {
+          let requestSlice: string | null = null;
+          if (opts.requestUsageFile) {
+            try {
+              const bytes = readFileSync(opts.requestUsageFile);
+              const offset = Number(opts.requestUsageOffset ?? '0');
+              if (Number.isSafeInteger(offset) && offset >= 0 && offset <= bytes.length) {
+                requestSlice = bytes.subarray(offset).toString('utf8');
+              }
+            } catch { /* an absent retained rollout is unknown, never a cumulative estimate */ }
+          }
+          // The invocation's own rollout records are authoritative. If no bounded slice exists,
+          // leave usage unknown; Codex's terminal summary may be cumulative across a resumed thread.
+          usage = requestSlice === null ? null : parseCodexRequestUsage(requestSlice);
         }
         // B-1179: the price comes from the model's catalog row when it carries all three prices, else
         // from the in-code tables (CODEX_PRICING / MODEL_PRICING); an unpriced model stays
@@ -272,7 +293,7 @@ export function registerLegCostCommands(program: Command): void {
         let cost: { total_cost_usd: number | null; cost_source: 'cli' | 'derived' | 'unknown' };
         if (parsed) cost = resolveCost(parsed, model, rowPrice);
         else {
-          const codexCost = adapterRec ? deriveCodexCostUsd(usage, model, rowPrice) : null;
+          const codexCost = facts.runtime === 'codex' ? deriveCodexCostUsd(usage, model, rowPrice) : null;
           cost = codexCost !== null ? { total_cost_usd: codexCost, cost_source: 'derived' } : { total_cost_usd: null, cost_source: 'unknown' };
         }
         // B-1149: the adapter's refusal verdict (Codex via its telemetry; Claude via its envelope).
@@ -281,6 +302,7 @@ export function registerLegCostCommands(program: Command): void {
         const durationMs = opts.durationMs !== undefined && Number.isFinite(workerDuration) && workerDuration >= 0 ? Math.round(workerDuration) : null;
 
         await recordLegCost(client, {
+          id: opts.invocationId ? stableInvocationUuid(opts.invocationId) : undefined,
           conduction_id: conductionId,
           leg_key: opts.legKey,
           task_id: context?.task_id ?? null,
@@ -300,7 +322,7 @@ export function registerLegCostCommands(program: Command): void {
           duration_ms: parsed?.duration_ms ?? durationMs,
           duration_api_ms: parsed?.duration_api_ms ?? null,
           session_id: parsed?.session_id ?? adapterRec?.sessionId ?? null,
-          is_error: parsed?.is_error ?? adapterRec?.isError ?? false,
+          is_error: parsed?.is_error ?? (Boolean(opts.isError) || Boolean(adapterRec?.isError)),
           service_tier: parsed?.service_tier ?? null,
           runtime: facts.runtime,
           credential_kind: facts.credential_kind,
@@ -310,4 +332,12 @@ export function registerLegCostCommands(program: Command): void {
         });
       },
     );
+}
+
+function stableInvocationUuid(key: string): string {
+  const hex = createHash('sha256').update(key).digest('hex').slice(0, 32).split('');
+  hex[12] = '8';
+  hex[16] = ((parseInt(hex[16], 16) & 0x3) | 0x8).toString(16);
+  const value = hex.join('');
+  return `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20)}`;
 }
