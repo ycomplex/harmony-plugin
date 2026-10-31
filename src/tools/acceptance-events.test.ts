@@ -12,6 +12,8 @@ import {
   consumePendingAcceptanceEvent,
   classifyPayload,
   isShippedMilestoneGuardError,
+  isDecisionOnlyGuardError,
+  GuardBlockedLabelAddError,
   ShippedMilestoneGuardError,
   RACED_EVENT_ERROR_SUBSTRING,
   type PendingAcceptanceEvent,
@@ -1851,6 +1853,137 @@ describe('entity_link kind disambiguation (B-1317)', () => {
     const link = client.rpcCalls.find((c: { name: string }) => c.name === 'consume_entity_link_write');
     expect((link.args as any)._entity_id).toBe(FEATURE.id);
     expect(client.rpcCalls.map((c: { name: string }) => c.name)).toContain('consume_acceptance_event');
+    expect(startElicitation).not.toHaveBeenCalled();
+  });
+});
+
+// B-833 — a guard-blocked decision-only label_add picked up by a fresh/cross-session leg files a
+// worker-question round (mirroring B-1317's ambiguity round) instead of a bare error, and is resolvable.
+describe('guard-blocked decision-only label_add (B-833)', () => {
+  const BUILD_SHAPE = { code: '23514', message: 'decision-only guard blocked: build-shape (task abc-123)' };
+  const clarifyEvent = (): PendingAcceptanceEvent => ({
+    id: 'event-1', task_id: 'task-1', brief_id: 'brief-1', reason: 'clarification-draft',
+    payload: { items: [acItem('ac-1'), labelAddItem('label-decision-only')] }, pending_activity: 'clarifying', status: 'pending',
+  });
+  const guardClient = (event: PendingAcceptanceEvent, extraRpc: Record<string, Array<{ data: unknown; error?: unknown }>> = {}) => makeClient({
+    fromResponses: {
+      pending_acceptance_events: [{ data: [], error: null }, { data: event }],
+      tasks: [{ data: { pending_acceptance_event_id: 'event-1' } }],
+    },
+    rpcResponses: {
+      consume_ac_add_write: [{ data: { applied: true } }],
+      consume_label_add_write: [{ data: null, error: BUILD_SHAPE }],
+      ...extraRpc,
+    },
+  });
+  const rpcNames = (client: any) => client.rpcCalls.map((c: { name: string }) => c.name);
+
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it('isDecisionOnlyGuardError matches 23514 + guard text only', () => {
+    expect(isDecisionOnlyGuardError(BUILD_SHAPE)).toBe(true);
+    expect(isDecisionOnlyGuardError({ code: '23514', message: 'decision-only guard blocked: terminal (task x)' })).toBe(true);
+    expect(isDecisionOnlyGuardError({ code: '23514', message: 'new row for relation "tasks" violates check constraint "tasks_priority_check"' })).toBe(false);
+    expect(isDecisionOnlyGuardError({ code: '42501', message: 'decision-only guard blocked: build-shape' })).toBe(false);
+    expect(isDecisionOnlyGuardError(null)).toBe(false);
+    expect(isDecisionOnlyGuardError(undefined)).toBe(false);
+  });
+
+  it('applyAcceptanceEventPayload throws a typed GuardBlockedLabelAddError carrying the guard message verbatim', async () => {
+    const client = makeClient({ rpcResponses: { consume_label_add_write: [{ data: null, error: BUILD_SHAPE }] } });
+    const err = await applyAcceptanceEventPayload(client, makeEvent([labelAddItem('label-decision-only')])).catch((e) => e);
+    expect(err).toBeInstanceOf(GuardBlockedLabelAddError);
+    expect(err.ref).toBe('label-decision-only');
+    expect(err.labelName).toBe('decision-only');
+    expect(err.blockReason).toBe('build-shape');
+    expect(err.guardMessage).toBe(BUILD_SHAPE.message);
+    expect(err.message).toContain(BUILD_SHAPE.message);
+  });
+
+  it('(a) a fresh-session consume with a user id files a worker-question round naming can_mark_decision_only and label_add, and does not consume', async () => {
+    const client = guardClient(clarifyEvent());
+    const err = await consumePendingAcceptanceEvent(client, PROJECT_ID, 'task-1', { userId: 'user-1' }).catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err.message).toMatch(/decision-only guard blocked: build-shape/);
+    expect(err.message).toMatch(/A worker-question round was filed on the ticket; the acceptance event stays pending until it is answered\./);
+    expect(rpcNames(client)).toContain('consume_ac_add_write');
+    expect(rpcNames(client)).not.toContain('consume_acceptance_event');
+    expect(startElicitation).toHaveBeenCalledWith(client, PROJECT_ID, 'user-1', expect.objectContaining({ task_id: 'task-1', trigger: 'worker-question', gate: 'clarifying' }));
+    expect(fileElicitationRound).toHaveBeenCalledTimes(1);
+    const filed = vi.mocked(fileElicitationRound).mock.calls[0][2];
+    expect(filed.exchange_id).toBe('exchange-1');
+    expect(filed.context_line).toMatch(/^Decision-only label blocked/);
+    expect(filed.context_line).toContain('can_mark_decision_only');
+    expect(filed.context_line).toContain('label_add');
+    expect(filed.context_line).toContain('build-shape');
+    expect(filed.context_line).toMatch(/still pending/);
+    expect(filed.questions).toHaveLength(1);
+    expect(filed.questions[0]).toMatchObject({ kind: 'open', stakes: 'load-bearing' });
+    expect(filed.questions[0].text).toMatch(/revise-scope/);
+    expect(filed.questions[0].why).toContain('skip_blocked_label_add: true');
+  });
+
+  it('(b) browser accept with no live session: a second consume while the round is unanswered files no duplicate, event still pending', async () => {
+    const first = guardClient(clarifyEvent());
+    await expect(consumePendingAcceptanceEvent(first, PROJECT_ID, 'task-1', { userId: 'user-1' })).rejects.toThrow(/round was filed/);
+    expect(fileElicitationRound).toHaveBeenCalledTimes(1);
+    const firstRound = vi.mocked(fileElicitationRound).mock.calls[0][2];
+
+    vi.mocked(startElicitation).mockResolvedValueOnce({ id: 'exchange-1', rounds: [{ context_line: firstRound.context_line, answers: {} }] } as any);
+    const second = guardClient(clarifyEvent(), { consume_ac_add_write: [{ data: { applied: false } }] });
+    await expect(consumePendingAcceptanceEvent(second, PROJECT_ID, 'task-1', { userId: 'user-1' })).rejects.toThrow(/round was filed/);
+    expect(fileElicitationRound).toHaveBeenCalledTimes(1);
+    expect(rpcNames(second)).not.toContain('consume_acceptance_event');
+  });
+
+  it('(c) with no user id the error says the round could not be filed and no exchange is opened', async () => {
+    const client = guardClient(clarifyEvent());
+    const err = await consumePendingAcceptanceEvent(client, PROJECT_ID, 'task-1').catch((e) => e);
+    expect(err.message).toMatch(/decision-only guard blocked: build-shape/);
+    expect(err.message).toMatch(/round could not be filed: no user id/);
+    expect(startElicitation).not.toHaveBeenCalled();
+    expect(fileElicitationRound).not.toHaveBeenCalled();
+    expect(rpcNames(client)).not.toContain('consume_acceptance_event');
+  });
+
+  it('a filing failure says why, and the event stays pending', async () => {
+    vi.mocked(startElicitation).mockRejectedValueOnce(new Error('rls denied'));
+    const client = guardClient(clarifyEvent());
+    await expect(consumePendingAcceptanceEvent(client, PROJECT_ID, 'task-1', { userId: 'user-1' }))
+      .rejects.toThrow(/round could not be filed \(rls denied\)/);
+    expect(rpcNames(client)).not.toContain('consume_acceptance_event');
+  });
+
+  it('(d) resolvable: skip_blocked_label_add: true skips the refused label and consumes, filing no round', async () => {
+    const client = guardClient(clarifyEvent(), {
+      consume_acceptance_event: [{ data: { event_id: 'event-1', task_id: 'task-1', status: 'consumed', workflow_state: 'Clarified', idempotent: false } }],
+    });
+    const result = await consumePendingAcceptanceEvent(client, PROJECT_ID, 'task-1', { userId: 'user-1', skip_blocked_label_add: true });
+    expect(result.status).toBe('consumed');
+    expect(result.applied).toBe(1);
+    expect(result.skipped_already_done).toBe(1);
+    expect(result.by_write_kind).toEqual({ acceptance_criterion: 1 });
+    expect(rpcNames(client)).toContain('consume_acceptance_event');
+    expect(startElicitation).not.toHaveBeenCalled();
+    expect(fileElicitationRound).not.toHaveBeenCalled();
+  });
+
+  it('skip_blocked_label_add does not skip other label_add errors', async () => {
+    const client = makeClient({ rpcResponses: { consume_label_add_write: [{ data: null, error: { code: '23514', message: 'some other check constraint' } }] } });
+    const err = await applyAcceptanceEventPayload(client, makeEvent([labelAddItem('label-decision-only')]), { skip_blocked_label_add: true }).catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(GuardBlockedLabelAddError);
+    expect(err.message).toBe('some other check constraint');
+  });
+
+  it('happy path unchanged: the guard allows, the label lands and no round is filed', async () => {
+    const client = guardClient(clarifyEvent(), {
+      consume_label_add_write: [{ data: { applied: true } }],
+      consume_acceptance_event: [{ data: { event_id: 'event-1', task_id: 'task-1', status: 'consumed', workflow_state: 'Clarified', idempotent: false } }],
+    });
+    const result = await consumePendingAcceptanceEvent(client, PROJECT_ID, 'task-1', { userId: 'user-1' });
+    expect(result.status).toBe('consumed');
+    expect(result.by_write_kind).toEqual({ acceptance_criterion: 1, label_add: 1 });
     expect(startElicitation).not.toHaveBeenCalled();
   });
 });

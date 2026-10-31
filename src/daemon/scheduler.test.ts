@@ -1323,6 +1323,46 @@ describe('runSchedulerPass — wake, fire, and settle (fire-and-track)', () => {
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
 describe('B-792: the repo-progress probe (deps.probeRef, bracketing fire and settle)', () => {
+  // B-1058: resolveWorkRef is module-private; it is pinned through the fire path — the ref the
+  // probe is called with IS resolveWorkRef's output, now fed by the meta projection's branch-only
+  // field_values (branch values uncoerced; nulls degrade to "no ref").
+  it('B-1058: a meta-shaped branch-only field_values resolves build_pr.branch, then work_branch.branch, then nothing', async () => {
+    const metaFv = (fv: { build_pr?: { branch?: unknown } | null; work_branch?: { branch?: unknown } | null }) => fv;
+
+    // 1. PR branch preferred (even with an empty-string pre-PR branch recorded).
+    let h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask({ field_values: metaFv({ build_pr: { branch: 'feat/pr' }, work_branch: { branch: '' } }) as DaemonTask['field_values'] }) },
+    });
+    h.setProbeRefSha('feat/pr', 'sha-1');
+    await h.pass();
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    await h.pass();
+    expect(h.probeRefCalls()).toEqual([{ ref: 'feat/pr', result: 'sha-1' }]);
+
+    // 2. Pre-PR fallback when no usable build_pr.branch (null, exactly as the projection emits).
+    h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask({ field_values: metaFv({ build_pr: { branch: null }, work_branch: { branch: 'feat/wip' } }) as DaemonTask['field_values'] }) },
+    });
+    h.setProbeRefSha('feat/wip', 'sha-2');
+    await h.pass();
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    await h.pass();
+    expect(h.probeRefCalls()).toEqual([{ ref: 'feat/wip', result: 'sha-2' }]);
+
+    // 3. Both null ⇒ never probed.
+    h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask({ field_values: metaFv({ build_pr: { branch: null }, work_branch: { branch: null } }) as DaemonTask['field_values'] }) },
+    });
+    await h.pass();
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input = false;
+    await h.pass();
+    expect(h.probeRefCalls()).toEqual([]);
+    expect(h.runtime.running.get('cond-1')?.preFireHeadSha).toBeNull();
+  });
+
   it('resolves build_pr.branch over work_branch.branch when both are present, probes it at fire, stores preFireHeadSha, and probes the SAME ref again at settle', async () => {
     const h = makeHarness({
       conductions: [conduction()],

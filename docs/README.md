@@ -18,6 +18,8 @@ keys, the three `harmony conductor config` commands, the adoption runbook and th
 `--remote` forms: what each verb does, the shared pre-flight, adopting running legs, and the operator machine (the
 CLI on PATH, the minimal laptop host file, gcloud and `gke-gcloud-auth-plugin`).
 
+`doctor-auth-hook.md` (B-1035, B-1300) is the operator reference for `harmony doctor auth-hook`: the two hook halves it prints, the before-user-created mismatch WARNs, and the access-token-only exit-code contract.
+
 `recorded-walk-contract.md` (B-1062) is the contract for recording a ticket's gates instead of conducting them: the
 `recorded_walk_requests` table the web's Record action writes and the plugin's walk reads.
 

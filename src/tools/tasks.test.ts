@@ -660,7 +660,7 @@ describe('getTask', () => {
 
   // B-684: the lean 'meta' view — a pinned loop-control projection for repeated re-reads.
   // Trim the RETURN, never the COMPUTATION: risk_classes keeps its full-mode inputs.
-  const makeFullClient = (opts: { title: string; description?: string }): any => ({
+  const makeFullClient = (opts: { title: string; description?: string; field_values?: unknown }): any => ({
     from: vi.fn((table: string) => {
       if (table === 'tasks') {
         return {
@@ -687,6 +687,7 @@ describe('getTask', () => {
                     updated_at: '2026-07-08T00:00:00Z',
                     content_updated_at: '2026-07-07T00:00:00Z',
                     last_activity_at: '2026-07-08T00:00:00Z',
+                    ...(opts.field_values !== undefined ? { field_values: opts.field_values } : {}),
                     task_labels: [{ labels: { id: 'l1', name: 'backend', color: '#fff' } }],
                     checklist_items: [{ id: 'ci1', title: 'item', completed: false, position: 0 }],
                   },
@@ -736,7 +737,7 @@ describe('getTask', () => {
     }),
   });
 
-  it("B-684/B-792/B-818/B-1157: view:'meta' returns EXACTLY the 24-key loop-control projection", async () => {
+  it("B-684/B-792/B-818/B-1157/B-1058: view:'meta' returns EXACTLY the 25-key loop-control projection", async () => {
     const client = makeFullClient({ title: 'T', description: 'A long payload description.' });
     const result = await getTask(client, 'proj-1', { task_id: 'B-1', view: 'meta' });
 
@@ -745,12 +746,17 @@ describe('getTask', () => {
       'awaiting_human_input', 'awaiting_human_reason', 'awaiting_human_ref',
       'pending_acceptance_event_id',
       'stale', 'stale_ref', 'parent_task_id', 'archived', 'subsumed_by_task_id',
-      'conductor_excluded_at', 'waiting_on',
+      'conductor_excluded_at', 'waiting_on', 'field_values',
       'pending_resolution', 'active_exchange', 'pending_remark', 'risk_classes',
       'active_brief_iteration', 'knowledge_reference_count',
       'updated_at', 'content_updated_at', 'last_activity_at',
     ];
     expect(Object.keys(result).sort()).toEqual([...expectedKeys].sort());
+    // B-1058: field_values is the BRANCH-ONLY shape — never the whole object.
+    expect((result as any).field_values).toEqual({
+      build_pr: { branch: null },
+      work_branch: { branch: null },
+    });
 
     // The payload fields are OMITTED (implied by the exact-key pin; asserted explicitly for clarity).
     expect(result).not.toHaveProperty('description');
@@ -759,6 +765,46 @@ describe('getTask', () => {
     expect(result).not.toHaveProperty('attachments');
     expect(result).not.toHaveProperty('labels');
     expect(result).not.toHaveProperty('checklist_items');
+  });
+
+  it("B-1058: view:'meta' carries ONLY build_pr.branch and work_branch.branch from field_values — gate records and unrelated custom fields stay excluded", async () => {
+    const client = makeFullClient({
+      title: 'T',
+      field_values: {
+        build_pr: { branch: 'feat/pr-branch', head_sha: 'abc123', pr_url: 'https://x/pr/1' },
+        work_branch: { branch: 'feat/wip-branch' },
+        waiting_on: { kind: 'pr', first_since: '2026-10-31T00:00:00Z' },
+        gate_slots: { clarify: { ratified: 'y'.repeat(5000) } },
+        some_custom_field: { big: true },
+      },
+    });
+    const result = await getTask(client, 'proj-1', { task_id: 'B-1', view: 'meta' });
+
+    // Exactly the two branch sub-keys — head_sha/pr_url do NOT ride the meta view.
+    expect((result as any).field_values).toEqual({
+      build_pr: { branch: 'feat/pr-branch' },
+      work_branch: { branch: 'feat/wip-branch' },
+    });
+    // waiting_on keeps its own top-level key (B-1157), never moves into field_values.
+    expect((result as any).waiting_on).toEqual({ kind: 'pr', first_since: '2026-10-31T00:00:00Z' });
+  });
+
+  it("B-1058: view:'meta' branch values pass through UNCOERCED — malformed/missing records degrade to null for resolveWorkRef to reject", async () => {
+    const client = makeFullClient({
+      title: 'T',
+      field_values: { build_pr: { branch: 42 }, work_branch: 'not-an-object' },
+    });
+    const result = await getTask(client, 'proj-1', { task_id: 'B-1', view: 'meta' });
+    expect((result as any).field_values).toEqual({
+      build_pr: { branch: 42 },
+      work_branch: { branch: null },
+    });
+
+    const absent = await getTask(makeFullClient({ title: 'T' }), 'proj-1', { task_id: 'B-1', view: 'meta' });
+    expect((absent as any).field_values).toEqual({
+      build_pr: { branch: null },
+      work_branch: { branch: null },
+    });
   });
 
   it("B-684: view:'meta' still computes risk_classes from the omitted description (trim the return, never the computation)", async () => {
