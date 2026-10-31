@@ -36458,6 +36458,11 @@ function isShippedMilestoneGuardError(error) {
   const msg = error.message ?? "";
   return /was shipped/i.test(msg) && /cannot be assigned to it/i.test(msg);
 }
+function isDecisionOnlyGuardError(error) {
+  if (!error) return false;
+  if (error.code !== "23514") return false;
+  return /decision-only guard blocked/i.test(error.message ?? "");
+}
 var ShippedMilestoneGuardError = class extends Error {
   constructor(guardMessage) {
     super(guardMessage);
@@ -36526,6 +36531,24 @@ var AmbiguousEntityLinkError = class extends Error {
   entityName;
   candidates;
 };
+var GuardBlockedLabelAddError = class extends Error {
+  constructor(ref, labelName, blockReason, guardMessage) {
+    super(guardMessage);
+    this.ref = ref;
+    this.labelName = labelName;
+    this.blockReason = blockReason;
+    this.guardMessage = guardMessage;
+    this.name = "GuardBlockedLabelAddError";
+  }
+  ref;
+  labelName;
+  blockReason;
+  guardMessage;
+};
+function parseGuardBlockReason(message) {
+  const m = /decision-only guard blocked:\s*([A-Za-z_-]+)/i.exec(message);
+  return m ? m[1] : "unknown";
+}
 async function preflightEntityLinks(client, event, items, opts) {
   const resolved = /* @__PURE__ */ new Map();
   for (const item of items) {
@@ -36752,6 +36775,13 @@ async function applyAcceptanceEventPayload(client, event, opts = {}) {
         });
         if (error) {
           if (isMissingRelationOrFunction(error)) throw new WriteKindSubstrateAbsentError("label_add");
+          if (isDecisionOnlyGuardError(error)) {
+            if (opts.skip_blocked_label_add) {
+              skipped += 1;
+              continue;
+            }
+            throw new GuardBlockedLabelAddError(item.ref, labelName, parseGuardBlockReason(error.message), error.message);
+          }
           throw new Error(error.message);
         }
         result = data;
@@ -36828,6 +36858,39 @@ ${list}`,
     return new Error(`${err.message} The question round could not be filed (${why}), so the human has not been asked \u2014 the acceptance event stays pending.`);
   }
 }
+var GUARD_BLOCKED_ROUND_PREFIX = "Decision-only label blocked";
+async function fileGuardBlockedLabelAddRound(client, projectId, event, err, userId) {
+  if (!userId) {
+    return new Error(`${err.message} The question round could not be filed: no user id was available to open the exchange, so the human has not been asked \u2014 ask them whether to drop the decision-only proposal (then re-run with skip_blocked_label_add: true) or revise scope; the acceptance event stays pending.`);
+  }
+  try {
+    const exchange = await startElicitation(client, projectId, userId, {
+      task_id: event.task_id,
+      trigger: "worker-question",
+      gate: event.pending_activity ?? void 0
+    });
+    const last = Array.isArray(exchange.rounds) ? exchange.rounds[exchange.rounds.length - 1] : void 0;
+    const alreadyAsked = !!last && (last.context_line ?? "").startsWith(GUARD_BLOCKED_ROUND_PREFIX) && Object.keys(last.answers ?? {}).length === 0;
+    if (!alreadyAsked) {
+      const text2 = err.blockReason === "terminal" ? `The ticket is Verified, Cancelled or Parked, so the '${err.labelName}' label cannot be stamped. Drop the decision-only proposal and commit the acceptance without it?` : err.blockReason === "build-shape" ? `The ticket is Planned or later, or already has a build PR, so the '${err.labelName}' label cannot be stamped. Drop the decision-only proposal and continue, or use revise-scope to change the ticket's shape?` : `The guard refused the '${err.labelName}' label (${err.guardMessage}). Drop the decision-only proposal and continue, or use revise-scope?`;
+      await fileElicitationRound(client, projectId, {
+        exchange_id: exchange.id,
+        context_line: `${GUARD_BLOCKED_ROUND_PREFIX}: the guard can_mark_decision_only refused the label_add write (item ${err.ref}, block_reason ${err.blockReason}). Every other write in the payload already landed, but the acceptance is still pending.`,
+        questions: [{
+          id: "q1",
+          stakes: "load-bearing",
+          kind: "open",
+          text: text2,
+          why: "Answering 'drop it' lets the next leg re-run consume_pending_acceptance_event with skip_blocked_label_add: true, which commits the acceptance without the label. If the acceptance has already been committed (a same-session clarify accept commits it directly), nothing more is needed: the label simply stays off."
+        }]
+      });
+    }
+    return new Error(`${err.message} A worker-question round was filed on the ticket; the acceptance event stays pending until it is answered.`);
+  } catch (fileErr) {
+    const why = fileErr instanceof Error ? fileErr.message : String(fileErr);
+    return new Error(`${err.message} The question round could not be filed (${why}), so the human has not been asked \u2014 the acceptance event stays pending.`);
+  }
+}
 async function consumePendingAcceptanceEvent(client, projectId, taskId, opts = {}) {
   const probe = await probeAcceptanceEventSubstrate(client);
   if (probe === "absent") return { status: "substrate-absent" };
@@ -36839,9 +36902,13 @@ async function consumePendingAcceptanceEvent(client, projectId, taskId, opts = {
   }
   let applyResult;
   try {
-    applyResult = await applyAcceptanceEventPayload(client, event, { entity_overrides: opts.entity_overrides });
+    applyResult = await applyAcceptanceEventPayload(client, event, {
+      entity_overrides: opts.entity_overrides,
+      skip_blocked_label_add: opts.skip_blocked_label_add
+    });
   } catch (err) {
     if (err instanceof AmbiguousEntityLinkError) throw await fileAmbiguityRound(client, projectId, event, err, opts.userId);
+    if (err instanceof GuardBlockedLabelAddError) throw await fileGuardBlockedLabelAddRound(client, projectId, event, err, opts.userId);
     throw err;
   }
   if (applyResult.substrate_absent_for) {

@@ -53868,6 +53868,11 @@ function isShippedMilestoneGuardError(error2) {
   const msg = error2.message ?? "";
   return /was shipped/i.test(msg) && /cannot be assigned to it/i.test(msg);
 }
+function isDecisionOnlyGuardError(error2) {
+  if (!error2) return false;
+  if (error2.code !== "23514") return false;
+  return /decision-only guard blocked/i.test(error2.message ?? "");
+}
 var ShippedMilestoneGuardError = class extends Error {
   constructor(guardMessage) {
     super(guardMessage);
@@ -53936,6 +53941,24 @@ var AmbiguousEntityLinkError = class extends Error {
   entityName;
   candidates;
 };
+var GuardBlockedLabelAddError = class extends Error {
+  constructor(ref, labelName, blockReason, guardMessage) {
+    super(guardMessage);
+    this.ref = ref;
+    this.labelName = labelName;
+    this.blockReason = blockReason;
+    this.guardMessage = guardMessage;
+    this.name = "GuardBlockedLabelAddError";
+  }
+  ref;
+  labelName;
+  blockReason;
+  guardMessage;
+};
+function parseGuardBlockReason(message) {
+  const m = /decision-only guard blocked:\s*([A-Za-z_-]+)/i.exec(message);
+  return m ? m[1] : "unknown";
+}
 async function preflightEntityLinks(client, event, items, opts) {
   const resolved = /* @__PURE__ */ new Map();
   for (const item of items) {
@@ -54162,6 +54185,13 @@ async function applyAcceptanceEventPayload(client, event, opts = {}) {
         });
         if (error2) {
           if (isMissingRelationOrFunction(error2)) throw new WriteKindSubstrateAbsentError("label_add");
+          if (isDecisionOnlyGuardError(error2)) {
+            if (opts.skip_blocked_label_add) {
+              skipped += 1;
+              continue;
+            }
+            throw new GuardBlockedLabelAddError(item.ref, labelName, parseGuardBlockReason(error2.message), error2.message);
+          }
           throw new Error(error2.message);
         }
         result = data;
@@ -54238,6 +54268,39 @@ ${list}`,
     return new Error(`${err.message} The question round could not be filed (${why}), so the human has not been asked \u2014 the acceptance event stays pending.`);
   }
 }
+var GUARD_BLOCKED_ROUND_PREFIX = "Decision-only label blocked";
+async function fileGuardBlockedLabelAddRound(client, projectId, event, err, userId) {
+  if (!userId) {
+    return new Error(`${err.message} The question round could not be filed: no user id was available to open the exchange, so the human has not been asked \u2014 ask them whether to drop the decision-only proposal (then re-run with skip_blocked_label_add: true) or revise scope; the acceptance event stays pending.`);
+  }
+  try {
+    const exchange = await startElicitation(client, projectId, userId, {
+      task_id: event.task_id,
+      trigger: "worker-question",
+      gate: event.pending_activity ?? void 0
+    });
+    const last = Array.isArray(exchange.rounds) ? exchange.rounds[exchange.rounds.length - 1] : void 0;
+    const alreadyAsked = !!last && (last.context_line ?? "").startsWith(GUARD_BLOCKED_ROUND_PREFIX) && Object.keys(last.answers ?? {}).length === 0;
+    if (!alreadyAsked) {
+      const text3 = err.blockReason === "terminal" ? `The ticket is Verified, Cancelled or Parked, so the '${err.labelName}' label cannot be stamped. Drop the decision-only proposal and commit the acceptance without it?` : err.blockReason === "build-shape" ? `The ticket is Planned or later, or already has a build PR, so the '${err.labelName}' label cannot be stamped. Drop the decision-only proposal and continue, or use revise-scope to change the ticket's shape?` : `The guard refused the '${err.labelName}' label (${err.guardMessage}). Drop the decision-only proposal and continue, or use revise-scope?`;
+      await fileElicitationRound(client, projectId, {
+        exchange_id: exchange.id,
+        context_line: `${GUARD_BLOCKED_ROUND_PREFIX}: the guard can_mark_decision_only refused the label_add write (item ${err.ref}, block_reason ${err.blockReason}). Every other write in the payload already landed, but the acceptance is still pending.`,
+        questions: [{
+          id: "q1",
+          stakes: "load-bearing",
+          kind: "open",
+          text: text3,
+          why: "Answering 'drop it' lets the next leg re-run consume_pending_acceptance_event with skip_blocked_label_add: true, which commits the acceptance without the label. If the acceptance has already been committed (a same-session clarify accept commits it directly), nothing more is needed: the label simply stays off."
+        }]
+      });
+    }
+    return new Error(`${err.message} A worker-question round was filed on the ticket; the acceptance event stays pending until it is answered.`);
+  } catch (fileErr) {
+    const why = fileErr instanceof Error ? fileErr.message : String(fileErr);
+    return new Error(`${err.message} The question round could not be filed (${why}), so the human has not been asked \u2014 the acceptance event stays pending.`);
+  }
+}
 async function consumePendingAcceptanceEvent(client, projectId, taskId, opts = {}) {
   const probe = await probeAcceptanceEventSubstrate(client);
   if (probe === "absent") return { status: "substrate-absent" };
@@ -54249,9 +54312,13 @@ async function consumePendingAcceptanceEvent(client, projectId, taskId, opts = {
   }
   let applyResult;
   try {
-    applyResult = await applyAcceptanceEventPayload(client, event, { entity_overrides: opts.entity_overrides });
+    applyResult = await applyAcceptanceEventPayload(client, event, {
+      entity_overrides: opts.entity_overrides,
+      skip_blocked_label_add: opts.skip_blocked_label_add
+    });
   } catch (err) {
     if (err instanceof AmbiguousEntityLinkError) throw await fileAmbiguityRound(client, projectId, event, err, opts.userId);
+    if (err instanceof GuardBlockedLabelAddError) throw await fileGuardBlockedLabelAddRound(client, projectId, event, err, opts.userId);
     throw err;
   }
   if (applyResult.substrate_absent_for) {
@@ -54281,19 +54348,24 @@ async function consumePendingAcceptanceEvent(client, projectId, taskId, opts = {
 }
 var consumePendingAcceptanceEventTool = {
   name: "consume_pending_acceptance_event",
-  description: 'B-797 leg-start-consume: check for and execute an outstanding accepted-brief payload (proposed ACs, decompose children + AC transfers, plan-step checklist, design AC refinements, B-688 decision-only label proposals, B-843 knowledge-entry content + per-gate supersede, B-867 the gate\'s durable ticket section, B-941 supersede-decision retires, B-997 confirmed feature-entity name(s) + entity edges) BEFORE any gate routing/floor check runs. Call this FIRST, on every leg pickup \u2014 mirrors the B-747 leg-start check. Feature-detects the substrate (never by plugin version): on an older DB without the B-797 tables/RPCs returns { status: "substrate-absent" } and changes nothing (today\'s synchronous behavior is exactly preserved). { status: "none" } = no outstanding event. { status: "consumed" } = every promised write landed (idempotently \u2014 a retry after a partial failure only applies what is still missing) and the deferred workflow-state advance committed; `workflow_state` is the ticket\'s new state; `by_write_kind` breaks `applied` down per write_kind (e.g. how many NEW acceptance_criterion writes this call itself filed). B-888: the consumed result ALSO carries `reason` and `brief_id`, surfaced directly from the pending event row (no second `list_activity` round-trip needed) \u2014 when `reason === "clarification-draft"` this consume IS the clarification\'s AC-filing pass, and the caller (harmony-conduct \xA71c) MUST write the `AC-FILING-PASS brief_id=<brief_id> filed=<by_write_kind.acceptance_criterion ?? 0>` marker right here \u2014 its absence is what let the design gate\'s \xA72b self-heal conclude filing never ran and re-file the same acceptance criteria a second time. { status: "payload-unrecognized", event_id, reason, items } = EITHER the event\'s snapshotted payload is not (yet) in the structured shape this tool applies, OR (B-688/B-383) a recognized write_kind\'s own RPC is not yet deployed on this DB (a pre-migration window) \u2014 both degrade to the SAME status/ shape and the SAME caller handling; do not try to distinguish them. `items` (B-816) is the VERBATIM snapshotted raw items the human already accepted \u2014 the owning gate\'s materialization MUST render these items (title/content per item) as a confirm-or-adjust ask, never re-read them via `get_task` / `get_pending_acceptance_event`, and never fall back to an open "what did you accept?" re-dictation question; only residue genuinely absent from `items` is a legitimate open question. Route to the OWNING GATE SKILL\'s existing materialization (e.g. the design-decide B-744 self-heal for clarify ACs, decompose\'s own B-646 existing-child detection), confirm the work is done, THEN call `consume_acceptance_event({ event_id })` directly to commit the deferred advance. NEVER treat "payload-unrecognized" as "nothing to do" \u2014 that would commit a hollow advance under a new name. Throws (does NOT swallow) if a recognized payload write fails \u2014 the event stays visibly pending; do not catch-and-continue. B-1317: every entity_link name is resolved BEFORE any write; an ambiguous name (e.g. a concept and a feature) throws with nothing applied, files a "which entity did you mean?" worker-question round, and leaves the event pending \u2014 once answered, call again with `entity_overrides` ({ <item ref>: <entity id> }).',
+  description: 'B-797 leg-start-consume: check for and execute an outstanding accepted-brief payload (proposed ACs, decompose children + AC transfers, plan-step checklist, design AC refinements, B-688 decision-only label proposals, B-843 knowledge-entry content + per-gate supersede, B-867 the gate\'s durable ticket section, B-941 supersede-decision retires, B-997 confirmed feature-entity name(s) + entity edges) BEFORE any gate routing/floor check runs. Call this FIRST, on every leg pickup \u2014 mirrors the B-747 leg-start check. Feature-detects the substrate (never by plugin version): on an older DB without the B-797 tables/RPCs returns { status: "substrate-absent" } and changes nothing (today\'s synchronous behavior is exactly preserved). { status: "none" } = no outstanding event. { status: "consumed" } = every promised write landed (idempotently \u2014 a retry after a partial failure only applies what is still missing) and the deferred workflow-state advance committed; `workflow_state` is the ticket\'s new state; `by_write_kind` breaks `applied` down per write_kind (e.g. how many NEW acceptance_criterion writes this call itself filed). B-888: the consumed result ALSO carries `reason` and `brief_id`, surfaced directly from the pending event row (no second `list_activity` round-trip needed) \u2014 when `reason === "clarification-draft"` this consume IS the clarification\'s AC-filing pass, and the caller (harmony-conduct \xA71c) MUST write the `AC-FILING-PASS brief_id=<brief_id> filed=<by_write_kind.acceptance_criterion ?? 0>` marker right here \u2014 its absence is what let the design gate\'s \xA72b self-heal conclude filing never ran and re-file the same acceptance criteria a second time. { status: "payload-unrecognized", event_id, reason, items } = EITHER the event\'s snapshotted payload is not (yet) in the structured shape this tool applies, OR (B-688/B-383) a recognized write_kind\'s own RPC is not yet deployed on this DB (a pre-migration window) \u2014 both degrade to the SAME status/ shape and the SAME caller handling; do not try to distinguish them. `items` (B-816) is the VERBATIM snapshotted raw items the human already accepted \u2014 the owning gate\'s materialization MUST render these items (title/content per item) as a confirm-or-adjust ask, never re-read them via `get_task` / `get_pending_acceptance_event`, and never fall back to an open "what did you accept?" re-dictation question; only residue genuinely absent from `items` is a legitimate open question. Route to the OWNING GATE SKILL\'s existing materialization (e.g. the design-decide B-744 self-heal for clarify ACs, decompose\'s own B-646 existing-child detection), confirm the work is done, THEN call `consume_acceptance_event({ event_id })` directly to commit the deferred advance. NEVER treat "payload-unrecognized" as "nothing to do" \u2014 that would commit a hollow advance under a new name. Throws (does NOT swallow) if a recognized payload write fails \u2014 the event stays visibly pending; do not catch-and-continue. B-1317: every entity_link name is resolved BEFORE any write; an ambiguous name (e.g. a concept and a feature) throws with nothing applied, files a "which entity did you mean?" worker-question round, and leaves the event pending \u2014 once answered, call again with `entity_overrides` ({ <item ref>: <entity id> }). B-833: a label_add refused by the decision-only guard throws (message keeps "decision-only guard blocked"), files a worker-question round and leaves the event pending \u2014 once the human answers "drop it", call again with `skip_blocked_label_add: true` to commit without the label.',
   inputSchema: {
     type: "object",
     properties: {
       task_id: { type: "string", description: "Task identifier \u2014 UUID, task number (e.g., 43), or visual ID (e.g., B-43)" },
-      entity_overrides: { type: "object", additionalProperties: { type: "string" }, description: `Optional map of entity_link item ref -> entity id, the answer to a "which entity did you mean?" round; applied as that item's entity_id.` }
+      entity_overrides: { type: "object", additionalProperties: { type: "string" }, description: `Optional map of entity_link item ref -> entity id, the answer to a "which entity did you mean?" round; applied as that item's entity_id.` },
+      skip_blocked_label_add: { type: "boolean", description: 'Optional (B-833): the answer "drop it" to a guard-blocked decision-only label round \u2014 a label_add the decision-only guard refuses is skipped (the label never lands) and the acceptance commits. Only the guard refusal is skippable.' }
     },
     required: ["task_id"]
   }
 };
 async function consumePendingAcceptanceEventToolHandler(client, projectId, args, userId) {
   if (!args.task_id) throw new Error("task_id is required");
-  return consumePendingAcceptanceEvent(client, projectId, args.task_id, { userId, entity_overrides: args.entity_overrides });
+  return consumePendingAcceptanceEvent(client, projectId, args.task_id, {
+    userId,
+    entity_overrides: args.entity_overrides,
+    skip_blocked_label_add: args.skip_blocked_label_add === true
+  });
 }
 var consumeAcceptanceEventTool = {
   name: "consume_acceptance_event",
