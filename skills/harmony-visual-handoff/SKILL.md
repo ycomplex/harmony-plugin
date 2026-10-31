@@ -79,8 +79,9 @@ did not validate this side — keep it a thin pass-through.)
 Run the preflight (`src/tools/figma-connection.ts`, `resolveFigmaRoute`) before step 3a:
 
 B-1201: run `node "${CLAUDE_PLUGIN_ROOT}/dist/bin/harmony.js" figma context` for the live connection. Missing schema means unconnected;
-other read errors stop. A connected worker must have passed `figma install-worker` with the
-exact generation and version refs and mounted access-token/PAT files. Look components up with
+other read errors stop. For a connected worker, the launcher has already run `figma install-worker`
+during provisioning with the exact generation and version refs and mounted access-token/PAT files.
+The worker must not run `figma install-worker` again; if setup is missing or stale, request a relaunch. Look components up with
 `node "${CLAUDE_PLUGIN_ROOT}/dist/bin/harmony.js" figma component "<variant name>" --in "<set name>"`
 and discover sets with `node "${CLAUDE_PLUGIN_ROOT}/dist/bin/harmony.js" figma component --sets`
 (one call, no Figma search). The saved map's set variants are keyed "<set> :: <variant>", so identically

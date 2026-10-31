@@ -60528,6 +60528,16 @@ function readLaunchContext() {
 var emitLine = (o) => {
   process.stdout.write(JSON.stringify(o) + "\n");
 };
+function replaceCodexFigmaSection(config2) {
+  const section = /^[ \t]*\[mcp_servers\.figma\][ \t]*(?:#[^\r\n]*)?(?:\r?\n|$)[\s\S]*?(?=^[ \t]*\[|(?![\s\S]))/gm;
+  let replaced = false;
+  const updated = config2.replace(section, () => {
+    if (replaced) return "";
+    replaced = true;
+    return renderFigmaMcp("codex").trimStart();
+  });
+  return replaced ? updated : config2 + renderFigmaMcp("codex");
+}
 function registerFigmaCommands(program3, ports = {
   prompt: secretPrompt,
   readGrant: readClaudeFigmaGrant,
@@ -60757,7 +60767,7 @@ function registerFigmaCommands(program3, ports = {
         );
         writeFileSync(
           path4,
-          readFileSync6(path4, "utf8") + renderFigmaMcp("codex"),
+          replaceCodexFigmaSection(readFileSync6(path4, "utf8")),
           { mode: 384 }
         );
         chmodSync2(path4, 384);

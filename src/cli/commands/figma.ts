@@ -158,6 +158,18 @@ const emitLine = (o: unknown): void => {
   process.stdout.write(JSON.stringify(o) + "\n");
 };
 
+/** Replace only the generated Figma table; retain every unrelated section verbatim. */
+function replaceCodexFigmaSection(config: string): string {
+  const section = /^[ \t]*\[mcp_servers\.figma\][ \t]*(?:#[^\r\n]*)?(?:\r?\n|$)[\s\S]*?(?=^[ \t]*\[|(?![\s\S]))/gm;
+  let replaced = false;
+  const updated = config.replace(section, () => {
+    if (replaced) return "";
+    replaced = true;
+    return renderFigmaMcp("codex").trimStart();
+  });
+  return replaced ? updated : config + renderFigmaMcp("codex");
+}
+
 export function registerFigmaCommands(program: Command, ports = {
   prompt: secretPrompt, readGrant: readClaudeFigmaGrant, mint: withClaudeFigmaSignIn,
 }): void {
@@ -448,7 +460,7 @@ export function registerFigmaCommands(program: Command, ports = {
           );
           writeFileSync(
             path,
-            readFileSync(path, "utf8") + renderFigmaMcp("codex"),
+            replaceCodexFigmaSection(readFileSync(path, "utf8")),
             { mode: 0o600 },
           );
           chmodSync(path, 0o600);
