@@ -52032,6 +52032,20 @@ async function getTask(client, projectId, args) {
       // hold gate / settle classification and the stop gate read through THIS view. ONE narrow key, not the
       // whole `field_values` (which carries kilobytes of gate_slots): pass-through, null when absent.
       waiting_on: t.field_values?.waiting_on ?? null,
+      // B-1058: the branch-only `field_values` — exactly the two refs B-792's repo-progress probe
+      // resolves (scheduler.ts resolveWorkRef: `build_pr.branch` over `work_branch.branch`). The
+      // tasks-row select already fetches field_values; the meta return used to DROP it wholesale,
+      // which made the probe unresolvable (resolveWorkRef always null ⇒ repo-active-board-silent
+      // unreachable). Branch-only, NOT the whole object (kilobytes of gate_slots / custom fields
+      // stay excluded — see the design decision): values pass through UNCOERCED — resolveWorkRef
+      // owns the non-empty-string validation, exactly as before.
+      field_values: (() => {
+        const fv = t.field_values;
+        return {
+          build_pr: { branch: fv?.build_pr?.branch ?? null },
+          work_branch: { branch: fv?.work_branch?.branch ?? null }
+        };
+      })(),
       pending_resolution,
       active_exchange,
       pending_remark,
