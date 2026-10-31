@@ -225,6 +225,16 @@ export function isShippedMilestoneGuardError(error: { message?: string; code?: s
   return /was shipped/i.test(msg) && /cannot be assigned to it/i.test(msg);
 }
 
+/** B-833 — the decision-only stamping guard's refusal from `consume_label_add_write`
+ *  (`can_mark_decision_only` said no): Postgres `check_violation` (23514) with a message containing
+ *  `decision-only guard blocked: <terminal|build-shape>`. Code PLUS text, so an unrelated 23514 is never
+ *  misclassified as this guard (same reasoning as `isShippedMilestoneGuardError`). */
+export function isDecisionOnlyGuardError(error: { message?: string; code?: string } | null | undefined): boolean {
+  if (!error) return false;
+  if (error.code !== '23514') return false;
+  return /decision-only guard blocked/i.test(error.message ?? '');
+}
+
 /** B-975 — typed rethrow of a b847 shipped-milestone guard refusal, carrying the guard's OWN message
  *  (`error.message`, verbatim — already names the milestone, when it shipped, and the one-shot-ejection
  *  caveat) rather than a generic wrapped Error. Detecting this BEFORE any `new Error(error.message)`
@@ -401,10 +411,35 @@ export class AmbiguousEntityLinkError extends Error {
   }
 }
 
+/** B-833 — a `label_add` write refused by the decision-only stamping guard. `.message` keeps the guard's
+ *  own text verbatim (callers match /decision-only guard blocked/). Every write ordered before label_add
+ *  has already landed when this is thrown (label_add runs last, B-1029); the event stays pending. */
+export class GuardBlockedLabelAddError extends Error {
+  constructor(
+    public readonly ref: string,
+    public readonly labelName: string,
+    public readonly blockReason: 'terminal' | 'build-shape' | string,
+    public readonly guardMessage: string,
+  ) {
+    super(guardMessage);
+    this.name = 'GuardBlockedLabelAddError';
+  }
+}
+
+/** Parse `<reason>` out of `decision-only guard blocked: <reason> ...`; 'unknown' when absent. */
+function parseGuardBlockReason(message: string): string {
+  const m = /decision-only guard blocked:\s*([A-Za-z_-]+)/i.exec(message);
+  return m ? m[1] : 'unknown';
+}
+
 export interface ApplyPayloadOptions {
   /** item ref -> entity id: treated as `entity_id` for that `entity_link` item (the answer to an
    *  ambiguity round). */
   entity_overrides?: Record<string, string>;
+  /** B-833 — the answer "drop it" to a guard-blocked label_add round: a label_add the decision-only guard
+   *  refuses is counted as skipped (the label never lands) instead of throwing. Only the guard refusal is
+   *  skippable; every other error behaves as before. */
+  skip_blocked_label_add?: boolean;
 }
 
 interface ResolvedEntityLink { projectId: string; workspaceId: string; selected: SelectedEntity | null }
@@ -700,6 +735,15 @@ export async function applyAcceptanceEventPayload(
           // call (RAISE EXCEPTION ... USING ERRCODE = 'check_violation') is NOT this class — it is a real
           // error and must propagate untouched (never swallowed).
           if (isMissingRelationOrFunction(error)) throw new WriteKindSubstrateAbsentError('label_add');
+          // B-833: the guard refusal gets a typed error (message verbatim) so the consume entry point can
+          // file an answerable round — or, once answered "drop it", skip the label and commit.
+          if (isDecisionOnlyGuardError(error)) {
+            if (opts.skip_blocked_label_add) {
+              skipped += 1;
+              continue;
+            }
+            throw new GuardBlockedLabelAddError(item.ref, labelName, parseGuardBlockReason(error.message), error.message);
+          }
           throw new Error(error.message);
         }
         result = data as { applied?: boolean };
@@ -836,6 +880,8 @@ export interface ConsumePendingOptions {
   userId?: string;
   /** item ref -> entity id: the answer to that round; applied as `entity_id` for the item. */
   entity_overrides?: Record<string, string>;
+  /** B-833 — the answer "drop it" to a guard-blocked label_add round: skip the refused label and commit. */
+  skip_blocked_label_add?: boolean;
 }
 
 const AMBIGUITY_ROUND_PREFIX = 'Entity link is ambiguous';
@@ -873,6 +919,51 @@ async function fileAmbiguityRound(
       });
     }
     return new Error(`${err.message} A "which entity did you mean?" round was filed on the ticket (worker-question); the acceptance event stays pending until it is answered.`);
+  } catch (fileErr) {
+    const why = fileErr instanceof Error ? fileErr.message : String(fileErr);
+    return new Error(`${err.message} The question round could not be filed (${why}), so the human has not been asked — the acceptance event stays pending.`);
+  }
+}
+
+const GUARD_BLOCKED_ROUND_PREFIX = 'Decision-only label blocked';
+
+/** B-833 — a guard-blocked label_add picked up by a fresh/cross-session leg: every other write already
+ *  landed, the event stays pending. File an answerable worker-question round (same shape and dedupe as
+ *  fileAmbiguityRound) and return the error to throw. Never swallows. */
+async function fileGuardBlockedLabelAddRound(
+  client: SupabaseClient,
+  projectId: string,
+  event: PendingAcceptanceEvent,
+  err: GuardBlockedLabelAddError,
+  userId: string | undefined,
+): Promise<Error> {
+  if (!userId) {
+    return new Error(`${err.message} The question round could not be filed: no user id was available to open the exchange, so the human has not been asked — ask them whether to drop the decision-only proposal (then re-run with skip_blocked_label_add: true) or revise scope; the acceptance event stays pending.`);
+  }
+  try {
+    const exchange = await startElicitation(client, projectId, userId, {
+      task_id: event.task_id, trigger: 'worker-question', gate: event.pending_activity ?? undefined,
+    }) as { id: string; rounds?: Array<{ context_line?: string; answers?: Record<string, unknown> }> };
+    const last = Array.isArray(exchange.rounds) ? exchange.rounds[exchange.rounds.length - 1] : undefined;
+    const alreadyAsked = !!last && (last.context_line ?? '').startsWith(GUARD_BLOCKED_ROUND_PREFIX)
+      && Object.keys(last.answers ?? {}).length === 0;
+    if (!alreadyAsked) {
+      const text = err.blockReason === 'terminal'
+        ? `The ticket is Verified, Cancelled or Parked, so the '${err.labelName}' label cannot be stamped. Drop the decision-only proposal and commit the acceptance without it?`
+        : err.blockReason === 'build-shape'
+          ? `The ticket is Planned or later, or already has a build PR, so the '${err.labelName}' label cannot be stamped. Drop the decision-only proposal and continue, or use revise-scope to change the ticket's shape?`
+          : `The guard refused the '${err.labelName}' label (${err.guardMessage}). Drop the decision-only proposal and continue, or use revise-scope?`;
+      await fileElicitationRound(client, projectId, {
+        exchange_id: exchange.id,
+        context_line: `${GUARD_BLOCKED_ROUND_PREFIX}: the guard can_mark_decision_only refused the label_add write (item ${err.ref}, block_reason ${err.blockReason}). Every other write in the payload already landed, but the acceptance is still pending.`,
+        questions: [{
+          id: 'q1', stakes: 'load-bearing', kind: 'open',
+          text,
+          why: "Answering 'drop it' lets the next leg re-run consume_pending_acceptance_event with skip_blocked_label_add: true, which commits the acceptance without the label. If the acceptance has already been committed (a same-session clarify accept commits it directly), nothing more is needed: the label simply stays off.",
+        }],
+      });
+    }
+    return new Error(`${err.message} A worker-question round was filed on the ticket; the acceptance event stays pending until it is answered.`);
   } catch (fileErr) {
     const why = fileErr instanceof Error ? fileErr.message : String(fileErr);
     return new Error(`${err.message} The question round could not be filed (${why}), so the human has not been asked — the acceptance event stays pending.`);
@@ -917,9 +1008,12 @@ export async function consumePendingAcceptanceEvent(
 
   let applyResult: ApplyPayloadResult;
   try {
-    applyResult = await applyAcceptanceEventPayload(client, event, { entity_overrides: opts.entity_overrides });
+    applyResult = await applyAcceptanceEventPayload(client, event, {
+      entity_overrides: opts.entity_overrides, skip_blocked_label_add: opts.skip_blocked_label_add,
+    });
   } catch (err) {
     if (err instanceof AmbiguousEntityLinkError) throw await fileAmbiguityRound(client, projectId, event, err, opts.userId);
+    if (err instanceof GuardBlockedLabelAddError) throw await fileGuardBlockedLabelAddRound(client, projectId, event, err, opts.userId);
     throw err;
   }
 
@@ -1004,12 +1098,14 @@ export const consumePendingAcceptanceEventTool = {
     'Throws (does NOT swallow) if a recognized payload write fails — the event stays visibly pending; ' +
     'do not catch-and-continue. B-1317: every entity_link name is resolved BEFORE any write; an ambiguous name ' +
     '(e.g. a concept and a feature) throws with nothing applied, files a "which entity did you mean?" worker-question ' +
-    'round, and leaves the event pending — once answered, call again with `entity_overrides` ({ <item ref>: <entity id> }).',
+    'round, and leaves the event pending — once answered, call again with `entity_overrides` ({ <item ref>: <entity id> }). ' +
+    'B-833: a label_add refused by the decision-only guard throws (message keeps "decision-only guard blocked"), files a worker-question round and leaves the event pending — once the human answers "drop it", call again with `skip_blocked_label_add: true` to commit without the label.',
   inputSchema: {
     type: 'object' as const,
     properties: {
       task_id: { type: 'string', description: 'Task identifier — UUID, task number (e.g., 43), or visual ID (e.g., B-43)' },
       entity_overrides: { type: 'object', additionalProperties: { type: 'string' }, description: 'Optional map of entity_link item ref -> entity id, the answer to a "which entity did you mean?" round; applied as that item\'s entity_id.' },
+      skip_blocked_label_add: { type: 'boolean', description: 'Optional (B-833): the answer "drop it" to a guard-blocked decision-only label round — a label_add the decision-only guard refuses is skipped (the label never lands) and the acceptance commits. Only the guard refusal is skippable.' },
     },
     required: ['task_id'],
   },
@@ -1018,11 +1114,13 @@ export const consumePendingAcceptanceEventTool = {
 export async function consumePendingAcceptanceEventToolHandler(
   client: SupabaseClient,
   projectId: string,
-  args: { task_id: string; entity_overrides?: Record<string, string> },
+  args: { task_id: string; entity_overrides?: Record<string, string>; skip_blocked_label_add?: boolean },
   userId?: string,
 ): Promise<ConsumePendingAcceptanceResult> {
   if (!args.task_id) throw new Error('task_id is required');
-  return consumePendingAcceptanceEvent(client, projectId, args.task_id, { userId, entity_overrides: args.entity_overrides });
+  return consumePendingAcceptanceEvent(client, projectId, args.task_id, {
+    userId, entity_overrides: args.entity_overrides, skip_blocked_label_add: args.skip_blocked_label_add === true,
+  });
 }
 
 export const consumeAcceptanceEventTool = {

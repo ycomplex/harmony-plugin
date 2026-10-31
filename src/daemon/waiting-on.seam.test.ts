@@ -83,10 +83,12 @@ async function metaOf(fieldValues: Record<string, unknown>) {
 const GATE_SLOTS = { gate_slots: { clarify: { content: { solving: 'x'.repeat(2000) } } }, build_pr: { pr_number: 364 } };
 
 describe("B-1157: the declared wait survives the REAL getTask(view:'meta') seam", () => {
-  it('meta carries the marker as its own key and still omits field_values', async () => {
+  it('meta carries the marker as its own key; field_values is branch-only (B-1058) — gate records stay excluded', async () => {
     const meta = await metaOf({ ...GATE_SLOTS, waiting_on: marker });
     expect(meta.waiting_on).toEqual(marker);
-    expect(meta).not.toHaveProperty('field_values'); // the lean projection stays lean
+    // B-1058: the lean projection stays lean — only the two probe branch refs ride field_values;
+    // gate_slots and non-branch build_pr keys never do, and the wait keeps its own key.
+    expect(meta.field_values).toEqual({ build_pr: { branch: null }, work_branch: { branch: null } });
   });
 
   it('meta waiting_on is null when no marker was declared (or it was cleared)', async () => {

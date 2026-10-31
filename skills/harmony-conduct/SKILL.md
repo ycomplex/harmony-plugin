@@ -397,6 +397,9 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
      Once the owning gate's materialization is confirmed done, call
      `mcp__harmony__consume_acceptance_event({ event_id: <from the payload-unrecognized result> })`
      directly to commit the deferred advance, then go back to step 1.
+   - **throws `decision-only guard blocked`** (B-833) → the tool has filed a worker-question round and
+     left the event pending: surface the round and pause (a clean elicitation pause); once the human has
+     answered "drop the proposal", re-run with `skip_blocked_label_add: true`.
 
    *(Mirrors 1b's shape exactly — a plumbing consume, not a gate: it commits writes a human already
    authorized by accepting. It composes no new brief and needs no pause of its own.)*
