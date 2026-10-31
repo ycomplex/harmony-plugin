@@ -127,6 +127,8 @@ export function isNamedColumnError(err: unknown, cols: readonly string[]): boole
  *  every measurement is optional, because a capture that read a malformed/absent result envelope
  *  must still record THAT the invocation happened rather than nothing at all. */
 export interface RecordLegCostArgs {
+  /** Stable invocation row identity. When supplied, duplicate retries are ignored by the row PK. */
+  id?: string;
   conduction_id: string;
   leg_key: string;
   /** Resolved here from the conduction when the caller does not already know it. */
@@ -256,6 +258,7 @@ export async function recordLegCost(
       (await resolveInvocationIndex(client, args.conduction_id, args.leg_key));
 
     const row: Record<string, unknown> = {
+      ...(args.id ? { id: args.id } : {}),
       conduction_id: args.conduction_id,
       task_id: args.task_id ?? null,
       leg_key: args.leg_key,
@@ -289,7 +292,25 @@ export async function recordLegCost(
     let refusalFields: Record<string, unknown> =
       args.refusal_kind ? { refusal_kind: args.refusal_kind, refusal_resets_at: args.refusal_resets_at ?? null } : {};
     let withRuntime = true;
-    let { error } = await client.from('conduction_leg_costs').insert({ ...row, ...runtimeFields, ...refusalFields });
+    if (args.id) {
+      // Diagnose a reused invocation key before the idempotent DO NOTHING write. A retry with the
+      // same measurements is expected; a key collision with different usage must be visible.
+      const { data: prior, error: readError } = await client
+        .from('conduction_leg_costs')
+        .select('input_tokens, output_tokens, cache_read_input_tokens, total_cost_usd, is_error')
+        .eq('id', args.id)
+        .maybeSingle();
+      if (!readError && prior) {
+        const expected = ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'total_cost_usd', 'is_error'];
+        const mismatch = expected.some((key) => (prior as Record<string, unknown>)[key] !== row[key]);
+        if (mismatch) warn(`invocation id ${args.id} already has different usage/cost values; preserving the existing row`);
+        return true;
+      }
+    }
+    const write = (payload: Record<string, unknown>) => args.id
+      ? client.from('conduction_leg_costs').upsert(payload, { onConflict: 'id', ignoreDuplicates: true })
+      : client.from('conduction_leg_costs').insert(payload);
+    let { error } = await write({ ...row, ...runtimeFields, ...refusalFields });
     // At most one retry per optional column group (refusal, runtime) — never a loop on an unrelated error.
     for (let attempt = 0; attempt < 2 && error; attempt += 1) {
       if (Object.keys(refusalFields).length > 0 && isRefusalColumnError(error)) {
@@ -310,9 +331,7 @@ export async function recordLegCost(
       } else {
         break;
       }
-      ({ error } = await client
-        .from('conduction_leg_costs')
-        .insert({ ...row, ...(withRuntime ? runtimeFields : {}), ...refusalFields }));
+      ({ error } = await write({ ...row, ...(withRuntime ? runtimeFields : {}), ...refusalFields }));
     }
     if (error) {
       warn(
