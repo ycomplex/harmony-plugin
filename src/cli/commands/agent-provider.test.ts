@@ -65,11 +65,13 @@ afterEach(() => {
   authMock.getAuthenticatedContext.mockReset();
 });
 
-async function run(args: string[]): Promise<number | null> {
-  const program = new Command();
+/** B-1348: the root program declares the same --json as src/cli/index.ts, so these tests see the
+ *  root/subcommand collision a bare `new Command()` hid. `rootArgs` go before `agent provider`. */
+async function run(args: string[], rootArgs: string[] = []): Promise<number | null> {
+  const program = new Command().option('--json', 'Output results as JSON', false);
   registerAgentCommands(program);
   try {
-    await program.parseAsync(['agent', 'provider', ...args], { from: 'user' });
+    await program.parseAsync([...rootArgs, 'agent', 'provider', ...args], { from: 'user' });
     return null;
   } catch (e) {
     if (e instanceof ExitSentinel) return e.code;
@@ -115,6 +117,37 @@ describe('harmony agent provider', () => {
     out = '';
     await run(['--model', 'gpt-6.1-sol', '--json']);
     expect(JSON.parse(out)).toMatchObject({ provider: 'openai', env_key: null, secret: null, base_url: null });
+  });
+
+  const OR_JSON = {
+    agent: 'codex',
+    model: 'qwen/qwen-9',
+    provider: 'openrouter',
+    env_key: 'OPENROUTER_API_KEY',
+    secret: 'harmony-provider-openrouter-key',
+    base_url: 'https://openrouter.ai/api/v1',
+    context_window_tokens: 262144,
+  };
+
+  it('B-1348 root --json collision: --json after the subcommand args still prints the provider JSON object', async () => {
+    expect(await run(['--agent', 'codex', '--model', 'codex:or-qwen', '--json'])).toBeNull();
+    expect(out.endsWith('\n')).toBe(true);
+    expect(out.trimEnd().split('\n')).toHaveLength(1);
+    expect(JSON.parse(out)).toEqual(OR_JSON);
+    expect(errSpy).not.toHaveBeenCalled();
+  });
+
+  it('B-1348 root --json collision: --json in root position (before agent provider) prints the provider JSON object', async () => {
+    expect(await run(['--agent', 'codex', '--model', 'codex:or-qwen'], ['--json'])).toBeNull();
+    expect(out.endsWith('\n')).toBe(true);
+    expect(out.trimEnd().split('\n')).toHaveLength(1);
+    expect(JSON.parse(out)).toEqual(OR_JSON);
+    expect(errSpy).not.toHaveBeenCalled();
+  });
+
+  it('B-1348 root --json collision: without --json, --field provider still prints the bare provider', async () => {
+    expect(await run(['--agent', 'codex', '--model', 'codex:or-qwen', '--field', 'provider'])).toBeNull();
+    expect(out).toBe('openrouter\n');
   });
 
   it('AC7: an inactive offer named explicitly still answers', async () => {

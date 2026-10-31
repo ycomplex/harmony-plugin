@@ -319,7 +319,10 @@ export function registerAgentCommands(program: Command): void {
     .option('--agent <id>', 'Agent runtime whose catalog rows to match', 'codex')
     .option('--field <field>', `One of: ${PROVIDER_FIELDS.join(', ')}`, 'provider')
     .option('--json', 'Print every fact as one JSON object')
-    .action(async (opts: { model: string; agent: string; field: string; json?: boolean }) => {
+    .action(async (opts: { model: string; agent: string; field: string; json?: boolean }, cmd: Command) => {
+      // B-1348: the root program also declares --json (src/cli/index.ts), and commander hands the flag to
+      // the root in either argv position, so this subcommand's own opts.json stays undefined. Read both.
+      const json = Boolean(opts.json || cmd.optsWithGlobals().json);
       if (!(PROVIDER_FIELDS as readonly string[]).includes(opts.field)) {
         console.error(`harmony agent provider: unknown --field '${opts.field}' — expected one of: ${PROVIDER_FIELDS.join(', ')}`);
         process.exit(1);
@@ -339,7 +342,7 @@ export function registerAgentCommands(program: Command): void {
         process.exit(2);
       }
       const v = (described as { ok: true; value: OfferProvider }).value;
-      process.stdout.write(opts.json ? `${JSON.stringify(v)}\n` : `${providerField(v, opts.field as ProviderField)}\n`);
+      process.stdout.write(json ? `${JSON.stringify(v)}\n` : `${providerField(v, opts.field as ProviderField)}\n`);
     });
 
   agent
