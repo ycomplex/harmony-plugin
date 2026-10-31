@@ -51,8 +51,9 @@ export function parseWaitingOn(fieldValues: unknown): WaitingOn | null {
 }
 
 /** The ticket-row shapes the declared-wait marker can arrive in: the `view:'meta'` projection's own
- *  `waiting_on` key (what the daemon and `tasks clean-check` actually read — meta omits `field_values`,
- *  B-1157 seat finding), or a full row's `field_values.waiting_on`. */
+ *  `waiting_on` key (what the daemon and `tasks clean-check` actually read — meta's `field_values`
+ *  is branch-only since B-1058, so the wait can never ride it there), or a full row's
+ *  `field_values.waiting_on`. */
 export interface WaitingOnCarrier {
   waiting_on?: unknown;
   field_values?: unknown;

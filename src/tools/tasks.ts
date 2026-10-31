@@ -247,7 +247,8 @@ export async function getTask(
   // label names) — it skips ONLY the pure return-payload selects (acceptance_criteria / test_cases /
   // attachments, which feed no computation) and returns a pinned 24-key loop-control projection
   // (B-792 widened it from 20 to 22 — see active_brief_iteration/knowledge_reference_count below;
-  // B-818 widened it again to 23 — see pending_acceptance_event_id below; B-1157 to 24 — waiting_on).
+  // B-818 widened it again to 23 — see pending_acceptance_event_id below; B-1157 to 24 — waiting_on;
+  // B-1058 to 25 — the branch-only field_values below).
   const meta = args.view === 'meta';
   const resolvedId = await resolveTaskId(client, projectId, args.task_id);
   const { data, error } = await client
@@ -362,10 +363,10 @@ export async function getTask(
     labels: labels.map((l: any) => l?.name).filter((n: unknown): n is string => typeof n === 'string'),
   });
 
-  // B-684: the lean 'meta' projection — a pinned 24-key loop-control shape (nothing more, nothing
+  // B-684: the lean 'meta' projection — a pinned 25-key loop-control shape (nothing more, nothing
   // less; tasks.test.ts deep-equals the key set — widened from 20 to 22 by B-792's
   // active_brief_iteration/knowledge_reference_count, to 23 by B-818's
-  // pending_acceptance_event_id, then to 24 by B-1157's waiting_on). risk_classes above was computed exactly as in full mode (trim the
+  // pending_acceptance_event_id, then to 24 by B-1157's waiting_on, to 25 by B-1058's field_values). risk_classes above was computed exactly as in full mode (trim the
   // return, never the computation); the omitted fields (description, acceptance criteria, test
   // cases, attachments, labels, checklist) are pure payload with no loop-control role.
   // pending_remark (B-503) is a poll marker — the conduct loop's poll read classifies on it — so it
@@ -397,6 +398,20 @@ export async function getTask(
       // hold gate / settle classification and the stop gate read through THIS view. ONE narrow key, not the
       // whole `field_values` (which carries kilobytes of gate_slots): pass-through, null when absent.
       waiting_on: (t.field_values as Record<string, unknown> | null | undefined)?.waiting_on ?? null,
+      // B-1058: the branch-only `field_values` — exactly the two refs B-792's repo-progress probe
+      // resolves (scheduler.ts resolveWorkRef: `build_pr.branch` over `work_branch.branch`). The
+      // tasks-row select already fetches field_values; the meta return used to DROP it wholesale,
+      // which made the probe unresolvable (resolveWorkRef always null ⇒ repo-active-board-silent
+      // unreachable). Branch-only, NOT the whole object (kilobytes of gate_slots / custom fields
+      // stay excluded — see the design decision): values pass through UNCOERCED — resolveWorkRef
+      // owns the non-empty-string validation, exactly as before.
+      field_values: (() => {
+        const fv = t.field_values as Record<string, unknown> | null | undefined;
+        return {
+          build_pr: { branch: (fv?.build_pr as { branch?: unknown } | null | undefined)?.branch ?? null },
+          work_branch: { branch: (fv?.work_branch as { branch?: unknown } | null | undefined)?.branch ?? null },
+        };
+      })(),
       pending_resolution,
       active_exchange,
       pending_remark,
