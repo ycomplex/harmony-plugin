@@ -745,7 +745,10 @@ Show the rendered `content` verbatim. On the human's command:
        full apply here would just retry the same doomed label write for no benefit, so only the deferred
        advance itself remains to commit: `mcp__harmony__consume_acceptance_event({ event_id })`.
        Report **Clarified** (never Verified — the label never landed, so no fast-forward).
-    3. File a `worker-question` round (`skills/harmony-shared/elicitation-engine.md` §The worker-question
+    3. Since B-833, `consume_pending_acceptance_event` files this round itself when it has a user id (the
+       thrown message then says "A worker-question round was filed"). File it here ONLY when the message
+       says the round could not be filed, so the ticket never gets two rounds. When it is yours to file,
+       file a `worker-question` round (`skills/harmony-shared/elicitation-engine.md` §The worker-question
        trigger) naming what happened — the ticket was judged decision-only-shaped and proposed, but the
        guard blocked it (name the `block_reason`) — and asking the human how to proceed (e.g. drop the
        proposal, or something else):
