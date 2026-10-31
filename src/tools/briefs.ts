@@ -1503,8 +1503,16 @@ export function renderSlot(doc: BriefDoc, gate: GateSlotName): GateSlotContent |
 
   switch (gate) {
     case 'design': {
-      if (frame.kind !== 'design' || !frame.design_artefact) return null;
-      return { design_artefact: frame.design_artefact };
+      if (frame.kind !== 'design') return null;
+      if (frame.design_artefact) return { design_artefact: frame.design_artefact };
+      // B-1324: non-visual tracks (product-design, technical-design) may have no design_artefact.
+      // Project the track/tracks/reach info as the slot content so write_gate_slot succeeds.
+      // UX/UI still requires an artefact — returning null signals that.
+      if (frame.track === 'ux-ui-design') return null;
+      const slot: GateSlotContent = { track: frame.track };
+      if (frame.tracks) slot.tracks = [...frame.tracks];
+      if (frame.reach) slot.reach = [...frame.reach];
+      return slot;
     }
     case 'clarify': {
       if (frame.kind !== 'clarify') return null;

@@ -140,13 +140,23 @@ function readEnvRunConfig(env: NodeJS.ProcessEnv): RunConfig | null {
  *  launch-env payload is the fallback whenever there is no conduction id, no client, or the row is
  *  missing/unreadable/malformed — so every non-conducted caller behaves exactly as before.
  *
- *  `client` is optional and last so existing positional callers (env, moduleUrl) are unchanged. */
+ *  `client` is optional and last so existing positional callers (env, moduleUrl) are unchanged.
+ *
+ *  B-1025: `overrideUrl` lets the MCP caller pass the URL the token exchange actually used (the
+ *  resolved target's URL — `client.supabaseUrl` here). Without it, `target` reflects env only,
+ *  and a registered staging project on a host with no `HARMONY_SUPABASE_URL` set would report
+ *  `target: 'prod'` while `get_project` itself was talking to staging — a CLI that says one
+ *  target and uses another. Optional last, default `undefined` so existing callers are
+ *  unchanged. */
 export async function resolveEnvironment(
   env: NodeJS.ProcessEnv = process.env,
   moduleUrl: string = import.meta.url,
   client?: SupabaseClient | null,
+  overrideUrl?: string,
 ): Promise<EnvironmentInfo> {
-  const supabase_url = harmonyEnv('HARMONY_SUPABASE_URL', env) ?? DEFAULT_SUPABASE_URL;
+  // B-1025: prefer the override (the exchange's URL) over env, so the displayed target matches
+  // where the exchange actually went. env is the fallback when no override is supplied.
+  const supabase_url = overrideUrl ?? harmonyEnv('HARMONY_SUPABASE_URL', env) ?? DEFAULT_SUPABASE_URL;
 
   let supabase_project_ref = '';
   try {

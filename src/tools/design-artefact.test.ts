@@ -18,6 +18,16 @@ describe('design artefacts', () => {
     expect(renderSlot({ ...doc, frame: { ...doc.frame!, design_artefact: undefined } } as BriefDoc, 'design')).toBeNull();
     expect(renderDesignArtefact(artefact).join('\n')).toContain('overview.png');
   });
+  it('B-1324: a product-track design frame without design_artefact returns track info instead of null', () => {
+    const productDoc = { decide: 'Review', items: [], frame: { kind: 'design', track: 'product-design', tracks: [], reach: [] } } as BriefDoc;
+    expect(renderSlot(productDoc, 'design')).toEqual({ track: 'product-design', tracks: [], reach: [] });
+    // ux-ui track without artefact STILL returns null
+    const uxDoc = { decide: 'Review', items: [], frame: { kind: 'design', track: 'ux-ui-design', tracks: [], reach: [] } } as BriefDoc;
+    expect(renderSlot(uxDoc, 'design')).toBeNull();
+    // technical-design track without artefact also returns track info
+    const techDoc = { decide: 'Review', items: [], frame: { kind: 'design', track: 'technical-design', tracks: [], reach: [] } } as BriefDoc;
+    expect(renderSlot(techDoc, 'design')).toEqual({ track: 'technical-design', tracks: [], reach: [] });
+  });
   it('requires production capability and finalized same-ticket media', async () => {
     const inQuery = vi.fn().mockResolvedValue({ data: [] });
     const chain = { select: () => chain, eq: () => chain, in: inQuery };

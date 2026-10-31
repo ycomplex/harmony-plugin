@@ -127,8 +127,37 @@ describe('getAuthenticatedContext() — B-1070 HARMONY_API_TOKEN fallback', () =
   });
 });
 
+// B-1025: the stored pair (supabaseUrl + supabaseAnonKey) on the active project must reach the
+// token exchange's URL and Authorization header — the old freeze at module import made the
+// stored pair dead code. This test registers a project with a CUSTOM URL + KEY (NOT the prod
+// built-in pair) and asserts fetch() was called against that URL with that key as the Bearer.
+it('stored project pair reaches fetch URL and Authorization header', async () => {
+  const customUrl = 'https://staging.example.supabase.co';
+  const customKey = 'custom-anon-key-987654321';
+  addProject('demo', 'demo-token', { supabaseUrl: customUrl, supabaseAnonKey: customKey });
+  // Stub the env pair to the PROD defaults so the assertion is not about env (it'd otherwise
+  // shadow the stored pair).
+  vi.stubEnv('HARMONY_SUPABASE_URL', 'https://prod.example.supabase.co');
+  vi.stubEnv('HARMONY_SUPABASE_ANON_KEY', 'prod-env-anon-key');
+  const fetchMock = vi.fn().mockResolvedValue(
+    jsonResponse({ access_token: fakeJwt('u-stored'), expires_in: 3600, project_id: 'proj-stored' }),
+  );
+  vi.stubGlobal('fetch', fetchMock);
+  vi.spyOn(console, 'error').mockImplementation(() => {});
+
+  const ctx = await getAuthenticatedContext();
+
+  expect(ctx.projectId).toBe('proj-stored');
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  const [calledUrl, requestInit] = fetchMock.mock.calls[0];
+  expect(calledUrl).toBe(`${customUrl}/functions/v1/auth-token`);
+  const headers = (requestInit as RequestInit).headers as Record<string, string>;
+  expect(headers.Authorization).toBe(`Bearer ${customKey}`);
+  expect(headers['Content-Type']).toBe('application/json');
+});
+
 it.each(["ENOTFOUND","ECONNRESET","UND_ERR_CONNECT_TIMEOUT","CERT_HAS_EXPIRED"])("shows %s and host without credentials",async code=>{
- vi.stubEnv("HARMONY_API_TOKEN","sensitive-token");vi.stubEnv("HARMONY_SUPABASE_URL","https://example.invalid");
+ vi.stubEnv("HARMONY_API_TOKEN","sensitive-token");vi.stubEnv("HARMONY_SUPABASE_URL","https://example.invalid");vi.stubEnv("HARMONY_SUPABASE_ANON_KEY","some-anon-key");
  vi.stubGlobal("fetch",vi.fn().mockRejectedValue(new Error("fetch failed",{cause:{code,message:"network failure sensitive-token Bearer hidden"}})));
  let message="";try{await getAuthenticatedContext();}catch(e){message=(e as Error).message;}
  expect(message).toBe(`Could not reach Harmony to validate HARMONY_API_TOKEN: fetch failed (host: example.invalid; cause: ${code}: network failure [redacted] Bearer [redacted])`);

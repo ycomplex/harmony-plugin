@@ -1,9 +1,5 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { harmonyEnv } from './env.js';
 import { HarmonyAuth } from './auth.js';
-
-const SUPABASE_URL = harmonyEnv('HARMONY_SUPABASE_URL') ?? 'https://eioxsunvhakmelhanmnn.supabase.co';
-const SUPABASE_ANON_KEY = harmonyEnv('HARMONY_SUPABASE_ANON_KEY') ?? 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpb3hzdW52aGFrbWVsaGFubW5uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2NDY3NjksImV4cCI6MjA5MDIyMjc2OX0.SdbpfqRhcB21qWs6XnD6Lsj6AGX2b6tOGV3pg2iJjsw';
 
 export async function createAuthenticatedClient(auth: HarmonyAuth): Promise<SupabaseClient> {
   // Fail fast at construction: a bad token errors loudly HERE, not on the first query.
@@ -13,7 +9,10 @@ export async function createAuthenticatedClient(auth: HarmonyAuth): Promise<Supa
   // per request, so HarmonyAuth's cache-and-re-exchange keeps a long-lived client authenticated. A
   // static `global.headers.Authorization` would freeze the JWT at construction (the daemon-zombie
   // class) — and supabase-js treats the two as mutually exclusive, so the header must be GONE.
-  return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  // B-1025: the pair comes from the auth instance, resolved for THIS call. It used to be read
+  // from module-level constants captured at import, before any CLI command had run — so the
+  // project's stored URL and the login flag never reached the client.
+  return createClient(auth.getSupabaseUrl(), auth.getSupabaseAnonKey(), {
     accessToken: () => auth.getAccessToken(),
     auth: {
       persistSession: false,
