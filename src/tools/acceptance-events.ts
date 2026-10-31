@@ -959,7 +959,7 @@ async function fileGuardBlockedLabelAddRound(
         questions: [{
           id: 'q1', stakes: 'load-bearing', kind: 'open',
           text,
-          why: "Answering 'drop it' lets the next leg re-run consume_pending_acceptance_event with skip_blocked_label_add: true, which commits the acceptance without the label.",
+          why: "Answering 'drop it' lets the next leg re-run consume_pending_acceptance_event with skip_blocked_label_add: true, which commits the acceptance without the label. If the acceptance has already been committed (a same-session clarify accept commits it directly), nothing more is needed: the label simply stays off.",
         }],
       });
     }
