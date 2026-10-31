@@ -13,7 +13,7 @@
 export const WAIT_CEILING_MS = 24 * 60 * 60 * 1000;
 export const WAIT_DEFAULT_RECHECK_MS = 15 * 60 * 1000;
 
-export const WAITING_ON_KINDS = ['ci', 'pr-state', 'human-step'] as const;
+export const WAITING_ON_KINDS = ['ci', 'pr-state', 'human-step', 'model-handoff'] as const;
 export type WaitingOnKind = (typeof WAITING_ON_KINDS)[number];
 
 export interface WaitingOn {
