@@ -1024,6 +1024,18 @@ async function fileGuardBlockedLabelAddRound(
   }
 }
 
+/** B-1047 — apply just the structured `rule_bundle` items of an event's payload (see the unrecognized
+ *  branch of `consumePendingAcceptanceEvent`). Never touches any other write_kind and never consumes. */
+export async function applyRuleBundlesOnly(client: SupabaseClient, event: PendingAcceptanceEvent): Promise<number> {
+  const bundles = rawItemsOf(event.payload).filter(
+    (i): i is AcceptanceEventPayloadItem =>
+      typeof i === 'object' && i !== null && (i as { write_kind?: unknown }).write_kind === 'rule_bundle',
+  );
+  if (bundles.length === 0) return 0;
+  const result = await applyAcceptanceEventPayload(client, { ...event, payload: { payload: bundles } } as PendingAcceptanceEvent);
+  return result.by_write_kind.rule_bundle ?? 0;
+}
+
 /**
  * The leg-start-consume entry point (checklist #8) — shaped like the existing B-747 leg-start check:
  * runs BEFORE gate routing/floors. Feature-detects the substrate FIRST (PROBE 3); when absent, degrades
@@ -1057,6 +1069,11 @@ export async function consumePendingAcceptanceEvent(
   // route to the gate's existing materialization mechanism and then call consumeAcceptanceEvent directly
   // once it has confirmed the work is done.
   if (classifyPayload(event.payload) === 'unrecognized') {
+    // B-1047: an unrecognized (e.g. mixed criterion-edit) payload must not bypass its promised rule
+    // bundle. Apply ONLY the ledgered rule_bundle items here — idempotent by their own ledger key, so a
+    // later full apply or retry skips them — and still hand back payload-unrecognized for the rest.
+    // A refusal throws (visible blocker, event stays pending); a missing RPC is left to the guard.
+    await applyRuleBundlesOnly(client, event);
     return { status: 'payload-unrecognized', event_id: event.id, reason: event.reason, items: rawItemsOf(event.payload) };
   }
 

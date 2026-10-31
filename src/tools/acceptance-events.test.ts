@@ -2092,4 +2092,28 @@ describe('rule_bundle (B-1047)', () => {
     await expect(applyAcceptanceEventPayload(client, designEvent([{ ...bundleItem(), rules: [] }]))).rejects.toThrow(/carries no rules/);
     expect(client.rpc).not.toHaveBeenCalled();
   });
+
+
+  it('an unrecognized mixed payload still applies its rule bundle (and nothing else), and is NOT consumed', async () => {
+    const event = designEvent([bundleItem(), { write_kind: 'acceptance_criterion_update', ref: 'ac-x' } as never]);
+    const client = makeClient({
+      fromResponses: pendingFrom(event),
+      rpcResponses: { consume_rule_bundle_write: [{ data: { status: 'applied', rules: [] } }] },
+    });
+    const result = await consumePendingAcceptanceEvent(client, PROJECT_ID, 'task-1');
+    expect(result.status).toBe('payload-unrecognized');
+    const names = vi.mocked(client.rpc).mock.calls.map((c) => c[0]);
+    expect(names).toEqual(['consume_rule_bundle_write']);
+    expect(names).not.toContain('consume_acceptance_event');
+  });
+
+  it('an unrecognized mixed payload whose rule bundle is refused surfaces the blocker (throws, not consumed)', async () => {
+    const event = designEvent([bundleItem(), { write_kind: 'acceptance_criterion_delete', ref: 'ac-y' } as never]);
+    const client = makeClient({
+      fromResponses: pendingFrom(event),
+      rpcResponses: { consume_rule_bundle_write: [{ data: null, error: { code: 'P0001', message: 'B-1047: stale rule target entry-7' } }] },
+    });
+    await expect(consumePendingAcceptanceEvent(client, PROJECT_ID, 'task-1')).rejects.toThrow(/B-1047: stale rule target/);
+    expect(vi.mocked(client.rpc).mock.calls.map((c) => c[0])).not.toContain('consume_acceptance_event');
+  });
 });
