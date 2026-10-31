@@ -66,7 +66,39 @@ if [ -z "$ANON_KEY" ]; then
 fi
 
 # --- Delegate to the generic writer -----------------------------------------
+# Writes the env triple to $DOGFOOD_DIR/.claude/settings.local.json — that's what the MCP
+# server under `claude --plugin-dir` reads (still env-at-import for MCP; the B-1025 fix only
+# touches the CLI's per-call resolver).
 "$SCRIPT_DIR/setup-channel-env.sh" "$DOGFOOD_DIR" "$STAGING_URL" "$ANON_KEY" "$API_TOKEN"
+
+# --- Register the staging project for the CLI -------------------------------
+# The CLI's auth path (src/cli/resolve-supabase-target.ts) reads the project registry
+# before env, so a registered project makes the CLI work with no env at all. We invoke
+# `harmony login` directly with both flags so the resolved pair carries the same URL+key
+# the script just wrote into $DOGFOOD_DIR/.claude/settings.local.json. The CLI looks up
+# `harmony` on PATH; if the founder's hooks/link-cli.sh ran, it is there, else `node
+# dist/bin/harmony.js` from the checkout also works. The `--token` arg never echoes
+# because `harmony login` (src/cli/commands/auth.ts) only writes it to disk and never logs
+# it. The `--name staging` makes the registered project idempotent across re-runs
+# (addProject overwrites by name); running with no env then works the same as running with
+# the env triple set.
+if command -v harmony >/dev/null 2>&1 || [ -x "$REPO_ROOT/dist/bin/harmony.js" ]; then
+  HARMONY_CMD="$(command -v harmony 2>/dev/null || echo node "$REPO_ROOT/dist/bin/harmony.js")"
+  if "$HARMONY_CMD" login \
+      --supabase-url "$STAGING_URL" \
+      --supabase-anon-key "$ANON_KEY" \
+      --token "$API_TOKEN" \
+      --name staging >/dev/null 2>&1; then
+    echo "Registered the 'staging' project for the CLI in \$HOME/.harmony/config.json."
+  else
+    echo "Warning: failed to register the 'staging' project for the CLI; the env triple is" >&2
+    echo "still written above and is sufficient for the MCP server under claude --plugin-dir." >&2
+  fi
+else
+  echo "Note: 'harmony' CLI not on PATH; skipped registering the 'staging' project." >&2
+  echo "Run this once to register it manually:" >&2
+  echo "  node $REPO_ROOT/dist/bin/harmony.js login --supabase-url $STAGING_URL --supabase-anon-key <key> --token <token> --name staging" >&2
+fi
 
 echo "Staging channel configured in $DOGFOOD_DIR"
 echo "  Target: $STAGING_URL (staging)"
