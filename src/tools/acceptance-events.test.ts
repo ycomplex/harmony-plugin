@@ -1409,6 +1409,53 @@ describe('consumePendingAcceptanceEvent — the B-688/B-383 missing-write-kind-s
     await expect(consumePendingAcceptanceEvent(client, PROJECT_ID, 'task-1')).rejects.toThrow(/decision-only guard blocked: terminal/);
     expect(client.rpc).not.toHaveBeenCalledWith('consume_acceptance_event', expect.anything());
   });
+
+  it('a guard-blocked label_add with userId files a worker-question round (not a bare error) — B-833', async () => {
+    const event: PendingAcceptanceEvent = {
+      id: 'event-1', task_id: 'task-1', brief_id: 'brief-1', reason: 'clarification-draft',
+      payload: { items: [labelAddItem('label-decision-only')] }, pending_activity: 'clarifying', status: 'pending',
+    };
+    const client = makeClient({
+      fromResponses: {
+        pending_acceptance_events: [{ data: [], error: null }, { data: event }],
+        tasks: [{ data: { pending_acceptance_event_id: 'event-1' } }],
+      },
+      rpcResponses: {
+        consume_label_add_write: [{ data: null, error: { code: '23514', message: 'decision-only guard blocked: build-shape (task abc-123)' } }],
+      },
+    });
+    const err = await (consumePendingAcceptanceEvent(client, PROJECT_ID, 'task-1', { userId: 'user-1' } as any).catch(e => e));
+    expect(err).toBeDefined();
+    expect(err.message).toMatch(/guard-blocked.*worker-question round was filed/);
+    // The acceptance event was NOT consumed — it stays pending for the human's answer
+    expect(client.rpc).not.toHaveBeenCalledWith('consume_acceptance_event', expect.anything());
+    // The elicitation round WAS filed
+    expect(vi.mocked(startElicitation)).toHaveBeenCalledWith(
+      expect.anything(), PROJECT_ID, 'user-1',
+      expect.objectContaining({ task_id: 'task-1', trigger: 'worker-question' }),
+    );
+    expect(vi.mocked(fileElicitationRound)).toHaveBeenCalledTimes(1);
+  });
+
+  it('a guard-blocked label_add without userId returns an error noting the missing user id — B-833', async () => {
+    const event: PendingAcceptanceEvent = {
+      id: 'event-2', task_id: 'task-1', brief_id: 'brief-1', reason: 'clarification-draft',
+      payload: { items: [labelAddItem('label-decision-only')] }, pending_activity: 'clarifying', status: 'pending',
+    };
+    const client = makeClient({
+      fromResponses: {
+        pending_acceptance_events: [{ data: [], error: null }, { data: event }],
+        tasks: [{ data: { pending_acceptance_event_id: 'event-2' } }],
+      },
+      rpcResponses: {
+        consume_label_add_write: [{ data: null, error: { code: '23514', message: 'decision-only guard blocked: terminal (task abc-123)' } }],
+      },
+    });
+    const err = await (consumePendingAcceptanceEvent(client, PROJECT_ID, 'task-1').catch(e => e));
+    expect(err).toBeDefined();
+    expect(err.message).toMatch(/no user id was available/);
+    expect(client.rpc).not.toHaveBeenCalledWith('consume_acceptance_event', expect.anything());
+  });
 });
 describe('rawItemsOf / classifyPayload — B-816 doc-nested snapshot (B-803 plan-event shape)', () => {
   // resolve_brief snapshots a brief's whole `doc` VERBATIM into pending_acceptance_events.payload. B-810's

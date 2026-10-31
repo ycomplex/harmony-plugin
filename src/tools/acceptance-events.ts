@@ -237,6 +237,30 @@ export class ShippedMilestoneGuardError extends Error {
     this.name = 'ShippedMilestoneGuardError';
   }
 }
+/** B-688 — a label_add RPC that raised check_violation (ERRCODE 23514) with the literal text "decision-only
+ *  guard blocked:" from can_mark_decision_only. Matches on the Postgres code PLUS the distinctive message
+ *  text so an unrelated 23514 from some other constraint (e.g. tasks_priority_check) is never misclassified.
+ *  The block_reason after "decision-only guard blocked: " is either "terminal" (Verified/Cancelled/Parked —
+ *  hard block) or "build-shape" (Planned-or-later, or a linked build PR — redirect to revise-scope). */
+export function isDecisionOnlyGuardError(error: { message?: string; code?: string } | null | undefined): boolean {
+  if (!error) return false;
+  if (error.code !== '23514') return false;
+  const msg = error.message ?? '';
+  return /decision-only guard blocked:/i.test(msg);
+}
+
+/** B-833 — typed rethrow of a guard-blocked label_add refusal from can_mark_decision_only, carrying the
+ *  guard's OWN message verbatim (names the block_reason: "terminal" or "build-shape") rather than a generic
+ *  wrapped Error. Detected BEFORE the generic `new Error(error.message)` wrap in the label_add dispatch so
+ *  the caller (consumePendingAcceptanceEvent) can `instanceof`-detect this specific expected refusal and
+ *  route it to a worker-question elicitation round instead of surfacing a bare thrown error. */
+export class GuardBlockedLabelAddError extends Error {
+  constructor(guardMessage: string) {
+    super(guardMessage);
+    this.name = 'GuardBlockedLabelAddError';
+  }
+}
+
 
 export type SubstrateProbeResult = 'present' | 'absent';
 
@@ -698,8 +722,10 @@ export async function applyAcceptanceEventPayload(
           // B-383 hazard: consume_label_add_write itself may not exist yet on this DB — degrade SAFELY
           // (never an opaque throw) rather than treating it like a real write failure. A guard-blocked
           // call (RAISE EXCEPTION ... USING ERRCODE = 'check_violation') is NOT this class — it is a real
-          // error and must propagate untouched (never swallowed).
+          // error and must be caught as GuardBlockedLabelAddError so consumePendingAcceptanceEvent can
+          // file a worker-question instead of surfacing a bare thrown error.
           if (isMissingRelationOrFunction(error)) throw new WriteKindSubstrateAbsentError('label_add');
+          if (isDecisionOnlyGuardError(error)) throw new GuardBlockedLabelAddError(error.message);
           throw new Error(error.message);
         }
         result = data as { applied?: boolean };
@@ -879,6 +905,46 @@ async function fileAmbiguityRound(
   }
 }
 
+const GUARD_BLOCKED_ROUND_PREFIX = 'Decision-only guard blocked';
+
+/** B-833 — a guard-blocked label_add leaves the event pending (nothing was written). File an answerable
+ *  worker-question round so the ticket's awaiting state shows it, and return the error to throw. Never
+ *  swallows: the returned error always says whether the round was filed. */
+async function fileGuardBlockedLabelAddRound(
+  client: SupabaseClient,
+  projectId: string,
+  event: PendingAcceptanceEvent,
+  err: GuardBlockedLabelAddError,
+  userId: string | undefined,
+): Promise<Error> {
+  if (!userId) {
+    return new Error(`${err.message} The question round could not be filed: no user id was available to open the exchange, so the human has not been asked — the acceptance event stays pending.`);
+  }
+  try {
+    const exchange = await startElicitation(client, projectId, userId, {
+      task_id: event.task_id, trigger: 'worker-question', gate: event.pending_activity ?? undefined,
+    }) as { id: string; rounds?: Array<{ context_line?: string; answers?: Record<string, unknown> }> };
+    const last = Array.isArray(exchange.rounds) ? exchange.rounds[exchange.rounds.length - 1] : undefined;
+    const alreadyAsked = !!last && (last.context_line ?? '').startsWith(GUARD_BLOCKED_ROUND_PREFIX)
+      && Object.keys(last.answers ?? {}).length === 0;
+    if (!alreadyAsked) {
+      await fileElicitationRound(client, projectId, {
+        exchange_id: exchange.id,
+        context_line: `${GUARD_BLOCKED_ROUND_PREFIX}: the can_mark_decision_only guard rejected the decision-only label_add write (block reason: ${err.message.replace(/^decision-only guard blocked:\s*/i, '').replace(/\(task [^)]+\)$/, '').trim() || err.message}). Nothing was applied; the acceptance event is still pending.`,
+        questions: [{
+          id: 'q1', stakes: 'load-bearing', kind: 'open',
+          text: 'The decision-only label could not be applied to this ticket because the can_mark_decision_only guard blocked it. What should happen next?\\n\\n- **Revise scope** and re-submit through the build gate\\n- **Re-clarify** the ticket intent\\n- **Override** and proceed anyway (manual label add)',
+          why: 'The guard blocks decision-only stamping on tickets past the design gate or with a linked build PR. The next leg re-applies the pending acceptance once the guard is satisfied, or the human manually adds the label.',
+        }],
+      });
+    }
+    return new Error(`${err.message} A "guard-blocked" worker-question round was filed on the ticket; the acceptance event stays pending until it is answered.`);
+  } catch (fileErr) {
+    const why = fileErr instanceof Error ? fileErr.message : String(fileErr);
+    return new Error(`${err.message} The question round could not be filed (${why}), so the human has not been asked — the acceptance event stays pending.`);
+  }
+}
+
 /**
  * The leg-start-consume entry point (checklist #8) — shaped like the existing B-747 leg-start check:
  * runs BEFORE gate routing/floors. Feature-detects the substrate FIRST (PROBE 3); when absent, degrades
@@ -920,6 +986,7 @@ export async function consumePendingAcceptanceEvent(
     applyResult = await applyAcceptanceEventPayload(client, event, { entity_overrides: opts.entity_overrides });
   } catch (err) {
     if (err instanceof AmbiguousEntityLinkError) throw await fileAmbiguityRound(client, projectId, event, err, opts.userId);
+    if (err instanceof GuardBlockedLabelAddError) throw await fileGuardBlockedLabelAddRound(client, projectId, event, err, opts.userId);
     throw err;
   }
 
