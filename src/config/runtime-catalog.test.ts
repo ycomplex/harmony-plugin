@@ -8,6 +8,7 @@ import {
   entryProvider,
   fetchModelCatalog,
   findModelEntry,
+  normalizeModelId,
   getModelContextBudgetBytes,
   getModelForGate,
   resolveModelCatalog,
@@ -370,5 +371,37 @@ describe('B-1178 explicitly named inactive offers (AC7)', () => {
 
   it('the pinned default ignores an inactive row pinned for the profile (active-only)', () => {
     expect(getPinnedDefaultModel('codex', 'prod', [{ ...inactive, pinned_default_profiles: ['prod'] }])).toBeNull();
+  });
+});
+
+describe('B-1152 provider-colliding bare model ids', () => {
+  const colliding: ModelCatalogEntry[] = [
+    { ...codexRow, alias: 'codex:shared', model_id: 'shared', provider: 'openrouter' },
+    { ...codexRow, alias: 'openai:shared', model_id: 'shared', provider: 'openai' },
+  ];
+
+  it('refuses before returning a row, naming providers in stable sorted order', () => {
+    expect(() => findModelEntry('shared', colliding, 'codex')).toThrow(
+      "Ambiguous model id 'shared' for runtime 'codex': active offers are provided by openai, openrouter.",
+    );
+  });
+
+  it('also refuses when a legacy alias equals the shared bare model id', () => {
+    const aliasCollision = [
+      { ...colliding[0], alias: 'shared' },
+      colliding[1],
+    ];
+    expect(() => normalizeModelId('shared', aliasCollision, 'codex')).toThrow(/Ambiguous model id 'shared'/);
+  });
+
+  it('checks only the selected runtime', () => {
+    const rows = [...colliding, { ...colliding[1], agent: 'claude-code' }];
+    expect(findModelEntry('shared', rows, 'claude-code')?.provider).toBe('openai');
+  });
+
+  it('does not treat an inactive duplicate as an active ambiguity and preserves explicit inactive aliases', () => {
+    const rows = [colliding[0], { ...colliding[1], active: false }];
+    expect(findModelEntry('shared', rows, 'codex')?.provider).toBe('openrouter');
+    expect(findModelEntry('openai:shared', rows, 'codex', { includeInactive: true })?.active).toBe(false);
   });
 });
