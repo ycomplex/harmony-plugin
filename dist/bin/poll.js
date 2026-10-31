@@ -31196,6 +31196,21 @@ var sketch = object({
   mcp_call_count: external_exports.number()
 });
 var floor = { floor_reviewed: strings.optional() };
+var REACH_LEVELS = ["this_ticket_only", "this_surface", "this_product"];
+var RULE_OPERATIONS = ["create", "amend", "reference"];
+var designRule = object({
+  ref: external_exports.string().trim().min(1),
+  operation: external_exports.enum(RULE_OPERATIONS),
+  wording: external_exports.string().trim().min(1).nullable().optional(),
+  domains: strings,
+  surfaces: strings,
+  knowledge_scope: external_exports.enum(["product", "deployment"]).nullable().optional(),
+  reach: external_exports.enum(["this_surface", "this_product"]).nullable().optional(),
+  target_entry_id: external_exports.string().nullable().optional(),
+  expected_fingerprint: external_exports.string().nullable().optional(),
+  before: external_exports.string().optional(),
+  title: external_exports.string().optional()
+});
 var briefFrameSchema = external_exports.discriminatedUnion("kind", [
   object({
     kind: external_exports.literal("clarify"),
@@ -31218,6 +31233,8 @@ var briefFrameSchema = external_exports.discriminatedUnion("kind", [
     tracks: external_exports.array(object({ track, status: external_exports.enum(["accepted", "this-brief", "pending", "not-required"]), note: external_exports.string().optional() })),
     reach: strings,
     not_reopened: strings.optional(),
+    reach_level: external_exports.enum(REACH_LEVELS).optional(),
+    rules: external_exports.array(designRule).optional(),
     derisk: object({ run: strings, not_run: strings }).optional(),
     files_on_accept: strings.optional(),
     designer_frames: external_exports.array(object({
@@ -31575,6 +31592,125 @@ function detectRiskClasses(input) {
   return RISK_CLASSES.filter((cls) => hits.has(cls));
 }
 
+// src/elicitation/engine.ts
+var MAX_QUESTIONS_PER_ROUND = 5;
+function currentRoundNumber(rounds) {
+  if (!Array.isArray(rounds) || rounds.length === 0) return 0;
+  const last = rounds[rounds.length - 1];
+  return typeof last?.n === "number" ? last.n : rounds.length;
+}
+
+// src/tools/elicitation.ts
+var TRIGGER_OWNERS = {
+  "pre-draft-clarify": "clarify",
+  "discuss": "any-gate",
+  "phase-split-probe": "clarify",
+  "worker-question": "any-gate",
+  "inception-semantics": "inception"
+};
+var VALID_TRIGGERS = Object.keys(TRIGGER_OWNERS);
+var CLARIFY_OWNED_TRIGGERS = VALID_TRIGGERS.filter((t) => TRIGGER_OWNERS[t] === "clarify");
+var fileElicitationRoundTool = {
+  name: "file_elicitation_round",
+  description: `File one round of questions on an active elicitation exchange and hand the ball to the human (sets awaiting_human_input with reason 'elicitation-round'; never touches workflow_state). Lints enforced before any write: at most ${MAX_QUESTIONS_PER_ROUND} questions per round; a load-bearing question MUST be kind='open' (open question first, candidate withheld \u2014 load-bearing must never render as a one-click confirm); kind='validate' requires a statement to confirm/correct. One plain-prose context_line frames the round. Filing also CONSUMES any prior answers marker (clears answers_submitted_at) \u2014 read the previous round's answers via get_elicitation before filing the next. For a brief-attached ('discuss') exchange, filing ROUND 1 also clears the attached brief's pending_resolution discuss marker (B-461 \u2014 the filing IS the consume). On success, the returned row carries a non-blocking warnings: string[] field (B-785) \u2014 e.g. an OPEN question whose why reads like it enumerates concrete options while text does not, steering enumerated options into text where they're unmissable; never throws, never blocks the filing. If the exchange was mechanically cancelled ('abandoned'), returns the typed no-op { noop: true, cause: 'exchange-cancelled', exchange } instead of throwing \u2014 the CALLING AGENT must then archive any claims it minted in that same turn (claims are minted before conclude; the mint\u2192conclude window can race a cancel).`,
+  inputSchema: {
+    type: "object",
+    properties: {
+      exchange_id: { type: "string", description: "The exchange to file on. Or pass task_id to target its active exchange." },
+      task_id: { type: "string", description: "Alternative to exchange_id \u2014 the task whose ACTIVE exchange to file on (UUID, task number, or visual ID)." },
+      context_line: { type: "string", description: "ONE plain-prose line framing the round (what this round is settling and why)." },
+      questions: {
+        type: "array",
+        description: `The round's questions (max ${MAX_QUESTIONS_PER_ROUND}).`,
+        items: {
+          type: "object",
+          properties: {
+            id: { type: "string", description: "Round-unique id the answer keys on (e.g. 'q1')." },
+            stakes: { type: "string", description: "'low' | 'load-bearing' \u2014 how much a wrong answer steers the work. Load-bearing \u21D2 kind must be 'open'." },
+            kind: { type: "string", description: "'validate' (confirm/correct an inference \u2014 requires statement) | 'open' (open text)." },
+            statement: { type: "string", description: "The agent's inference the human confirms or corrects. Required for kind='validate'." },
+            text: { type: "string", description: "The question text." },
+            why: { type: "string", description: `Optional "why I'm asking" expander.` }
+          },
+          required: ["id", "stakes", "kind", "text"]
+        }
+      },
+      prior_answers: {
+        type: "object",
+        description: "Terminal-given answers to the PREVIOUS round, echoed into the exchange record in the same write (B-462 \u2014 the human answered in the terminal, not the web). Keyed by question id: { <qid>: { verb, text? } } with verb confirm|correct|skip for a 'validate' question and answer|skip for an 'open' one (correct/answer require text). Only the LAST filed round's unanswered questions may be echoed; each echo is stamped via:'terminal'. Omit entirely for web-submitted answers \u2014 the web writes those itself."
+      }
+    },
+    required: ["context_line", "questions"]
+  }
+};
+async function fetchActiveExchange(client, taskId) {
+  try {
+    const { data, error } = await client.from("elicitation_exchanges").select("id, status, rounds, answers_submitted_at, force_quit_requested_at").eq("task_id", taskId).eq("status", "active").maybeSingle();
+    if (error || !data) return null;
+    const row = data;
+    const rounds = Array.isArray(row.rounds) ? row.rounds : [];
+    return {
+      exchange_id: row.id,
+      status: row.status,
+      round: currentRoundNumber(rounds),
+      answers_submitted_at: row.answers_submitted_at ?? null,
+      force_quit_requested_at: row.force_quit_requested_at ?? null
+    };
+  } catch {
+    return null;
+  }
+}
+
+// src/tools/gate-slots.ts
+var ExcludedSlotSchema = external_exports.object({
+  item: external_exports.string(),
+  lands: external_exports.string()
+}).passthrough();
+var PullRequestSlotSchema = external_exports.object({
+  repo: external_exports.string().optional(),
+  ref: external_exports.string().optional(),
+  url: external_exports.string().optional(),
+  title: external_exports.string().optional()
+}).passthrough();
+var CriterionSlotSchema = external_exports.object({
+  ac_id: external_exports.string().optional(),
+  text: external_exports.string().optional(),
+  how: external_exports.string().optional(),
+  disposition: external_exports.string().optional()
+}).passthrough();
+var VerifyStepSlotSchema = external_exports.object({
+  ref: external_exports.string().optional(),
+  action: external_exports.string().optional(),
+  expect: external_exports.string().optional(),
+  covers: external_exports.array(external_exports.string()).optional()
+}).passthrough();
+var ClarifySlotSchema = external_exports.object({
+  solving: external_exports.string().optional(),
+  in_scope: external_exports.array(external_exports.string()).optional(),
+  not_solving: external_exports.array(ExcludedSlotSchema).optional()
+}).passthrough();
+var ReleaseSlotSchema = external_exports.object({
+  shipped: external_exports.string().optional(),
+  lands_in: external_exports.string().optional(),
+  prs: external_exports.array(PullRequestSlotSchema).optional(),
+  unproven: external_exports.array(external_exports.string()).optional(),
+  evidence_status: external_exports.string().optional()
+}).passthrough();
+var VerifySlotSchema = external_exports.object({
+  environment: external_exports.string().optional(),
+  criteria: external_exports.array(CriterionSlotSchema).optional(),
+  // B-1068 — the ordered runbook steps themselves, alongside the criteria they discharge.
+  steps: external_exports.array(VerifyStepSlotSchema).optional(),
+  evidence_status: external_exports.string().optional()
+}).passthrough();
+var UnknownGateSlotSchema = external_exports.record(external_exports.unknown());
+var GATE_SLOT_SCHEMAS = {
+  design: external_exports.object({ design_artefact: DesignArtefactSchema.optional() }).passthrough(),
+  clarify: ClarifySlotSchema,
+  release: ReleaseSlotSchema,
+  verify: VerifySlotSchema
+};
+
 // src/tools/revision-cause.ts
 var REVISION_CAUSE_SOURCES = [
   "human-send-back",
@@ -31735,6 +31871,8 @@ function renderFrame(frame) {
       const reach = frame.reach ?? [];
       if (reach.length) out.push("**Reach beyond this ticket:**", ...reach.map((r) => `- ${r}`));
       else out.push("**Reach beyond this ticket:** none \u2014 this decision reaches nothing outside the ticket");
+      if (frame.reach_level) out.push(`**Reach:** ${REACH_LABEL[frame.reach_level] ?? frame.reach_level} (\`${frame.reach_level}\`)`);
+      if (frame.rules?.length) out.push(...renderDesignRules(frame.rules));
       if (frame.not_reopened?.length) {
         out.push("**Not reopened here:**", ...frame.not_reopened.map((r) => `- ${r}`));
       }
@@ -31869,6 +32007,40 @@ function itemLines(doc) {
 function proposedAcLines(payload) {
   return (payload ?? []).filter((p) => p.write_kind === "acceptance_criterion" && typeof p.content === "string" && p.content.trim().length > 0).map((p) => `- ${p.content}`);
 }
+var REACH_LABEL = {
+  this_ticket_only: "this ticket only",
+  this_surface: "this surface",
+  this_product: "this product"
+};
+function renderDesignRules(rules) {
+  const list = (v) => v?.length ? v.join(", ") : "(none)";
+  const out = ["**Rules:**"];
+  for (const rule of rules) {
+    if (rule.operation === "reference") {
+      const title = rule.title?.trim() ? ` \u2014 ${rule.title.trim()}` : "";
+      out.push(`- **reference** \`${rule.ref}\` \u2014 Cites rule ${rule.target_entry_id ?? "(none)"}${title}`);
+      if (rule.wording?.trim()) out.push(`  - wording: "${rule.wording.trim()}"`);
+      const extra = [
+        rule.reach ? `reach: \`${rule.reach}\`` : null,
+        `domains: ${list(rule.domains)}`,
+        `surfaces: ${list(rule.surfaces)}`,
+        rule.knowledge_scope ? `scope: ${rule.knowledge_scope}` : null
+      ].filter(Boolean).join(" \xB7 ");
+      out.push(`  - ${extra}`);
+      out.push(`  - expected fingerprint: ${rule.expected_fingerprint ?? "(none)"}`);
+      continue;
+    }
+    out.push(`- **${rule.operation}** \`${rule.ref}\` \u2014 "${rule.wording}"`);
+    out.push(`  - reach: \`${rule.reach}\` \xB7 domains: ${list(rule.domains)} \xB7 surfaces: ${list(rule.surfaces)} \xB7 scope: ${rule.knowledge_scope}`);
+    if (rule.operation !== "create") {
+      out.push(`  - target: ${rule.target_entry_id ?? "(none)"} \xB7 expected fingerprint: ${rule.expected_fingerprint ?? "(none)"}`);
+    }
+    if (rule.operation === "amend") {
+      out.push(`  - before: ${rule.before?.trim() ? `"${rule.before.trim()}"` : "(not shown \u2014 read the target entry)"}`, `  - after: "${rule.wording}"`);
+    }
+  }
+  return out;
+}
 function promisedWriteLine(item) {
   const text2 = (v) => typeof v === "string" && v.trim() ? v.trim() : null;
   switch (item.write_kind) {
@@ -31901,6 +32073,11 @@ function promisedWriteLine(item) {
     case "implements_entities": {
       const names = Array.isArray(item.names) ? item.names : [];
       return `- the confirmed feature-entity name(s) \u2014 ${names.length ? names.join(", ") : "(none)"} \u2014 landed on the ticket`;
+    }
+    case "rule_bundle": {
+      const rules = Array.isArray(item.rules) ? item.rules : [];
+      const counts = ["create", "amend", "reference"].map((op) => [op, rules.filter((r) => r.operation === op).length]).filter(([, n]) => n > 0).map(([op, n]) => `${op} ${n}`);
+      return `- the rule bundle \u2014 ${rules.length} rule(s) recorded as one write before the decision entry (${counts.join(", ") || "none"})`;
     }
     case "entity_link": {
       const identity = text2(item.entity_name) ?? text2(item.entity_id);
@@ -32082,7 +32259,7 @@ var composeBriefTool = {
           tail: { type: "string", description: "Optional custom command tail line; defaults to the standard one" },
           frame: {
             type: "object",
-            description: "B-876 \u2014 the gate-specific frame, discriminated by `kind` (must match the gate reason): 'clarify' { solving, in_scope[], not_solving[{item,lands}], floor_reviewed?[] } | 'decompose' { elements[{text,surface?,covers?}], coverage, existing_children_checked, floor_reviewed?[] } | 'design' { track, tracks[{track,status,note?}], reach[], not_reopened?[], derisk?{run[],not_run[]}, files_on_accept?[], floor_reviewed?[] } | 'plan' { scope{repos[],surfaces[],has_migration}, steps[], attestation{base_verified,derisked_by_running?}, carried_unproven[{item,reason}], ac_coverage, landing?, design_delta?, design_read?{version_id|null,screens[],drift: 'changed'|'unchanged'|'unchecked'} (B-1205), floor_reviewed?[] } | 'release' { settled_beyond_design?[{behaviour,ac,knowledge_entry_id}], act(LandingShape), unproven[{item,reason}], evidence_status{proven_by_run,walk_at_verify,unproven,total,detail?}, risk_classes[], pr_review_state?, contradiction_signal?{status,message,entries[{entry_id,title,state,matched_values[],source}],truncated?}, floor_reviewed?[] } | 'verify' { environment, criteria[{ac_id,text,checked,disposition,step_ref?,blocked_reason?,carried_to?,backed_by?}], steps?[{ref,action,expect,covers[],design_node?{node_id,name,caption?,preview_attachment_id,preview_filename}}], design_comparison?, exempt_reason?, evidence_status, bounded_accept? }. `floor_reviewed` (B-838) applies to the FIVE forward gates only \u2014 never verify. LandingShape = { repos[], pr_count, lands_in: 'staging'|'production'|'both'|'merged-main', atomicity: 'single'|'together'|'ordered', ordering? (required when ordered), irreversible[], prs?[{repo,number,url}] (B-890, optional forever \u2014 populated from field_values.prerequisite_pr then build_pr) }. Every rule over this field is a WARNING, with two exceptions: (B-1016) a `release` frame missing `evidence_status` is REFUSED outright; (B-1068) a `verify` frame is REFUSED when a `walk`-kind criterion has no `frame.steps` at all, when a `step_ref` matches no declared step, when a step covers no filed criterion, when a `walk` criterion names no `step_ref`, when a step's `action` or `expect` is blank, or when `items[].kind === 'step'` / a raw `frame.runbook` key is present \u2014 author the walk as `frame.steps: [{ ref, action, expect, covers }]`, one action plus one expected observation per step, `covers` naming the acceptance-criterion ids it discharges. Omit the frame entirely and the render is byte-identical to the pre-B-876 output."
+            description: "B-876 \u2014 the gate-specific frame, discriminated by `kind` (must match the gate reason): 'clarify' { solving, in_scope[], not_solving[{item,lands}], floor_reviewed?[] } | 'decompose' { elements[{text,surface?,covers?}], coverage, existing_children_checked, floor_reviewed?[] } | 'design' { track, tracks[{track,status,note?}], reach[], reach_level? ('this_ticket_only'|'this_surface'|'this_product', B-1047 \u2014 declare it on every design brief), rules?[{ref,operation:'create'|'amend'|'reference',wording,domains[],surfaces[],knowledge_scope:'product'|'deployment',reach:'this_surface'|'this_product',target_entry_id,expected_fingerprint,before?,title?}] (B-1047 \u2014 beyond-ticket reach with zero rules is REFUSED; this_ticket_only allows only 'reference'; amend/reference need target_entry_id + expected_fingerprint (from read_rule_registry); create/amend need wording, knowledge_scope and reach; a reference never restates its rule, so wording/knowledge_scope/reach are optional there and `title` is display-only; compose derives the 'rule_bundle' payload item and refuses when this database lacks the rule registry), not_reopened?[], derisk?{run[],not_run[]}, files_on_accept?[], floor_reviewed?[] } | 'plan' { scope{repos[],surfaces[],has_migration}, steps[], attestation{base_verified,derisked_by_running?}, carried_unproven[{item,reason}], ac_coverage, landing?, design_delta?, design_read?{version_id|null,screens[],drift: 'changed'|'unchanged'|'unchecked'} (B-1205), floor_reviewed?[] } | 'release' { settled_beyond_design?[{behaviour,ac,knowledge_entry_id}], act(LandingShape), unproven[{item,reason}], evidence_status{proven_by_run,walk_at_verify,unproven,total,detail?}, risk_classes[], pr_review_state?, contradiction_signal?{status,message,entries[{entry_id,title,state,matched_values[],source}],truncated?}, floor_reviewed?[] } | 'verify' { environment, criteria[{ac_id,text,checked,disposition,step_ref?,blocked_reason?,carried_to?,backed_by?}], steps?[{ref,action,expect,covers[],design_node?{node_id,name,caption?,preview_attachment_id,preview_filename}}], design_comparison?, exempt_reason?, evidence_status, bounded_accept? }. `floor_reviewed` (B-838) applies to the FIVE forward gates only \u2014 never verify. LandingShape = { repos[], pr_count, lands_in: 'staging'|'production'|'both'|'merged-main', atomicity: 'single'|'together'|'ordered', ordering? (required when ordered), irreversible[], prs?[{repo,number,url}] (B-890, optional forever \u2014 populated from field_values.prerequisite_pr then build_pr) }. Every rule over this field is a WARNING, with two exceptions: (B-1016) a `release` frame missing `evidence_status` is REFUSED outright; (B-1068) a `verify` frame is REFUSED when a `walk`-kind criterion has no `frame.steps` at all, when a `step_ref` matches no declared step, when a step covers no filed criterion, when a `walk` criterion names no `step_ref`, when a step's `action` or `expect` is blank, or when `items[].kind === 'step'` / a raw `frame.runbook` key is present \u2014 author the walk as `frame.steps: [{ ref, action, expect, covers }]`, one action plus one expected observation per step, `covers` naming the acceptance-criterion ids it discharges. Omit the frame entirely and the render is byte-identical to the pre-B-876 output."
           },
           revision: {
             type: "object",
@@ -32094,7 +32271,7 @@ var composeBriefTool = {
             items: {
               type: "object",
               properties: {
-                write_kind: { type: "string", description: "'acceptance_criterion' | 'child_ticket' | 'checklist_item' | 'ac_transfer' | 'label_add' | 'knowledge_entry_content' | 'entity_link'" },
+                write_kind: { type: "string", description: "'acceptance_criterion' | 'child_ticket' | 'checklist_item' | 'ac_transfer' | 'label_add' | 'knowledge_entry_content' | 'entity_link' | 'rule_bundle' (B-1047 \u2014 DERIVED from frame.rules; never author it)" },
                 entity_id: { type: "string", description: "entity_link: explicit current identity UUID; accepts ID without a name" },
                 entity_name: { type: "string", description: "entity_link: exact current/retired name; ambiguity lists candidate identities" },
                 kind: { type: "string", description: "entity_link: optional kind selector, applied before ambiguity detection" },
@@ -32236,75 +32413,6 @@ async function fetchPendingRemark(client, taskId) {
 var BRIEF_HISTORY_COLS = `${BRIEF_COLS}, lineage_id, iterate_feedback, revision_cause`;
 var BRIEF_HISTORY_COLS_NO_CAUSE = `${BRIEF_COLS}, lineage_id, iterate_feedback`;
 var ACCEPTED_PROVENANCE = `'${PROVENANCE_HUMAN_IN_SESSION}', '${PROVENANCE_AGENT_SYNTHESIZED}', or '${PROVENANCE_AGENT_SYNTHESIZED}:<mode>'`;
-
-// src/elicitation/engine.ts
-var MAX_QUESTIONS_PER_ROUND = 5;
-function currentRoundNumber(rounds) {
-  if (!Array.isArray(rounds) || rounds.length === 0) return 0;
-  const last = rounds[rounds.length - 1];
-  return typeof last?.n === "number" ? last.n : rounds.length;
-}
-
-// src/tools/elicitation.ts
-var TRIGGER_OWNERS = {
-  "pre-draft-clarify": "clarify",
-  "discuss": "any-gate",
-  "phase-split-probe": "clarify",
-  "worker-question": "any-gate",
-  "inception-semantics": "inception"
-};
-var VALID_TRIGGERS = Object.keys(TRIGGER_OWNERS);
-var CLARIFY_OWNED_TRIGGERS = VALID_TRIGGERS.filter((t) => TRIGGER_OWNERS[t] === "clarify");
-var fileElicitationRoundTool = {
-  name: "file_elicitation_round",
-  description: `File one round of questions on an active elicitation exchange and hand the ball to the human (sets awaiting_human_input with reason 'elicitation-round'; never touches workflow_state). Lints enforced before any write: at most ${MAX_QUESTIONS_PER_ROUND} questions per round; a load-bearing question MUST be kind='open' (open question first, candidate withheld \u2014 load-bearing must never render as a one-click confirm); kind='validate' requires a statement to confirm/correct. One plain-prose context_line frames the round. Filing also CONSUMES any prior answers marker (clears answers_submitted_at) \u2014 read the previous round's answers via get_elicitation before filing the next. For a brief-attached ('discuss') exchange, filing ROUND 1 also clears the attached brief's pending_resolution discuss marker (B-461 \u2014 the filing IS the consume). On success, the returned row carries a non-blocking warnings: string[] field (B-785) \u2014 e.g. an OPEN question whose why reads like it enumerates concrete options while text does not, steering enumerated options into text where they're unmissable; never throws, never blocks the filing. If the exchange was mechanically cancelled ('abandoned'), returns the typed no-op { noop: true, cause: 'exchange-cancelled', exchange } instead of throwing \u2014 the CALLING AGENT must then archive any claims it minted in that same turn (claims are minted before conclude; the mint\u2192conclude window can race a cancel).`,
-  inputSchema: {
-    type: "object",
-    properties: {
-      exchange_id: { type: "string", description: "The exchange to file on. Or pass task_id to target its active exchange." },
-      task_id: { type: "string", description: "Alternative to exchange_id \u2014 the task whose ACTIVE exchange to file on (UUID, task number, or visual ID)." },
-      context_line: { type: "string", description: "ONE plain-prose line framing the round (what this round is settling and why)." },
-      questions: {
-        type: "array",
-        description: `The round's questions (max ${MAX_QUESTIONS_PER_ROUND}).`,
-        items: {
-          type: "object",
-          properties: {
-            id: { type: "string", description: "Round-unique id the answer keys on (e.g. 'q1')." },
-            stakes: { type: "string", description: "'low' | 'load-bearing' \u2014 how much a wrong answer steers the work. Load-bearing \u21D2 kind must be 'open'." },
-            kind: { type: "string", description: "'validate' (confirm/correct an inference \u2014 requires statement) | 'open' (open text)." },
-            statement: { type: "string", description: "The agent's inference the human confirms or corrects. Required for kind='validate'." },
-            text: { type: "string", description: "The question text." },
-            why: { type: "string", description: `Optional "why I'm asking" expander.` }
-          },
-          required: ["id", "stakes", "kind", "text"]
-        }
-      },
-      prior_answers: {
-        type: "object",
-        description: "Terminal-given answers to the PREVIOUS round, echoed into the exchange record in the same write (B-462 \u2014 the human answered in the terminal, not the web). Keyed by question id: { <qid>: { verb, text? } } with verb confirm|correct|skip for a 'validate' question and answer|skip for an 'open' one (correct/answer require text). Only the LAST filed round's unanswered questions may be echoed; each echo is stamped via:'terminal'. Omit entirely for web-submitted answers \u2014 the web writes those itself."
-      }
-    },
-    required: ["context_line", "questions"]
-  }
-};
-async function fetchActiveExchange(client, taskId) {
-  try {
-    const { data, error } = await client.from("elicitation_exchanges").select("id, status, rounds, answers_submitted_at, force_quit_requested_at").eq("task_id", taskId).eq("status", "active").maybeSingle();
-    if (error || !data) return null;
-    const row = data;
-    const rounds = Array.isArray(row.rounds) ? row.rounds : [];
-    return {
-      exchange_id: row.id,
-      status: row.status,
-      round: currentRoundNumber(rounds),
-      answers_submitted_at: row.answers_submitted_at ?? null,
-      force_quit_requested_at: row.force_quit_requested_at ?? null
-    };
-  } catch {
-    return null;
-  }
-}
 
 // src/tools/tasks.ts
 async function fetchActiveBriefIteration(client, taskId) {

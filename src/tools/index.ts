@@ -1,6 +1,7 @@
 import { proseTools, readProse, configureProse, setDefinedIn } from './knowledge-prose.js';
 import { knowledgeNameTools, readKnowledgeNames, renameKnowledgeConcept, previewKnowledgeMerge, mergeKnowledgeConcepts } from './knowledge-names.js';
 import { surfaceRecordTools, captureSurfaceRecord, readSurfaceRecords } from './surface-records.js';
+import { readRuleRegistryTool, readRuleRegistry } from './rule-registry.js';
 import { featureAccountTools, createFeatureAccount, readFeatureAccounts, previewFeatureAmendment, proposeFeatureAmendment, applyFeatureAmendment } from './feature-accounts.js';
 import { sourceTools, publishSourceInventory, readSourceInventory, comparePublishedCoverage } from './knowledge-sources.js';
 import { saveKnowledgeQuestionTool, saveKnowledgeQuestion, previewKnowledgeQuestionsTool, previewKnowledgeQuestions, importKnowledgeQuestionsTool, importKnowledgeQuestions } from './knowledge-questions.js';
@@ -174,6 +175,8 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
   const tools = [
     ...featureAccountTools,
     ...surfaceRecordTools,
+    // B-1047 — the rule registry reader (amend/reference targets and their fingerprints).
+    readRuleRegistryTool,
     // Core tools (always visible)
     getProjectTool, listTasksTool, getTaskTool, createTaskTool, updateTaskTool,
     bulkCreateTasksTool, bulkUpdateTasksTool, queryTasksTool, searchTasksTool,
@@ -307,6 +310,7 @@ export async function handleToolCall(
       case 'read_surface_records': result = await readSurfaceRecords(client,projectId,args); break;
       case 'create_feature_account': result = await createFeatureAccount(client,projectId,args); break;
       case 'read_feature_accounts': result = await readFeatureAccounts(client,projectId,args); break;
+      case 'read_rule_registry': result = await readRuleRegistry(client,projectId,args); break;
       case 'preview_feature_amendment': result = await previewFeatureAmendment(client,projectId,args); break;
       case 'propose_feature_amendment': result = await proposeFeatureAmendment(client,projectId,args); break;
       case 'apply_feature_amendment': result = await applyFeatureAmendment(client,projectId,args); break;

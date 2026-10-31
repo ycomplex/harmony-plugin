@@ -10,7 +10,7 @@ import { resolveTaskId } from './resolve-task-id.js';
 import { validateBriefFrame } from './brief-frame-schema.js';
 import { settlementWarning } from './build-settlement.js';
 import { detectRiskClasses } from './risk-class.js';
-import type { AcceptanceEventPayloadItem } from './acceptance-events.js';
+import { isMissingRelationOrFunction, type AcceptanceEventPayloadItem, type RuleBundleRule } from './acceptance-events.js';
 import { slugRef } from './payload-refs.js';
 import { listTicketKnowledge } from './workflow.js';
 import { queryKnowledge, getWorkspaceId } from './knowledge.js';
@@ -183,6 +183,30 @@ export interface DesignNodeRef {
  *  `GateFrame['track']` is illegal on a union whose other members carry no `track` key. */
 export type DesignTrack = 'product-design' | 'technical-design' | 'ux-ui-design';
 
+/** B-1047 — how far a design reaches. A beyond-ticket design records its rule once, as a rule. */
+export type ReachLevel = 'this_ticket_only' | 'this_surface' | 'this_product';
+
+/** B-1047 — one rule a design declares. All fields but `before` and `title` are the server's bundle
+ *  rule shape (`consume_rule_bundle_write`); `before` and `title` are display-only. A 'reference' cites
+ *  its target and never restates it: wording, knowledge_scope and reach are optional there (sent as
+ *  explicit nulls) and required on create/amend (`designRuleIssues`). */
+export interface DesignRule {
+  ref: string;
+  operation: 'create' | 'amend' | 'reference';
+  wording?: string | null;
+  domains: string[];
+  surfaces: string[];
+  knowledge_scope?: 'product' | 'deployment' | null;
+  reach?: 'this_surface' | 'this_product' | null;
+  /** amend/reference — obtained from `read_rule_registry` (`entry_id` and `fingerprint`). */
+  target_entry_id?: string | null;
+  expected_fingerprint?: string | null;
+  /** amend only — the target's current content, rendered as the "before". Never sent to the server. */
+  before?: string;
+  /** reference only — the cited rule's title, rendered beside its id. Never sent to the server. */
+  title?: string;
+}
+
 export interface DesignTrackEntry {
   track: DesignTrack;
   status: 'accepted' | 'this-brief' | 'pending' | 'not-required';
@@ -264,6 +288,11 @@ export type GateFrame =
       tracks: DesignTrackEntry[];
       /** `[]` is a real answer ("this reaches nothing beyond the ticket"); an ABSENT key is not. */
       reach: string[];
+      /** B-1047 — the structured reach. Absent only on legacy frames (lint-warned). */
+      reach_level?: ReachLevel;
+      /** B-1047 — the rules this design creates, amends or references; compose derives the
+       *  `rule_bundle` payload item from them (`withDerivedRuleBundle`). */
+      rules?: DesignRule[];
       not_reopened?: string[];
       derisk?: { run: string[]; not_run: string[] };
       /** Product track only — the AC manifest this accept files. */
@@ -788,6 +817,9 @@ function renderFrame(frame: GateFrame): string[] {
       const reach = frame.reach ?? [];
       if (reach.length) out.push('**Reach beyond this ticket:**', ...reach.map((r) => `- ${r}`));
       else out.push('**Reach beyond this ticket:** none — this decision reaches nothing outside the ticket');
+      // B-1047 — rendered only when declared, so a legacy frame's bytes are unchanged.
+      if (frame.reach_level) out.push(`**Reach:** ${REACH_LABEL[frame.reach_level] ?? frame.reach_level} (\`${frame.reach_level}\`)`);
+      if (frame.rules?.length) out.push(...renderDesignRules(frame.rules));
       if (frame.not_reopened?.length) {
         out.push('**Not reopened here:**', ...frame.not_reopened.map((r) => `- ${r}`));
       }
@@ -965,6 +997,40 @@ function proposedAcLines(payload: AcceptanceEventPayloadItem[] | undefined): str
     .map((p) => `- ${p.content}`);
 }
 
+const REACH_LABEL: Record<string, string> = {
+  this_ticket_only: 'this ticket only', this_surface: 'this surface', this_product: 'this product',
+};
+
+/** B-1047 — every declared rule, shown in full BEFORE acceptance: operation, exact wording (verbatim),
+ *  reach, domains, surfaces and knowledge scope; amend/reference name their target and fingerprint, and
+ *  an amend shows before and after. */
+export function renderDesignRules(rules: DesignRule[]): string[] {
+  const list = (v: string[] | undefined): string => (v?.length ? v.join(', ') : '(none)');
+  const out = ['**Rules:**'];
+  for (const rule of rules) {
+    if (rule.operation === 'reference') {
+      // A reference cites the rule; it never restates it.
+      const title = rule.title?.trim() ? ` — ${rule.title.trim()}` : '';
+      out.push(`- **reference** \`${rule.ref}\` — Cites rule ${rule.target_entry_id ?? '(none)'}${title}`);
+      if (rule.wording?.trim()) out.push(`  - wording: "${rule.wording.trim()}"`);
+      const extra = [rule.reach ? `reach: \`${rule.reach}\`` : null, `domains: ${list(rule.domains)}`, `surfaces: ${list(rule.surfaces)}`,
+        rule.knowledge_scope ? `scope: ${rule.knowledge_scope}` : null].filter(Boolean).join(' · ');
+      out.push(`  - ${extra}`);
+      out.push(`  - expected fingerprint: ${rule.expected_fingerprint ?? '(none)'}`);
+      continue;
+    }
+    out.push(`- **${rule.operation}** \`${rule.ref}\` — "${rule.wording}"`);
+    out.push(`  - reach: \`${rule.reach}\` · domains: ${list(rule.domains)} · surfaces: ${list(rule.surfaces)} · scope: ${rule.knowledge_scope}`);
+    if (rule.operation !== 'create') {
+      out.push(`  - target: ${rule.target_entry_id ?? '(none)'} · expected fingerprint: ${rule.expected_fingerprint ?? '(none)'}`);
+    }
+    if (rule.operation === 'amend') {
+      out.push(`  - before: ${rule.before?.trim() ? `"${rule.before.trim()}"` : '(not shown — read the target entry)'}`, `  - after: "${rule.wording}"`);
+    }
+  }
+  return out;
+}
+
 /** B-866 — one promise line per payload item, in the item's own terms. Returns null for an item that
  *  carries nothing renderable: a promise the reader cannot check is worse than no promise at all. */
 function promisedWriteLine(item: AcceptanceEventPayloadItem): string | null {
@@ -1008,6 +1074,14 @@ function promisedWriteLine(item: AcceptanceEventPayloadItem): string | null {
       // answer (same doctrine as gate_slot above), so it renders too, never silently as "nothing".
       const names = Array.isArray(item.names) ? item.names : [];
       return `- the confirmed feature-entity name(s) — ${names.length ? names.join(', ') : '(none)'} — landed on the ticket`;
+    }
+    case 'rule_bundle': {
+      // B-1047 — the rules themselves render in the frame's **Rules:** block; this line names the write.
+      const rules = Array.isArray(item.rules) ? item.rules : [];
+      const counts = (['create', 'amend', 'reference'] as const)
+        .map((op) => [op, rules.filter((r) => r.operation === op).length] as const)
+        .filter(([, n]) => n > 0).map(([op, n]) => `${op} ${n}`);
+      return `- the rule bundle — ${rules.length} rule(s) recorded as one write before the decision entry (${counts.join(', ') || 'none'})`;
     }
     case 'entity_link': {
       const identity = text(item.entity_name) ?? text(item.entity_id);
@@ -1750,6 +1824,9 @@ function lintFrame(doc: BriefDoc, ctx: BriefLintContext, errors: string[], warni
           warnings.push(`Track '${entry.track}' is declared not-required with no note. Declaring a track away is a decision — say why, so a reader can contest it.`);
         }
       }
+      if (!frame.reach_level) {
+        warnings.push('`frame.reach_level` is absent (B-1047). Declare this_ticket_only | this_surface | this_product; a beyond-ticket design must also declare its rules in `frame.rules`.');
+      }
       if (!Array.isArray(frame.reach)) {
         warnings.push('`frame.reach` is absent. The KEY is required: `[]` ("this reaches nothing beyond the ticket") is a real answer, and a negative reach claim is often what carries the recommendation.');
       }
@@ -2236,6 +2313,57 @@ export function withDerivedGateSlot(doc: BriefDoc, reason: string): BriefDoc {
     ref: slugRef('slot', gate),
     gate,
     slot_content: content,
+  };
+  return { ...doc, payload: [...others, item] };
+}
+
+/** B-1047 — the stable ref of the ONE rule_bundle item a design brief's payload carries. */
+export const RULE_BUNDLE_REF = 'rule-bundle';
+
+/** B-1047 — the refusal when a brief promises rules on a database without the rule registry. */
+export const RULE_BUNDLE_UNSUPPORTED =
+  'rule promises need the B-1047 database support, not yet live on this environment — compose refused rather than strip the declared rules; recompose after the promote, or remove the rules deliberately';
+
+/** B-1047 — does this database carry the rule registry? `rule_registry_capability()` → `{ rule_bundle: 1 }`.
+ *  A missing function (PGRST202 / 42883) is "absent"; any other failure propagates, never read as absent. */
+export async function ruleRegistryAvailable(client: SupabaseClient): Promise<boolean> {
+  const { data, error } = await client.rpc('rule_registry_capability');
+  if (error) {
+    if (isMissingRelationOrFunction(error)) return false;
+    throw new Error(`rule_registry_capability failed: ${error.message}`);
+  }
+  const version = (data as { rule_bundle?: unknown } | null)?.rule_bundle;
+  return typeof version === 'number' && version >= 1;
+}
+
+/** B-1047 — a design rule in the server's bundle shape: `before` and `title` are display-only and are
+ *  dropped, and an absent target/fingerprint (or a reference's omitted wording/scope/reach) is an
+ *  explicit null. */
+function bundleRule(rule: DesignRule): RuleBundleRule {
+  return {
+    ref: rule.ref, operation: rule.operation, wording: rule.wording ?? null,
+    domains: [...(rule.domains ?? [])], surfaces: [...(rule.surfaces ?? [])],
+    knowledge_scope: rule.knowledge_scope ?? null, reach: rule.reach ?? null,
+    target_entry_id: rule.target_entry_id ?? null, expected_fingerprint: rule.expected_fingerprint ?? null,
+  };
+}
+
+/**
+ * B-1047 — DERIVE the `rule_bundle` payload item from `frame.rules` (B-866 style: one authored source).
+ * Any hand-authored rule_bundle item is REPLACED. A doc with no rules is returned unchanged — unless it
+ * hand-authors a rule_bundle item, which is refused (the rules belong in the frame, where they render).
+ */
+export function withDerivedRuleBundle(doc: BriefDoc, decisionRef: DecisionRef | null | undefined): BriefDoc {
+  const rules = doc.frame?.kind === 'design' ? doc.frame.rules ?? [] : [];
+  const handAuthored = (doc.payload ?? []).some((p) => p.write_kind === 'rule_bundle');
+  if (!rules.length) {
+    if (handAuthored) throw new Error('compose_brief: a rule_bundle payload item is derived from doc.frame.rules — declare the rules in the design frame, never hand-author the item');
+    return doc;
+  }
+  if (!decisionRef?.id) throw new Error('compose_brief: a design brief declaring frame.rules needs a decision_ref — the rule bundle cites the design decision');
+  const others = (doc.payload ?? []).filter((p) => p.write_kind !== 'rule_bundle');
+  const item: AcceptanceEventPayloadItem = {
+    write_kind: 'rule_bundle', ref: RULE_BUNDLE_REF, rules: rules.map(bundleRule), decision_id: decisionRef.id,
   };
   return { ...doc, payload: [...others, item] };
 }
@@ -3066,9 +3194,16 @@ export async function composeBrief(
   if (docWithContradiction.frame?.kind === 'design' && docWithContradiction.frame.designer_frames?.length) {
     await validateDesignerFrameAttachments(client, taskId, docWithContradiction.frame.designer_frames);
   }
+  // B-1047 — a brief that PROMISES rules needs the rule registry on this database. Probe only then
+  // (legacy, rule-less designs never probe), and refuse rather than silently strip the rules.
+  if (docWithContradiction.frame?.kind === 'design' && docWithContradiction.frame.rules?.length) {
+    if (!await ruleRegistryAvailable(client)) throw new Error(`compose_brief: ${RULE_BUNDLE_UNSUPPORTED}`);
+  }
   const manifestEvidence = await withManifestEvidence(client, taskId, docWithContradiction, args);
+  // B-1047: the rule bundle is derived INSIDE the entry derivation, like the gate slot, so the entry
+  // projection carries the bundle's promise line exactly as the human read it.
   const doc = withDerivedEntryContent(
-    withDerivedGateSlot(manifestEvidence.doc, args.reason),
+    withDerivedRuleBundle(withDerivedGateSlot(manifestEvidence.doc, args.reason), mergedDecisionRef),
     args.reason,
     mergedDecisionRef,
     renderCtx,
@@ -3403,7 +3538,7 @@ export const composeBriefTool = {
           frame: {
             type: 'object',
             description:
-              "B-876 — the gate-specific frame, discriminated by `kind` (must match the gate reason): 'clarify' { solving, in_scope[], not_solving[{item,lands}], floor_reviewed?[] } | 'decompose' { elements[{text,surface?,covers?}], coverage, existing_children_checked, floor_reviewed?[] } | 'design' { track, tracks[{track,status,note?}], reach[], not_reopened?[], derisk?{run[],not_run[]}, files_on_accept?[], floor_reviewed?[] } | 'plan' { scope{repos[],surfaces[],has_migration}, steps[], attestation{base_verified,derisked_by_running?}, carried_unproven[{item,reason}], ac_coverage, landing?, design_delta?, design_read?{version_id|null,screens[],drift: 'changed'|'unchanged'|'unchecked'} (B-1205), floor_reviewed?[] } | 'release' { settled_beyond_design?[{behaviour,ac,knowledge_entry_id}], act(LandingShape), unproven[{item,reason}], evidence_status{proven_by_run,walk_at_verify,unproven,total,detail?}, risk_classes[], pr_review_state?, contradiction_signal?{status,message,entries[{entry_id,title,state,matched_values[],source}],truncated?}, floor_reviewed?[] } | 'verify' { environment, criteria[{ac_id,text,checked,disposition,step_ref?,blocked_reason?,carried_to?,backed_by?}], steps?[{ref,action,expect,covers[],design_node?{node_id,name,caption?,preview_attachment_id,preview_filename}}], design_comparison?, exempt_reason?, evidence_status, bounded_accept? }. `floor_reviewed` (B-838) applies to the FIVE forward gates only — never verify. LandingShape = { repos[], pr_count, lands_in: 'staging'|'production'|'both'|'merged-main', atomicity: 'single'|'together'|'ordered', ordering? (required when ordered), irreversible[], prs?[{repo,number,url}] (B-890, optional forever — populated from field_values.prerequisite_pr then build_pr) }. Every rule over this field is a WARNING, with two exceptions: (B-1016) a `release` frame missing `evidence_status` is REFUSED outright; (B-1068) a `verify` frame is REFUSED when a `walk`-kind criterion has no `frame.steps` at all, when a `step_ref` matches no declared step, when a step covers no filed criterion, when a `walk` criterion names no `step_ref`, when a step's `action` or `expect` is blank, or when `items[].kind === 'step'` / a raw `frame.runbook` key is present — author the walk as `frame.steps: [{ ref, action, expect, covers }]`, one action plus one expected observation per step, `covers` naming the acceptance-criterion ids it discharges. Omit the frame entirely and the render is byte-identical to the pre-B-876 output.",
+              "B-876 — the gate-specific frame, discriminated by `kind` (must match the gate reason): 'clarify' { solving, in_scope[], not_solving[{item,lands}], floor_reviewed?[] } | 'decompose' { elements[{text,surface?,covers?}], coverage, existing_children_checked, floor_reviewed?[] } | 'design' { track, tracks[{track,status,note?}], reach[], reach_level? ('this_ticket_only'|'this_surface'|'this_product', B-1047 — declare it on every design brief), rules?[{ref,operation:'create'|'amend'|'reference',wording,domains[],surfaces[],knowledge_scope:'product'|'deployment',reach:'this_surface'|'this_product',target_entry_id,expected_fingerprint,before?,title?}] (B-1047 — beyond-ticket reach with zero rules is REFUSED; this_ticket_only allows only 'reference'; amend/reference need target_entry_id + expected_fingerprint (from read_rule_registry); create/amend need wording, knowledge_scope and reach; a reference never restates its rule, so wording/knowledge_scope/reach are optional there and `title` is display-only; compose derives the 'rule_bundle' payload item and refuses when this database lacks the rule registry), not_reopened?[], derisk?{run[],not_run[]}, files_on_accept?[], floor_reviewed?[] } | 'plan' { scope{repos[],surfaces[],has_migration}, steps[], attestation{base_verified,derisked_by_running?}, carried_unproven[{item,reason}], ac_coverage, landing?, design_delta?, design_read?{version_id|null,screens[],drift: 'changed'|'unchanged'|'unchecked'} (B-1205), floor_reviewed?[] } | 'release' { settled_beyond_design?[{behaviour,ac,knowledge_entry_id}], act(LandingShape), unproven[{item,reason}], evidence_status{proven_by_run,walk_at_verify,unproven,total,detail?}, risk_classes[], pr_review_state?, contradiction_signal?{status,message,entries[{entry_id,title,state,matched_values[],source}],truncated?}, floor_reviewed?[] } | 'verify' { environment, criteria[{ac_id,text,checked,disposition,step_ref?,blocked_reason?,carried_to?,backed_by?}], steps?[{ref,action,expect,covers[],design_node?{node_id,name,caption?,preview_attachment_id,preview_filename}}], design_comparison?, exempt_reason?, evidence_status, bounded_accept? }. `floor_reviewed` (B-838) applies to the FIVE forward gates only — never verify. LandingShape = { repos[], pr_count, lands_in: 'staging'|'production'|'both'|'merged-main', atomicity: 'single'|'together'|'ordered', ordering? (required when ordered), irreversible[], prs?[{repo,number,url}] (B-890, optional forever — populated from field_values.prerequisite_pr then build_pr) }. Every rule over this field is a WARNING, with two exceptions: (B-1016) a `release` frame missing `evidence_status` is REFUSED outright; (B-1068) a `verify` frame is REFUSED when a `walk`-kind criterion has no `frame.steps` at all, when a `step_ref` matches no declared step, when a step covers no filed criterion, when a `walk` criterion names no `step_ref`, when a step's `action` or `expect` is blank, or when `items[].kind === 'step'` / a raw `frame.runbook` key is present — author the walk as `frame.steps: [{ ref, action, expect, covers }]`, one action plus one expected observation per step, `covers` naming the acceptance-criterion ids it discharges. Omit the frame entirely and the render is byte-identical to the pre-B-876 output.",
           },
           revision: {
             type: 'object',
@@ -3417,7 +3552,7 @@ export const composeBriefTool = {
             items: {
               type: 'object',
               properties: {
-                write_kind: { type: 'string', description: "'acceptance_criterion' | 'child_ticket' | 'checklist_item' | 'ac_transfer' | 'label_add' | 'knowledge_entry_content' | 'entity_link'" },
+                write_kind: { type: 'string', description: "'acceptance_criterion' | 'child_ticket' | 'checklist_item' | 'ac_transfer' | 'label_add' | 'knowledge_entry_content' | 'entity_link' | 'rule_bundle' (B-1047 — DERIVED from frame.rules; never author it)" },
                 entity_id: { type: 'string', description: 'entity_link: explicit current identity UUID; accepts ID without a name' },
                 entity_name: { type: 'string', description: 'entity_link: exact current/retired name; ambiguity lists candidate identities' },
                 kind: { type: 'string', description: 'entity_link: optional kind selector, applied before ambiguity detection' },

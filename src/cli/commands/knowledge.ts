@@ -5,6 +5,7 @@ import { initProseSources, RELEASED_PROSE_CLI } from '../prose-init.js';
 import { readProse, setDefinedIn } from '../../tools/knowledge-prose.js';
 import { readKnowledgeNames, renameKnowledgeConcept, previewKnowledgeMerge, mergeKnowledgeConcepts } from '../../tools/knowledge-names.js';
 import { captureSurfaceRecord, readSurfaceRecords } from '../../tools/surface-records.js';
+import { readRuleRegistry } from '../../tools/rule-registry.js';
 import { createFeatureAccount, readFeatureAccounts, previewFeatureAmendment, proposeFeatureAmendment, applyFeatureAmendment } from '../../tools/feature-accounts.js';
 import { registerSourceCommands } from './knowledge-sources.js';
 import { readFile } from 'node:fs/promises';
@@ -72,6 +73,11 @@ export function registerKnowledgeCommands(program: Command): void {
         (ctx) => captureSurfaceRecord(ctx.client, ctx.projectId, args),
         (data) => JSON.stringify(data, null, 2),
       );
+    });
+  knowledge.command('rules').description('Read the rule registry: entry ids and fingerprints for amend/reference rules (B-1047)')
+    .option('--entry <id>').option('--domain <domain...>').option('--surface <surface...>').option('--search <text>').option('--limit <n>')
+    .action(async opts => {
+      await runCommand(program.opts(), ctx => readRuleRegistry(ctx.client, ctx.projectId, { entry_id: opts.entry, domains: opts.domain, surfaces: opts.surface, search: opts.search, limit: opts.limit ? Number(opts.limit) : undefined }), data => JSON.stringify(data, null, 2));
     });
   const accounts = knowledge.command('accounts').description('Live feature accounts and pending clause amendments');
   accounts.command('list').option('--surface <surface>').option('--account <id>').option('--history-limit <n>').option('--history-before <n>').action(async opts => {

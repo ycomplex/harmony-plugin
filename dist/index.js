@@ -47990,336 +47990,419 @@ var surfaceRecordTools = [
   }
 ];
 
-// src/tools/feature-accounts.ts
-var uuid2 = external_exports.string().uuid();
-var operation = external_exports.discriminatedUnion("op", [
-  external_exports.object({ op: external_exports.literal("replace"), clause_id: external_exports.string().trim().min(1), content: external_exports.string() }).strict(),
-  external_exports.object({
-    op: external_exports.literal("insert"),
-    clause_id: external_exports.string().trim().min(1),
-    content: external_exports.string(),
-    ordinal: external_exports.number().int().positive()
-  }).strict()
-]);
-var createAccountSchema = external_exports.object({ owner_surface: external_exports.string().trim().min(1), concept_id: uuid2.optional() }).strict();
-var readAccountsSchema = external_exports.object({
-  account_id: uuid2.optional(),
-  owner_surface: external_exports.string().optional(),
-  history_limit: external_exports.number().int().min(1).max(100).optional(),
-  history_before: external_exports.number().int().positive().optional()
-}).strict();
-var previewAmendmentSchema = external_exports.object({
-  account_id: uuid2,
-  expected_revision: external_exports.number().int().nonnegative(),
-  operations: external_exports.array(operation).min(1)
-}).strict();
-var proposeAmendmentSchema = previewAmendmentSchema.extend({
-  source_decision_id: uuid2,
-  source_task_id: uuid2,
-  idempotency_key: external_exports.string().trim().min(1),
-  leaves_untouched: external_exports.array(
-    external_exports.object({
-      account_id: uuid2.optional(),
-      entry_id: uuid2.optional(),
-      owner_surface: external_exports.string().min(1).optional(),
-      clause_id: external_exports.string().min(1).optional()
-    }).strict().refine((value) => Object.keys(value).length > 0, "Name the untouched scope")
-  ),
-  evidence: external_exports.object({ pr_url: external_exports.string().url().optional(), commit: external_exports.string().min(1).optional() }).strict().optional()
-});
-var applyAmendmentSchema = external_exports.object({
-  amendment_id: uuid2,
-  production_event_id: uuid2.optional(),
-  confirm_production: external_exports.boolean().optional()
-}).strict().refine(
-  (value) => !!value.production_event_id !== (value.confirm_production === true),
-  "Provide one production event or explicitly confirm post-promotion production"
-);
-function missingAccountCapability(error2) {
-  return ["PGRST202", "42883", "42P01", "PGRST205"].includes(error2.code ?? "") && /(?:feature_account|feature_amendment|knowledge_feature_)/i.test(error2.message ?? "");
+// src/elicitation/engine.ts
+var MAX_QUESTIONS_PER_ROUND = 5;
+function validateRound(questions) {
+  const errors = [];
+  if (!Array.isArray(questions) || questions.length === 0) {
+    errors.push("a round needs at least one question");
+    return errors;
+  }
+  if (questions.length > MAX_QUESTIONS_PER_ROUND) {
+    errors.push(
+      `a round carries at most ${MAX_QUESTIONS_PER_ROUND} questions (got ${questions.length}) \u2014 split the residual across rounds instead of interrogating in bulk`
+    );
+  }
+  const seen = /* @__PURE__ */ new Set();
+  for (const q of questions) {
+    const label = q.id?.trim() ? `question "${q.id}"` : "a question";
+    if (!q.id?.trim()) {
+      errors.push("every question needs an id (the answer keys on it)");
+    } else if (seen.has(q.id)) {
+      errors.push(`duplicate question id "${q.id}" \u2014 answers key on the id, so ids must be round-unique`);
+    } else {
+      seen.add(q.id);
+    }
+    if (!q.text?.trim()) {
+      errors.push(`${label} has no text`);
+    }
+    if (q.stakes === "load-bearing" && q.kind === "validate") {
+      errors.push(
+        `${label} is load-bearing but kind='validate' \u2014 load-bearing questions MUST be kind='open' (open question first, candidate withheld; a one-click confirm on a load-bearing residual is the rubber-stamp this engine exists to prevent)`
+      );
+    }
+    if (q.kind === "validate" && !q.statement?.trim()) {
+      errors.push(`${label} is kind='validate' but has no statement \u2014 there is nothing for the human to confirm or correct`);
+    }
+  }
+  return errors;
 }
-async function call2(client, name, projectId, args, read = false) {
-  const parameters = Object.fromEntries(
-    Object.entries(args).filter(([, value]) => value !== void 0).map(([key, value]) => [`p_${key}`, value])
-  );
-  const { data, error: error2 } = await client.rpc(name, { p_project_id: projectId, ...parameters });
-  if (error2) {
-    if (missingAccountCapability(error2)) {
-      if (read) return { availability: "unavailable", accounts: [] };
+var ENUMERATED_OPTIONS_PATTERN = /\(\d+\)|\([a-zA-Z]\)|(?:^|\s)\d+[.)]\s|(?:^|\s)[a-zA-Z][.)]\s/g;
+function looksEnumerated(text3) {
+  if (!text3) return false;
+  const matches = text3.match(ENUMERATED_OPTIONS_PATTERN);
+  return !!matches && matches.length >= 2;
+}
+function warnRound(questions) {
+  const warnings = [];
+  if (!Array.isArray(questions)) return warnings;
+  for (const q of questions) {
+    if (q.kind !== "open") continue;
+    if (!looksEnumerated(q.why)) continue;
+    if (looksEnumerated(q.text)) continue;
+    const label = q.id?.trim() ? `question "${q.id}"` : "a question";
+    warnings.push(
+      `${label}'s why field looks like it enumerates options (e.g. "(1)\u2026(2)\u2026") but text does not \u2014 options a worker prepares should live in text, where they're unmissable (a why expander can go unread); consider moving the enumerated options into text.`
+    );
+  }
+  return warnings;
+}
+function nextRoundNumber(rounds) {
+  return currentRoundNumber(rounds) + 1;
+}
+function currentRoundNumber(rounds) {
+  if (!Array.isArray(rounds) || rounds.length === 0) return 0;
+  const last = rounds[rounds.length - 1];
+  return typeof last?.n === "number" ? last.n : rounds.length;
+}
+function appendRound(rounds, round) {
+  return [...Array.isArray(rounds) ? rounds : [], round];
+}
+function echoPriorAnswers(rounds, priorAnswers, answeredAt) {
+  const errors = [];
+  if (!Array.isArray(rounds) || rounds.length === 0) {
+    return { rounds: null, errors: ["no round has been filed \u2014 there is nothing to echo answers onto"] };
+  }
+  const entries = Object.entries(priorAnswers ?? {});
+  if (entries.length === 0) {
+    return { rounds: null, errors: ["prior_answers is empty \u2014 omit it instead of passing an empty object"] };
+  }
+  const last = rounds[rounds.length - 1];
+  const byId = new Map(last.questions.map((q) => [q.id, q]));
+  for (const [qid, answer] of entries) {
+    const q = byId.get(qid);
+    if (!q) {
+      errors.push(`question "${qid}" is not in the last filed round (round ${last.n}) \u2014 only the open round can be echoed`);
+      continue;
+    }
+    if (last.answers?.[qid]) {
+      errors.push(`question "${qid}" already has an answer \u2014 a submitted answer is the human's own words and is never overwritten`);
+      continue;
+    }
+    const verb = answer?.verb;
+    if (q.kind === "validate" && verb !== "confirm" && verb !== "correct" && verb !== "skip") {
+      errors.push(`question "${qid}" is kind='validate' \u2014 its echoed verb must be confirm, correct, or skip (got '${verb}')`);
+    }
+    if (q.kind === "open" && verb !== "answer" && verb !== "skip") {
+      errors.push(`question "${qid}" is kind='open' \u2014 its echoed verb must be answer or skip (got '${verb}')`);
+    }
+    if ((verb === "correct" || verb === "answer") && !answer.text?.trim()) {
+      errors.push(`question "${qid}" echoes verb='${verb}' but has no text \u2014 there is no answer to record`);
+    }
+  }
+  if (errors.length > 0) return { rounds: null, errors };
+  const echoed = {
+    ...last,
+    answers: {
+      ...last.answers,
+      ...Object.fromEntries(entries.map(([qid, a]) => [qid, { ...a, via: "terminal" }]))
+    },
+    ...answeredAt && !last.answered_at ? { answered_at: answeredAt } : {}
+  };
+  return { rounds: [...rounds.slice(0, -1), echoed], errors: [] };
+}
+
+// src/tools/elicitation.ts
+var EXCHANGE_COLS = "id, task_id, trigger, gate, brief_id, status, rounds, answers_submitted_at, force_quit_requested_at, created_by, created_at, updated_at";
+var TRIGGER_OWNERS = {
+  "pre-draft-clarify": "clarify",
+  "discuss": "any-gate",
+  "phase-split-probe": "clarify",
+  "worker-question": "any-gate",
+  "inception-semantics": "inception"
+};
+var VALID_TRIGGERS = Object.keys(TRIGGER_OWNERS);
+var CLARIFY_OWNED_TRIGGERS = VALID_TRIGGERS.filter((t) => TRIGGER_OWNERS[t] === "clarify");
+var VALID_OUTCOMES = ["converged", "force-quit", "abandoned"];
+var isMissingPendingResolutionColumn = (msg) => !!msg && /pending_resolution/.test(msg) && /(does not exist|could not find|schema cache|column)/i.test(msg);
+async function findActiveExchange(client, taskId) {
+  const { data, error: error2 } = await client.from("elicitation_exchanges").select(EXCHANGE_COLS).eq("task_id", taskId).eq("status", "active").maybeSingle();
+  if (error2) throw new Error(error2.message);
+  return data ?? null;
+}
+async function resolveExchange(client, projectId, args) {
+  if (args.exchange_id) {
+    const { data, error: error2 } = await client.from("elicitation_exchanges").select(EXCHANGE_COLS).eq("id", args.exchange_id).maybeSingle();
+    if (error2) throw new Error(error2.message);
+    if (!data) throw new Error(`elicitation exchange ${args.exchange_id} not found`);
+    return data;
+  }
+  if (!args.task_id) throw new Error("either exchange_id or task_id is required");
+  const taskId = await resolveTaskId2(client, projectId, args.task_id);
+  const active = await findActiveExchange(client, taskId);
+  if (!active) throw new Error(`no active elicitation exchange for task ${args.task_id}`);
+  return active;
+}
+async function startElicitation(client, projectId, userId, args) {
+  if (!args.task_id) throw new Error("task_id is required");
+  if (!args.trigger || !VALID_TRIGGERS.includes(args.trigger)) {
+    throw new Error(`trigger must be one of: ${VALID_TRIGGERS.join(", ")}`);
+  }
+  const taskId = await resolveTaskId2(client, projectId, args.task_id);
+  const existing = await findActiveExchange(client, taskId);
+  if (existing) return existing;
+  const { data, error: error2 } = await client.from("elicitation_exchanges").insert({
+    task_id: taskId,
+    trigger: args.trigger,
+    gate: args.gate ?? null,
+    brief_id: args.brief_id ?? null,
+    created_by: userId
+  }).select(EXCHANGE_COLS).single();
+  if (error2) throw new Error(error2.message);
+  return data;
+}
+var startElicitationTool = {
+  name: "start_elicitation",
+  description: "Open an elicitation exchange for a task (elicitation-first discovery, B-550) \u2014 the round-based question/answer record a gate skill interrogates the human's intent through BEFORE drafting. Idempotent-on-active: at most one active exchange exists per task, and calling this when one exists RETURNS it (resume, not error). Elicit only when intent is opaque relative to the knowledge base \u2014 always try KB inference first and interrogate the residual; see skills/harmony-shared/elicitation-engine.md for the behavioural contract.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: { type: "string", description: "The task the exchange belongs to \u2014 UUID, task number, or visual ID (e.g., B-43)" },
+      trigger: { type: "string", description: "What started the exchange: 'pre-draft-clarify' (questions before a clarification draft exists) | 'discuss' (attached to an active brief under discussion) | 'phase-split-probe' (probing whether/where to split phases) | 'worker-question' (the running session itself hit a judgment call or capability denial mid-run \u2014 B-733; see skills/harmony-shared/elicitation-engine.md \xA7The worker-question trigger)" },
+      gate: { type: "string", description: "The workflow activity the exchange serves (e.g. 'clarifying'). Optional." },
+      brief_id: { type: "string", description: "The active brief a 'discuss' exchange attaches to. Omit for pre-draft triggers." }
+    },
+    required: ["task_id", "trigger"]
+  }
+};
+async function fileElicitationRound(client, projectId, args) {
+  if (!args.context_line?.trim()) throw new Error("context_line is required \u2014 one plain-prose line framing the round");
+  const violations = validateRound(args.questions ?? []);
+  if (violations.length > 0) {
+    throw new Error(`Round failed the elicitation lints:
+- ${violations.join("\n- ")}`);
+  }
+  const exchange = await resolveExchange(client, projectId, args);
+  if (exchange.status !== "active") {
+    if (exchange.status === "abandoned") {
+      return { noop: true, cause: "exchange-cancelled", exchange };
+    }
+    throw new Error(`exchange ${exchange.id} is '${exchange.status}' \u2014 rounds can only be filed on an active exchange`);
+  }
+  let rounds = Array.isArray(exchange.rounds) ? exchange.rounds : [];
+  if (args.prior_answers) {
+    const echoed = echoPriorAnswers(rounds, args.prior_answers, (/* @__PURE__ */ new Date()).toISOString());
+    if (echoed.errors.length > 0) {
+      throw new Error(`prior_answers failed the echo guards:
+- ${echoed.errors.join("\n- ")}`);
+    }
+    rounds = echoed.rounds;
+  }
+  const n = nextRoundNumber(rounds);
+  if (exchange.brief_id != null && n === 1) {
+    const { error: clearErr } = await client.from("briefs").update({ pending_resolution: null }).eq("id", exchange.brief_id);
+    if (clearErr && !isMissingPendingResolutionColumn(clearErr.message)) {
+      throw new Error(clearErr.message);
+    }
+  }
+  const round = {
+    n,
+    context_line: args.context_line.trim(),
+    questions: args.questions,
+    answers: {},
+    // House idiom (milestones.ts shipped_at / knowledge.ts valid_to): timestamps are stamped
+    // client-side; the row's updated_at trigger carries the authoritative DB clock for the write.
+    filed_at: (/* @__PURE__ */ new Date()).toISOString()
+  };
+  const { data, error: error2 } = await client.from("elicitation_exchanges").update({ rounds: appendRound(rounds, round), answers_submitted_at: null }).eq("id", exchange.id).select(EXCHANGE_COLS).single();
+  if (error2) throw new Error(error2.message);
+  const { error: taskErr } = await client.from("tasks").update({
+    awaiting_human_input: true,
+    awaiting_human_reason: "elicitation-round",
+    // `gate` rides along (B-462) so surfaces can group/label the round by the lifecycle gate the
+    // exchange serves without re-fetching the exchange (the Queue card's gate pill reads it).
+    awaiting_human_ref: { kind: "elicitation", exchange_id: exchange.id, round: n, gate: exchange.gate ?? null }
+  }).eq("id", exchange.task_id);
+  if (taskErr) throw new Error(taskErr.message);
+  const warnings = warnRound(round.questions);
+  return { ...data, warnings };
+}
+var fileElicitationRoundTool = {
+  name: "file_elicitation_round",
+  description: `File one round of questions on an active elicitation exchange and hand the ball to the human (sets awaiting_human_input with reason 'elicitation-round'; never touches workflow_state). Lints enforced before any write: at most ${MAX_QUESTIONS_PER_ROUND} questions per round; a load-bearing question MUST be kind='open' (open question first, candidate withheld \u2014 load-bearing must never render as a one-click confirm); kind='validate' requires a statement to confirm/correct. One plain-prose context_line frames the round. Filing also CONSUMES any prior answers marker (clears answers_submitted_at) \u2014 read the previous round's answers via get_elicitation before filing the next. For a brief-attached ('discuss') exchange, filing ROUND 1 also clears the attached brief's pending_resolution discuss marker (B-461 \u2014 the filing IS the consume). On success, the returned row carries a non-blocking warnings: string[] field (B-785) \u2014 e.g. an OPEN question whose why reads like it enumerates concrete options while text does not, steering enumerated options into text where they're unmissable; never throws, never blocks the filing. If the exchange was mechanically cancelled ('abandoned'), returns the typed no-op { noop: true, cause: 'exchange-cancelled', exchange } instead of throwing \u2014 the CALLING AGENT must then archive any claims it minted in that same turn (claims are minted before conclude; the mint\u2192conclude window can race a cancel).`,
+  inputSchema: {
+    type: "object",
+    properties: {
+      exchange_id: { type: "string", description: "The exchange to file on. Or pass task_id to target its active exchange." },
+      task_id: { type: "string", description: "Alternative to exchange_id \u2014 the task whose ACTIVE exchange to file on (UUID, task number, or visual ID)." },
+      context_line: { type: "string", description: "ONE plain-prose line framing the round (what this round is settling and why)." },
+      questions: {
+        type: "array",
+        description: `The round's questions (max ${MAX_QUESTIONS_PER_ROUND}).`,
+        items: {
+          type: "object",
+          properties: {
+            id: { type: "string", description: "Round-unique id the answer keys on (e.g. 'q1')." },
+            stakes: { type: "string", description: "'low' | 'load-bearing' \u2014 how much a wrong answer steers the work. Load-bearing \u21D2 kind must be 'open'." },
+            kind: { type: "string", description: "'validate' (confirm/correct an inference \u2014 requires statement) | 'open' (open text)." },
+            statement: { type: "string", description: "The agent's inference the human confirms or corrects. Required for kind='validate'." },
+            text: { type: "string", description: "The question text." },
+            why: { type: "string", description: `Optional "why I'm asking" expander.` }
+          },
+          required: ["id", "stakes", "kind", "text"]
+        }
+      },
+      prior_answers: {
+        type: "object",
+        description: "Terminal-given answers to the PREVIOUS round, echoed into the exchange record in the same write (B-462 \u2014 the human answered in the terminal, not the web). Keyed by question id: { <qid>: { verb, text? } } with verb confirm|correct|skip for a 'validate' question and answer|skip for an 'open' one (correct/answer require text). Only the LAST filed round's unanswered questions may be echoed; each echo is stamped via:'terminal'. Omit entirely for web-submitted answers \u2014 the web writes those itself."
+      }
+    },
+    required: ["context_line", "questions"]
+  }
+};
+async function getElicitation(client, projectId, args) {
+  if (!args.task_id) throw new Error("task_id is required");
+  const taskId = await resolveTaskId2(client, projectId, args.task_id);
+  const active = await findActiveExchange(client, taskId);
+  if (active) return active;
+  const { data, error: error2 } = await client.from("elicitation_exchanges").select(EXCHANGE_COLS).eq("task_id", taskId).order("created_at", { ascending: false }).limit(1).maybeSingle();
+  if (error2) throw new Error(error2.message);
+  return data ?? null;
+}
+var getElicitationTool = {
+  name: "get_elicitation",
+  description: "Get a task's elicitation exchange \u2014 the active one, or the most recent if none is active (null when the task has never had one). `rounds` carries every filed round with its questions and any answers keyed by question id; a non-null `answers_submitted_at` means the human submitted answers the agent has NOT yet consumed (filing the next round, or concluding, consumes it); a non-null `force_quit_requested_at` means the human asked to force-quit ('best efforts, proceed').",
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: { type: "string", description: "The task whose exchange to fetch \u2014 UUID, task number, or visual ID (e.g., B-43)" }
+    },
+    required: ["task_id"]
+  }
+};
+async function concludeElicitation(client, projectId, args) {
+  if (!args.outcome || !VALID_OUTCOMES.includes(args.outcome)) {
+    throw new Error(`outcome must be one of: ${VALID_OUTCOMES.join(", ")}`);
+  }
+  const exchange = await resolveExchange(client, projectId, args);
+  if (exchange.status !== "active") {
+    if (exchange.status === args.outcome) return exchange;
+    if (exchange.status === "abandoned") {
+      return { noop: true, cause: "exchange-cancelled", exchange };
+    }
+    throw new Error(`exchange ${exchange.id} is already '${exchange.status}' \u2014 cannot conclude it '${args.outcome}'`);
+  }
+  let roundsUpdate = {};
+  if (args.prior_answers) {
+    const echoed = echoPriorAnswers(
+      Array.isArray(exchange.rounds) ? exchange.rounds : [],
+      args.prior_answers,
+      (/* @__PURE__ */ new Date()).toISOString()
+    );
+    if (echoed.errors.length > 0) {
+      throw new Error(`prior_answers failed the echo guards:
+- ${echoed.errors.join("\n- ")}`);
+    }
+    roundsUpdate = { rounds: echoed.rounds };
+  }
+  const { data, error: error2 } = await client.from("elicitation_exchanges").update({ status: args.outcome, answers_submitted_at: null, force_quit_requested_at: null, ...roundsUpdate }).eq("id", exchange.id).select(EXCHANGE_COLS).single();
+  if (error2) throw new Error(error2.message);
+  return data;
+}
+var concludeElicitationTool = {
+  name: "conclude_elicitation",
+  description: `Conclude an elicitation exchange: 'converged' (the agent can now confidently draft a brief that represents the user's intent), 'force-quit' (the human said "best efforts, proceed" \u2014 draft from what you have; mint any claims with provenance 'force-quit'), or 'abandoned'. Sets the exchange status and clears both consumable markers. Writes NOTHING else: it does not touch the attached brief and does not re-set the task's awaiting flag \u2014 for 'abandoned' on a brief-attached exchange the brief row deliberately stays ACTIVE with the flag down, so the owning gate's "brief already active" path re-surfaces it in place on re-entry. If the exchange is already 'abandoned' (a mechanical cancel landed first) and a DIFFERENT outcome is requested, returns the typed no-op { noop: true, cause: 'exchange-cancelled', exchange } instead of throwing (B-461) \u2014 the CALLING AGENT must then archive any claims it minted in that same turn (claims are minted before conclude; the mint\u2192conclude window can race a cancel). Re-issuing the SAME outcome stays idempotent and returns the row.`,
+  inputSchema: {
+    type: "object",
+    properties: {
+      exchange_id: { type: "string", description: "The exchange to conclude. Or pass task_id to target its active exchange." },
+      task_id: { type: "string", description: "Alternative to exchange_id \u2014 the task whose ACTIVE exchange to conclude (UUID, task number, or visual ID)." },
+      outcome: { type: "string", description: "'converged' | 'force-quit' | 'abandoned'" },
+      prior_answers: {
+        type: "object",
+        description: "Terminal-given answers to the FINAL round, echoed into the exchange record in the same concluding write (B-462) \u2014 use when the answers that produced this conclusion arrived in the terminal, not the web. Same shape and guards as file_elicitation_round's prior_answers; each echo is stamped via:'terminal'."
+      }
+    },
+    required: ["outcome"]
+  }
+};
+async function findLatestExchange(client, taskId) {
+  const { data, error: error2 } = await client.from("elicitation_exchanges").select(EXCHANGE_COLS).eq("task_id", taskId).order("created_at", { ascending: false }).limit(1).maybeSingle();
+  if (error2) throw new Error(error2.message);
+  return data ?? null;
+}
+async function submitElicitationAnswers(client, projectId, args) {
+  if (!args.task_id) throw new Error("task_id is required");
+  const taskId = await resolveTaskId2(client, projectId, args.task_id);
+  const exchange = await findActiveExchange(client, taskId);
+  if (!exchange) {
+    const latest = await findLatestExchange(client, taskId);
+    if (!latest) {
       throw new Error(
-        "Current account storage is unavailable. Deploy the web migration before writing; no change was made."
+        `task ${args.task_id} has no open elicitation exchange \u2014 there is no filed round to record answers against. Open one with start_elicitation and file a round first; nothing was written.`
+      );
+    }
+    if (latest.status === "abandoned") {
+      throw new Error(
+        `exchange ${latest.id} is 'abandoned' \u2014 the human cancelled the discussion, so these answers cannot be recorded and the call must not be retried. Nothing was written.`
       );
     }
     throw new Error(
-      `Current account operation failed (${error2.code ?? "unknown"}): ${error2.message}`
+      `exchange ${latest.id} is '${latest.status}' \u2014 answers can only be recorded on an active exchange, and this one is already concluded. Nothing was written.`
     );
   }
-  if (!data || typeof data !== "object") throw new Error("Invalid current account response");
+  const nowIso = (/* @__PURE__ */ new Date()).toISOString();
+  const echoed = echoPriorAnswers(
+    Array.isArray(exchange.rounds) ? exchange.rounds : [],
+    args.answers,
+    nowIso
+  );
+  if (echoed.errors.length > 0) {
+    throw new Error(`answers failed the echo guards:
+- ${echoed.errors.join("\n- ")}`);
+  }
+  const { data, error: error2 } = await client.from("elicitation_exchanges").update({ rounds: echoed.rounds, answers_submitted_at: nowIso }).eq("id", exchange.id).select(EXCHANGE_COLS).single();
+  if (error2) throw new Error(error2.message);
+  const { error: taskErr } = await client.from("tasks").update({ awaiting_human_input: false, awaiting_human_reason: null, awaiting_human_ref: null }).eq("id", exchange.task_id);
+  if (taskErr) throw new Error(taskErr.message);
   return data;
 }
-async function createFeatureAccount(client, projectId, args) {
-  return call2(client, "create_feature_account", projectId, createAccountSchema.parse(args));
-}
-async function readFeatureAccounts(client, projectId, args = {}) {
-  const result = await call2(
-    client,
-    "read_feature_accounts",
-    projectId,
-    readAccountsSchema.parse(args),
-    true
-  );
-  if (!["available", "unavailable", "not-found"].includes(result.availability) || !Array.isArray(result.accounts))
-    throw new Error("Invalid current account read response");
-  return result;
-}
-async function previewFeatureAmendment(client, projectId, args) {
-  return call2(client, "preview_feature_amendment", projectId, previewAmendmentSchema.parse(args));
-}
-async function proposeFeatureAmendment(client, projectId, args) {
-  return call2(client, "propose_feature_amendment", projectId, proposeAmendmentSchema.parse(args));
-}
-async function applyFeatureAmendment(client, projectId, args) {
-  return call2(client, "apply_feature_amendment", projectId, applyAmendmentSchema.parse(args));
-}
-var properties = {
-  account_id: { type: "string", description: "Stable account UUID" },
-  expected_revision: { type: "integer", minimum: 0 },
-  operations: {
-    type: "array",
-    minItems: 1,
-    items: {
-      type: "object",
-      properties: {
-        op: { type: "string", enum: ["replace", "insert"] },
-        clause_id: { type: "string" },
-        content: { type: "string" },
-        ordinal: { type: "integer", minimum: 1 }
-      },
-      required: ["op", "clause_id", "content"],
-      additionalProperties: false
-    },
-    description: "Ordered replacements or insertions. Insert requires a new clause_id and final ordinal. Replace preserves order."
-  }
-};
-var featureAccountTools = [
-  {
-    name: "create_feature_account",
-    description: "Create a project/surface current-account identity with no live text. Existing normalized surface returns the same identity. Optional concept_id shares the workspace concept UUID.",
-    inputSchema: {
-      type: "object",
-      properties: { owner_surface: { type: "string" }, concept_id: { type: "string" } },
-      required: ["owner_surface"],
-      additionalProperties: false
-    }
-  },
-  {
-    name: "read_feature_accounts",
-    description: "Read live current_text and ordered clauses separately from labelled pending_amendments and immutable history. Returns available, not-found or unavailable; permission/network errors stay errors. History is newest first; pass its last revision as history_before for the next page.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        account_id: properties.account_id,
-        owner_surface: { type: "string" },
-        history_limit: { type: "integer", minimum: 1, maximum: 100 },
-        history_before: { type: "integer", minimum: 1 }
-      },
-      additionalProperties: false
-    }
-  },
-  {
-    name: "preview_feature_amendment",
-    description: "Preview named clause operations at the expected live revision without proposing or publishing. Returns preview_text labelled live=false.",
-    inputSchema: {
-      type: "object",
-      properties,
-      required: ["account_id", "expected_revision", "operations"],
-      additionalProperties: false
-    }
-  },
-  {
-    name: "propose_feature_amendment",
-    description: "Register an idempotent pending amendment from an accepted project decision and source ticket. Names clauses replaced, insertion order and neighbours left untouched. Records amendment-proposed; does not change live current_text. PR/commit evidence optional.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        ...properties,
-        source_decision_id: { type: "string" },
-        source_task_id: { type: "string" },
-        idempotency_key: { type: "string" },
-        leaves_untouched: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              account_id: { type: "string" },
-              entry_id: { type: "string" },
-              owner_surface: { type: "string" },
-              clause_id: { type: "string" }
-            },
-            additionalProperties: false
-          }
-        },
-        evidence: {
-          type: "object",
-          properties: { pr_url: { type: "string" }, commit: { type: "string" } },
-          additionalProperties: false
-        }
-      },
-      required: [
-        "account_id",
-        "expected_revision",
-        "operations",
-        "leaves_untouched",
-        "source_decision_id",
-        "source_task_id",
-        "idempotency_key"
-      ],
-      additionalProperties: false
-    }
-  },
-  {
-    name: "apply_feature_amendment",
-    description: "Publish a pending amendment atomically ONLY with a trusted production-live re-stamped event, or confirm_production=true explicitly after promotion. Never call merely because a ticket merged, reached Deployed or Verified. Stale revision fails unchanged; successful retry creates no duplicate history/events.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        amendment_id: { type: "string" },
-        production_event_id: { type: "string" },
-        confirm_production: { type: "boolean" }
-      },
-      required: ["amendment_id"],
-      additionalProperties: false
-    }
-  }
-];
-
-// src/tools/epic-order.ts
-function sortEpics(epics) {
-  const lexical = (a, b) => a < b ? -1 : a > b ? 1 : 0;
-  return [...epics].sort((a, b) => Number(!!a.retired_at) - Number(!!b.retired_at) || lexical(a.name.toLowerCase(), b.name.toLowerCase()) || lexical(a.id, b.id));
-}
-
-// src/tools/epics.ts
-var listEpicsTool = {
-  name: "list_epics",
-  description: "List all epics in the project",
-  inputSchema: { type: "object", properties: {} }
-};
-function isMissingEpicRetirement(error2) {
-  if (!error2 || !["42703", "PGRST204"].includes(error2.code ?? "")) return false;
-  const diagnostic = `${error2.message ?? ""} ${error2.details ?? ""}`;
-  return /\bepics\b/.test(diagnostic) && /\bretired_at\b/.test(diagnostic) && /does not exist|could not find|not found|missing/i.test(diagnostic);
-}
-async function listEpics(client, projectId) {
-  const result = await client.from("epics").select("id, name, color, position, retired_at").eq("project_id", projectId);
-  if (isMissingEpicRetirement(result.error)) {
-    const legacy = await client.from("epics").select("id, name, color, position").eq("project_id", projectId);
-    if (legacy.error) throw legacy.error;
-    return sortEpics((legacy.data ?? []).map((epic) => ({ ...epic, retired_at: null })));
-  }
-  if (result.error) throw result.error;
-  return sortEpics((result.data ?? []).map((epic) => ({ ...epic, retired_at: epic.retired_at ?? null })));
-}
-async function assertActiveEpic(client, projectId, epicId) {
-  if (!epicId) return;
-  const epic = (await listEpics(client, projectId)).find((e) => e.id === epicId);
-  if (!epic) throw new Error("Epic is not available in this project");
-  if (epic.retired_at) throw new Error(`Epic "${epic.name}" is retired; choose an active epic`);
-}
-var createEpicTool = {
-  name: "create_epic",
-  description: "Create a new epic in the project",
+var submitElicitationAnswersTool = {
+  name: "submit_elicitation_answers",
+  description: "Record terminal-given answers to the OPEN round of a task's active elicitation exchange and hand the ball back to the agent \u2014 WITHOUT asking another round and WITHOUT concluding the exchange. This is the terminal twin of the web's answer form and the PRODUCER of the answers marker: it stamps answers_submitted_at, leaves the exchange 'active' (a follow-up round can still be filed), and clears the task's awaiting_human_input (reason/ref nulled) so the conductor watch classifies 'answers-landed'. Never touches workflow_state. Use it when an out-of-band caller holds answers the human gave in the terminal and the next move hasn't been decided yet; use file_elicitation_round's or conclude_elicitation's prior_answers instead when you are filing the next round or concluding in the same turn (those CONSUME the marker). Same guards as prior_answers: only the last filed round's unanswered questions may be answered, a submitted answer is never overwritten, and verbs must fit the question kind \u2014 any violation refuses the whole call with no partial write. Each answer is stamped via:'terminal'. Refuses (writing nothing) when the task has no open exchange, or when its exchange is already concluded \u2014 an 'abandoned' exchange means the human cancelled the discussion, so do not retry.",
   inputSchema: {
     type: "object",
     properties: {
-      name: { type: "string", description: "Epic name" },
-      color: { type: "string", description: "Hex color (e.g. #6366f1). Optional." }
+      task_id: { type: "string", description: "The task whose ACTIVE exchange to record answers on \u2014 UUID, task number, or visual ID (e.g., B-43)" },
+      answers: {
+        type: "object",
+        description: "The human's terminal-given answers to the OPEN round, keyed by question id: { <qid>: { verb, text? } } with verb confirm|correct|skip for a 'validate' question and answer|skip for an 'open' one (correct/answer require text). Answering only SOME of the round's questions is legitimate \u2014 the rest stay unanswered and the round stays open."
+      }
     },
-    required: ["name"]
+    required: ["task_id", "answers"]
   }
 };
-var updateEpicTool = {
-  name: "update_epic",
-  description: "Update an epic's name or color",
-  inputSchema: {
-    type: "object",
-    properties: {
-      epic_id: { type: "string", description: "Epic ID" },
-      name: { type: "string", description: "New name" },
-      color: { type: "string", description: "New hex color (e.g. #6366f1)" }
-    },
-    required: ["epic_id"]
+async function fetchActiveExchange(client, taskId) {
+  try {
+    const { data, error: error2 } = await client.from("elicitation_exchanges").select("id, status, rounds, answers_submitted_at, force_quit_requested_at").eq("task_id", taskId).eq("status", "active").maybeSingle();
+    if (error2 || !data) return null;
+    const row = data;
+    const rounds = Array.isArray(row.rounds) ? row.rounds : [];
+    return {
+      exchange_id: row.id,
+      status: row.status,
+      round: currentRoundNumber(rounds),
+      answers_submitted_at: row.answers_submitted_at ?? null,
+      force_quit_requested_at: row.force_quit_requested_at ?? null
+    };
+  } catch {
+    return null;
   }
-};
-async function updateEpic(client, projectId, args) {
-  const updates = {};
-  if (args.name !== void 0) updates.name = args.name;
-  if (args.color !== void 0) updates.color = args.color;
-  const { data, error: error2 } = await client.from("epics").update(updates).eq("id", args.epic_id).eq("project_id", projectId).select().single();
-  if (error2) throw error2;
-  return data;
-}
-async function createEpic(client, projectId, userId, args) {
-  const { data: existing } = await client.from("epics").select("position").eq("project_id", projectId).order("position", { ascending: false }).limit(1);
-  const nextPosition = (existing?.[0]?.position ?? -1) + 1;
-  const { data, error: error2 } = await client.from("epics").insert({
-    project_id: projectId,
-    name: args.name,
-    color: args.color ?? "#6366f1",
-    position: nextPosition,
-    created_by: userId
-  }).select().single();
-  if (error2) throw error2;
-  return data;
 }
 
-// src/tools/members.ts
-var listMembersTool = {
-  name: "list_members",
-  description: "List all members of the workspace. Returns user IDs, display names, emails, and roles. Use this to look up assignee IDs for task assignment.",
-  inputSchema: { type: "object", properties: {} }
-};
-async function listMembers(client, projectId) {
-  const { data: project, error: projError } = await client.from("projects").select("workspace_id").eq("id", projectId).single();
-  if (projError) throw projError;
-  const { data, error: error2 } = await client.from("workspace_members").select("user_id, role, joined_at, profile:profiles!workspace_members_user_id_profiles_fkey(display_name, email)").eq("workspace_id", project.workspace_id).order("joined_at", { ascending: true });
-  if (error2) throw error2;
-  return data.map((m) => ({
-    user_id: m.user_id,
-    display_name: m.profile?.display_name ?? null,
-    email: m.profile?.email ?? null,
-    role: m.role
-  }));
-}
-async function resolveAssignee(client, projectId, assignee) {
-  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(assignee)) {
-    return assignee;
-  }
-  const members = await listMembers(client, projectId);
-  const query = assignee.toLowerCase();
-  const emailMatch = members.filter((m) => m.email?.toLowerCase() === query);
-  if (emailMatch.length === 1) return emailMatch[0].user_id;
-  const nameMatch = members.filter(
-    (m) => m.display_name?.toLowerCase().includes(query)
-  );
-  if (nameMatch.length === 1) return nameMatch[0].user_id;
-  if (nameMatch.length > 1) {
-    const names = nameMatch.map((m) => m.display_name ?? m.email).join(", ");
-    throw new Error(`Ambiguous assignee "${assignee}" \u2014 matches multiple members: ${names}. Be more specific.`);
-  }
-  throw new Error(`No member found matching "${assignee}". Use list_members to see available members.`);
-}
+// src/tools/acceptance-events.ts
+import { createHash as createHash2 } from "node:crypto";
 
 // src/tools/design-artefact.ts
-var uuid3 = external_exports.string().uuid();
-var NodeSchema = external_exports.object({ id: external_exports.string().min(1), name: external_exports.string().min(1), caption: external_exports.string(), preview_attachment_id: uuid3, preview_filename: external_exports.string().min(1) }).strict();
+var uuid2 = external_exports.string().uuid();
+var NodeSchema = external_exports.object({ id: external_exports.string().min(1), name: external_exports.string().min(1), caption: external_exports.string(), preview_attachment_id: uuid2, preview_filename: external_exports.string().min(1) }).strict();
 var base = { schema_version: external_exports.literal(1), composed_at: external_exports.string().datetime(), provenance_notes: external_exports.string(), mcp_call_count: external_exports.number().int().nonnegative() };
 var DesignArtefactSchema = external_exports.discriminatedUnion("tool", [
   external_exports.object({ ...base, tool: external_exports.literal("figma"), file_key: external_exports.string().regex(/^[a-zA-Z0-9]+$/), file_url: external_exports.string().url().refine((s) => {
     const u = new URL(s);
     return u.protocol === "https:" && u.hostname === "www.figma.com";
   }), version_id: external_exports.string().min(1).optional(), nodes: external_exports.array(NodeSchema).min(1) }).strict(),
-  external_exports.object({ ...base, tool: external_exports.literal("html"), surface_attachment_id: uuid3, surface_filename: external_exports.string().min(1), nodes: external_exports.array(NodeSchema).max(0).optional() }).strict()
+  external_exports.object({ ...base, tool: external_exports.literal("html"), surface_attachment_id: uuid2, surface_filename: external_exports.string().min(1), nodes: external_exports.array(NodeSchema).max(0).optional() }).strict()
 ]);
 function designAttachmentIds(a) {
   return a.tool === "html" ? [a.surface_attachment_id] : a.nodes.map((n) => n.preview_attachment_id);
@@ -48406,6 +48489,21 @@ var sketch = object3({
   mcp_call_count: external_exports.number()
 });
 var floor = { floor_reviewed: strings.optional() };
+var REACH_LEVELS = ["this_ticket_only", "this_surface", "this_product"];
+var RULE_OPERATIONS = ["create", "amend", "reference"];
+var designRule = object3({
+  ref: external_exports.string().trim().min(1),
+  operation: external_exports.enum(RULE_OPERATIONS),
+  wording: external_exports.string().trim().min(1).nullable().optional(),
+  domains: strings,
+  surfaces: strings,
+  knowledge_scope: external_exports.enum(["product", "deployment"]).nullable().optional(),
+  reach: external_exports.enum(["this_surface", "this_product"]).nullable().optional(),
+  target_entry_id: external_exports.string().nullable().optional(),
+  expected_fingerprint: external_exports.string().nullable().optional(),
+  before: external_exports.string().optional(),
+  title: external_exports.string().optional()
+});
 var briefFrameSchema = external_exports.discriminatedUnion("kind", [
   object3({
     kind: external_exports.literal("clarify"),
@@ -48428,6 +48526,8 @@ var briefFrameSchema = external_exports.discriminatedUnion("kind", [
     tracks: external_exports.array(object3({ track, status: external_exports.enum(["accepted", "this-brief", "pending", "not-required"]), note: external_exports.string().optional() })),
     reach: strings,
     not_reopened: strings.optional(),
+    reach_level: external_exports.enum(REACH_LEVELS).optional(),
+    rules: external_exports.array(designRule).optional(),
     derisk: object3({ run: strings, not_run: strings }).optional(),
     files_on_accept: strings.optional(),
     designer_frames: external_exports.array(object3({
@@ -48501,6 +48601,40 @@ var briefFrameSchema = external_exports.discriminatedUnion("kind", [
     bounded_accept: object3({ open_ac_ids: strings, closes_when: external_exports.string() }).optional()
   })
 ]);
+function designRuleIssues(frame) {
+  const issues = [];
+  const rules = frame.rules ?? [];
+  const level = frame.reach_level;
+  if ((level === "this_surface" || level === "this_product") && rules.length === 0) {
+    issues.push(`doc.frame.rules: a design whose reach_level is '${level}' must declare at least one rule (create, amend or reference) \u2014 a beyond-ticket design records its rule once, as a rule`);
+  }
+  const seen = /* @__PURE__ */ new Set();
+  rules.forEach((rule, i) => {
+    const at = `doc.frame.rules[${i}]`;
+    const op = rule.operation;
+    if (level === void 0) {
+      issues.push(`${at}: rules need a declared doc.frame.reach_level (this_ticket_only | this_surface | this_product)`);
+    } else if (level === "this_ticket_only" && op !== "reference") {
+      issues.push(`${at}: a this_ticket_only design creates no rule \u2014 only 'reference' rules are allowed, not '${String(op)}'`);
+    }
+    if ((op === "amend" || op === "reference") && (!rule.target_entry_id || !rule.expected_fingerprint)) {
+      issues.push(`${at}: an '${String(op)}' rule must name target_entry_id and expected_fingerprint`);
+    }
+    if (op === "create" || op === "amend") {
+      for (const field of ["wording", "knowledge_scope", "reach"]) {
+        const v = rule[field];
+        if (v == null || typeof v === "string" && !v.trim()) issues.push(`${at}: a '${String(op)}' rule must declare ${field}`);
+      }
+    }
+    if (op === "create" && (rule.target_entry_id || rule.expected_fingerprint)) {
+      issues.push(`${at}: a 'create' rule names no target_entry_id or expected_fingerprint`);
+    }
+    const ref = String(rule.ref);
+    if (seen.has(ref)) issues.push(`${at}: duplicate rule ref '${ref}'`);
+    seen.add(ref);
+  });
+  return issues;
+}
 function validateBriefFrame(frame, expectedKind) {
   if (frame == null) return;
   const result = briefFrameSchema.safeParse(frame);
@@ -48510,6 +48644,11 @@ ${result.error.issues.map((issue2) => `- doc.frame${issue2.path.map((p) => typeo
   }
   if (expectedKind && result.data.kind !== expectedKind) {
     throw new Error(`Invalid brief frame: doc.frame.kind must be '${expectedKind}', received '${result.data.kind}'`);
+  }
+  if (result.data.kind === "design") {
+    const issues = designRuleIssues(result.data);
+    if (issues.length) throw new Error(`Invalid brief frame:
+${issues.map((i) => `- ${i}`).join("\n")}`);
   }
 }
 
@@ -49576,6 +49715,8 @@ function renderFrame(frame) {
       const reach = frame.reach ?? [];
       if (reach.length) out.push("**Reach beyond this ticket:**", ...reach.map((r) => `- ${r}`));
       else out.push("**Reach beyond this ticket:** none \u2014 this decision reaches nothing outside the ticket");
+      if (frame.reach_level) out.push(`**Reach:** ${REACH_LABEL[frame.reach_level] ?? frame.reach_level} (\`${frame.reach_level}\`)`);
+      if (frame.rules?.length) out.push(...renderDesignRules(frame.rules));
       if (frame.not_reopened?.length) {
         out.push("**Not reopened here:**", ...frame.not_reopened.map((r) => `- ${r}`));
       }
@@ -49710,6 +49851,40 @@ function itemLines(doc) {
 function proposedAcLines(payload) {
   return (payload ?? []).filter((p) => p.write_kind === "acceptance_criterion" && typeof p.content === "string" && p.content.trim().length > 0).map((p) => `- ${p.content}`);
 }
+var REACH_LABEL = {
+  this_ticket_only: "this ticket only",
+  this_surface: "this surface",
+  this_product: "this product"
+};
+function renderDesignRules(rules) {
+  const list = (v) => v?.length ? v.join(", ") : "(none)";
+  const out = ["**Rules:**"];
+  for (const rule of rules) {
+    if (rule.operation === "reference") {
+      const title = rule.title?.trim() ? ` \u2014 ${rule.title.trim()}` : "";
+      out.push(`- **reference** \`${rule.ref}\` \u2014 Cites rule ${rule.target_entry_id ?? "(none)"}${title}`);
+      if (rule.wording?.trim()) out.push(`  - wording: "${rule.wording.trim()}"`);
+      const extra = [
+        rule.reach ? `reach: \`${rule.reach}\`` : null,
+        `domains: ${list(rule.domains)}`,
+        `surfaces: ${list(rule.surfaces)}`,
+        rule.knowledge_scope ? `scope: ${rule.knowledge_scope}` : null
+      ].filter(Boolean).join(" \xB7 ");
+      out.push(`  - ${extra}`);
+      out.push(`  - expected fingerprint: ${rule.expected_fingerprint ?? "(none)"}`);
+      continue;
+    }
+    out.push(`- **${rule.operation}** \`${rule.ref}\` \u2014 "${rule.wording}"`);
+    out.push(`  - reach: \`${rule.reach}\` \xB7 domains: ${list(rule.domains)} \xB7 surfaces: ${list(rule.surfaces)} \xB7 scope: ${rule.knowledge_scope}`);
+    if (rule.operation !== "create") {
+      out.push(`  - target: ${rule.target_entry_id ?? "(none)"} \xB7 expected fingerprint: ${rule.expected_fingerprint ?? "(none)"}`);
+    }
+    if (rule.operation === "amend") {
+      out.push(`  - before: ${rule.before?.trim() ? `"${rule.before.trim()}"` : "(not shown \u2014 read the target entry)"}`, `  - after: "${rule.wording}"`);
+    }
+  }
+  return out;
+}
 function promisedWriteLine(item) {
   const text3 = (v) => typeof v === "string" && v.trim() ? v.trim() : null;
   switch (item.write_kind) {
@@ -49742,6 +49917,11 @@ function promisedWriteLine(item) {
     case "implements_entities": {
       const names = Array.isArray(item.names) ? item.names : [];
       return `- the confirmed feature-entity name(s) \u2014 ${names.length ? names.join(", ") : "(none)"} \u2014 landed on the ticket`;
+    }
+    case "rule_bundle": {
+      const rules = Array.isArray(item.rules) ? item.rules : [];
+      const counts = ["create", "amend", "reference"].map((op) => [op, rules.filter((r) => r.operation === op).length]).filter(([, n]) => n > 0).map(([op, n]) => `${op} ${n}`);
+      return `- the rule bundle \u2014 ${rules.length} rule(s) recorded as one write before the decision entry (${counts.join(", ") || "none"})`;
     }
     case "entity_link": {
       const identity2 = text3(item.entity_name) ?? text3(item.entity_id);
@@ -50107,6 +50287,9 @@ function lintFrame(doc, ctx, errors, warnings) {
           warnings.push(`Track '${entry.track}' is declared not-required with no note. Declaring a track away is a decision \u2014 say why, so a reader can contest it.`);
         }
       }
+      if (!frame.reach_level) {
+        warnings.push("`frame.reach_level` is absent (B-1047). Declare this_ticket_only | this_surface | this_product; a beyond-ticket design must also declare its rules in `frame.rules`.");
+      }
       if (!Array.isArray(frame.reach)) {
         warnings.push('`frame.reach` is absent. The KEY is required: `[]` ("this reaches nothing beyond the ticket") is a real answer, and a negative reach claim is often what carries the recommendation.');
       }
@@ -50381,6 +50564,47 @@ function withDerivedGateSlot(doc, reason) {
     ref: slugRef("slot", gate),
     gate,
     slot_content: content
+  };
+  return { ...doc, payload: [...others, item] };
+}
+var RULE_BUNDLE_REF = "rule-bundle";
+var RULE_BUNDLE_UNSUPPORTED = "rule promises need the B-1047 database support, not yet live on this environment \u2014 compose refused rather than strip the declared rules; recompose after the promote, or remove the rules deliberately";
+async function ruleRegistryAvailable(client) {
+  const { data, error: error2 } = await client.rpc("rule_registry_capability");
+  if (error2) {
+    if (isMissingRelationOrFunction(error2)) return false;
+    throw new Error(`rule_registry_capability failed: ${error2.message}`);
+  }
+  const version4 = data?.rule_bundle;
+  return typeof version4 === "number" && version4 >= 1;
+}
+function bundleRule(rule) {
+  return {
+    ref: rule.ref,
+    operation: rule.operation,
+    wording: rule.wording ?? null,
+    domains: [...rule.domains ?? []],
+    surfaces: [...rule.surfaces ?? []],
+    knowledge_scope: rule.knowledge_scope ?? null,
+    reach: rule.reach ?? null,
+    target_entry_id: rule.target_entry_id ?? null,
+    expected_fingerprint: rule.expected_fingerprint ?? null
+  };
+}
+function withDerivedRuleBundle(doc, decisionRef) {
+  const rules = doc.frame?.kind === "design" ? doc.frame.rules ?? [] : [];
+  const handAuthored = (doc.payload ?? []).some((p) => p.write_kind === "rule_bundle");
+  if (!rules.length) {
+    if (handAuthored) throw new Error("compose_brief: a rule_bundle payload item is derived from doc.frame.rules \u2014 declare the rules in the design frame, never hand-author the item");
+    return doc;
+  }
+  if (!decisionRef?.id) throw new Error("compose_brief: a design brief declaring frame.rules needs a decision_ref \u2014 the rule bundle cites the design decision");
+  const others = (doc.payload ?? []).filter((p) => p.write_kind !== "rule_bundle");
+  const item = {
+    write_kind: "rule_bundle",
+    ref: RULE_BUNDLE_REF,
+    rules: rules.map(bundleRule),
+    decision_id: decisionRef.id
   };
   return { ...doc, payload: [...others, item] };
 }
@@ -50663,9 +50887,12 @@ async function composeBrief(client, projectId, userId, args) {
   if (docWithContradiction.frame?.kind === "design" && docWithContradiction.frame.designer_frames?.length) {
     await validateDesignerFrameAttachments(client, taskId, docWithContradiction.frame.designer_frames);
   }
+  if (docWithContradiction.frame?.kind === "design" && docWithContradiction.frame.rules?.length) {
+    if (!await ruleRegistryAvailable(client)) throw new Error(`compose_brief: ${RULE_BUNDLE_UNSUPPORTED}`);
+  }
   const manifestEvidence = await withManifestEvidence(client, taskId, docWithContradiction, args);
   const doc = withDerivedEntryContent(
-    withDerivedGateSlot(manifestEvidence.doc, args.reason),
+    withDerivedRuleBundle(withDerivedGateSlot(manifestEvidence.doc, args.reason), mergedDecisionRef),
     args.reason,
     mergedDecisionRef,
     renderCtx
@@ -50873,7 +51100,7 @@ var composeBriefTool = {
           tail: { type: "string", description: "Optional custom command tail line; defaults to the standard one" },
           frame: {
             type: "object",
-            description: "B-876 \u2014 the gate-specific frame, discriminated by `kind` (must match the gate reason): 'clarify' { solving, in_scope[], not_solving[{item,lands}], floor_reviewed?[] } | 'decompose' { elements[{text,surface?,covers?}], coverage, existing_children_checked, floor_reviewed?[] } | 'design' { track, tracks[{track,status,note?}], reach[], not_reopened?[], derisk?{run[],not_run[]}, files_on_accept?[], floor_reviewed?[] } | 'plan' { scope{repos[],surfaces[],has_migration}, steps[], attestation{base_verified,derisked_by_running?}, carried_unproven[{item,reason}], ac_coverage, landing?, design_delta?, design_read?{version_id|null,screens[],drift: 'changed'|'unchanged'|'unchecked'} (B-1205), floor_reviewed?[] } | 'release' { settled_beyond_design?[{behaviour,ac,knowledge_entry_id}], act(LandingShape), unproven[{item,reason}], evidence_status{proven_by_run,walk_at_verify,unproven,total,detail?}, risk_classes[], pr_review_state?, contradiction_signal?{status,message,entries[{entry_id,title,state,matched_values[],source}],truncated?}, floor_reviewed?[] } | 'verify' { environment, criteria[{ac_id,text,checked,disposition,step_ref?,blocked_reason?,carried_to?,backed_by?}], steps?[{ref,action,expect,covers[],design_node?{node_id,name,caption?,preview_attachment_id,preview_filename}}], design_comparison?, exempt_reason?, evidence_status, bounded_accept? }. `floor_reviewed` (B-838) applies to the FIVE forward gates only \u2014 never verify. LandingShape = { repos[], pr_count, lands_in: 'staging'|'production'|'both'|'merged-main', atomicity: 'single'|'together'|'ordered', ordering? (required when ordered), irreversible[], prs?[{repo,number,url}] (B-890, optional forever \u2014 populated from field_values.prerequisite_pr then build_pr) }. Every rule over this field is a WARNING, with two exceptions: (B-1016) a `release` frame missing `evidence_status` is REFUSED outright; (B-1068) a `verify` frame is REFUSED when a `walk`-kind criterion has no `frame.steps` at all, when a `step_ref` matches no declared step, when a step covers no filed criterion, when a `walk` criterion names no `step_ref`, when a step's `action` or `expect` is blank, or when `items[].kind === 'step'` / a raw `frame.runbook` key is present \u2014 author the walk as `frame.steps: [{ ref, action, expect, covers }]`, one action plus one expected observation per step, `covers` naming the acceptance-criterion ids it discharges. Omit the frame entirely and the render is byte-identical to the pre-B-876 output."
+            description: "B-876 \u2014 the gate-specific frame, discriminated by `kind` (must match the gate reason): 'clarify' { solving, in_scope[], not_solving[{item,lands}], floor_reviewed?[] } | 'decompose' { elements[{text,surface?,covers?}], coverage, existing_children_checked, floor_reviewed?[] } | 'design' { track, tracks[{track,status,note?}], reach[], reach_level? ('this_ticket_only'|'this_surface'|'this_product', B-1047 \u2014 declare it on every design brief), rules?[{ref,operation:'create'|'amend'|'reference',wording,domains[],surfaces[],knowledge_scope:'product'|'deployment',reach:'this_surface'|'this_product',target_entry_id,expected_fingerprint,before?,title?}] (B-1047 \u2014 beyond-ticket reach with zero rules is REFUSED; this_ticket_only allows only 'reference'; amend/reference need target_entry_id + expected_fingerprint (from read_rule_registry); create/amend need wording, knowledge_scope and reach; a reference never restates its rule, so wording/knowledge_scope/reach are optional there and `title` is display-only; compose derives the 'rule_bundle' payload item and refuses when this database lacks the rule registry), not_reopened?[], derisk?{run[],not_run[]}, files_on_accept?[], floor_reviewed?[] } | 'plan' { scope{repos[],surfaces[],has_migration}, steps[], attestation{base_verified,derisked_by_running?}, carried_unproven[{item,reason}], ac_coverage, landing?, design_delta?, design_read?{version_id|null,screens[],drift: 'changed'|'unchanged'|'unchecked'} (B-1205), floor_reviewed?[] } | 'release' { settled_beyond_design?[{behaviour,ac,knowledge_entry_id}], act(LandingShape), unproven[{item,reason}], evidence_status{proven_by_run,walk_at_verify,unproven,total,detail?}, risk_classes[], pr_review_state?, contradiction_signal?{status,message,entries[{entry_id,title,state,matched_values[],source}],truncated?}, floor_reviewed?[] } | 'verify' { environment, criteria[{ac_id,text,checked,disposition,step_ref?,blocked_reason?,carried_to?,backed_by?}], steps?[{ref,action,expect,covers[],design_node?{node_id,name,caption?,preview_attachment_id,preview_filename}}], design_comparison?, exempt_reason?, evidence_status, bounded_accept? }. `floor_reviewed` (B-838) applies to the FIVE forward gates only \u2014 never verify. LandingShape = { repos[], pr_count, lands_in: 'staging'|'production'|'both'|'merged-main', atomicity: 'single'|'together'|'ordered', ordering? (required when ordered), irreversible[], prs?[{repo,number,url}] (B-890, optional forever \u2014 populated from field_values.prerequisite_pr then build_pr) }. Every rule over this field is a WARNING, with two exceptions: (B-1016) a `release` frame missing `evidence_status` is REFUSED outright; (B-1068) a `verify` frame is REFUSED when a `walk`-kind criterion has no `frame.steps` at all, when a `step_ref` matches no declared step, when a step covers no filed criterion, when a `walk` criterion names no `step_ref`, when a step's `action` or `expect` is blank, or when `items[].kind === 'step'` / a raw `frame.runbook` key is present \u2014 author the walk as `frame.steps: [{ ref, action, expect, covers }]`, one action plus one expected observation per step, `covers` naming the acceptance-criterion ids it discharges. Omit the frame entirely and the render is byte-identical to the pre-B-876 output."
           },
           revision: {
             type: "object",
@@ -50885,7 +51112,7 @@ var composeBriefTool = {
             items: {
               type: "object",
               properties: {
-                write_kind: { type: "string", description: "'acceptance_criterion' | 'child_ticket' | 'checklist_item' | 'ac_transfer' | 'label_add' | 'knowledge_entry_content' | 'entity_link'" },
+                write_kind: { type: "string", description: "'acceptance_criterion' | 'child_ticket' | 'checklist_item' | 'ac_transfer' | 'label_add' | 'knowledge_entry_content' | 'entity_link' | 'rule_bundle' (B-1047 \u2014 DERIVED from frame.rules; never author it)" },
                 entity_id: { type: "string", description: "entity_link: explicit current identity UUID; accepts ID without a name" },
                 entity_name: { type: "string", description: "entity_link: exact current/retired name; ambiguity lists candidate identities" },
                 kind: { type: "string", description: "entity_link: optional kind selector, applied before ambiguity detection" },
@@ -51442,404 +51669,1160 @@ var reshapeBriefTool = {
   }
 };
 
-// src/elicitation/engine.ts
-var MAX_QUESTIONS_PER_ROUND = 5;
-function validateRound(questions) {
-  const errors = [];
-  if (!Array.isArray(questions) || questions.length === 0) {
-    errors.push("a round needs at least one question");
-    return errors;
-  }
-  if (questions.length > MAX_QUESTIONS_PER_ROUND) {
-    errors.push(
-      `a round carries at most ${MAX_QUESTIONS_PER_ROUND} questions (got ${questions.length}) \u2014 split the residual across rounds instead of interrogating in bulk`
-    );
-  }
-  const seen = /* @__PURE__ */ new Set();
-  for (const q of questions) {
-    const label = q.id?.trim() ? `question "${q.id}"` : "a question";
-    if (!q.id?.trim()) {
-      errors.push("every question needs an id (the answer keys on it)");
-    } else if (seen.has(q.id)) {
-      errors.push(`duplicate question id "${q.id}" \u2014 answers key on the id, so ids must be round-unique`);
-    } else {
-      seen.add(q.id);
-    }
-    if (!q.text?.trim()) {
-      errors.push(`${label} has no text`);
-    }
-    if (q.stakes === "load-bearing" && q.kind === "validate") {
-      errors.push(
-        `${label} is load-bearing but kind='validate' \u2014 load-bearing questions MUST be kind='open' (open question first, candidate withheld; a one-click confirm on a load-bearing residual is the rubber-stamp this engine exists to prevent)`
-      );
-    }
-    if (q.kind === "validate" && !q.statement?.trim()) {
-      errors.push(`${label} is kind='validate' but has no statement \u2014 there is nothing for the human to confirm or correct`);
-    }
-  }
-  return errors;
-}
-var ENUMERATED_OPTIONS_PATTERN = /\(\d+\)|\([a-zA-Z]\)|(?:^|\s)\d+[.)]\s|(?:^|\s)[a-zA-Z][.)]\s/g;
-function looksEnumerated(text3) {
-  if (!text3) return false;
-  const matches = text3.match(ENUMERATED_OPTIONS_PATTERN);
-  return !!matches && matches.length >= 2;
-}
-function warnRound(questions) {
-  const warnings = [];
-  if (!Array.isArray(questions)) return warnings;
-  for (const q of questions) {
-    if (q.kind !== "open") continue;
-    if (!looksEnumerated(q.why)) continue;
-    if (looksEnumerated(q.text)) continue;
-    const label = q.id?.trim() ? `question "${q.id}"` : "a question";
-    warnings.push(
-      `${label}'s why field looks like it enumerates options (e.g. "(1)\u2026(2)\u2026") but text does not \u2014 options a worker prepares should live in text, where they're unmissable (a why expander can go unread); consider moving the enumerated options into text.`
-    );
-  }
-  return warnings;
-}
-function nextRoundNumber(rounds) {
-  return currentRoundNumber(rounds) + 1;
-}
-function currentRoundNumber(rounds) {
-  if (!Array.isArray(rounds) || rounds.length === 0) return 0;
-  const last = rounds[rounds.length - 1];
-  return typeof last?.n === "number" ? last.n : rounds.length;
-}
-function appendRound(rounds, round) {
-  return [...Array.isArray(rounds) ? rounds : [], round];
-}
-function echoPriorAnswers(rounds, priorAnswers, answeredAt) {
-  const errors = [];
-  if (!Array.isArray(rounds) || rounds.length === 0) {
-    return { rounds: null, errors: ["no round has been filed \u2014 there is nothing to echo answers onto"] };
-  }
-  const entries = Object.entries(priorAnswers ?? {});
-  if (entries.length === 0) {
-    return { rounds: null, errors: ["prior_answers is empty \u2014 omit it instead of passing an empty object"] };
-  }
-  const last = rounds[rounds.length - 1];
-  const byId = new Map(last.questions.map((q) => [q.id, q]));
-  for (const [qid, answer] of entries) {
-    const q = byId.get(qid);
-    if (!q) {
-      errors.push(`question "${qid}" is not in the last filed round (round ${last.n}) \u2014 only the open round can be echoed`);
-      continue;
-    }
-    if (last.answers?.[qid]) {
-      errors.push(`question "${qid}" already has an answer \u2014 a submitted answer is the human's own words and is never overwritten`);
-      continue;
-    }
-    const verb = answer?.verb;
-    if (q.kind === "validate" && verb !== "confirm" && verb !== "correct" && verb !== "skip") {
-      errors.push(`question "${qid}" is kind='validate' \u2014 its echoed verb must be confirm, correct, or skip (got '${verb}')`);
-    }
-    if (q.kind === "open" && verb !== "answer" && verb !== "skip") {
-      errors.push(`question "${qid}" is kind='open' \u2014 its echoed verb must be answer or skip (got '${verb}')`);
-    }
-    if ((verb === "correct" || verb === "answer") && !answer.text?.trim()) {
-      errors.push(`question "${qid}" echoes verb='${verb}' but has no text \u2014 there is no answer to record`);
-    }
-  }
-  if (errors.length > 0) return { rounds: null, errors };
-  const echoed = {
-    ...last,
-    answers: {
-      ...last.answers,
-      ...Object.fromEntries(entries.map(([qid, a]) => [qid, { ...a, via: "terminal" }]))
-    },
-    ...answeredAt && !last.answered_at ? { answered_at: answeredAt } : {}
-  };
-  return { rounds: [...rounds.slice(0, -1), echoed], errors: [] };
-}
-
-// src/tools/elicitation.ts
-var EXCHANGE_COLS = "id, task_id, trigger, gate, brief_id, status, rounds, answers_submitted_at, force_quit_requested_at, created_by, created_at, updated_at";
-var TRIGGER_OWNERS = {
-  "pre-draft-clarify": "clarify",
-  "discuss": "any-gate",
-  "phase-split-probe": "clarify",
-  "worker-question": "any-gate",
-  "inception-semantics": "inception"
+// src/tools/gate-slots.ts
+var GATE_SLOT_FIELD_KEY = "gate_slots";
+var ExcludedSlotSchema = external_exports.object({
+  item: external_exports.string(),
+  lands: external_exports.string()
+}).passthrough();
+var PullRequestSlotSchema = external_exports.object({
+  repo: external_exports.string().optional(),
+  ref: external_exports.string().optional(),
+  url: external_exports.string().optional(),
+  title: external_exports.string().optional()
+}).passthrough();
+var CriterionSlotSchema = external_exports.object({
+  ac_id: external_exports.string().optional(),
+  text: external_exports.string().optional(),
+  how: external_exports.string().optional(),
+  disposition: external_exports.string().optional()
+}).passthrough();
+var VerifyStepSlotSchema = external_exports.object({
+  ref: external_exports.string().optional(),
+  action: external_exports.string().optional(),
+  expect: external_exports.string().optional(),
+  covers: external_exports.array(external_exports.string()).optional()
+}).passthrough();
+var ClarifySlotSchema = external_exports.object({
+  solving: external_exports.string().optional(),
+  in_scope: external_exports.array(external_exports.string()).optional(),
+  not_solving: external_exports.array(ExcludedSlotSchema).optional()
+}).passthrough();
+var ReleaseSlotSchema = external_exports.object({
+  shipped: external_exports.string().optional(),
+  lands_in: external_exports.string().optional(),
+  prs: external_exports.array(PullRequestSlotSchema).optional(),
+  unproven: external_exports.array(external_exports.string()).optional(),
+  evidence_status: external_exports.string().optional()
+}).passthrough();
+var VerifySlotSchema = external_exports.object({
+  environment: external_exports.string().optional(),
+  criteria: external_exports.array(CriterionSlotSchema).optional(),
+  // B-1068 — the ordered runbook steps themselves, alongside the criteria they discharge.
+  steps: external_exports.array(VerifyStepSlotSchema).optional(),
+  evidence_status: external_exports.string().optional()
+}).passthrough();
+var UnknownGateSlotSchema = external_exports.record(external_exports.unknown());
+var GATE_SLOT_SCHEMAS = {
+  design: external_exports.object({ design_artefact: DesignArtefactSchema.optional() }).passthrough(),
+  clarify: ClarifySlotSchema,
+  release: ReleaseSlotSchema,
+  verify: VerifySlotSchema
 };
-var VALID_TRIGGERS = Object.keys(TRIGGER_OWNERS);
-var CLARIFY_OWNED_TRIGGERS = VALID_TRIGGERS.filter((t) => TRIGGER_OWNERS[t] === "clarify");
-var VALID_OUTCOMES = ["converged", "force-quit", "abandoned"];
-var isMissingPendingResolutionColumn = (msg) => !!msg && /pending_resolution/.test(msg) && /(does not exist|could not find|schema cache|column)/i.test(msg);
-async function findActiveExchange(client, taskId) {
-  const { data, error: error2 } = await client.from("elicitation_exchanges").select(EXCHANGE_COLS).eq("task_id", taskId).eq("status", "active").maybeSingle();
-  if (error2) throw new Error(error2.message);
-  return data ?? null;
+function isGateSlotName(gate) {
+  return GATE_SLOT_NAMES.includes(gate);
 }
-async function resolveExchange(client, projectId, args) {
-  if (args.exchange_id) {
-    const { data, error: error2 } = await client.from("elicitation_exchanges").select(EXCHANGE_COLS).eq("id", args.exchange_id).maybeSingle();
-    if (error2) throw new Error(error2.message);
-    if (!data) throw new Error(`elicitation exchange ${args.exchange_id} not found`);
-    return data;
+function parseGateSlotContent(gate, content) {
+  const schema = isGateSlotName(gate) ? GATE_SLOT_SCHEMAS[gate] : UnknownGateSlotSchema;
+  const parsed = schema.safeParse(content);
+  if (!parsed.success) {
+    const detail = parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ");
+    throw new Error(`gate_slot content for gate '${gate}' does not match the pinned shape \u2014 ${detail}`);
   }
-  if (!args.task_id) throw new Error("either exchange_id or task_id is required");
-  const taskId = await resolveTaskId2(client, projectId, args.task_id);
-  const active = await findActiveExchange(client, taskId);
-  if (!active) throw new Error(`no active elicitation exchange for task ${args.task_id}`);
-  return active;
+  return parsed.data;
 }
-async function startElicitation(client, projectId, userId, args) {
+function pinBuildPrs(fieldValues) {
+  const refs = readBuildPrReferences(fieldValues);
+  const out = [];
+  for (const ref of refs) {
+    const label = typeof ref.pr_number === "number" ? `#${ref.pr_number}` : ref.branch ?? ref.pr_url;
+    if (!ref.pr_url && !label) continue;
+    const pr = { repo: ref.key };
+    if (label) pr.ref = label;
+    if (ref.pr_url) pr.url = ref.pr_url;
+    out.push(pr);
+  }
+  return out;
+}
+var isPlainObject5 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+function isMissingGateSlotRpc(err) {
+  if (!err) return false;
+  const code = err.code ?? "";
+  if (code === "42P01" || code === "42883" || code === "PGRST202" || code === "PGRST205") return true;
+  const msg = err.message ?? "";
+  return /schema cache/i.test(msg) && /(could not find|does not exist)/i.test(msg);
+}
+function ratifiedAtStamp(now) {
+  return `${now.toISOString().slice(0, 19)}Z`;
+}
+async function writeGateSlot(client, args) {
+  const gate = (args.gate ?? "").trim();
+  if (!gate) throw new Error("gate_slot write names no gate \u2014 the slot is keyed by the gate that ratified it");
+  if (!isPlainObject5(args.content)) {
+    throw new Error(
+      `gate_slot write for gate '${gate}' must carry a content OBJECT (an EMPTY object is valid \u2014 it means the gate ratified an empty answer)`
+    );
+  }
+  const content = parseGateSlotContent(gate, args.content);
+  const keys = Object.keys(content);
+  if (args.target.via === "acceptance-event") {
+    if (gate === "design" && content.design_artefact) {
+      content.drift = await observeDesignDrift(DesignArtefactSchema.parse(content.design_artefact), process.env.HARMONY_FIGMA_TOKEN);
+    }
+    const { data, error: error2 } = await client.rpc("consume_gate_slot_write", {
+      _event_id: args.target.event_id,
+      _external_ref: args.target.external_ref,
+      _gate: gate,
+      // ONLY the content. `ratified_by` / `ratified_at` are stamped INSIDE the function, from `_gate`
+      // and `now()` — sending them would let a replayed payload back-date a slot.
+      _content: content
+    });
+    if (error2) {
+      if (isMissingGateSlotRpc(error2)) return { gate, applied: false, keys, substrate_absent: true };
+      throw new Error(error2.message);
+    }
+    const row = data ?? {};
+    return { gate, applied: row.applied === true, keys, result_id: row.result_id };
+  }
+  const taskId = args.target.task_id;
+  const { data: taskRow, error: readErr } = await client.from("tasks").select("field_values").eq("id", taskId).maybeSingle();
+  if (readErr) throw new Error(readErr.message);
+  if (!taskRow) throw new Error(`gate_slot write for gate '${gate}' targets task ${taskId}, which does not exist`);
+  const fieldValues = isPlainObject5(taskRow.field_values) ? taskRow.field_values : {};
+  const existingSlots = isPlainObject5(fieldValues[GATE_SLOT_FIELD_KEY]) ? fieldValues[GATE_SLOT_FIELD_KEY] : {};
+  const ratified_at = ratifiedAtStamp(/* @__PURE__ */ new Date());
+  const nextFieldValues = {
+    ...fieldValues,
+    [GATE_SLOT_FIELD_KEY]: {
+      ...existingSlots,
+      // B-1062: `ratified_by` defaults to `gate` (unchanged behavior) unless the caller overrides it —
+      // see `WriteGateSlotArgs.ratified_by`'s doc comment for the one caller that does.
+      [gate]: { content, ratified_by: args.ratified_by ?? gate, ratified_at }
+    }
+  };
+  const { error: writeErr } = await client.from("tasks").update({ field_values: nextFieldValues }).eq("id", taskId);
+  if (writeErr) throw new Error(writeErr.message);
+  return { gate, applied: true, keys, result_id: taskId };
+}
+async function writeGateSlotToolHandler(client, projectId, args) {
   if (!args.task_id) throw new Error("task_id is required");
-  if (!args.trigger || !VALID_TRIGGERS.includes(args.trigger)) {
-    throw new Error(`trigger must be one of: ${VALID_TRIGGERS.join(", ")}`);
+  const gate = (args.gate ?? "").trim();
+  if (!gate) throw new Error("gate is required");
+  if (!isGateSlotName(gate)) {
+    throw new Error(`gate must be one of: ${GATE_SLOT_NAMES.join(", ")} \u2014 got '${gate}'`);
   }
   const taskId = await resolveTaskId2(client, projectId, args.task_id);
-  const existing = await findActiveExchange(client, taskId);
-  if (existing) return existing;
-  const { data, error: error2 } = await client.from("elicitation_exchanges").insert({
-    task_id: taskId,
-    trigger: args.trigger,
-    gate: args.gate ?? null,
-    brief_id: args.brief_id ?? null,
-    created_by: userId
-  }).select(EXCHANGE_COLS).single();
-  if (error2) throw new Error(error2.message);
-  return data;
+  const reason = REASON_FOR_GATE_SLOT[gate];
+  const { data: briefRows, error: briefErr } = await client.from("briefs").select("id, doc, reason, created_at").eq("task_id", taskId).eq("reason", reason).order("created_at", { ascending: false }).limit(1);
+  if (briefErr) throw new Error(briefErr.message);
+  const brief = (briefRows ?? [])[0];
+  if (!brief) {
+    return { task_id: taskId, gate, written: false, reason: `no ${reason} brief exists on this ticket \u2014 nothing was ratified at the ${gate} gate` };
+  }
+  const doc = brief.doc;
+  const projected = doc ? renderSlot(doc, gate) : null;
+  if (!projected) {
+    return {
+      task_id: taskId,
+      gate,
+      written: false,
+      brief_id: brief.id,
+      reason: `the ${reason} brief carries no ${gate} frame \u2014 there is nothing ratified in a shape the ticket's section can lay out`
+    };
+  }
+  const content = { ...projected };
+  if (gate === "release") {
+    const { data: taskRow } = await client.from("tasks").select("field_values").eq("id", taskId).maybeSingle();
+    const prs = pinBuildPrs(taskRow?.field_values);
+    content.prs = prs;
+  }
+  if (gate === "design") {
+    const { data: event, error: error2 } = await client.from("pending_acceptance_events").select("id").eq("brief_id", brief.id).order("created_at", { ascending: false }).limit(1).maybeSingle();
+    if (error2) throw new Error(error2.message);
+    if (!event) throw new Error("Design slot requires the accepted brief event; accept the design before writing its slot.");
+    const result2 = await writeGateSlot(client, { gate, content, target: { via: "acceptance-event", event_id: event.id, external_ref: "slot-design" } });
+    return { task_id: taskId, gate, written: true, applied: result2.applied, keys: result2.keys, brief_id: brief.id };
+  }
+  const result = await writeGateSlot(client, { gate, content, target: { via: "task", task_id: taskId } });
+  return { task_id: taskId, gate, written: true, applied: result.applied, keys: result.keys, brief_id: brief.id };
 }
-var startElicitationTool = {
-  name: "start_elicitation",
-  description: "Open an elicitation exchange for a task (elicitation-first discovery, B-550) \u2014 the round-based question/answer record a gate skill interrogates the human's intent through BEFORE drafting. Idempotent-on-active: at most one active exchange exists per task, and calling this when one exists RETURNS it (resume, not error). Elicit only when intent is opaque relative to the knowledge base \u2014 always try KB inference first and interrogate the residual; see skills/harmony-shared/elicitation-engine.md for the behavioural contract.",
+var writeGateSlotTool = {
+  name: "write_gate_slot",
+  description: `B-867 \u2014 land a gate's ratified brief content on the ticket as a DURABLE section, visible forever after (stored in tasks.field_values.gate_slots, one sub-key per gate, latest-accepted-per-gate). Call it IMMEDIATELY AFTER the accept at the release gate (gate: "release") and the verify gate (gate: "verify") \u2014 those two accepts create no acceptance event, so their slot cannot ride a brief payload the way clarify's does; this tool is how they reach the same write. Clarify normally needs no call at all: its slot rides its accept payload automatically. The content is DERIVED, never passed in: this reads the gate's own brief and projects its ratified doc (the same projection the brief itself renders), so the section and the brief cannot disagree \u2014 there is deliberately no way to hand-author it. Requires the gate's brief to carry a \`doc.frame\` of the matching kind (B-876); a brief without one returns { written: false, reason } and changes nothing, rather than failing the accept. Idempotent: re-running replaces THIS gate's slot and touches no other gate's, and never any other field_values key (build_pr / work_branch are safe). Returns { written, applied, keys, reason? }.`,
   inputSchema: {
     type: "object",
     properties: {
-      task_id: { type: "string", description: "The task the exchange belongs to \u2014 UUID, task number, or visual ID (e.g., B-43)" },
-      trigger: { type: "string", description: "What started the exchange: 'pre-draft-clarify' (questions before a clarification draft exists) | 'discuss' (attached to an active brief under discussion) | 'phase-split-probe' (probing whether/where to split phases) | 'worker-question' (the running session itself hit a judgment call or capability denial mid-run \u2014 B-733; see skills/harmony-shared/elicitation-engine.md \xA7The worker-question trigger)" },
-      gate: { type: "string", description: "The workflow activity the exchange serves (e.g. 'clarifying'). Optional." },
-      brief_id: { type: "string", description: "The active brief a 'discuss' exchange attaches to. Omit for pre-draft triggers." }
-    },
-    required: ["task_id", "trigger"]
-  }
-};
-async function fileElicitationRound(client, projectId, args) {
-  if (!args.context_line?.trim()) throw new Error("context_line is required \u2014 one plain-prose line framing the round");
-  const violations = validateRound(args.questions ?? []);
-  if (violations.length > 0) {
-    throw new Error(`Round failed the elicitation lints:
-- ${violations.join("\n- ")}`);
-  }
-  const exchange = await resolveExchange(client, projectId, args);
-  if (exchange.status !== "active") {
-    if (exchange.status === "abandoned") {
-      return { noop: true, cause: "exchange-cancelled", exchange };
-    }
-    throw new Error(`exchange ${exchange.id} is '${exchange.status}' \u2014 rounds can only be filed on an active exchange`);
-  }
-  let rounds = Array.isArray(exchange.rounds) ? exchange.rounds : [];
-  if (args.prior_answers) {
-    const echoed = echoPriorAnswers(rounds, args.prior_answers, (/* @__PURE__ */ new Date()).toISOString());
-    if (echoed.errors.length > 0) {
-      throw new Error(`prior_answers failed the echo guards:
-- ${echoed.errors.join("\n- ")}`);
-    }
-    rounds = echoed.rounds;
-  }
-  const n = nextRoundNumber(rounds);
-  if (exchange.brief_id != null && n === 1) {
-    const { error: clearErr } = await client.from("briefs").update({ pending_resolution: null }).eq("id", exchange.brief_id);
-    if (clearErr && !isMissingPendingResolutionColumn(clearErr.message)) {
-      throw new Error(clearErr.message);
-    }
-  }
-  const round = {
-    n,
-    context_line: args.context_line.trim(),
-    questions: args.questions,
-    answers: {},
-    // House idiom (milestones.ts shipped_at / knowledge.ts valid_to): timestamps are stamped
-    // client-side; the row's updated_at trigger carries the authoritative DB clock for the write.
-    filed_at: (/* @__PURE__ */ new Date()).toISOString()
-  };
-  const { data, error: error2 } = await client.from("elicitation_exchanges").update({ rounds: appendRound(rounds, round), answers_submitted_at: null }).eq("id", exchange.id).select(EXCHANGE_COLS).single();
-  if (error2) throw new Error(error2.message);
-  const { error: taskErr } = await client.from("tasks").update({
-    awaiting_human_input: true,
-    awaiting_human_reason: "elicitation-round",
-    // `gate` rides along (B-462) so surfaces can group/label the round by the lifecycle gate the
-    // exchange serves without re-fetching the exchange (the Queue card's gate pill reads it).
-    awaiting_human_ref: { kind: "elicitation", exchange_id: exchange.id, round: n, gate: exchange.gate ?? null }
-  }).eq("id", exchange.task_id);
-  if (taskErr) throw new Error(taskErr.message);
-  const warnings = warnRound(round.questions);
-  return { ...data, warnings };
-}
-var fileElicitationRoundTool = {
-  name: "file_elicitation_round",
-  description: `File one round of questions on an active elicitation exchange and hand the ball to the human (sets awaiting_human_input with reason 'elicitation-round'; never touches workflow_state). Lints enforced before any write: at most ${MAX_QUESTIONS_PER_ROUND} questions per round; a load-bearing question MUST be kind='open' (open question first, candidate withheld \u2014 load-bearing must never render as a one-click confirm); kind='validate' requires a statement to confirm/correct. One plain-prose context_line frames the round. Filing also CONSUMES any prior answers marker (clears answers_submitted_at) \u2014 read the previous round's answers via get_elicitation before filing the next. For a brief-attached ('discuss') exchange, filing ROUND 1 also clears the attached brief's pending_resolution discuss marker (B-461 \u2014 the filing IS the consume). On success, the returned row carries a non-blocking warnings: string[] field (B-785) \u2014 e.g. an OPEN question whose why reads like it enumerates concrete options while text does not, steering enumerated options into text where they're unmissable; never throws, never blocks the filing. If the exchange was mechanically cancelled ('abandoned'), returns the typed no-op { noop: true, cause: 'exchange-cancelled', exchange } instead of throwing \u2014 the CALLING AGENT must then archive any claims it minted in that same turn (claims are minted before conclude; the mint\u2192conclude window can race a cancel).`,
-  inputSchema: {
-    type: "object",
-    properties: {
-      exchange_id: { type: "string", description: "The exchange to file on. Or pass task_id to target its active exchange." },
-      task_id: { type: "string", description: "Alternative to exchange_id \u2014 the task whose ACTIVE exchange to file on (UUID, task number, or visual ID)." },
-      context_line: { type: "string", description: "ONE plain-prose line framing the round (what this round is settling and why)." },
-      questions: {
-        type: "array",
-        description: `The round's questions (max ${MAX_QUESTIONS_PER_ROUND}).`,
-        items: {
-          type: "object",
-          properties: {
-            id: { type: "string", description: "Round-unique id the answer keys on (e.g. 'q1')." },
-            stakes: { type: "string", description: "'low' | 'load-bearing' \u2014 how much a wrong answer steers the work. Load-bearing \u21D2 kind must be 'open'." },
-            kind: { type: "string", description: "'validate' (confirm/correct an inference \u2014 requires statement) | 'open' (open text)." },
-            statement: { type: "string", description: "The agent's inference the human confirms or corrects. Required for kind='validate'." },
-            text: { type: "string", description: "The question text." },
-            why: { type: "string", description: `Optional "why I'm asking" expander.` }
-          },
-          required: ["id", "stakes", "kind", "text"]
-        }
-      },
-      prior_answers: {
-        type: "object",
-        description: "Terminal-given answers to the PREVIOUS round, echoed into the exchange record in the same write (B-462 \u2014 the human answered in the terminal, not the web). Keyed by question id: { <qid>: { verb, text? } } with verb confirm|correct|skip for a 'validate' question and answer|skip for an 'open' one (correct/answer require text). Only the LAST filed round's unanswered questions may be echoed; each echo is stamped via:'terminal'. Omit entirely for web-submitted answers \u2014 the web writes those itself."
+      task_id: { type: "string", description: "Task identifier \u2014 UUID, task number (e.g., 867), or visual ID (e.g., B-867)" },
+      gate: {
+        type: "string",
+        enum: ["clarify", "design", "release", "verify"],
+        description: "Which gate's section to land \u2014 design replays only its accepted event; 'release' after the release accept, 'verify' after the verify accept."
       }
     },
-    required: ["context_line", "questions"]
+    required: ["task_id", "gate"]
   }
 };
-async function getElicitation(client, projectId, args) {
-  if (!args.task_id) throw new Error("task_id is required");
-  const taskId = await resolveTaskId2(client, projectId, args.task_id);
-  const active = await findActiveExchange(client, taskId);
-  if (active) return active;
-  const { data, error: error2 } = await client.from("elicitation_exchanges").select(EXCHANGE_COLS).eq("task_id", taskId).order("created_at", { ascending: false }).limit(1).maybeSingle();
-  if (error2) throw new Error(error2.message);
-  return data ?? null;
+
+// src/tools/acceptance-events.ts
+function isMissingRelationOrFunction(err) {
+  if (!err) return false;
+  const code = err.code ?? "";
+  if (code === "42P01" || code === "42883" || code === "PGRST202" || code === "PGRST205") return true;
+  const msg = err.message ?? "";
+  return /schema cache/i.test(msg) && /(could not find|does not exist)/i.test(msg);
 }
-var getElicitationTool = {
-  name: "get_elicitation",
-  description: "Get a task's elicitation exchange \u2014 the active one, or the most recent if none is active (null when the task has never had one). `rounds` carries every filed round with its questions and any answers keyed by question id; a non-null `answers_submitted_at` means the human submitted answers the agent has NOT yet consumed (filing the next round, or concluding, consumes it); a non-null `force_quit_requested_at` means the human asked to force-quit ('best efforts, proceed').",
+var isMissingTitleParam = (msg) => !!msg && /_title/.test(msg) && /(does not exist|could not find|schema cache|function)/i.test(msg);
+var isMissingTagsParam = (msg) => !!msg && /_tags/.test(msg) && /(does not exist|could not find|schema cache|function)/i.test(msg);
+function isShippedMilestoneGuardError(error2) {
+  if (!error2) return false;
+  if (error2.code !== "23514") return false;
+  const msg = error2.message ?? "";
+  return /was shipped/i.test(msg) && /cannot be assigned to it/i.test(msg);
+}
+function isDecisionOnlyGuardError(error2) {
+  if (!error2) return false;
+  if (error2.code !== "23514") return false;
+  return /decision-only guard blocked/i.test(error2.message ?? "");
+}
+var ShippedMilestoneGuardError = class extends Error {
+  constructor(guardMessage) {
+    super(guardMessage);
+    this.name = "ShippedMilestoneGuardError";
+  }
+};
+async function probeAcceptanceEventSubstrate(client) {
+  const { error: error2 } = await client.from("pending_acceptance_events").select("id").limit(0);
+  if (!error2) return "present";
+  if (isMissingRelationOrFunction(error2)) return "absent";
+  throw new Error(`acceptance-event substrate probe failed (not a schema-absence error \u2014 do not degrade): ${error2.message}`);
+}
+async function getPendingAcceptanceEvent(client, projectId, taskId) {
+  const resolvedId = await resolveTaskId2(client, projectId, taskId);
+  const { data: task, error: taskErr } = await client.from("tasks").select("pending_acceptance_event_id").eq("id", resolvedId).maybeSingle();
+  if (taskErr) {
+    if (isMissingRelationOrFunction(taskErr)) return null;
+    throw new Error(taskErr.message);
+  }
+  const eventId = task?.pending_acceptance_event_id;
+  if (!eventId) return null;
+  const { data: event, error: eventErr } = await client.from("pending_acceptance_events").select("id, task_id, brief_id, reason, payload, pending_activity, status").eq("id", eventId).maybeSingle();
+  if (eventErr) {
+    if (isMissingRelationOrFunction(eventErr)) return null;
+    throw new Error(eventErr.message);
+  }
+  return event ?? null;
+}
+var KNOWN_WRITE_KINDS = /* @__PURE__ */ new Set(["acceptance_criterion", "child_ticket", "checklist_item", "ac_transfer", "label_add", "knowledge_entry_content", "gate_slot", "supersede_decision", "implements_entities", "entity_link", "rule_bundle"]);
+function rawItemsOf(payload) {
+  const withNestedPayload = payload;
+  if (Array.isArray(withNestedPayload?.payload)) return withNestedPayload.payload;
+  if (Array.isArray(payload)) return payload;
+  const withItems = payload;
+  return Array.isArray(withItems?.items) ? withItems.items : [];
+}
+function itemsOf(payload) {
+  return rawItemsOf(payload);
+}
+function classifyPayload(payload) {
+  const raw = rawItemsOf(payload);
+  if (raw.length === 0) return "empty";
+  const allStructured = raw.every(
+    (i) => typeof i === "object" && i !== null && KNOWN_WRITE_KINDS.has(i.write_kind)
+  );
+  return allStructured ? "structured" : "unrecognized";
+}
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const obj = value;
+    return `{${Object.keys(obj).filter((k) => obj[k] !== void 0).sort().map((k) => `${JSON.stringify(k)}:${canonicalJson(obj[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(value ?? null);
+}
+function ruleBundleDigest(bundle) {
+  return createHash2("sha256").update(canonicalJson({ rules: bundle.rules, decision_id: bundle.decision_id })).digest("hex");
+}
+var WriteKindSubstrateAbsentError = class extends Error {
+  constructor(writeKind) {
+    super(`substrate absent for write_kind '${writeKind}' (RPC not found \u2014 B-383 pre-migration window)`);
+    this.writeKind = writeKind;
+  }
+  writeKind;
+};
+var AmbiguousEntityLinkError = class extends Error {
+  constructor(ref, entityName, candidates) {
+    super(
+      `entity_link item '${ref}' is ambiguous: the name '${entityName}' matches ${candidates.length} entities \u2014 ` + candidates.map((c) => `${c.name} (kind ${c.kind || "unknown"}, id ${c.id})`).join("; ") + `. Nothing was written. Next: answer which entity was meant (re-run consume_pending_acceptance_event with entity_overrides { "${ref}": "<entity id>" }), or send the design brief back so it recomposes with a kind.`
+    );
+    this.ref = ref;
+    this.entityName = entityName;
+    this.candidates = candidates;
+    this.name = "AmbiguousEntityLinkError";
+  }
+  ref;
+  entityName;
+  candidates;
+};
+var GuardBlockedLabelAddError = class extends Error {
+  constructor(ref, labelName, blockReason, guardMessage) {
+    super(guardMessage);
+    this.ref = ref;
+    this.labelName = labelName;
+    this.blockReason = blockReason;
+    this.guardMessage = guardMessage;
+    this.name = "GuardBlockedLabelAddError";
+  }
+  ref;
+  labelName;
+  blockReason;
+  guardMessage;
+};
+function parseGuardBlockReason(message) {
+  const m = /decision-only guard blocked:\s*([A-Za-z_-]+)/i.exec(message);
+  return m ? m[1] : "unknown";
+}
+async function preflightEntityLinks(client, event, items, opts) {
+  const resolved = /* @__PURE__ */ new Map();
+  for (const item of items) {
+    if (item.write_kind !== "entity_link" || !item.ref) continue;
+    const entityId = opts.entity_overrides?.[item.ref] ?? item.entity_id;
+    const name = item.entity_name?.trim();
+    if (!name && !entityId) continue;
+    const { data: taskRow, error: taskErr } = await client.from("tasks").select("project_id").eq("id", event.task_id).maybeSingle();
+    if (taskErr) throw new Error(taskErr.message);
+    const projectId = taskRow?.project_id;
+    if (!projectId) throw new Error(`entity_link item '${item.ref}' \u2014 task ${event.task_id} has no project_id, cannot resolve the entity`);
+    const workspaceId = await getWorkspaceId(client, projectId);
+    const kind = item.kind ?? item.entity_kind;
+    try {
+      const selected = await selectEntity(client, workspaceId, projectId, { entity_id: entityId, name, kind });
+      resolved.set(item.ref, { projectId, workspaceId, selected });
+    } catch (err) {
+      if (err instanceof AmbiguousEntitySelectionError) {
+        throw new AmbiguousEntityLinkError(item.ref, name ?? "", err.candidates.map((c) => ({ id: c.id, name: c.name, kind: c.kind })));
+      }
+      throw err;
+    }
+  }
+  return resolved;
+}
+async function applyAcceptanceEventPayload(client, event, opts = {}) {
+  const items = itemsOf(event.payload);
+  const resolvedLinks = await preflightEntityLinks(client, event, items, opts);
+  const order = [
+    "child_ticket",
+    "checklist_item",
+    "acceptance_criterion",
+    "ac_transfer",
+    // B-867 sits HERE — after every concrete materialization, before the entry promotion. Same reasoning
+    // as the line below, one notch weaker: the slot is the ticket's DISPLAYED record of what this accept
+    // did, so a payload that fails partway must not leave a section on the ticket announcing writes that
+    // never landed. It stays AHEAD of the entry promotion because a slot is a projection of the brief,
+    // repaired by the next accept (latest-accepted-per-gate), whereas a wrongly-promoted entry has
+    // already superseded a real one.
+    "gate_slot",
+    // B-997 sits right after gate_slot, before knowledge_entry_content: it lands the human-confirmed
+    // feature-entity name(s) onto the ticket's field_values — a durable, displayed-adjacent record,
+    // same reasoning as gate_slot just above (materialize before the entry promotion / decision
+    // retirement below, which are the more consequential, harder-to-undo writes).
+    "implements_entities",
+    // B-843 sits after gate_slot, before label_add: it promotes the gate's knowledge entry and supersedes
+    // the previous round's. Running it after every AC/child/checklist write means a payload that fails
+    // partway leaves the knowledge base untouched rather than promoting a decision whose materialization
+    // never landed.
+    // B-1047 sits immediately BEFORE knowledge_entry_content: "preflight, apply the bundle, project the
+    // design, then consume". The bundle is one server-side transaction (a refusal rolls it back and
+    // throws here, so the design entry is never projected and the event stays pending with the blocker
+    // named); a retry finds the bundle's ledger row and skips it.
+    "rule_bundle",
+    "knowledge_entry_content",
+    // B-997 sits right after knowledge_entry_content, before supersede_decision: it lands the
+    // already-resolved entity edge(s) a design/visual-handoff accept confirmed. Entity-NAME resolution
+    // happens HERE, in this dispatch, via resolveOrCreateEntity — never in SQL — so it must run after
+    // the entry promotion above (the same 'materialize before touching the knowledge base's terminal
+    // state' reasoning) and before supersede_decision below (a wholly separate decision retirement
+    // that must never be blocked by this write, or vice versa).
+    "entity_link",
+    // B-941 sits right after entity_link (B-997 inserted between it and knowledge_entry_content),
+    // before label_add: it retires an UPSTREAM decision
+    // (harmony-revise-scope's supersede-list) — a wholly different decision from the one
+    // knowledge_entry_content above may have just promoted, but the same "materialize before touching the
+    // knowledge base's terminal state" reasoning applies, and it has nothing to do with label_add's
+    // decision-only guard below, so it must never sit behind that potentially-blocked write.
+    "supersede_decision",
+    // B-1029: label_add moved LAST, deliberately after gate_slot/knowledge_entry_content (not before, as
+    // it used to run). `consume_label_add_write` can be blocked two ways that are NOT transient: a
+    // decision-only guard-block (a persistent business-rule refusal from the RPC itself) or the RPC being
+    // altogether absent on this DB (B-383 pre-migration window, surfaced as `substrate_absent_for`).
+    // Either one throws/degrades and stops the loop — so with label_add anywhere earlier in this order, a
+    // decision-only-shaped ticket's label write would PERMANENTLY block gate_slot/knowledge_entry_content
+    // from ever landing on that payload, even though those two writes have nothing to do with the label
+    // guard rule. Running label_add last means every other write in the payload lands first, and only the
+    // genuinely-blocked label write is left pending — it never blocks the more consequential writes.
+    "label_add"
+  ];
+  const ordered = order.flatMap((kind) => items.filter((i) => i.write_kind === kind));
+  let applied = 0;
+  let skipped = 0;
+  const byKind = {};
+  try {
+    for (const item of ordered) {
+      if (!item.ref) throw new Error(`payload item of write_kind '${item.write_kind}' is missing its stable 'ref' \u2014 cannot derive an idempotent external_ref`);
+      let result = null;
+      if (item.write_kind === "acceptance_criterion") {
+        if (!item.content) throw new Error(`acceptance_criterion item '${item.ref}' is missing content`);
+        const { data, error: error2 } = await client.rpc("consume_ac_add_write", {
+          _event_id: event.id,
+          _external_ref: item.ref,
+          _content: item.content
+        });
+        if (error2) throw new Error(error2.message);
+        result = data;
+      } else if (item.write_kind === "child_ticket") {
+        if (!item.title) throw new Error(`child_ticket item '${item.ref}' is missing title`);
+        const { data, error: error2 } = await client.rpc("consume_child_mint_write", {
+          _event_id: event.id,
+          _external_ref: item.ref,
+          _title: item.title,
+          _description: item.description ?? null
+        });
+        if (error2) {
+          if (isShippedMilestoneGuardError(error2)) throw new ShippedMilestoneGuardError(error2.message);
+          throw new Error(error2.message);
+        }
+        result = data;
+      } else if (item.write_kind === "checklist_item") {
+        if (!item.title) throw new Error(`checklist_item item '${item.ref}' is missing title`);
+        const { data, error: error2 } = await client.rpc("consume_checklist_item_write", {
+          _event_id: event.id,
+          _external_ref: item.ref,
+          _title: item.title
+        });
+        if (error2) throw new Error(error2.message);
+        result = data;
+      } else if (item.write_kind === "ac_transfer") {
+        if (!item.content) throw new Error(`ac_transfer item '${item.ref}' is missing content`);
+        if (!item.target_child_ref) throw new Error(`ac_transfer item '${item.ref}' is missing target_child_ref`);
+        const { data, error: error2 } = await client.rpc("consume_ac_transfer_write", {
+          _event_id: event.id,
+          _external_ref: item.ref,
+          _content: item.content,
+          _target_child_external_ref: item.target_child_ref,
+          _from_ac_id: item.from_ac_id ?? null
+        });
+        if (error2) throw new Error(error2.message);
+        result = data;
+      } else if (item.write_kind === "knowledge_entry_content") {
+        if (!item.content) throw new Error(`knowledge_entry_content item '${item.ref}' is missing content \u2014 the payload CARRIES the entry text; it is never synthesized from doc fields`);
+        const metadata = item.scope !== void 0;
+        if (metadata && !await metadataCapable(client)) throw new Error("Accepted scope metadata unavailable until the schema is promoted; acceptance remains pending.");
+        const operation2 = metadata ? "consume_knowledge_entry_content_write_metadata" : "consume_knowledge_entry_content_write";
+        let includeTitle = true;
+        let includeTags = true;
+        const callArgs = () => ({
+          _event_id: event.id,
+          _external_ref: item.ref,
+          _content: item.content,
+          _entry_id: item.entry_id ?? null,
+          ...metadata ? { _scope: item.scope } : {},
+          ...includeTitle ? { _title: item.title ?? null } : {},
+          ...includeTags ? { _tags: item.tags ?? null } : {}
+        });
+        let { data, error: error2 } = await client.rpc(operation2, callArgs());
+        for (let round = 0; round < 2 && error2 && !metadata; round++) {
+          if (includeTags && isMissingTagsParam(error2.message)) {
+            includeTags = false;
+          } else if (includeTitle && isMissingTitleParam(error2.message)) {
+            includeTitle = false;
+          } else {
+            break;
+          }
+          ({ data, error: error2 } = await client.rpc(operation2, callArgs()));
+        }
+        if (error2) {
+          if (isMissingRelationOrFunction(error2)) throw new WriteKindSubstrateAbsentError("knowledge_entry_content");
+          throw new Error(error2.message);
+        }
+        result = data;
+      } else if (item.write_kind === "rule_bundle") {
+        if (!Array.isArray(item.rules) || item.rules.length === 0) throw new Error(`rule_bundle item '${item.ref}' carries no rules \u2014 a bundle is derived from a design's declared rules and is never empty`);
+        if (!item.decision_id) throw new Error(`rule_bundle item '${item.ref}' names no decision_id`);
+        const bundle = { rules: item.rules, decision_id: item.decision_id };
+        const { data, error: error2 } = await client.rpc("consume_rule_bundle_write", {
+          p_event_id: event.id,
+          p_external_ref: item.ref,
+          p_bundle: bundle,
+          p_request_digest: ruleBundleDigest(bundle)
+        });
+        if (error2) {
+          if (isMissingRelationOrFunction(error2)) throw new WriteKindSubstrateAbsentError("rule_bundle");
+          throw new Error(error2.message);
+        }
+        const status = data?.status;
+        if (status !== "applied" && status !== "already-applied") throw new Error(`consume_rule_bundle_write returned an unexpected status '${String(status)}' for '${item.ref}'`);
+        result = { applied: status === "applied" };
+      } else if (item.write_kind === "gate_slot") {
+        if (!item.gate?.trim()) throw new Error(`gate_slot item '${item.ref}' names no gate \u2014 the slot is keyed by the gate that ratified it`);
+        if (!item.slot_content || typeof item.slot_content !== "object" || Array.isArray(item.slot_content)) {
+          throw new Error(`gate_slot item '${item.ref}' for gate '${item.gate}' carries no slot_content object \u2014 an EMPTY object is valid (the gate ratified an empty answer), an absent one is not`);
+        }
+        const slotResult = await writeGateSlot(client, {
+          gate: item.gate,
+          content: item.slot_content,
+          target: { via: "acceptance-event", event_id: event.id, external_ref: item.ref }
+        });
+        if (slotResult.substrate_absent) throw new WriteKindSubstrateAbsentError("gate_slot");
+        result = { applied: slotResult.applied };
+      } else if (item.write_kind === "implements_entities") {
+        if (!Array.isArray(item.names)) {
+          throw new Error(`implements_entities item '${item.ref}' carries no names array \u2014 an EMPTY array is valid (it means the ticket was confirmed to implement zero named entities), an absent/non-array one is not`);
+        }
+        const { data, error: error2 } = await client.rpc("consume_implements_entities_write", {
+          _event_id: event.id,
+          _external_ref: item.ref,
+          _names: item.names
+        });
+        if (error2) {
+          if (isMissingRelationOrFunction(error2)) throw new WriteKindSubstrateAbsentError("implements_entities");
+          throw new Error(error2.message);
+        }
+        result = data;
+      } else if (item.write_kind === "entity_link") {
+        const overrideId = opts.entity_overrides?.[item.ref];
+        const name = item.entity_name?.trim();
+        if (!name && !item.entity_id && !overrideId) throw new Error(`entity_link item '${item.ref}' needs entity_id or entity_name`);
+        const link = resolvedLinks.get(item.ref);
+        if (!link) throw new Error(`entity_link item '${item.ref}' was not resolved by the pre-flight`);
+        const kind = item.kind ?? item.entity_kind;
+        const entityId = link.selected?.id ?? await resolveOrCreateEntity(client, link.workspaceId, link.projectId, name, kind ?? "feature");
+        const { data, error: error2 } = await client.rpc("consume_entity_link_write", {
+          _event_id: event.id,
+          _external_ref: item.ref,
+          _entity_id: entityId,
+          _decision_id: item.decision_id ?? null
+        });
+        if (error2) {
+          if (isMissingRelationOrFunction(error2)) throw new WriteKindSubstrateAbsentError("entity_link");
+          throw new Error(error2.message);
+        }
+        result = data;
+      } else if (item.write_kind === "supersede_decision") {
+        const decisionId = item.decision_id;
+        if (!decisionId) throw new Error(`supersede_decision item '${item.ref}' names no decision_id`);
+        const { data, error: error2 } = await client.rpc("consume_supersede_decision_write", {
+          _event_id: event.id,
+          _external_ref: item.ref,
+          _decision_id: decisionId
+        });
+        if (error2) {
+          if (isMissingRelationOrFunction(error2)) throw new WriteKindSubstrateAbsentError("supersede_decision");
+          throw new Error(error2.message);
+        }
+        result = data;
+      } else if (item.write_kind === "label_add") {
+        if (item.label_name === "") throw new Error(`label_add item '${item.ref}' has an empty label_name`);
+        const labelName = item.label_name ?? "decision-only";
+        const { data, error: error2 } = await client.rpc("consume_label_add_write", {
+          _event_id: event.id,
+          _external_ref: item.ref,
+          _label_name: labelName
+        });
+        if (error2) {
+          if (isMissingRelationOrFunction(error2)) throw new WriteKindSubstrateAbsentError("label_add");
+          if (isDecisionOnlyGuardError(error2)) {
+            if (opts.skip_blocked_label_add) {
+              skipped += 1;
+              continue;
+            }
+            throw new GuardBlockedLabelAddError(item.ref, labelName, parseGuardBlockReason(error2.message), error2.message);
+          }
+          throw new Error(error2.message);
+        }
+        result = data;
+      }
+      if (result?.applied) {
+        applied += 1;
+        byKind[item.write_kind] = (byKind[item.write_kind] ?? 0) + 1;
+      } else {
+        skipped += 1;
+      }
+    }
+  } catch (err) {
+    if (err instanceof WriteKindSubstrateAbsentError) {
+      return { event_id: event.id, applied, skipped_already_done: skipped, by_write_kind: byKind, substrate_absent_for: err.writeKind };
+    }
+    throw err;
+  }
+  return { event_id: event.id, applied, skipped_already_done: skipped, by_write_kind: byKind };
+}
+var RACED_EVENT_ERROR_SUBSTRING = "no longer matches event";
+async function consumeAcceptanceEvent(client, eventId) {
+  const { data, error: error2 } = await client.rpc("consume_acceptance_event", { _event_id: eventId });
+  if (!error2) return data;
+  if (!error2.message.includes(RACED_EVENT_ERROR_SUBSTRING)) {
+    throw new Error(error2.message);
+  }
+  const { data: staleEventRow, error: staleEventErr } = await client.from("pending_acceptance_events").select("task_id").eq("id", eventId).maybeSingle();
+  if (staleEventErr || !staleEventRow) {
+    throw new Error(error2.message);
+  }
+  const { data: taskRow, error: taskErr } = await client.from("tasks").select("pending_acceptance_event_id").eq("id", staleEventRow.task_id).maybeSingle();
+  if (taskErr || !taskRow) {
+    throw new Error(error2.message);
+  }
+  const currentEventId = taskRow.pending_acceptance_event_id;
+  if (!currentEventId || currentEventId === eventId) {
+    throw new Error(error2.message);
+  }
+  const { data: retryData, error: retryError } = await client.rpc("consume_acceptance_event", { _event_id: currentEventId });
+  if (retryError) throw new Error(retryError.message);
+  return { ...retryData, retried_from_event_id: eventId };
+}
+var AMBIGUITY_ROUND_PREFIX = "Entity link is ambiguous";
+async function fileAmbiguityRound(client, projectId, event, err, userId) {
+  if (!userId) {
+    return new Error(`${err.message} The question round could not be filed: no user id was available to open the exchange, so the human has not been asked \u2014 ask them which entity was meant and re-run with entity_overrides.`);
+  }
+  try {
+    const exchange = await startElicitation(client, projectId, userId, {
+      task_id: event.task_id,
+      trigger: "worker-question",
+      gate: event.pending_activity ?? void 0
+    });
+    const last = Array.isArray(exchange.rounds) ? exchange.rounds[exchange.rounds.length - 1] : void 0;
+    const alreadyAsked = !!last && (last.context_line ?? "").startsWith(AMBIGUITY_ROUND_PREFIX) && Object.keys(last.answers ?? {}).length === 0;
+    if (!alreadyAsked) {
+      const list = err.candidates.map((c) => `- ${c.name} (kind ${c.kind || "unknown"}, id ${c.id})`).join("\n");
+      await fileElicitationRound(client, projectId, {
+        exchange_id: exchange.id,
+        context_line: `${AMBIGUITY_ROUND_PREFIX}: accepting this brief would link '${err.entityName}' (item ${err.ref}), which matches more than one entity. Nothing was applied; the acceptance is still pending.`,
+        questions: [{
+          id: "q1",
+          stakes: "load-bearing",
+          kind: "open",
+          text: `Which entity did you mean? Answer with its id.
+${list}`,
+          why: `The next leg re-applies the pending acceptance with entity_overrides { "${err.ref}": "<id you pick>" }.`
+        }]
+      });
+    }
+    return new Error(`${err.message} A "which entity did you mean?" round was filed on the ticket (worker-question); the acceptance event stays pending until it is answered.`);
+  } catch (fileErr) {
+    const why = fileErr instanceof Error ? fileErr.message : String(fileErr);
+    return new Error(`${err.message} The question round could not be filed (${why}), so the human has not been asked \u2014 the acceptance event stays pending.`);
+  }
+}
+var GUARD_BLOCKED_ROUND_PREFIX = "Decision-only label blocked";
+async function fileGuardBlockedLabelAddRound(client, projectId, event, err, userId) {
+  if (!userId) {
+    return new Error(`${err.message} The question round could not be filed: no user id was available to open the exchange, so the human has not been asked \u2014 ask them whether to drop the decision-only proposal (then re-run with skip_blocked_label_add: true) or revise scope; the acceptance event stays pending.`);
+  }
+  try {
+    const exchange = await startElicitation(client, projectId, userId, {
+      task_id: event.task_id,
+      trigger: "worker-question",
+      gate: event.pending_activity ?? void 0
+    });
+    const last = Array.isArray(exchange.rounds) ? exchange.rounds[exchange.rounds.length - 1] : void 0;
+    const alreadyAsked = !!last && (last.context_line ?? "").startsWith(GUARD_BLOCKED_ROUND_PREFIX) && Object.keys(last.answers ?? {}).length === 0;
+    if (!alreadyAsked) {
+      const text3 = err.blockReason === "terminal" ? `The ticket is Verified, Cancelled or Parked, so the '${err.labelName}' label cannot be stamped. Drop the decision-only proposal and commit the acceptance without it?` : err.blockReason === "build-shape" ? `The ticket is Planned or later, or already has a build PR, so the '${err.labelName}' label cannot be stamped. Drop the decision-only proposal and continue, or use revise-scope to change the ticket's shape?` : `The guard refused the '${err.labelName}' label (${err.guardMessage}). Drop the decision-only proposal and continue, or use revise-scope?`;
+      await fileElicitationRound(client, projectId, {
+        exchange_id: exchange.id,
+        context_line: `${GUARD_BLOCKED_ROUND_PREFIX}: the guard can_mark_decision_only refused the label_add write (item ${err.ref}, block_reason ${err.blockReason}). Every other write in the payload already landed, but the acceptance is still pending.`,
+        questions: [{
+          id: "q1",
+          stakes: "load-bearing",
+          kind: "open",
+          text: text3,
+          why: "Answering 'drop it' lets the next leg re-run consume_pending_acceptance_event with skip_blocked_label_add: true, which commits the acceptance without the label. If the acceptance has already been committed (a same-session clarify accept commits it directly), nothing more is needed: the label simply stays off."
+        }]
+      });
+    }
+    return new Error(`${err.message} A worker-question round was filed on the ticket; the acceptance event stays pending until it is answered.`);
+  } catch (fileErr) {
+    const why = fileErr instanceof Error ? fileErr.message : String(fileErr);
+    return new Error(`${err.message} The question round could not be filed (${why}), so the human has not been asked \u2014 the acceptance event stays pending.`);
+  }
+}
+async function applyRuleBundlesOnly(client, event) {
+  const bundles = rawItemsOf(event.payload).filter(
+    (i) => typeof i === "object" && i !== null && i.write_kind === "rule_bundle"
+  );
+  if (bundles.length === 0) return 0;
+  const result = await applyAcceptanceEventPayload(client, { ...event, payload: { payload: bundles } });
+  return result.by_write_kind.rule_bundle ?? 0;
+}
+async function consumePendingAcceptanceEvent(client, projectId, taskId, opts = {}) {
+  const probe = await probeAcceptanceEventSubstrate(client);
+  if (probe === "absent") return { status: "substrate-absent" };
+  const event = await getPendingAcceptanceEvent(client, projectId, taskId);
+  if (!event) return { status: "none" };
+  if (event.status === "consumed") return { status: "none" };
+  if (classifyPayload(event.payload) === "unrecognized") {
+    await applyRuleBundlesOnly(client, event);
+    return { status: "payload-unrecognized", event_id: event.id, reason: event.reason, items: rawItemsOf(event.payload) };
+  }
+  let applyResult;
+  try {
+    applyResult = await applyAcceptanceEventPayload(client, event, {
+      entity_overrides: opts.entity_overrides,
+      skip_blocked_label_add: opts.skip_blocked_label_add
+    });
+  } catch (err) {
+    if (err instanceof AmbiguousEntityLinkError) throw await fileAmbiguityRound(client, projectId, event, err, opts.userId);
+    if (err instanceof GuardBlockedLabelAddError) throw await fileGuardBlockedLabelAddRound(client, projectId, event, err, opts.userId);
+    throw err;
+  }
+  if (applyResult.substrate_absent_for) {
+    return { status: "payload-unrecognized", event_id: event.id, reason: event.reason, items: rawItemsOf(event.payload) };
+  }
+  const consumeResult = await consumeAcceptanceEvent(client, event.id);
+  let effectiveReason = event.reason;
+  let effectiveBriefId = event.brief_id;
+  if (consumeResult.event_id && consumeResult.event_id !== event.id) {
+    const { data: actualEventRow } = await client.from("pending_acceptance_events").select("reason, brief_id").eq("id", consumeResult.event_id).maybeSingle();
+    if (actualEventRow) {
+      const actual = actualEventRow;
+      effectiveReason = actual.reason;
+      effectiveBriefId = actual.brief_id;
+    }
+  }
+  return {
+    status: "consumed",
+    event_id: consumeResult.event_id,
+    applied: applyResult.applied,
+    skipped_already_done: applyResult.skipped_already_done,
+    by_write_kind: applyResult.by_write_kind,
+    workflow_state: consumeResult.workflow_state,
+    reason: effectiveReason,
+    brief_id: effectiveBriefId
+  };
+}
+var consumePendingAcceptanceEventTool = {
+  name: "consume_pending_acceptance_event",
+  description: 'B-797 leg-start-consume: check for and execute an outstanding accepted-brief payload (proposed ACs, decompose children + AC transfers, plan-step checklist, design AC refinements, B-688 decision-only label proposals, B-843 knowledge-entry content + per-gate supersede, B-867 the gate\'s durable ticket section, B-941 supersede-decision retires, B-997 confirmed feature-entity name(s) + entity edges) BEFORE any gate routing/floor check runs. Call this FIRST, on every leg pickup \u2014 mirrors the B-747 leg-start check. Feature-detects the substrate (never by plugin version): on an older DB without the B-797 tables/RPCs returns { status: "substrate-absent" } and changes nothing (today\'s synchronous behavior is exactly preserved). { status: "none" } = no outstanding event. { status: "consumed" } = every promised write landed (idempotently \u2014 a retry after a partial failure only applies what is still missing) and the deferred workflow-state advance committed; `workflow_state` is the ticket\'s new state; `by_write_kind` breaks `applied` down per write_kind (e.g. how many NEW acceptance_criterion writes this call itself filed). B-888: the consumed result ALSO carries `reason` and `brief_id`, surfaced directly from the pending event row (no second `list_activity` round-trip needed) \u2014 when `reason === "clarification-draft"` this consume IS the clarification\'s AC-filing pass, and the caller (harmony-conduct \xA71c) MUST write the `AC-FILING-PASS brief_id=<brief_id> filed=<by_write_kind.acceptance_criterion ?? 0>` marker right here \u2014 its absence is what let the design gate\'s \xA72b self-heal conclude filing never ran and re-file the same acceptance criteria a second time. { status: "payload-unrecognized", event_id, reason, items } = EITHER the event\'s snapshotted payload is not (yet) in the structured shape this tool applies, OR (B-688/B-383) a recognized write_kind\'s own RPC is not yet deployed on this DB (a pre-migration window) \u2014 both degrade to the SAME status/ shape and the SAME caller handling; do not try to distinguish them. `items` (B-816) is the VERBATIM snapshotted raw items the human already accepted \u2014 the owning gate\'s materialization MUST render these items (title/content per item) as a confirm-or-adjust ask, never re-read them via `get_task` / `get_pending_acceptance_event`, and never fall back to an open "what did you accept?" re-dictation question; only residue genuinely absent from `items` is a legitimate open question. Route to the OWNING GATE SKILL\'s existing materialization (e.g. the design-decide B-744 self-heal for clarify ACs, decompose\'s own B-646 existing-child detection), confirm the work is done, THEN call `consume_acceptance_event({ event_id })` directly to commit the deferred advance. NEVER treat "payload-unrecognized" as "nothing to do" \u2014 that would commit a hollow advance under a new name. Throws (does NOT swallow) if a recognized payload write fails \u2014 the event stays visibly pending; do not catch-and-continue. B-1317: every entity_link name is resolved BEFORE any write; an ambiguous name (e.g. a concept and a feature) throws with nothing applied, files a "which entity did you mean?" worker-question round, and leaves the event pending \u2014 once answered, call again with `entity_overrides` ({ <item ref>: <entity id> }). B-833: a label_add refused by the decision-only guard throws (message keeps "decision-only guard blocked"), files a worker-question round and leaves the event pending \u2014 once the human answers "drop it", call again with `skip_blocked_label_add: true` to commit without the label.',
   inputSchema: {
     type: "object",
     properties: {
-      task_id: { type: "string", description: "The task whose exchange to fetch \u2014 UUID, task number, or visual ID (e.g., B-43)" }
+      task_id: { type: "string", description: "Task identifier \u2014 UUID, task number (e.g., 43), or visual ID (e.g., B-43)" },
+      entity_overrides: { type: "object", additionalProperties: { type: "string" }, description: `Optional map of entity_link item ref -> entity id, the answer to a "which entity did you mean?" round; applied as that item's entity_id.` },
+      skip_blocked_label_add: { type: "boolean", description: 'Optional (B-833): the answer "drop it" to a guard-blocked decision-only label round \u2014 a label_add the decision-only guard refuses is skipped (the label never lands) and the acceptance commits. Only the guard refusal is skippable.' }
     },
     required: ["task_id"]
   }
 };
-async function concludeElicitation(client, projectId, args) {
-  if (!args.outcome || !VALID_OUTCOMES.includes(args.outcome)) {
-    throw new Error(`outcome must be one of: ${VALID_OUTCOMES.join(", ")}`);
-  }
-  const exchange = await resolveExchange(client, projectId, args);
-  if (exchange.status !== "active") {
-    if (exchange.status === args.outcome) return exchange;
-    if (exchange.status === "abandoned") {
-      return { noop: true, cause: "exchange-cancelled", exchange };
-    }
-    throw new Error(`exchange ${exchange.id} is already '${exchange.status}' \u2014 cannot conclude it '${args.outcome}'`);
-  }
-  let roundsUpdate = {};
-  if (args.prior_answers) {
-    const echoed = echoPriorAnswers(
-      Array.isArray(exchange.rounds) ? exchange.rounds : [],
-      args.prior_answers,
-      (/* @__PURE__ */ new Date()).toISOString()
-    );
-    if (echoed.errors.length > 0) {
-      throw new Error(`prior_answers failed the echo guards:
-- ${echoed.errors.join("\n- ")}`);
-    }
-    roundsUpdate = { rounds: echoed.rounds };
-  }
-  const { data, error: error2 } = await client.from("elicitation_exchanges").update({ status: args.outcome, answers_submitted_at: null, force_quit_requested_at: null, ...roundsUpdate }).eq("id", exchange.id).select(EXCHANGE_COLS).single();
-  if (error2) throw new Error(error2.message);
-  return data;
+async function consumePendingAcceptanceEventToolHandler(client, projectId, args, userId) {
+  if (!args.task_id) throw new Error("task_id is required");
+  return consumePendingAcceptanceEvent(client, projectId, args.task_id, {
+    userId,
+    entity_overrides: args.entity_overrides,
+    skip_blocked_label_add: args.skip_blocked_label_add === true
+  });
 }
-var concludeElicitationTool = {
-  name: "conclude_elicitation",
-  description: `Conclude an elicitation exchange: 'converged' (the agent can now confidently draft a brief that represents the user's intent), 'force-quit' (the human said "best efforts, proceed" \u2014 draft from what you have; mint any claims with provenance 'force-quit'), or 'abandoned'. Sets the exchange status and clears both consumable markers. Writes NOTHING else: it does not touch the attached brief and does not re-set the task's awaiting flag \u2014 for 'abandoned' on a brief-attached exchange the brief row deliberately stays ACTIVE with the flag down, so the owning gate's "brief already active" path re-surfaces it in place on re-entry. If the exchange is already 'abandoned' (a mechanical cancel landed first) and a DIFFERENT outcome is requested, returns the typed no-op { noop: true, cause: 'exchange-cancelled', exchange } instead of throwing (B-461) \u2014 the CALLING AGENT must then archive any claims it minted in that same turn (claims are minted before conclude; the mint\u2192conclude window can race a cancel). Re-issuing the SAME outcome stays idempotent and returns the row.`,
+var consumeAcceptanceEventTool = {
+  name: "consume_acceptance_event",
+  description: "B-797 \u2014 the FINAL commit for a pending acceptance event: marks it consumed, clears tasks.pending_acceptance_event_id, and applies the brief's originally-deferred workflow-state advance (if any), atomically. B-1029: this is FINAL-COMMIT-ONLY \u2014 it applies NOTHING from the payload (no gate_slot, no knowledge_entry_content, no label_add); most same-session accept paths must call `consume_pending_acceptance_event({ task_id })` instead, which runs `applyAcceptanceEventPayload` FIRST. Calling this one directly is correct in only three remaining LEGITIMATE cases, all already-past the apply step by construction: (a) harmony-conduct's \xA71c `payload-unrecognized` route, once it has confirmed the owning gate's own materialization already did the work; and (b) harmony-clarify's two guard-blocked/label-RPC-absent continuations, which run AFTER `consume_pending_acceptance_event` has already applied gate_slot/knowledge_entry_content and only the terminally-blocked label_add write is left pending \u2014 retrying the full apply again would just retry the same doomed label write; and (c) start-work's O3 leg-start-standalone self-heal (its own `payload-unrecognized` route) \u2014 start-work's equivalent of harmony-conduct's \xA71c when it runs with no conductor loop wrapping it: it manually re-materializes the missed checklist/gate_slot items from the echoed payload, and only the commit is left. Do NOT use this as generic same-session accept guidance; every other caller wants `consume_pending_acceptance_event` so the deferred payload actually lands. `resolve_brief`'s response carries `pending_acceptance_event_id`; when non-null and one of the three cases above applies, call this with it. Idempotent \u2014 a second call on an already-consumed event is a safe no-op.",
   inputSchema: {
     type: "object",
     properties: {
-      exchange_id: { type: "string", description: "The exchange to conclude. Or pass task_id to target its active exchange." },
-      task_id: { type: "string", description: "Alternative to exchange_id \u2014 the task whose ACTIVE exchange to conclude (UUID, task number, or visual ID)." },
-      outcome: { type: "string", description: "'converged' | 'force-quit' | 'abandoned'" },
-      prior_answers: {
-        type: "object",
-        description: "Terminal-given answers to the FINAL round, echoed into the exchange record in the same concluding write (B-462) \u2014 use when the answers that produced this conclusion arrived in the terminal, not the web. Same shape and guards as file_elicitation_round's prior_answers; each echo is stamped via:'terminal'."
-      }
+      event_id: { type: "string", description: "The pending acceptance event's id (from resolve_brief's pending_acceptance_event_id, or get task/get_pending_acceptance_event)." }
     },
-    required: ["outcome"]
+    required: ["event_id"]
   }
 };
-async function findLatestExchange(client, taskId) {
-  const { data, error: error2 } = await client.from("elicitation_exchanges").select(EXCHANGE_COLS).eq("task_id", taskId).order("created_at", { ascending: false }).limit(1).maybeSingle();
-  if (error2) throw new Error(error2.message);
-  return data ?? null;
+async function consumeAcceptanceEventToolHandler(client, args) {
+  if (!args.event_id) throw new Error("event_id is required");
+  return consumeAcceptanceEvent(client, args.event_id);
 }
-async function submitElicitationAnswers(client, projectId, args) {
-  if (!args.task_id) throw new Error("task_id is required");
-  const taskId = await resolveTaskId2(client, projectId, args.task_id);
-  const exchange = await findActiveExchange(client, taskId);
-  if (!exchange) {
-    const latest = await findLatestExchange(client, taskId);
-    if (!latest) {
-      throw new Error(
-        `task ${args.task_id} has no open elicitation exchange \u2014 there is no filed round to record answers against. Open one with start_elicitation and file a round first; nothing was written.`
-      );
+
+// src/tools/rule-registry.ts
+var RULE_REGISTRY_UNAVAILABLE = "B-1047 rule registry not on this environment yet";
+var DEFAULT_LIMIT = 50;
+var MAX_LIMIT = 200;
+var readRuleRegistrySchema = external_exports.object({
+  entry_id: external_exports.string().trim().min(1).optional(),
+  domains: external_exports.array(external_exports.string().trim().min(1)).optional(),
+  surfaces: external_exports.array(external_exports.string().trim().min(1)).optional(),
+  search: external_exports.string().trim().min(1).optional(),
+  limit: external_exports.number().int().min(1).max(MAX_LIMIT).optional()
+}).strict();
+function escapeLike(text3) {
+  return text3.replace(/[\\%_]/g, (c) => `\\${c}`);
+}
+async function readRuleRegistry(client, projectId, args = {}) {
+  const input = readRuleRegistrySchema.parse(args ?? {});
+  let query = client.from("knowledge_rule_registry").select("entry_id, fingerprint, normalized_claim, scope, reach, domains, surfaces").eq("project_id", projectId);
+  if (input.entry_id) query = query.eq("entry_id", input.entry_id);
+  if (input.domains?.length) query = query.overlaps("domains", input.domains);
+  if (input.surfaces?.length) query = query.overlaps("surfaces", input.surfaces);
+  if (input.search) query = query.ilike("normalized_claim", `%${escapeLike(input.search)}%`);
+  const { data, error: error2 } = await query.order("updated_at", { ascending: false }).limit(input.limit ?? DEFAULT_LIMIT);
+  if (error2) {
+    if (isMissingRelationOrFunction(error2)) {
+      return { availability: "unavailable", reason: RULE_REGISTRY_UNAVAILABLE, rules: [] };
     }
-    if (latest.status === "abandoned") {
+    throw new Error(`read_rule_registry failed: ${error2.message}`);
+  }
+  const rows = data ?? [];
+  if (rows.length === 0) return { availability: "available", rules: [] };
+  const ids2 = [...new Set(rows.map((r) => r.entry_id))];
+  const { data: entries, error: entryErr } = await client.from("knowledge_decisions").select("id, title, status, content").in("id", ids2);
+  if (entryErr) throw new Error(`read_rule_registry failed reading rule entries: ${entryErr.message}`);
+  const byId = new Map((entries ?? []).map((e) => [e.id, e]));
+  return {
+    availability: "available",
+    rules: rows.map((r) => {
+      const entry = byId.get(r.entry_id);
+      return {
+        entry_id: r.entry_id,
+        fingerprint: r.fingerprint,
+        normalized_claim: r.normalized_claim,
+        scope: r.scope,
+        reach: r.reach,
+        domains: r.domains ?? [],
+        surfaces: r.surfaces ?? [],
+        title: entry?.title ?? null,
+        status: entry?.status ?? null,
+        content: entry?.content ?? null
+      };
+    })
+  };
+}
+var readRuleRegistryTool = {
+  name: "read_rule_registry",
+  description: "B-1047 \u2014 read the active project's rule registry. Each rule returns { entry_id, fingerprint, normalized_claim, scope, reach, domains, surfaces, title, status, content }. A design brief's amend/reference rule names target_entry_id = entry_id and expected_fingerprint = fingerprint (sha256 of the entry's current content); an amend quotes content as `before`. Filters: entry_id (exact), domains / surfaces (overlap \u2014 any listed value matches), search (case-insensitive substring of normalized_claim), limit (default 50, max 200). Returns { availability: 'available', rules } or, when this environment has no registry yet, { availability: 'unavailable', reason, rules: [] } \u2014 then amend/reference cannot be declared; never guess a fingerprint. Permission and network errors stay errors.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      entry_id: { type: "string", description: "The rule knowledge entry id (exact match)" },
+      domains: { type: "array", items: { type: "string" }, description: "Match rules whose domains overlap these" },
+      surfaces: { type: "array", items: { type: "string" }, description: "Match rules whose surfaces overlap these" },
+      search: { type: "string", description: "Case-insensitive substring of normalized_claim" },
+      limit: { type: "integer", minimum: 1, maximum: MAX_LIMIT }
+    },
+    additionalProperties: false
+  }
+};
+
+// src/tools/feature-accounts.ts
+var uuid3 = external_exports.string().uuid();
+var operation = external_exports.discriminatedUnion("op", [
+  external_exports.object({ op: external_exports.literal("replace"), clause_id: external_exports.string().trim().min(1), content: external_exports.string() }).strict(),
+  external_exports.object({
+    op: external_exports.literal("insert"),
+    clause_id: external_exports.string().trim().min(1),
+    content: external_exports.string(),
+    ordinal: external_exports.number().int().positive()
+  }).strict()
+]);
+var createAccountSchema = external_exports.object({ owner_surface: external_exports.string().trim().min(1), concept_id: uuid3.optional() }).strict();
+var readAccountsSchema = external_exports.object({
+  account_id: uuid3.optional(),
+  owner_surface: external_exports.string().optional(),
+  history_limit: external_exports.number().int().min(1).max(100).optional(),
+  history_before: external_exports.number().int().positive().optional()
+}).strict();
+var previewAmendmentSchema = external_exports.object({
+  account_id: uuid3,
+  expected_revision: external_exports.number().int().nonnegative(),
+  operations: external_exports.array(operation).min(1)
+}).strict();
+var proposeAmendmentSchema = previewAmendmentSchema.extend({
+  source_decision_id: uuid3,
+  source_task_id: uuid3,
+  idempotency_key: external_exports.string().trim().min(1),
+  leaves_untouched: external_exports.array(
+    external_exports.object({
+      account_id: uuid3.optional(),
+      entry_id: uuid3.optional(),
+      owner_surface: external_exports.string().min(1).optional(),
+      clause_id: external_exports.string().min(1).optional()
+    }).strict().refine((value) => Object.keys(value).length > 0, "Name the untouched scope")
+  ),
+  evidence: external_exports.object({ pr_url: external_exports.string().url().optional(), commit: external_exports.string().min(1).optional() }).strict().optional()
+});
+var applyAmendmentSchema = external_exports.object({
+  amendment_id: uuid3,
+  production_event_id: uuid3.optional(),
+  confirm_production: external_exports.boolean().optional()
+}).strict().refine(
+  (value) => !!value.production_event_id !== (value.confirm_production === true),
+  "Provide one production event or explicitly confirm post-promotion production"
+);
+function missingAccountCapability(error2) {
+  return ["PGRST202", "42883", "42P01", "PGRST205"].includes(error2.code ?? "") && /(?:feature_account|feature_amendment|knowledge_feature_)/i.test(error2.message ?? "");
+}
+async function call2(client, name, projectId, args, read = false) {
+  const parameters = Object.fromEntries(
+    Object.entries(args).filter(([, value]) => value !== void 0).map(([key, value]) => [`p_${key}`, value])
+  );
+  const { data, error: error2 } = await client.rpc(name, { p_project_id: projectId, ...parameters });
+  if (error2) {
+    if (missingAccountCapability(error2)) {
+      if (read) return { availability: "unavailable", accounts: [] };
       throw new Error(
-        `exchange ${latest.id} is 'abandoned' \u2014 the human cancelled the discussion, so these answers cannot be recorded and the call must not be retried. Nothing was written.`
+        "Current account storage is unavailable. Deploy the web migration before writing; no change was made."
       );
     }
     throw new Error(
-      `exchange ${latest.id} is '${latest.status}' \u2014 answers can only be recorded on an active exchange, and this one is already concluded. Nothing was written.`
+      `Current account operation failed (${error2.code ?? "unknown"}): ${error2.message}`
     );
   }
-  const nowIso = (/* @__PURE__ */ new Date()).toISOString();
-  const echoed = echoPriorAnswers(
-    Array.isArray(exchange.rounds) ? exchange.rounds : [],
-    args.answers,
-    nowIso
-  );
-  if (echoed.errors.length > 0) {
-    throw new Error(`answers failed the echo guards:
-- ${echoed.errors.join("\n- ")}`);
-  }
-  const { data, error: error2 } = await client.from("elicitation_exchanges").update({ rounds: echoed.rounds, answers_submitted_at: nowIso }).eq("id", exchange.id).select(EXCHANGE_COLS).single();
-  if (error2) throw new Error(error2.message);
-  const { error: taskErr } = await client.from("tasks").update({ awaiting_human_input: false, awaiting_human_reason: null, awaiting_human_ref: null }).eq("id", exchange.task_id);
-  if (taskErr) throw new Error(taskErr.message);
+  if (!data || typeof data !== "object") throw new Error("Invalid current account response");
   return data;
 }
-var submitElicitationAnswersTool = {
-  name: "submit_elicitation_answers",
-  description: "Record terminal-given answers to the OPEN round of a task's active elicitation exchange and hand the ball back to the agent \u2014 WITHOUT asking another round and WITHOUT concluding the exchange. This is the terminal twin of the web's answer form and the PRODUCER of the answers marker: it stamps answers_submitted_at, leaves the exchange 'active' (a follow-up round can still be filed), and clears the task's awaiting_human_input (reason/ref nulled) so the conductor watch classifies 'answers-landed'. Never touches workflow_state. Use it when an out-of-band caller holds answers the human gave in the terminal and the next move hasn't been decided yet; use file_elicitation_round's or conclude_elicitation's prior_answers instead when you are filing the next round or concluding in the same turn (those CONSUME the marker). Same guards as prior_answers: only the last filed round's unanswered questions may be answered, a submitted answer is never overwritten, and verbs must fit the question kind \u2014 any violation refuses the whole call with no partial write. Each answer is stamped via:'terminal'. Refuses (writing nothing) when the task has no open exchange, or when its exchange is already concluded \u2014 an 'abandoned' exchange means the human cancelled the discussion, so do not retry.",
+async function createFeatureAccount(client, projectId, args) {
+  return call2(client, "create_feature_account", projectId, createAccountSchema.parse(args));
+}
+async function readFeatureAccounts(client, projectId, args = {}) {
+  const result = await call2(
+    client,
+    "read_feature_accounts",
+    projectId,
+    readAccountsSchema.parse(args),
+    true
+  );
+  if (!["available", "unavailable", "not-found"].includes(result.availability) || !Array.isArray(result.accounts))
+    throw new Error("Invalid current account read response");
+  return result;
+}
+async function previewFeatureAmendment(client, projectId, args) {
+  return call2(client, "preview_feature_amendment", projectId, previewAmendmentSchema.parse(args));
+}
+async function proposeFeatureAmendment(client, projectId, args) {
+  return call2(client, "propose_feature_amendment", projectId, proposeAmendmentSchema.parse(args));
+}
+async function applyFeatureAmendment(client, projectId, args) {
+  return call2(client, "apply_feature_amendment", projectId, applyAmendmentSchema.parse(args));
+}
+var properties = {
+  account_id: { type: "string", description: "Stable account UUID" },
+  expected_revision: { type: "integer", minimum: 0 },
+  operations: {
+    type: "array",
+    minItems: 1,
+    items: {
+      type: "object",
+      properties: {
+        op: { type: "string", enum: ["replace", "insert"] },
+        clause_id: { type: "string" },
+        content: { type: "string" },
+        ordinal: { type: "integer", minimum: 1 }
+      },
+      required: ["op", "clause_id", "content"],
+      additionalProperties: false
+    },
+    description: "Ordered replacements or insertions. Insert requires a new clause_id and final ordinal. Replace preserves order."
+  }
+};
+var featureAccountTools = [
+  {
+    name: "create_feature_account",
+    description: "Create a project/surface current-account identity with no live text. Existing normalized surface returns the same identity. Optional concept_id shares the workspace concept UUID.",
+    inputSchema: {
+      type: "object",
+      properties: { owner_surface: { type: "string" }, concept_id: { type: "string" } },
+      required: ["owner_surface"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "read_feature_accounts",
+    description: "Read live current_text and ordered clauses separately from labelled pending_amendments and immutable history. Returns available, not-found or unavailable; permission/network errors stay errors. History is newest first; pass its last revision as history_before for the next page.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        account_id: properties.account_id,
+        owner_surface: { type: "string" },
+        history_limit: { type: "integer", minimum: 1, maximum: 100 },
+        history_before: { type: "integer", minimum: 1 }
+      },
+      additionalProperties: false
+    }
+  },
+  {
+    name: "preview_feature_amendment",
+    description: "Preview named clause operations at the expected live revision without proposing or publishing. Returns preview_text labelled live=false.",
+    inputSchema: {
+      type: "object",
+      properties,
+      required: ["account_id", "expected_revision", "operations"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "propose_feature_amendment",
+    description: "Register an idempotent pending amendment from an accepted project decision and source ticket. Names clauses replaced, insertion order and neighbours left untouched. Records amendment-proposed; does not change live current_text. PR/commit evidence optional.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        ...properties,
+        source_decision_id: { type: "string" },
+        source_task_id: { type: "string" },
+        idempotency_key: { type: "string" },
+        leaves_untouched: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              account_id: { type: "string" },
+              entry_id: { type: "string" },
+              owner_surface: { type: "string" },
+              clause_id: { type: "string" }
+            },
+            additionalProperties: false
+          }
+        },
+        evidence: {
+          type: "object",
+          properties: { pr_url: { type: "string" }, commit: { type: "string" } },
+          additionalProperties: false
+        }
+      },
+      required: [
+        "account_id",
+        "expected_revision",
+        "operations",
+        "leaves_untouched",
+        "source_decision_id",
+        "source_task_id",
+        "idempotency_key"
+      ],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "apply_feature_amendment",
+    description: "Publish a pending amendment atomically ONLY with a trusted production-live re-stamped event, or confirm_production=true explicitly after promotion. Never call merely because a ticket merged, reached Deployed or Verified. Stale revision fails unchanged; successful retry creates no duplicate history/events.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        amendment_id: { type: "string" },
+        production_event_id: { type: "string" },
+        confirm_production: { type: "boolean" }
+      },
+      required: ["amendment_id"],
+      additionalProperties: false
+    }
+  }
+];
+
+// src/tools/epic-order.ts
+function sortEpics(epics) {
+  const lexical = (a, b) => a < b ? -1 : a > b ? 1 : 0;
+  return [...epics].sort((a, b) => Number(!!a.retired_at) - Number(!!b.retired_at) || lexical(a.name.toLowerCase(), b.name.toLowerCase()) || lexical(a.id, b.id));
+}
+
+// src/tools/epics.ts
+var listEpicsTool = {
+  name: "list_epics",
+  description: "List all epics in the project",
+  inputSchema: { type: "object", properties: {} }
+};
+function isMissingEpicRetirement(error2) {
+  if (!error2 || !["42703", "PGRST204"].includes(error2.code ?? "")) return false;
+  const diagnostic = `${error2.message ?? ""} ${error2.details ?? ""}`;
+  return /\bepics\b/.test(diagnostic) && /\bretired_at\b/.test(diagnostic) && /does not exist|could not find|not found|missing/i.test(diagnostic);
+}
+async function listEpics(client, projectId) {
+  const result = await client.from("epics").select("id, name, color, position, retired_at").eq("project_id", projectId);
+  if (isMissingEpicRetirement(result.error)) {
+    const legacy = await client.from("epics").select("id, name, color, position").eq("project_id", projectId);
+    if (legacy.error) throw legacy.error;
+    return sortEpics((legacy.data ?? []).map((epic) => ({ ...epic, retired_at: null })));
+  }
+  if (result.error) throw result.error;
+  return sortEpics((result.data ?? []).map((epic) => ({ ...epic, retired_at: epic.retired_at ?? null })));
+}
+async function assertActiveEpic(client, projectId, epicId) {
+  if (!epicId) return;
+  const epic = (await listEpics(client, projectId)).find((e) => e.id === epicId);
+  if (!epic) throw new Error("Epic is not available in this project");
+  if (epic.retired_at) throw new Error(`Epic "${epic.name}" is retired; choose an active epic`);
+}
+var createEpicTool = {
+  name: "create_epic",
+  description: "Create a new epic in the project",
   inputSchema: {
     type: "object",
     properties: {
-      task_id: { type: "string", description: "The task whose ACTIVE exchange to record answers on \u2014 UUID, task number, or visual ID (e.g., B-43)" },
-      answers: {
-        type: "object",
-        description: "The human's terminal-given answers to the OPEN round, keyed by question id: { <qid>: { verb, text? } } with verb confirm|correct|skip for a 'validate' question and answer|skip for an 'open' one (correct/answer require text). Answering only SOME of the round's questions is legitimate \u2014 the rest stay unanswered and the round stays open."
-      }
+      name: { type: "string", description: "Epic name" },
+      color: { type: "string", description: "Hex color (e.g. #6366f1). Optional." }
     },
-    required: ["task_id", "answers"]
+    required: ["name"]
   }
 };
-async function fetchActiveExchange(client, taskId) {
-  try {
-    const { data, error: error2 } = await client.from("elicitation_exchanges").select("id, status, rounds, answers_submitted_at, force_quit_requested_at").eq("task_id", taskId).eq("status", "active").maybeSingle();
-    if (error2 || !data) return null;
-    const row = data;
-    const rounds = Array.isArray(row.rounds) ? row.rounds : [];
-    return {
-      exchange_id: row.id,
-      status: row.status,
-      round: currentRoundNumber(rounds),
-      answers_submitted_at: row.answers_submitted_at ?? null,
-      force_quit_requested_at: row.force_quit_requested_at ?? null
-    };
-  } catch {
-    return null;
+var updateEpicTool = {
+  name: "update_epic",
+  description: "Update an epic's name or color",
+  inputSchema: {
+    type: "object",
+    properties: {
+      epic_id: { type: "string", description: "Epic ID" },
+      name: { type: "string", description: "New name" },
+      color: { type: "string", description: "New hex color (e.g. #6366f1)" }
+    },
+    required: ["epic_id"]
   }
+};
+async function updateEpic(client, projectId, args) {
+  const updates = {};
+  if (args.name !== void 0) updates.name = args.name;
+  if (args.color !== void 0) updates.color = args.color;
+  const { data, error: error2 } = await client.from("epics").update(updates).eq("id", args.epic_id).eq("project_id", projectId).select().single();
+  if (error2) throw error2;
+  return data;
+}
+async function createEpic(client, projectId, userId, args) {
+  const { data: existing } = await client.from("epics").select("position").eq("project_id", projectId).order("position", { ascending: false }).limit(1);
+  const nextPosition = (existing?.[0]?.position ?? -1) + 1;
+  const { data, error: error2 } = await client.from("epics").insert({
+    project_id: projectId,
+    name: args.name,
+    color: args.color ?? "#6366f1",
+    position: nextPosition,
+    created_by: userId
+  }).select().single();
+  if (error2) throw error2;
+  return data;
+}
+
+// src/tools/members.ts
+var listMembersTool = {
+  name: "list_members",
+  description: "List all members of the workspace. Returns user IDs, display names, emails, and roles. Use this to look up assignee IDs for task assignment.",
+  inputSchema: { type: "object", properties: {} }
+};
+async function listMembers(client, projectId) {
+  const { data: project, error: projError } = await client.from("projects").select("workspace_id").eq("id", projectId).single();
+  if (projError) throw projError;
+  const { data, error: error2 } = await client.from("workspace_members").select("user_id, role, joined_at, profile:profiles!workspace_members_user_id_profiles_fkey(display_name, email)").eq("workspace_id", project.workspace_id).order("joined_at", { ascending: true });
+  if (error2) throw error2;
+  return data.map((m) => ({
+    user_id: m.user_id,
+    display_name: m.profile?.display_name ?? null,
+    email: m.profile?.email ?? null,
+    role: m.role
+  }));
+}
+async function resolveAssignee(client, projectId, assignee) {
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(assignee)) {
+    return assignee;
+  }
+  const members = await listMembers(client, projectId);
+  const query = assignee.toLowerCase();
+  const emailMatch = members.filter((m) => m.email?.toLowerCase() === query);
+  if (emailMatch.length === 1) return emailMatch[0].user_id;
+  const nameMatch = members.filter(
+    (m) => m.display_name?.toLowerCase().includes(query)
+  );
+  if (nameMatch.length === 1) return nameMatch[0].user_id;
+  if (nameMatch.length > 1) {
+    const names = nameMatch.map((m) => m.display_name ?? m.email).join(", ");
+    throw new Error(`Ambiguous assignee "${assignee}" \u2014 matches multiple members: ${names}. Be more specific.`);
+  }
+  throw new Error(`No member found matching "${assignee}". Use list_members to see available members.`);
 }
 
 // src/tools/tasks.ts
@@ -52639,12 +53622,12 @@ var searchTasksTool = {
 };
 
 // src/tools/find-related-tickets.ts
-var DEFAULT_LIMIT = 5;
+var DEFAULT_LIMIT2 = 5;
 var RRF_K2 = 10;
 var BOUNDED_QUERY_CHARS = 400;
 async function findRelatedTickets(client, projectId, args) {
   if (!args.task_id?.trim()) throw new Error("task_id is required");
-  const limit = args.limit ?? DEFAULT_LIMIT;
+  const limit = args.limit ?? DEFAULT_LIMIT2;
   const subjectId = await resolveTaskId3(client, projectId, args.task_id);
   const { data: subject, error: subjectErr } = await client.from("tasks").select("id, title, description").eq("project_id", projectId).eq("id", subjectId).single();
   if (subjectErr || !subject) {
@@ -53051,8 +54034,8 @@ async function listActivity(client, projectId, args) {
 
 // src/tools/workflow-transitions.ts
 var DEFAULT_FIELD_NAME = "workflow_state";
-var DEFAULT_LIMIT2 = 100;
-var MAX_LIMIT = 500;
+var DEFAULT_LIMIT3 = 100;
+var MAX_LIMIT2 = 500;
 var listWorkflowTransitionsTool = {
   name: "list_workflow_transitions",
   description: `List workflow_state (or another field_change) transitions across the WHOLE project between two timestamps \u2014 "what did the board deliver last week" in one call instead of one list_activity call per ticket. Reads activity_events (event_type=field_change), project-scoped (implicit project). The from/to created_at range is REQUIRED. Rows are LEAN by default (task_id, visual_id, old_value, new_value, created_at); view:'full' adds title. Multi-hop transitions from a single accept (e.g. Deployed\u2192Built then Built\u2192Planned) are rendered in true causal order via a client-side chain-sort; a row whose group's chain couldn't be causally resolved is tagged order:'fallback' (id order).`,
@@ -53128,7 +54111,7 @@ async function listWorkflowTransitions(client, projectId, args) {
   if (!args.from || !args.to) {
     throw new Error("list_workflow_transitions requires both `from` and `to` (ISO created_at range).");
   }
-  const limit = Math.min(args.limit ?? DEFAULT_LIMIT2, MAX_LIMIT);
+  const limit = Math.min(args.limit ?? DEFAULT_LIMIT3, MAX_LIMIT2);
   const offset = args.offset ?? 0;
   const fieldName = args.field_name ?? DEFAULT_FIELD_NAME;
   const { data: project, error: projectError } = await client.from("projects").select("key").eq("id", projectId).single();
@@ -53676,731 +54659,6 @@ async function manageDependencies(client, projectId, userId, args) {
     result.removed = args.remove;
   }
   return result;
-}
-
-// src/tools/gate-slots.ts
-var GATE_SLOT_FIELD_KEY = "gate_slots";
-var ExcludedSlotSchema = external_exports.object({
-  item: external_exports.string(),
-  lands: external_exports.string()
-}).passthrough();
-var PullRequestSlotSchema = external_exports.object({
-  repo: external_exports.string().optional(),
-  ref: external_exports.string().optional(),
-  url: external_exports.string().optional(),
-  title: external_exports.string().optional()
-}).passthrough();
-var CriterionSlotSchema = external_exports.object({
-  ac_id: external_exports.string().optional(),
-  text: external_exports.string().optional(),
-  how: external_exports.string().optional(),
-  disposition: external_exports.string().optional()
-}).passthrough();
-var VerifyStepSlotSchema = external_exports.object({
-  ref: external_exports.string().optional(),
-  action: external_exports.string().optional(),
-  expect: external_exports.string().optional(),
-  covers: external_exports.array(external_exports.string()).optional()
-}).passthrough();
-var ClarifySlotSchema = external_exports.object({
-  solving: external_exports.string().optional(),
-  in_scope: external_exports.array(external_exports.string()).optional(),
-  not_solving: external_exports.array(ExcludedSlotSchema).optional()
-}).passthrough();
-var ReleaseSlotSchema = external_exports.object({
-  shipped: external_exports.string().optional(),
-  lands_in: external_exports.string().optional(),
-  prs: external_exports.array(PullRequestSlotSchema).optional(),
-  unproven: external_exports.array(external_exports.string()).optional(),
-  evidence_status: external_exports.string().optional()
-}).passthrough();
-var VerifySlotSchema = external_exports.object({
-  environment: external_exports.string().optional(),
-  criteria: external_exports.array(CriterionSlotSchema).optional(),
-  // B-1068 — the ordered runbook steps themselves, alongside the criteria they discharge.
-  steps: external_exports.array(VerifyStepSlotSchema).optional(),
-  evidence_status: external_exports.string().optional()
-}).passthrough();
-var UnknownGateSlotSchema = external_exports.record(external_exports.unknown());
-var GATE_SLOT_SCHEMAS = {
-  design: external_exports.object({ design_artefact: DesignArtefactSchema.optional() }).passthrough(),
-  clarify: ClarifySlotSchema,
-  release: ReleaseSlotSchema,
-  verify: VerifySlotSchema
-};
-function isGateSlotName(gate) {
-  return GATE_SLOT_NAMES.includes(gate);
-}
-function parseGateSlotContent(gate, content) {
-  const schema = isGateSlotName(gate) ? GATE_SLOT_SCHEMAS[gate] : UnknownGateSlotSchema;
-  const parsed = schema.safeParse(content);
-  if (!parsed.success) {
-    const detail = parsed.error.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ");
-    throw new Error(`gate_slot content for gate '${gate}' does not match the pinned shape \u2014 ${detail}`);
-  }
-  return parsed.data;
-}
-function pinBuildPrs(fieldValues) {
-  const refs = readBuildPrReferences(fieldValues);
-  const out = [];
-  for (const ref of refs) {
-    const label = typeof ref.pr_number === "number" ? `#${ref.pr_number}` : ref.branch ?? ref.pr_url;
-    if (!ref.pr_url && !label) continue;
-    const pr = { repo: ref.key };
-    if (label) pr.ref = label;
-    if (ref.pr_url) pr.url = ref.pr_url;
-    out.push(pr);
-  }
-  return out;
-}
-var isPlainObject5 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
-function isMissingGateSlotRpc(err) {
-  if (!err) return false;
-  const code = err.code ?? "";
-  if (code === "42P01" || code === "42883" || code === "PGRST202" || code === "PGRST205") return true;
-  const msg = err.message ?? "";
-  return /schema cache/i.test(msg) && /(could not find|does not exist)/i.test(msg);
-}
-function ratifiedAtStamp(now) {
-  return `${now.toISOString().slice(0, 19)}Z`;
-}
-async function writeGateSlot(client, args) {
-  const gate = (args.gate ?? "").trim();
-  if (!gate) throw new Error("gate_slot write names no gate \u2014 the slot is keyed by the gate that ratified it");
-  if (!isPlainObject5(args.content)) {
-    throw new Error(
-      `gate_slot write for gate '${gate}' must carry a content OBJECT (an EMPTY object is valid \u2014 it means the gate ratified an empty answer)`
-    );
-  }
-  const content = parseGateSlotContent(gate, args.content);
-  const keys = Object.keys(content);
-  if (args.target.via === "acceptance-event") {
-    if (gate === "design" && content.design_artefact) {
-      content.drift = await observeDesignDrift(DesignArtefactSchema.parse(content.design_artefact), process.env.HARMONY_FIGMA_TOKEN);
-    }
-    const { data, error: error2 } = await client.rpc("consume_gate_slot_write", {
-      _event_id: args.target.event_id,
-      _external_ref: args.target.external_ref,
-      _gate: gate,
-      // ONLY the content. `ratified_by` / `ratified_at` are stamped INSIDE the function, from `_gate`
-      // and `now()` — sending them would let a replayed payload back-date a slot.
-      _content: content
-    });
-    if (error2) {
-      if (isMissingGateSlotRpc(error2)) return { gate, applied: false, keys, substrate_absent: true };
-      throw new Error(error2.message);
-    }
-    const row = data ?? {};
-    return { gate, applied: row.applied === true, keys, result_id: row.result_id };
-  }
-  const taskId = args.target.task_id;
-  const { data: taskRow, error: readErr } = await client.from("tasks").select("field_values").eq("id", taskId).maybeSingle();
-  if (readErr) throw new Error(readErr.message);
-  if (!taskRow) throw new Error(`gate_slot write for gate '${gate}' targets task ${taskId}, which does not exist`);
-  const fieldValues = isPlainObject5(taskRow.field_values) ? taskRow.field_values : {};
-  const existingSlots = isPlainObject5(fieldValues[GATE_SLOT_FIELD_KEY]) ? fieldValues[GATE_SLOT_FIELD_KEY] : {};
-  const ratified_at = ratifiedAtStamp(/* @__PURE__ */ new Date());
-  const nextFieldValues = {
-    ...fieldValues,
-    [GATE_SLOT_FIELD_KEY]: {
-      ...existingSlots,
-      // B-1062: `ratified_by` defaults to `gate` (unchanged behavior) unless the caller overrides it —
-      // see `WriteGateSlotArgs.ratified_by`'s doc comment for the one caller that does.
-      [gate]: { content, ratified_by: args.ratified_by ?? gate, ratified_at }
-    }
-  };
-  const { error: writeErr } = await client.from("tasks").update({ field_values: nextFieldValues }).eq("id", taskId);
-  if (writeErr) throw new Error(writeErr.message);
-  return { gate, applied: true, keys, result_id: taskId };
-}
-async function writeGateSlotToolHandler(client, projectId, args) {
-  if (!args.task_id) throw new Error("task_id is required");
-  const gate = (args.gate ?? "").trim();
-  if (!gate) throw new Error("gate is required");
-  if (!isGateSlotName(gate)) {
-    throw new Error(`gate must be one of: ${GATE_SLOT_NAMES.join(", ")} \u2014 got '${gate}'`);
-  }
-  const taskId = await resolveTaskId2(client, projectId, args.task_id);
-  const reason = REASON_FOR_GATE_SLOT[gate];
-  const { data: briefRows, error: briefErr } = await client.from("briefs").select("id, doc, reason, created_at").eq("task_id", taskId).eq("reason", reason).order("created_at", { ascending: false }).limit(1);
-  if (briefErr) throw new Error(briefErr.message);
-  const brief = (briefRows ?? [])[0];
-  if (!brief) {
-    return { task_id: taskId, gate, written: false, reason: `no ${reason} brief exists on this ticket \u2014 nothing was ratified at the ${gate} gate` };
-  }
-  const doc = brief.doc;
-  const projected = doc ? renderSlot(doc, gate) : null;
-  if (!projected) {
-    return {
-      task_id: taskId,
-      gate,
-      written: false,
-      brief_id: brief.id,
-      reason: `the ${reason} brief carries no ${gate} frame \u2014 there is nothing ratified in a shape the ticket's section can lay out`
-    };
-  }
-  const content = { ...projected };
-  if (gate === "release") {
-    const { data: taskRow } = await client.from("tasks").select("field_values").eq("id", taskId).maybeSingle();
-    const prs = pinBuildPrs(taskRow?.field_values);
-    content.prs = prs;
-  }
-  if (gate === "design") {
-    const { data: event, error: error2 } = await client.from("pending_acceptance_events").select("id").eq("brief_id", brief.id).order("created_at", { ascending: false }).limit(1).maybeSingle();
-    if (error2) throw new Error(error2.message);
-    if (!event) throw new Error("Design slot requires the accepted brief event; accept the design before writing its slot.");
-    const result2 = await writeGateSlot(client, { gate, content, target: { via: "acceptance-event", event_id: event.id, external_ref: "slot-design" } });
-    return { task_id: taskId, gate, written: true, applied: result2.applied, keys: result2.keys, brief_id: brief.id };
-  }
-  const result = await writeGateSlot(client, { gate, content, target: { via: "task", task_id: taskId } });
-  return { task_id: taskId, gate, written: true, applied: result.applied, keys: result.keys, brief_id: brief.id };
-}
-var writeGateSlotTool = {
-  name: "write_gate_slot",
-  description: `B-867 \u2014 land a gate's ratified brief content on the ticket as a DURABLE section, visible forever after (stored in tasks.field_values.gate_slots, one sub-key per gate, latest-accepted-per-gate). Call it IMMEDIATELY AFTER the accept at the release gate (gate: "release") and the verify gate (gate: "verify") \u2014 those two accepts create no acceptance event, so their slot cannot ride a brief payload the way clarify's does; this tool is how they reach the same write. Clarify normally needs no call at all: its slot rides its accept payload automatically. The content is DERIVED, never passed in: this reads the gate's own brief and projects its ratified doc (the same projection the brief itself renders), so the section and the brief cannot disagree \u2014 there is deliberately no way to hand-author it. Requires the gate's brief to carry a \`doc.frame\` of the matching kind (B-876); a brief without one returns { written: false, reason } and changes nothing, rather than failing the accept. Idempotent: re-running replaces THIS gate's slot and touches no other gate's, and never any other field_values key (build_pr / work_branch are safe). Returns { written, applied, keys, reason? }.`,
-  inputSchema: {
-    type: "object",
-    properties: {
-      task_id: { type: "string", description: "Task identifier \u2014 UUID, task number (e.g., 867), or visual ID (e.g., B-867)" },
-      gate: {
-        type: "string",
-        enum: ["clarify", "design", "release", "verify"],
-        description: "Which gate's section to land \u2014 design replays only its accepted event; 'release' after the release accept, 'verify' after the verify accept."
-      }
-    },
-    required: ["task_id", "gate"]
-  }
-};
-
-// src/tools/acceptance-events.ts
-function isMissingRelationOrFunction(err) {
-  if (!err) return false;
-  const code = err.code ?? "";
-  if (code === "42P01" || code === "42883" || code === "PGRST202" || code === "PGRST205") return true;
-  const msg = err.message ?? "";
-  return /schema cache/i.test(msg) && /(could not find|does not exist)/i.test(msg);
-}
-var isMissingTitleParam = (msg) => !!msg && /_title/.test(msg) && /(does not exist|could not find|schema cache|function)/i.test(msg);
-var isMissingTagsParam = (msg) => !!msg && /_tags/.test(msg) && /(does not exist|could not find|schema cache|function)/i.test(msg);
-function isShippedMilestoneGuardError(error2) {
-  if (!error2) return false;
-  if (error2.code !== "23514") return false;
-  const msg = error2.message ?? "";
-  return /was shipped/i.test(msg) && /cannot be assigned to it/i.test(msg);
-}
-function isDecisionOnlyGuardError(error2) {
-  if (!error2) return false;
-  if (error2.code !== "23514") return false;
-  return /decision-only guard blocked/i.test(error2.message ?? "");
-}
-var ShippedMilestoneGuardError = class extends Error {
-  constructor(guardMessage) {
-    super(guardMessage);
-    this.name = "ShippedMilestoneGuardError";
-  }
-};
-async function probeAcceptanceEventSubstrate(client) {
-  const { error: error2 } = await client.from("pending_acceptance_events").select("id").limit(0);
-  if (!error2) return "present";
-  if (isMissingRelationOrFunction(error2)) return "absent";
-  throw new Error(`acceptance-event substrate probe failed (not a schema-absence error \u2014 do not degrade): ${error2.message}`);
-}
-async function getPendingAcceptanceEvent(client, projectId, taskId) {
-  const resolvedId = await resolveTaskId2(client, projectId, taskId);
-  const { data: task, error: taskErr } = await client.from("tasks").select("pending_acceptance_event_id").eq("id", resolvedId).maybeSingle();
-  if (taskErr) {
-    if (isMissingRelationOrFunction(taskErr)) return null;
-    throw new Error(taskErr.message);
-  }
-  const eventId = task?.pending_acceptance_event_id;
-  if (!eventId) return null;
-  const { data: event, error: eventErr } = await client.from("pending_acceptance_events").select("id, task_id, brief_id, reason, payload, pending_activity, status").eq("id", eventId).maybeSingle();
-  if (eventErr) {
-    if (isMissingRelationOrFunction(eventErr)) return null;
-    throw new Error(eventErr.message);
-  }
-  return event ?? null;
-}
-var KNOWN_WRITE_KINDS = /* @__PURE__ */ new Set(["acceptance_criterion", "child_ticket", "checklist_item", "ac_transfer", "label_add", "knowledge_entry_content", "gate_slot", "supersede_decision", "implements_entities", "entity_link"]);
-function rawItemsOf(payload) {
-  const withNestedPayload = payload;
-  if (Array.isArray(withNestedPayload?.payload)) return withNestedPayload.payload;
-  if (Array.isArray(payload)) return payload;
-  const withItems = payload;
-  return Array.isArray(withItems?.items) ? withItems.items : [];
-}
-function itemsOf(payload) {
-  return rawItemsOf(payload);
-}
-function classifyPayload(payload) {
-  const raw = rawItemsOf(payload);
-  if (raw.length === 0) return "empty";
-  const allStructured = raw.every(
-    (i) => typeof i === "object" && i !== null && KNOWN_WRITE_KINDS.has(i.write_kind)
-  );
-  return allStructured ? "structured" : "unrecognized";
-}
-var WriteKindSubstrateAbsentError = class extends Error {
-  constructor(writeKind) {
-    super(`substrate absent for write_kind '${writeKind}' (RPC not found \u2014 B-383 pre-migration window)`);
-    this.writeKind = writeKind;
-  }
-  writeKind;
-};
-var AmbiguousEntityLinkError = class extends Error {
-  constructor(ref, entityName, candidates) {
-    super(
-      `entity_link item '${ref}' is ambiguous: the name '${entityName}' matches ${candidates.length} entities \u2014 ` + candidates.map((c) => `${c.name} (kind ${c.kind || "unknown"}, id ${c.id})`).join("; ") + `. Nothing was written. Next: answer which entity was meant (re-run consume_pending_acceptance_event with entity_overrides { "${ref}": "<entity id>" }), or send the design brief back so it recomposes with a kind.`
-    );
-    this.ref = ref;
-    this.entityName = entityName;
-    this.candidates = candidates;
-    this.name = "AmbiguousEntityLinkError";
-  }
-  ref;
-  entityName;
-  candidates;
-};
-var GuardBlockedLabelAddError = class extends Error {
-  constructor(ref, labelName, blockReason, guardMessage) {
-    super(guardMessage);
-    this.ref = ref;
-    this.labelName = labelName;
-    this.blockReason = blockReason;
-    this.guardMessage = guardMessage;
-    this.name = "GuardBlockedLabelAddError";
-  }
-  ref;
-  labelName;
-  blockReason;
-  guardMessage;
-};
-function parseGuardBlockReason(message) {
-  const m = /decision-only guard blocked:\s*([A-Za-z_-]+)/i.exec(message);
-  return m ? m[1] : "unknown";
-}
-async function preflightEntityLinks(client, event, items, opts) {
-  const resolved = /* @__PURE__ */ new Map();
-  for (const item of items) {
-    if (item.write_kind !== "entity_link" || !item.ref) continue;
-    const entityId = opts.entity_overrides?.[item.ref] ?? item.entity_id;
-    const name = item.entity_name?.trim();
-    if (!name && !entityId) continue;
-    const { data: taskRow, error: taskErr } = await client.from("tasks").select("project_id").eq("id", event.task_id).maybeSingle();
-    if (taskErr) throw new Error(taskErr.message);
-    const projectId = taskRow?.project_id;
-    if (!projectId) throw new Error(`entity_link item '${item.ref}' \u2014 task ${event.task_id} has no project_id, cannot resolve the entity`);
-    const workspaceId = await getWorkspaceId(client, projectId);
-    const kind = item.kind ?? item.entity_kind;
-    try {
-      const selected = await selectEntity(client, workspaceId, projectId, { entity_id: entityId, name, kind });
-      resolved.set(item.ref, { projectId, workspaceId, selected });
-    } catch (err) {
-      if (err instanceof AmbiguousEntitySelectionError) {
-        throw new AmbiguousEntityLinkError(item.ref, name ?? "", err.candidates.map((c) => ({ id: c.id, name: c.name, kind: c.kind })));
-      }
-      throw err;
-    }
-  }
-  return resolved;
-}
-async function applyAcceptanceEventPayload(client, event, opts = {}) {
-  const items = itemsOf(event.payload);
-  const resolvedLinks = await preflightEntityLinks(client, event, items, opts);
-  const order = [
-    "child_ticket",
-    "checklist_item",
-    "acceptance_criterion",
-    "ac_transfer",
-    // B-867 sits HERE — after every concrete materialization, before the entry promotion. Same reasoning
-    // as the line below, one notch weaker: the slot is the ticket's DISPLAYED record of what this accept
-    // did, so a payload that fails partway must not leave a section on the ticket announcing writes that
-    // never landed. It stays AHEAD of the entry promotion because a slot is a projection of the brief,
-    // repaired by the next accept (latest-accepted-per-gate), whereas a wrongly-promoted entry has
-    // already superseded a real one.
-    "gate_slot",
-    // B-997 sits right after gate_slot, before knowledge_entry_content: it lands the human-confirmed
-    // feature-entity name(s) onto the ticket's field_values — a durable, displayed-adjacent record,
-    // same reasoning as gate_slot just above (materialize before the entry promotion / decision
-    // retirement below, which are the more consequential, harder-to-undo writes).
-    "implements_entities",
-    // B-843 sits after gate_slot, before label_add: it promotes the gate's knowledge entry and supersedes
-    // the previous round's. Running it after every AC/child/checklist write means a payload that fails
-    // partway leaves the knowledge base untouched rather than promoting a decision whose materialization
-    // never landed.
-    "knowledge_entry_content",
-    // B-997 sits right after knowledge_entry_content, before supersede_decision: it lands the
-    // already-resolved entity edge(s) a design/visual-handoff accept confirmed. Entity-NAME resolution
-    // happens HERE, in this dispatch, via resolveOrCreateEntity — never in SQL — so it must run after
-    // the entry promotion above (the same 'materialize before touching the knowledge base's terminal
-    // state' reasoning) and before supersede_decision below (a wholly separate decision retirement
-    // that must never be blocked by this write, or vice versa).
-    "entity_link",
-    // B-941 sits right after entity_link (B-997 inserted between it and knowledge_entry_content),
-    // before label_add: it retires an UPSTREAM decision
-    // (harmony-revise-scope's supersede-list) — a wholly different decision from the one
-    // knowledge_entry_content above may have just promoted, but the same "materialize before touching the
-    // knowledge base's terminal state" reasoning applies, and it has nothing to do with label_add's
-    // decision-only guard below, so it must never sit behind that potentially-blocked write.
-    "supersede_decision",
-    // B-1029: label_add moved LAST, deliberately after gate_slot/knowledge_entry_content (not before, as
-    // it used to run). `consume_label_add_write` can be blocked two ways that are NOT transient: a
-    // decision-only guard-block (a persistent business-rule refusal from the RPC itself) or the RPC being
-    // altogether absent on this DB (B-383 pre-migration window, surfaced as `substrate_absent_for`).
-    // Either one throws/degrades and stops the loop — so with label_add anywhere earlier in this order, a
-    // decision-only-shaped ticket's label write would PERMANENTLY block gate_slot/knowledge_entry_content
-    // from ever landing on that payload, even though those two writes have nothing to do with the label
-    // guard rule. Running label_add last means every other write in the payload lands first, and only the
-    // genuinely-blocked label write is left pending — it never blocks the more consequential writes.
-    "label_add"
-  ];
-  const ordered = order.flatMap((kind) => items.filter((i) => i.write_kind === kind));
-  let applied = 0;
-  let skipped = 0;
-  const byKind = {};
-  try {
-    for (const item of ordered) {
-      if (!item.ref) throw new Error(`payload item of write_kind '${item.write_kind}' is missing its stable 'ref' \u2014 cannot derive an idempotent external_ref`);
-      let result = null;
-      if (item.write_kind === "acceptance_criterion") {
-        if (!item.content) throw new Error(`acceptance_criterion item '${item.ref}' is missing content`);
-        const { data, error: error2 } = await client.rpc("consume_ac_add_write", {
-          _event_id: event.id,
-          _external_ref: item.ref,
-          _content: item.content
-        });
-        if (error2) throw new Error(error2.message);
-        result = data;
-      } else if (item.write_kind === "child_ticket") {
-        if (!item.title) throw new Error(`child_ticket item '${item.ref}' is missing title`);
-        const { data, error: error2 } = await client.rpc("consume_child_mint_write", {
-          _event_id: event.id,
-          _external_ref: item.ref,
-          _title: item.title,
-          _description: item.description ?? null
-        });
-        if (error2) {
-          if (isShippedMilestoneGuardError(error2)) throw new ShippedMilestoneGuardError(error2.message);
-          throw new Error(error2.message);
-        }
-        result = data;
-      } else if (item.write_kind === "checklist_item") {
-        if (!item.title) throw new Error(`checklist_item item '${item.ref}' is missing title`);
-        const { data, error: error2 } = await client.rpc("consume_checklist_item_write", {
-          _event_id: event.id,
-          _external_ref: item.ref,
-          _title: item.title
-        });
-        if (error2) throw new Error(error2.message);
-        result = data;
-      } else if (item.write_kind === "ac_transfer") {
-        if (!item.content) throw new Error(`ac_transfer item '${item.ref}' is missing content`);
-        if (!item.target_child_ref) throw new Error(`ac_transfer item '${item.ref}' is missing target_child_ref`);
-        const { data, error: error2 } = await client.rpc("consume_ac_transfer_write", {
-          _event_id: event.id,
-          _external_ref: item.ref,
-          _content: item.content,
-          _target_child_external_ref: item.target_child_ref,
-          _from_ac_id: item.from_ac_id ?? null
-        });
-        if (error2) throw new Error(error2.message);
-        result = data;
-      } else if (item.write_kind === "knowledge_entry_content") {
-        if (!item.content) throw new Error(`knowledge_entry_content item '${item.ref}' is missing content \u2014 the payload CARRIES the entry text; it is never synthesized from doc fields`);
-        const metadata = item.scope !== void 0;
-        if (metadata && !await metadataCapable(client)) throw new Error("Accepted scope metadata unavailable until the schema is promoted; acceptance remains pending.");
-        const operation2 = metadata ? "consume_knowledge_entry_content_write_metadata" : "consume_knowledge_entry_content_write";
-        let includeTitle = true;
-        let includeTags = true;
-        const callArgs = () => ({
-          _event_id: event.id,
-          _external_ref: item.ref,
-          _content: item.content,
-          _entry_id: item.entry_id ?? null,
-          ...metadata ? { _scope: item.scope } : {},
-          ...includeTitle ? { _title: item.title ?? null } : {},
-          ...includeTags ? { _tags: item.tags ?? null } : {}
-        });
-        let { data, error: error2 } = await client.rpc(operation2, callArgs());
-        for (let round = 0; round < 2 && error2 && !metadata; round++) {
-          if (includeTags && isMissingTagsParam(error2.message)) {
-            includeTags = false;
-          } else if (includeTitle && isMissingTitleParam(error2.message)) {
-            includeTitle = false;
-          } else {
-            break;
-          }
-          ({ data, error: error2 } = await client.rpc(operation2, callArgs()));
-        }
-        if (error2) {
-          if (isMissingRelationOrFunction(error2)) throw new WriteKindSubstrateAbsentError("knowledge_entry_content");
-          throw new Error(error2.message);
-        }
-        result = data;
-      } else if (item.write_kind === "gate_slot") {
-        if (!item.gate?.trim()) throw new Error(`gate_slot item '${item.ref}' names no gate \u2014 the slot is keyed by the gate that ratified it`);
-        if (!item.slot_content || typeof item.slot_content !== "object" || Array.isArray(item.slot_content)) {
-          throw new Error(`gate_slot item '${item.ref}' for gate '${item.gate}' carries no slot_content object \u2014 an EMPTY object is valid (the gate ratified an empty answer), an absent one is not`);
-        }
-        const slotResult = await writeGateSlot(client, {
-          gate: item.gate,
-          content: item.slot_content,
-          target: { via: "acceptance-event", event_id: event.id, external_ref: item.ref }
-        });
-        if (slotResult.substrate_absent) throw new WriteKindSubstrateAbsentError("gate_slot");
-        result = { applied: slotResult.applied };
-      } else if (item.write_kind === "implements_entities") {
-        if (!Array.isArray(item.names)) {
-          throw new Error(`implements_entities item '${item.ref}' carries no names array \u2014 an EMPTY array is valid (it means the ticket was confirmed to implement zero named entities), an absent/non-array one is not`);
-        }
-        const { data, error: error2 } = await client.rpc("consume_implements_entities_write", {
-          _event_id: event.id,
-          _external_ref: item.ref,
-          _names: item.names
-        });
-        if (error2) {
-          if (isMissingRelationOrFunction(error2)) throw new WriteKindSubstrateAbsentError("implements_entities");
-          throw new Error(error2.message);
-        }
-        result = data;
-      } else if (item.write_kind === "entity_link") {
-        const overrideId = opts.entity_overrides?.[item.ref];
-        const name = item.entity_name?.trim();
-        if (!name && !item.entity_id && !overrideId) throw new Error(`entity_link item '${item.ref}' needs entity_id or entity_name`);
-        const link = resolvedLinks.get(item.ref);
-        if (!link) throw new Error(`entity_link item '${item.ref}' was not resolved by the pre-flight`);
-        const kind = item.kind ?? item.entity_kind;
-        const entityId = link.selected?.id ?? await resolveOrCreateEntity(client, link.workspaceId, link.projectId, name, kind ?? "feature");
-        const { data, error: error2 } = await client.rpc("consume_entity_link_write", {
-          _event_id: event.id,
-          _external_ref: item.ref,
-          _entity_id: entityId,
-          _decision_id: item.decision_id ?? null
-        });
-        if (error2) {
-          if (isMissingRelationOrFunction(error2)) throw new WriteKindSubstrateAbsentError("entity_link");
-          throw new Error(error2.message);
-        }
-        result = data;
-      } else if (item.write_kind === "supersede_decision") {
-        const decisionId = item.decision_id;
-        if (!decisionId) throw new Error(`supersede_decision item '${item.ref}' names no decision_id`);
-        const { data, error: error2 } = await client.rpc("consume_supersede_decision_write", {
-          _event_id: event.id,
-          _external_ref: item.ref,
-          _decision_id: decisionId
-        });
-        if (error2) {
-          if (isMissingRelationOrFunction(error2)) throw new WriteKindSubstrateAbsentError("supersede_decision");
-          throw new Error(error2.message);
-        }
-        result = data;
-      } else if (item.write_kind === "label_add") {
-        if (item.label_name === "") throw new Error(`label_add item '${item.ref}' has an empty label_name`);
-        const labelName = item.label_name ?? "decision-only";
-        const { data, error: error2 } = await client.rpc("consume_label_add_write", {
-          _event_id: event.id,
-          _external_ref: item.ref,
-          _label_name: labelName
-        });
-        if (error2) {
-          if (isMissingRelationOrFunction(error2)) throw new WriteKindSubstrateAbsentError("label_add");
-          if (isDecisionOnlyGuardError(error2)) {
-            if (opts.skip_blocked_label_add) {
-              skipped += 1;
-              continue;
-            }
-            throw new GuardBlockedLabelAddError(item.ref, labelName, parseGuardBlockReason(error2.message), error2.message);
-          }
-          throw new Error(error2.message);
-        }
-        result = data;
-      }
-      if (result?.applied) {
-        applied += 1;
-        byKind[item.write_kind] = (byKind[item.write_kind] ?? 0) + 1;
-      } else {
-        skipped += 1;
-      }
-    }
-  } catch (err) {
-    if (err instanceof WriteKindSubstrateAbsentError) {
-      return { event_id: event.id, applied, skipped_already_done: skipped, by_write_kind: byKind, substrate_absent_for: err.writeKind };
-    }
-    throw err;
-  }
-  return { event_id: event.id, applied, skipped_already_done: skipped, by_write_kind: byKind };
-}
-var RACED_EVENT_ERROR_SUBSTRING = "no longer matches event";
-async function consumeAcceptanceEvent(client, eventId) {
-  const { data, error: error2 } = await client.rpc("consume_acceptance_event", { _event_id: eventId });
-  if (!error2) return data;
-  if (!error2.message.includes(RACED_EVENT_ERROR_SUBSTRING)) {
-    throw new Error(error2.message);
-  }
-  const { data: staleEventRow, error: staleEventErr } = await client.from("pending_acceptance_events").select("task_id").eq("id", eventId).maybeSingle();
-  if (staleEventErr || !staleEventRow) {
-    throw new Error(error2.message);
-  }
-  const { data: taskRow, error: taskErr } = await client.from("tasks").select("pending_acceptance_event_id").eq("id", staleEventRow.task_id).maybeSingle();
-  if (taskErr || !taskRow) {
-    throw new Error(error2.message);
-  }
-  const currentEventId = taskRow.pending_acceptance_event_id;
-  if (!currentEventId || currentEventId === eventId) {
-    throw new Error(error2.message);
-  }
-  const { data: retryData, error: retryError } = await client.rpc("consume_acceptance_event", { _event_id: currentEventId });
-  if (retryError) throw new Error(retryError.message);
-  return { ...retryData, retried_from_event_id: eventId };
-}
-var AMBIGUITY_ROUND_PREFIX = "Entity link is ambiguous";
-async function fileAmbiguityRound(client, projectId, event, err, userId) {
-  if (!userId) {
-    return new Error(`${err.message} The question round could not be filed: no user id was available to open the exchange, so the human has not been asked \u2014 ask them which entity was meant and re-run with entity_overrides.`);
-  }
-  try {
-    const exchange = await startElicitation(client, projectId, userId, {
-      task_id: event.task_id,
-      trigger: "worker-question",
-      gate: event.pending_activity ?? void 0
-    });
-    const last = Array.isArray(exchange.rounds) ? exchange.rounds[exchange.rounds.length - 1] : void 0;
-    const alreadyAsked = !!last && (last.context_line ?? "").startsWith(AMBIGUITY_ROUND_PREFIX) && Object.keys(last.answers ?? {}).length === 0;
-    if (!alreadyAsked) {
-      const list = err.candidates.map((c) => `- ${c.name} (kind ${c.kind || "unknown"}, id ${c.id})`).join("\n");
-      await fileElicitationRound(client, projectId, {
-        exchange_id: exchange.id,
-        context_line: `${AMBIGUITY_ROUND_PREFIX}: accepting this brief would link '${err.entityName}' (item ${err.ref}), which matches more than one entity. Nothing was applied; the acceptance is still pending.`,
-        questions: [{
-          id: "q1",
-          stakes: "load-bearing",
-          kind: "open",
-          text: `Which entity did you mean? Answer with its id.
-${list}`,
-          why: `The next leg re-applies the pending acceptance with entity_overrides { "${err.ref}": "<id you pick>" }.`
-        }]
-      });
-    }
-    return new Error(`${err.message} A "which entity did you mean?" round was filed on the ticket (worker-question); the acceptance event stays pending until it is answered.`);
-  } catch (fileErr) {
-    const why = fileErr instanceof Error ? fileErr.message : String(fileErr);
-    return new Error(`${err.message} The question round could not be filed (${why}), so the human has not been asked \u2014 the acceptance event stays pending.`);
-  }
-}
-var GUARD_BLOCKED_ROUND_PREFIX = "Decision-only label blocked";
-async function fileGuardBlockedLabelAddRound(client, projectId, event, err, userId) {
-  if (!userId) {
-    return new Error(`${err.message} The question round could not be filed: no user id was available to open the exchange, so the human has not been asked \u2014 ask them whether to drop the decision-only proposal (then re-run with skip_blocked_label_add: true) or revise scope; the acceptance event stays pending.`);
-  }
-  try {
-    const exchange = await startElicitation(client, projectId, userId, {
-      task_id: event.task_id,
-      trigger: "worker-question",
-      gate: event.pending_activity ?? void 0
-    });
-    const last = Array.isArray(exchange.rounds) ? exchange.rounds[exchange.rounds.length - 1] : void 0;
-    const alreadyAsked = !!last && (last.context_line ?? "").startsWith(GUARD_BLOCKED_ROUND_PREFIX) && Object.keys(last.answers ?? {}).length === 0;
-    if (!alreadyAsked) {
-      const text3 = err.blockReason === "terminal" ? `The ticket is Verified, Cancelled or Parked, so the '${err.labelName}' label cannot be stamped. Drop the decision-only proposal and commit the acceptance without it?` : err.blockReason === "build-shape" ? `The ticket is Planned or later, or already has a build PR, so the '${err.labelName}' label cannot be stamped. Drop the decision-only proposal and continue, or use revise-scope to change the ticket's shape?` : `The guard refused the '${err.labelName}' label (${err.guardMessage}). Drop the decision-only proposal and continue, or use revise-scope?`;
-      await fileElicitationRound(client, projectId, {
-        exchange_id: exchange.id,
-        context_line: `${GUARD_BLOCKED_ROUND_PREFIX}: the guard can_mark_decision_only refused the label_add write (item ${err.ref}, block_reason ${err.blockReason}). Every other write in the payload already landed, but the acceptance is still pending.`,
-        questions: [{
-          id: "q1",
-          stakes: "load-bearing",
-          kind: "open",
-          text: text3,
-          why: "Answering 'drop it' lets the next leg re-run consume_pending_acceptance_event with skip_blocked_label_add: true, which commits the acceptance without the label. If the acceptance has already been committed (a same-session clarify accept commits it directly), nothing more is needed: the label simply stays off."
-        }]
-      });
-    }
-    return new Error(`${err.message} A worker-question round was filed on the ticket; the acceptance event stays pending until it is answered.`);
-  } catch (fileErr) {
-    const why = fileErr instanceof Error ? fileErr.message : String(fileErr);
-    return new Error(`${err.message} The question round could not be filed (${why}), so the human has not been asked \u2014 the acceptance event stays pending.`);
-  }
-}
-async function consumePendingAcceptanceEvent(client, projectId, taskId, opts = {}) {
-  const probe = await probeAcceptanceEventSubstrate(client);
-  if (probe === "absent") return { status: "substrate-absent" };
-  const event = await getPendingAcceptanceEvent(client, projectId, taskId);
-  if (!event) return { status: "none" };
-  if (event.status === "consumed") return { status: "none" };
-  if (classifyPayload(event.payload) === "unrecognized") {
-    return { status: "payload-unrecognized", event_id: event.id, reason: event.reason, items: rawItemsOf(event.payload) };
-  }
-  let applyResult;
-  try {
-    applyResult = await applyAcceptanceEventPayload(client, event, {
-      entity_overrides: opts.entity_overrides,
-      skip_blocked_label_add: opts.skip_blocked_label_add
-    });
-  } catch (err) {
-    if (err instanceof AmbiguousEntityLinkError) throw await fileAmbiguityRound(client, projectId, event, err, opts.userId);
-    if (err instanceof GuardBlockedLabelAddError) throw await fileGuardBlockedLabelAddRound(client, projectId, event, err, opts.userId);
-    throw err;
-  }
-  if (applyResult.substrate_absent_for) {
-    return { status: "payload-unrecognized", event_id: event.id, reason: event.reason, items: rawItemsOf(event.payload) };
-  }
-  const consumeResult = await consumeAcceptanceEvent(client, event.id);
-  let effectiveReason = event.reason;
-  let effectiveBriefId = event.brief_id;
-  if (consumeResult.event_id && consumeResult.event_id !== event.id) {
-    const { data: actualEventRow } = await client.from("pending_acceptance_events").select("reason, brief_id").eq("id", consumeResult.event_id).maybeSingle();
-    if (actualEventRow) {
-      const actual = actualEventRow;
-      effectiveReason = actual.reason;
-      effectiveBriefId = actual.brief_id;
-    }
-  }
-  return {
-    status: "consumed",
-    event_id: consumeResult.event_id,
-    applied: applyResult.applied,
-    skipped_already_done: applyResult.skipped_already_done,
-    by_write_kind: applyResult.by_write_kind,
-    workflow_state: consumeResult.workflow_state,
-    reason: effectiveReason,
-    brief_id: effectiveBriefId
-  };
-}
-var consumePendingAcceptanceEventTool = {
-  name: "consume_pending_acceptance_event",
-  description: 'B-797 leg-start-consume: check for and execute an outstanding accepted-brief payload (proposed ACs, decompose children + AC transfers, plan-step checklist, design AC refinements, B-688 decision-only label proposals, B-843 knowledge-entry content + per-gate supersede, B-867 the gate\'s durable ticket section, B-941 supersede-decision retires, B-997 confirmed feature-entity name(s) + entity edges) BEFORE any gate routing/floor check runs. Call this FIRST, on every leg pickup \u2014 mirrors the B-747 leg-start check. Feature-detects the substrate (never by plugin version): on an older DB without the B-797 tables/RPCs returns { status: "substrate-absent" } and changes nothing (today\'s synchronous behavior is exactly preserved). { status: "none" } = no outstanding event. { status: "consumed" } = every promised write landed (idempotently \u2014 a retry after a partial failure only applies what is still missing) and the deferred workflow-state advance committed; `workflow_state` is the ticket\'s new state; `by_write_kind` breaks `applied` down per write_kind (e.g. how many NEW acceptance_criterion writes this call itself filed). B-888: the consumed result ALSO carries `reason` and `brief_id`, surfaced directly from the pending event row (no second `list_activity` round-trip needed) \u2014 when `reason === "clarification-draft"` this consume IS the clarification\'s AC-filing pass, and the caller (harmony-conduct \xA71c) MUST write the `AC-FILING-PASS brief_id=<brief_id> filed=<by_write_kind.acceptance_criterion ?? 0>` marker right here \u2014 its absence is what let the design gate\'s \xA72b self-heal conclude filing never ran and re-file the same acceptance criteria a second time. { status: "payload-unrecognized", event_id, reason, items } = EITHER the event\'s snapshotted payload is not (yet) in the structured shape this tool applies, OR (B-688/B-383) a recognized write_kind\'s own RPC is not yet deployed on this DB (a pre-migration window) \u2014 both degrade to the SAME status/ shape and the SAME caller handling; do not try to distinguish them. `items` (B-816) is the VERBATIM snapshotted raw items the human already accepted \u2014 the owning gate\'s materialization MUST render these items (title/content per item) as a confirm-or-adjust ask, never re-read them via `get_task` / `get_pending_acceptance_event`, and never fall back to an open "what did you accept?" re-dictation question; only residue genuinely absent from `items` is a legitimate open question. Route to the OWNING GATE SKILL\'s existing materialization (e.g. the design-decide B-744 self-heal for clarify ACs, decompose\'s own B-646 existing-child detection), confirm the work is done, THEN call `consume_acceptance_event({ event_id })` directly to commit the deferred advance. NEVER treat "payload-unrecognized" as "nothing to do" \u2014 that would commit a hollow advance under a new name. Throws (does NOT swallow) if a recognized payload write fails \u2014 the event stays visibly pending; do not catch-and-continue. B-1317: every entity_link name is resolved BEFORE any write; an ambiguous name (e.g. a concept and a feature) throws with nothing applied, files a "which entity did you mean?" worker-question round, and leaves the event pending \u2014 once answered, call again with `entity_overrides` ({ <item ref>: <entity id> }). B-833: a label_add refused by the decision-only guard throws (message keeps "decision-only guard blocked"), files a worker-question round and leaves the event pending \u2014 once the human answers "drop it", call again with `skip_blocked_label_add: true` to commit without the label.',
-  inputSchema: {
-    type: "object",
-    properties: {
-      task_id: { type: "string", description: "Task identifier \u2014 UUID, task number (e.g., 43), or visual ID (e.g., B-43)" },
-      entity_overrides: { type: "object", additionalProperties: { type: "string" }, description: `Optional map of entity_link item ref -> entity id, the answer to a "which entity did you mean?" round; applied as that item's entity_id.` },
-      skip_blocked_label_add: { type: "boolean", description: 'Optional (B-833): the answer "drop it" to a guard-blocked decision-only label round \u2014 a label_add the decision-only guard refuses is skipped (the label never lands) and the acceptance commits. Only the guard refusal is skippable.' }
-    },
-    required: ["task_id"]
-  }
-};
-async function consumePendingAcceptanceEventToolHandler(client, projectId, args, userId) {
-  if (!args.task_id) throw new Error("task_id is required");
-  return consumePendingAcceptanceEvent(client, projectId, args.task_id, {
-    userId,
-    entity_overrides: args.entity_overrides,
-    skip_blocked_label_add: args.skip_blocked_label_add === true
-  });
-}
-var consumeAcceptanceEventTool = {
-  name: "consume_acceptance_event",
-  description: "B-797 \u2014 the FINAL commit for a pending acceptance event: marks it consumed, clears tasks.pending_acceptance_event_id, and applies the brief's originally-deferred workflow-state advance (if any), atomically. B-1029: this is FINAL-COMMIT-ONLY \u2014 it applies NOTHING from the payload (no gate_slot, no knowledge_entry_content, no label_add); most same-session accept paths must call `consume_pending_acceptance_event({ task_id })` instead, which runs `applyAcceptanceEventPayload` FIRST. Calling this one directly is correct in only three remaining LEGITIMATE cases, all already-past the apply step by construction: (a) harmony-conduct's \xA71c `payload-unrecognized` route, once it has confirmed the owning gate's own materialization already did the work; and (b) harmony-clarify's two guard-blocked/label-RPC-absent continuations, which run AFTER `consume_pending_acceptance_event` has already applied gate_slot/knowledge_entry_content and only the terminally-blocked label_add write is left pending \u2014 retrying the full apply again would just retry the same doomed label write; and (c) start-work's O3 leg-start-standalone self-heal (its own `payload-unrecognized` route) \u2014 start-work's equivalent of harmony-conduct's \xA71c when it runs with no conductor loop wrapping it: it manually re-materializes the missed checklist/gate_slot items from the echoed payload, and only the commit is left. Do NOT use this as generic same-session accept guidance; every other caller wants `consume_pending_acceptance_event` so the deferred payload actually lands. `resolve_brief`'s response carries `pending_acceptance_event_id`; when non-null and one of the three cases above applies, call this with it. Idempotent \u2014 a second call on an already-consumed event is a safe no-op.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      event_id: { type: "string", description: "The pending acceptance event's id (from resolve_brief's pending_acceptance_event_id, or get task/get_pending_acceptance_event)." }
-    },
-    required: ["event_id"]
-  }
-};
-async function consumeAcceptanceEventToolHandler(client, args) {
-  if (!args.event_id) throw new Error("event_id is required");
-  return consumeAcceptanceEvent(client, args.event_id);
 }
 
 // src/tools/decomposition.ts
@@ -57133,6 +57391,8 @@ function registerTools(disabledFeatures) {
   const tools = [
     ...featureAccountTools,
     ...surfaceRecordTools,
+    // B-1047 — the rule registry reader (amend/reference targets and their fingerprints).
+    readRuleRegistryTool,
     // Core tools (always visible)
     getProjectTool,
     listTasksTool,
@@ -57298,6 +57558,9 @@ async function handleToolCall(name, args, client, projectId, userId) {
         break;
       case "read_feature_accounts":
         result = await readFeatureAccounts(client, projectId, args);
+        break;
+      case "read_rule_registry":
+        result = await readRuleRegistry(client, projectId, args);
         break;
       case "preview_feature_amendment":
         result = await previewFeatureAmendment(client, projectId, args);

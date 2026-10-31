@@ -343,6 +343,45 @@ says all of it:
   Both halves, always: "not run and not claimed" is the easiest sentence in a brief to skim past.
 - **`files_on_accept`** — **PRODUCT TRACK ONLY**: the AC manifest this accept files, as a list. The
   product accept is a WRITE and nothing marks it today.
+- **`reach_level` + `rules[]` (B-1047)** — see **Reach and rules** below. Every design brief, on every
+  track (product, technical, and the delegated ux-ui track), declares its reach level.
+
+**Reach and rules (B-1047).** A rule future tickets must follow is recorded once, as a rule, at accept.
+
+- **Every design brief must declare `frame.reach_level`**: `this_ticket_only` | `this_surface` |
+  `this_product`. A frame with no `reach_level` composes with a warning (legacy only); never author one.
+- **A beyond-ticket design must produce a rule.** `this_surface` or `this_product` with zero
+  `frame.rules` is refused at compose. `this_ticket_only` creates no rule: it may carry only
+  `reference` rules (citing an existing one); `create` / `amend` are refused.
+- **Each rule** is `{ ref, operation: create|amend|reference, wording, domains[], surfaces[],
+  knowledge_scope: product|deployment, reach: this_surface|this_product, target_entry_id,
+  expected_fingerprint, before?, title? }`. `create` and `amend` require `wording`, `knowledge_scope`
+  and `reach`; `wording` is the exact obligation, shown verbatim before acceptance. `amend` and
+  `reference` name `target_entry_id` + `expected_fingerprint`; `amend` also carries `before` (the
+  target's current content) so the brief shows before and after. A `reference` carries **no**
+  `wording` (and no `knowledge_scope` / `reach`; the server ignores them): it renders as "Cites rule
+  <target_entry_id>", plus the optional display-only `title`. `before` and `title` never reach the payload.
+- **Match before you declare.** Search Accepted rules first: `query_knowledge` with type `convention`
+  and tag `rule`, same project, the same domains and surfaces. Read every candidate in full, then:
+  - equivalent obligation and applicability ⇒ `reference` it. **Reference the existing rule, never
+    restate its wording**: a design that restates an existing rule must instead reference it.
+  - same rule, changed wording ⇒ an explicit `amend` with the target and its expected fingerprint.
+  - ambiguous or conflicting candidates ⇒ do not guess; return to design or elicit from the human.
+  - a different obligation ⇒ `create`.
+- **Obtain the target from the registry, never guess it.** For each candidate you will amend or
+  reference, read its registry row: `read_rule_registry({ entry_id: "<candidate id>" })` (or
+  `read_rule_registry({ search: "<claim words>", domains: [...], surfaces: [...] })` to scan; CLI
+  `harmony knowledge rules --entry <id>`). It returns `{ availability, rules: [{ entry_id, fingerprint,
+  normalized_claim, scope, reach, domains, surfaces, title, status, content }] }`. Set
+  `target_entry_id` = `entry_id` and `expected_fingerprint` = `fingerprint` (the sha256 of the entry's
+  current content). For an `amend`, quote that row's `content` verbatim as `before`; for a `reference`,
+  you may pass its `title`. A candidate with no registry row is not a registered rule: it cannot be an
+  amend/reference target. If `availability` is `'unavailable'`, the rule registry is not on this
+  environment yet: amend and reference cannot be declared here. Say so in the brief and never guess a
+  fingerprint.
+- **Compose derives the payload** item `rule_bundle` from `frame.rules`; never hand-author it. On an
+  environment without the B-1047 database support, a brief with rules is refused at compose: say so,
+  never drop the rules to get it through.
 
 `frame.kind` must be `"design"`; the render places it below the recommendation. The `ux-ui-design` track
 is the one exempt from the alternatives rule — `visual-handoff.md` §D2 forbids auto-generating a guessed
@@ -367,6 +406,13 @@ mcp__harmony__compose_brief({
         { track: "ux-ui-design", status: "not-required", note: "<why — e.g. an operator table view analogous to the existing views, not a new visual language. Override me if you disagree.>" }
       ],
       reach: ["<what this decision touches beyond this ticket>"],   // [] is a real answer; absence is not
+      reach_level: "this_surface",                    // this_ticket_only | this_surface | this_product (B-1047)
+      rules: [{ ref: "rule-<slug>", operation: "create", wording: "<the exact obligation>",
+                domains: ["<domain>"], surfaces: ["<surface>"], knowledge_scope: "product",
+                reach: "this_surface", target_entry_id: null, expected_fingerprint: null }],
+      // a reference cites, never restates: rules: [{ ref: "rule-<slug>", operation: "reference",
+      //   domains: [...], surfaces: [...], target_entry_id: "<entry_id>",
+      //   expected_fingerprint: "<fingerprint from read_rule_registry>", title: "<its title>" }]
       not_reopened: ["<the upstream decisions this brief does NOT reopen>"],
       derisk: { run: ["<what you actually executed, with the observation>"],
                 not_run: ["<what was NOT run and is NOT claimed>"] }
@@ -501,6 +547,11 @@ Show the rendered `content`. On the human's command:
   those other write kinds. On a mixed round, per §4's classification, this call sees an `'unrecognized'`
   payload and never re-applies (or double-files) the AC edits you already made above — that branch's
   behavior is unchanged by B-1034.
+
+  **Rule bundle (B-1047).** When the brief declared `frame.rules`, that same call applies the
+  `rule_bundle` FIRST (preflight, apply the bundle, then project the design), as one ledgered write.
+  A refusal (`B-1047: …`, e.g. a stale amend target) rolls the bundle back and leaves the event pending:
+  report the blocker verbatim and do not advance. A retry skips a bundle that already committed.
 
   **Fingerprint the accepted Figma design (B-1203).** Right after that `consume_pending_acceptance_event`
   call, when the accepted brief's frame carries a **figma** `design_artefact`, run
