@@ -72943,6 +72943,8 @@ function registerNotifyCommands(program3) {
 }
 
 // src/cli/commands/doctor.ts
+var HOOK_BUC_ENABLED_KEY = "hook_before_user_created_enabled";
+var HOOK_BUC_URI_KEY = "hook_before_user_created_uri";
 var PG_FUNCTIONS_URI = /^pg-functions:\/\/postgres\/([^/]+)\/([^/]+)$/;
 function resolveDefaultProjectRef(input) {
   const url2 = input.activeProjectSupabaseUrl ?? input.envSupabaseUrl ?? DEFAULT_SUPABASE_URL2;
@@ -72955,6 +72957,101 @@ function resolveDefaultProjectRef(input) {
 }
 function errMessage(err) {
   return err?.message ?? String(err);
+}
+async function reportBeforeUserCreatedHalf(body, deps, projectRef, log, error2) {
+  const rawEnabled = body[HOOK_BUC_ENABLED_KEY];
+  const rawUri = body[HOOK_BUC_URI_KEY];
+  const uri = typeof rawUri === "string" ? rawUri : void 0;
+  const uriDisplay = uri ?? "<none>";
+  let registration;
+  let registrationDetail;
+  if (typeof rawEnabled !== "boolean") {
+    registration = "cannot-determine";
+    registrationDetail = `${HOOK_BUC_ENABLED_KEY} is missing or not a boolean in the auth-config response (expected ${HOOK_BUC_ENABLED_KEY} per the Management API auth-config schema).`;
+  } else if (!rawEnabled) {
+    registration = "not-registered";
+    registrationDetail = `${HOOK_BUC_ENABLED_KEY}=false, ${HOOK_BUC_URI_KEY}=${uriDisplay}`;
+  } else {
+    const match2 = uri ? PG_FUNCTIONS_URI.exec(uri) : null;
+    if (match2 && match2[1] === "public" && match2[2] === "before_user_created_hook") {
+      registration = "registered";
+      registrationDetail = `${HOOK_BUC_ENABLED_KEY}=true, ${HOOK_BUC_URI_KEY}=${uri} resolves to public.before_user_created_hook`;
+    } else {
+      registration = "cannot-determine";
+      registrationDetail = `${HOOK_BUC_ENABLED_KEY}=true but ${HOOK_BUC_URI_KEY}=${uriDisplay} does not resolve to public.before_user_created_hook`;
+    }
+  }
+  let functionExists = "cannot-determine";
+  let functionExistsDetail = "";
+  if (deps.fetchFunctionExistence) {
+    try {
+      const probe = await deps.fetchFunctionExistence(projectRef, deps.accessToken);
+      if (probe.status >= 200 && probe.status < 300) {
+        const parsed = parseRegprocedureExists(probe.body);
+        functionExists = parsed === null ? "cannot-determine" : parsed ? "exists" : "missing";
+      } else {
+        functionExistsDetail = ` (probe HTTP ${probe.status})`;
+      }
+    } catch {
+      functionExists = "cannot-determine";
+    }
+  }
+  if (registration === "registered") {
+    log(
+      `harmony doctor auth-hook: before-user-created hook REGISTERED (project ${projectRef}) \u2014 ` + registrationDetail
+    );
+  } else if (registration === "not-registered") {
+    log(
+      `harmony doctor auth-hook: before-user-created hook NOT REGISTERED (project ${projectRef}) \u2014 ` + registrationDetail
+    );
+  } else {
+    log(
+      `harmony doctor auth-hook: before-user-created hook CANNOT DETERMINE (project ${projectRef}) \u2014 ` + registrationDetail
+    );
+  }
+  if (functionExists === "exists") {
+    log(
+      `harmony doctor auth-hook: before-user-created function public.before_user_created_hook(jsonb) EXISTS (project ${projectRef}).`
+    );
+  } else if (functionExists === "missing") {
+    log(
+      `harmony doctor auth-hook: before-user-created function public.before_user_created_hook(jsonb) MISSING (project ${projectRef}).`
+    );
+  } else {
+    log(
+      `harmony doctor auth-hook: before-user-created function existence CANNOT DETERMINE (project ${projectRef})${functionExistsDetail}.`
+    );
+  }
+  if (registration === "registered" && functionExists === "missing") {
+    error2(
+      `WARN harmony doctor auth-hook: BEFORE-USER-CREATED MISMATCH (project ${projectRef}) \u2014 the hook is REGISTERED but its backing function public.before_user_created_hook(jsonb) is MISSING from the database. A registered hook pointing at a missing function FAILS EVERY sign-up on this project. Fix: re-apply the migration that creates the function, or disable the hook at Supabase Dashboard -> Authentication -> Hooks.`
+    );
+  } else if (registration === "not-registered" && functionExists === "exists") {
+    error2(
+      `WARN harmony doctor auth-hook: BEFORE-USER-CREATED MISMATCH (project ${projectRef}) \u2014 the backing function public.before_user_created_hook(jsonb) EXISTS in the database but the hook is NOT REGISTERED, so sign-up is silently left open. Fix: register the hook at Supabase Dashboard -> Authentication -> Hooks (Before User Created -> Postgres -> public.before_user_created_hook -> Enable).`
+    );
+  }
+}
+function parseRegprocedureExists(body) {
+  if (!Array.isArray(body) || body.length === 0) {
+    return null;
+  }
+  const row = body[0];
+  if (typeof row !== "object" || row === null) {
+    return null;
+  }
+  const values = Object.values(row);
+  if (values.length !== 1) {
+    return null;
+  }
+  const value = values[0];
+  if (value === null) {
+    return false;
+  }
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return true;
+  }
+  return null;
 }
 async function runDoctorAuthHookCommand(deps) {
   const token = deps.accessToken;
@@ -73012,40 +73109,85 @@ async function runDoctorAuthHookCommand(deps) {
   const rawUri = body.hook_custom_access_token_uri;
   const uri = typeof rawUri === "string" ? rawUri : void 0;
   const uriDisplay = uri ?? "<none>";
+  let exitCode;
   if (!enabled) {
     error2(
       `harmony doctor auth-hook: NOT REGISTERED (project ${projectRef}) \u2014 hook_custom_access_token_enabled=false, hook_custom_access_token_uri=${uriDisplay}. Fix: register the hook at Supabase Dashboard -> Authentication -> Hooks, or via the Management API.`
     );
-    return 1;
+    exitCode = 1;
+  } else {
+    const match2 = uri ? PG_FUNCTIONS_URI.exec(uri) : null;
+    if (!match2) {
+      error2(
+        `harmony doctor auth-hook: CANNOT DETERMINE (project ${projectRef}) \u2014 hook_custom_access_token_enabled=true but hook_custom_access_token_uri=${uriDisplay} does not match any recognizable pg-functions://postgres/<schema>/<function> shape.`
+      );
+      exitCode = 2;
+    } else {
+      const [, schema, fn] = match2;
+      if (schema === "public" && fn === "custom_access_token_hook") {
+        log(
+          `harmony doctor auth-hook: REGISTERED (project ${projectRef}) \u2014 hook_custom_access_token_enabled=true, hook_custom_access_token_uri=${uri} resolves to public.custom_access_token_hook.`
+        );
+        exitCode = 0;
+      } else {
+        error2(
+          `harmony doctor auth-hook: NOT REGISTERED (project ${projectRef}) \u2014 hook_custom_access_token_enabled=true but hook_custom_access_token_uri=${uri} points at ${schema}.${fn}, not public.custom_access_token_hook. Fix: register the hook at Supabase Dashboard -> Authentication -> Hooks, or via the Management API.`
+        );
+        exitCode = 1;
+      }
+    }
   }
-  const match2 = uri ? PG_FUNCTIONS_URI.exec(uri) : null;
-  if (!match2) {
-    error2(
-      `harmony doctor auth-hook: CANNOT DETERMINE (project ${projectRef}) \u2014 hook_custom_access_token_enabled=true but hook_custom_access_token_uri=${uriDisplay} does not match any recognizable pg-functions://postgres/<schema>/<function> shape.`
-    );
-    return 2;
+  if (deps.fetchFunctionExistence) {
+    await reportBeforeUserCreatedHalf(body, deps, projectRef, log, error2);
   }
-  const [, schema, fn] = match2;
-  if (schema === "public" && fn === "custom_access_token_hook") {
-    log(
-      `harmony doctor auth-hook: REGISTERED (project ${projectRef}) \u2014 hook_custom_access_token_enabled=true, hook_custom_access_token_uri=${uri} resolves to public.custom_access_token_hook.`
-    );
-    return 0;
-  }
-  error2(
-    `harmony doctor auth-hook: NOT REGISTERED (project ${projectRef}) \u2014 hook_custom_access_token_enabled=true but hook_custom_access_token_uri=${uri} points at ${schema}.${fn}, not public.custom_access_token_hook. Fix: register the hook at Supabase Dashboard -> Authentication -> Hooks, or via the Management API.`
-  );
-  return 1;
+  return exitCode;
 }
 function registerDoctorCommands(program3) {
   const doctor = program3.command("doctor").description("Read-only operator diagnostics (no board writes, no plugin-tracked state).");
   doctor.command("auth-hook").description(
-    "Report whether the actor-claim custom access-token hook (public.custom_access_token_hook, B-978) is registered on a Supabase project, by reading the Supabase Management API (GoTrue auth config is platform state, not DB state \u2014 a DB-only check would be a false green). Requires SUPABASE_ACCESS_TOKEN (the Supabase CLI's own personal-access-token env var) with the auth:read (auth_config_read) scope. --project-ref defaults to the Supabase project this CLI session is already configured against (active `harmony login` project's Supabase URL, else HARMONY_SUPABASE_URL, else the hardcoded prod project every session targets absent an override) when omitted \u2014 pass it explicitly to check a different project. Exit 0 = registered, 1 = not registered, 2 = cannot determine."
+    "Report whether the actor-claim custom access-token hook (public.custom_access_token_hook, B-978) AND the invitation-only before-user-created hook (public.before_user_created_hook, B-1298) are registered on a Supabase project, and whether the before-user-created backing function exists \u2014 reading the Supabase Management API (GoTrue auth config is platform state, not DB state \u2014 a DB-only check would be a false green). Registration comes from GET /v1/projects/<ref>/config/auth; the before-user-created function-existence probe runs the same to_regprocedure existence query the founder runs by hand, through POST /v1/projects/<ref>/database/query under the same SUPABASE_ACCESS_TOKEN (the Supabase CLI's own personal-access-token env var, auth:read scope). One run prints the access-token half first and unchanged, then the before-user-created half; a mismatch on the before-user-created half is a loud WARN and NEVER changes the exit code. --project-ref defaults to the Supabase project this CLI session is already configured against (active `harmony login` project's Supabase URL, else HARMONY_SUPABASE_URL, else the hardcoded prod project every session targets absent an override) when omitted \u2014 pass it explicitly to check a different project. Exit 0 = access-token hook registered, 1 = access-token hook not registered, 2 = cannot determine the access-token hook (the before-user-created half adds no exit outcome of its own)."
   ).option(
     "--project-ref <ref>",
     "Supabase project ref to check (defaults to this CLI session's configured project; see description above)"
   ).action(async (opts) => {
-    const exitCode = await runDoctorAuthHookCommand({
+    const accessToken = process.env.SUPABASE_ACCESS_TOKEN;
+    const fetchAuthConfig = async (projectRef, token) => {
+      const res = await fetch(`https://api.supabase.com/v1/projects/${projectRef}/config/auth`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      let body;
+      try {
+        body = await res.json();
+      } catch {
+        body = void 0;
+      }
+      return { status: res.status, body };
+    };
+    const fetchFunctionExistence = async (projectRef, token) => {
+      const res = await fetch(
+        `https://api.supabase.com/v1/projects/${projectRef}/database/query`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            query: "SELECT to_regprocedure('public.before_user_created_hook(jsonb)')",
+            read_only: true
+          })
+        }
+      );
+      let body;
+      try {
+        body = await res.json();
+      } catch {
+        body = void 0;
+      }
+      return { status: res.status, body };
+    };
+    let probeMemo;
+    const deps = {
       projectRefFlag: opts.projectRef,
       resolveDefaultProjectRef: () => {
         let activeProjectSupabaseUrl;
@@ -73059,22 +73201,21 @@ function registerDoctorCommands(program3) {
           envSupabaseUrl: process.env.HARMONY_SUPABASE_URL
         });
       },
-      accessToken: process.env.SUPABASE_ACCESS_TOKEN,
-      fetchAuthConfig: async (projectRef, accessToken) => {
-        const res = await fetch(`https://api.supabase.com/v1/projects/${projectRef}/config/auth`, {
-          headers: { Authorization: `Bearer ${accessToken}` }
-        });
-        let body;
-        try {
-          body = await res.json();
-        } catch {
-          body = void 0;
+      accessToken,
+      fetchAuthConfig: (projectRef, token) => {
+        const configPromise = fetchAuthConfig(projectRef, token);
+        if (token) {
+          probeMemo = fetchFunctionExistence(projectRef, token).catch(
+            () => ({ status: 0, body: void 0 })
+          );
         }
-        return { status: res.status, body };
+        return configPromise;
       },
+      fetchFunctionExistence: () => probeMemo ?? Promise.resolve({ status: 0, body: void 0 }),
       log: (line) => console.log(line),
       error: (line) => console.error(line)
-    });
+    };
+    const exitCode = await runDoctorAuthHookCommand(deps);
     process.exit(exitCode);
   });
 }
