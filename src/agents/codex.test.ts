@@ -15,6 +15,7 @@ import {
   codexPrompt,
   parseCodexThreadId,
   parseCodexUsage,
+  parseCodexRequestUsage,
   renderCodexAgentsMd,
   renderCodexConfig,
   verifyCodexAgentsMd,
@@ -280,6 +281,13 @@ describe('10. telemetry', () => {
   it('reads the LAST turn.completed usage into the four token categories', () => {
     expect(parseCodexUsage(stream)).toEqual({ inputTokens: 5, cachedInputTokens: 2, cacheWriteInputTokens: 1, outputTokens: 7, reasoningOutputTokens: 3 });
     expect(parseCodexUsage('{"type":"turn.started"}')).toBeNull();
+  });
+  it('sums newly appended request records once by response id and refuses incomplete evidence', () => {
+    const request = (id: string, input: number) => JSON.stringify({ type: 'token_usage_record', payload: { response_id: id, usage: { input_tokens: input, cached_input_tokens: 2, output_tokens: 3, reasoning_output_tokens: 99 } } });
+    expect(parseCodexRequestUsage([request('r1', 10), request('r1', 10), request('r2', 20)].join('\n')))
+      .toEqual({ inputTokens: 30, cacheReadInputTokens: 4, outputTokens: 6 });
+    expect(parseCodexRequestUsage(request('r1', 10).replace('"output_tokens":3', '"output_tokens":null'))).toBeNull();
+    expect(parseCodexRequestUsage('{"type":"turn.completed","usage":{"input_tokens":99}}')).toBeNull();
   });
 });
 

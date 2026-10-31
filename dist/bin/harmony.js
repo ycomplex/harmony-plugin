@@ -68386,6 +68386,27 @@ function codexTelemetryUsage(stdout) {
   if (!u) return null;
   return { inputTokens: u.inputTokens, cacheReadInputTokens: u.cachedInputTokens, outputTokens: u.outputTokens };
 }
+function parseCodexRequestUsage(stdout) {
+  const rows = events(stdout).filter((e) => e.type === "token_usage_record");
+  if (rows.length === 0) return null;
+  const seen = /* @__PURE__ */ new Set();
+  const total = { inputTokens: 0, cacheReadInputTokens: 0, outputTokens: 0 };
+  for (const row of rows) {
+    const id = row.response_id ?? row.payload?.response_id;
+    const usage = row.payload?.usage ?? row.usage;
+    if (typeof id !== "string" || id.length === 0 || !usage) return null;
+    if (seen.has(id)) continue;
+    const input = usage.input_tokens;
+    const cached2 = usage.cached_input_tokens ?? usage.cache_read_input_tokens;
+    const output = usage.output_tokens;
+    if (![input, cached2, output].every((n) => typeof n === "number" && Number.isSafeInteger(n) && n >= 0)) return null;
+    seen.add(id);
+    total.inputTokens += input;
+    total.cacheReadInputTokens += cached2;
+    total.outputTokens += output;
+  }
+  return total;
+}
 var CODEX_QUOTA_RE = /usage[ _-]?limit|usage_limit_reached|insufficient_quota|hit your (?:usage )?limit|quota (?:exceeded|exhausted)|exceeded your (?:current )?quota|plan limit/i;
 var CODEX_RATE_LIMIT_RE = /\b429\b|rate[ _-]?limit|too many requests/i;
 function errorText(e) {
@@ -72374,7 +72395,8 @@ function registerAgentCommands(program3) {
 }
 
 // src/cli/commands/leg-cost.ts
-import { readFileSync as readFileSync16 } from "node:fs";
+import { readFileSync as readFileSync16, writeFileSync as writeFileSync11 } from "node:fs";
+import { createHash as createHash6 } from "node:crypto";
 
 // src/tools/leg-cost-record.ts
 var LEG_COST_COLS = "id, conduction_id, task_id, leg_key, gate, model, invocation_index, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_creation_1h_input_tokens, cache_creation_5m_input_tokens, thinking_tokens, total_cost_usd, cost_source, num_turns, duration_ms, duration_api_ms, session_id, is_error, service_tier, created_at";
@@ -72434,6 +72456,7 @@ async function recordLegCost(client, args) {
   try {
     const invocationIndex = args.invocation_index ?? await resolveInvocationIndex(client, args.conduction_id, args.leg_key);
     const row = {
+      ...args.id ? { id: args.id } : {},
       conduction_id: args.conduction_id,
       task_id: args.task_id ?? null,
       leg_key: args.leg_key,
@@ -72463,7 +72486,17 @@ async function recordLegCost(client, args) {
     };
     let refusalFields = args.refusal_kind ? { refusal_kind: args.refusal_kind, refusal_resets_at: args.refusal_resets_at ?? null } : {};
     let withRuntime = true;
-    let { error: error2 } = await client.from("conduction_leg_costs").insert({ ...row, ...runtimeFields, ...refusalFields });
+    if (args.id) {
+      const { data: prior, error: readError } = await client.from("conduction_leg_costs").select("input_tokens, output_tokens, cache_read_input_tokens, total_cost_usd, is_error").eq("id", args.id).maybeSingle();
+      if (!readError && prior) {
+        const expected = ["input_tokens", "output_tokens", "cache_read_input_tokens", "total_cost_usd", "is_error"];
+        const mismatch = expected.some((key) => prior[key] !== row[key]);
+        if (mismatch) warn2(`invocation id ${args.id} already has different usage/cost values; preserving the existing row`);
+        return true;
+      }
+    }
+    const write = (payload2) => args.id ? client.from("conduction_leg_costs").upsert(payload2, { onConflict: "id", ignoreDuplicates: true }) : client.from("conduction_leg_costs").insert(payload2);
+    let { error: error2 } = await write({ ...row, ...runtimeFields, ...refusalFields });
     for (let attempt = 0; attempt < 2 && error2; attempt += 1) {
       if (Object.keys(refusalFields).length > 0 && isRefusalColumnError(error2)) {
         warn2(
@@ -72478,7 +72511,7 @@ async function recordLegCost(client, args) {
       } else {
         break;
       }
-      ({ error: error2 } = await client.from("conduction_leg_costs").insert({ ...row, ...withRuntime ? runtimeFields : {}, ...refusalFields }));
+      ({ error: error2 } = await write({ ...row, ...withRuntime ? runtimeFields : {}, ...refusalFields }));
     }
     if (error2) {
       warn2(
@@ -72491,30 +72524,6 @@ async function recordLegCost(client, args) {
     warn2(`writing the leg-cost row threw (${errText(err)}) \u2014 the leg itself is unaffected`);
     return false;
   }
-}
-async function sumPriorSessionUsage(client, args) {
-  if (!client || !args.conduction_id || !args.session_id) return null;
-  try {
-    const { data, error: error2 } = await client.from("conduction_leg_costs").select("input_tokens, cache_read_input_tokens, output_tokens").eq("conduction_id", args.conduction_id).eq("session_id", args.session_id);
-    if (error2) {
-      warn2(`could not read earlier rows for session ${args.session_id} (${errText(error2)}); recording the cumulative figure`);
-      return null;
-    }
-    const rows = data ?? [];
-    const sum = (k) => rows.reduce((a3, r) => a3 + (typeof r[k] === "number" ? r[k] : 0), 0);
-    return { input_tokens: sum("input_tokens"), cache_read_input_tokens: sum("cache_read_input_tokens"), output_tokens: sum("output_tokens") };
-  } catch (err) {
-    warn2(`reading earlier rows for session ${args.session_id} threw (${errText(err)})`);
-    return null;
-  }
-}
-function ownUsageDelta(cumulative, prior) {
-  const d = (v2, p) => v2 === null ? null : Math.max(0, v2 - (prior ? p : 0));
-  return {
-    inputTokens: d(cumulative.inputTokens, prior?.input_tokens ?? 0),
-    cacheReadInputTokens: d(cumulative.cacheReadInputTokens, prior?.cache_read_input_tokens ?? 0),
-    outputTokens: d(cumulative.outputTokens, prior?.output_tokens ?? 0)
-  };
 }
 
 // src/cli/commands/leg-cost.ts
@@ -72608,7 +72617,7 @@ function registerLegCostCommands(program3) {
   });
   legCost.command("record").description(
     "Record ONE claude invocation's cost from its captured `--output-format json` stdout. Parses the result envelope (keyed on `is_error`, NOT `subtype` \u2014 an errored run still reports subtype 'success'), resolves the cost (the CLI's own total_cost_usd, else the derived figure from the catalog row price or the price table, else 'unknown'), and inserts one conduction_leg_costs row. Always exits 0 and NEVER throws: a missing conduction id, an unparseable capture, an unreachable board or a not-yet-migrated table all degrade to \"nothing recorded\" with one stderr WARNING. The leg is never affected."
-  ).requiredOption("--file <path>", "The file this invocation's stdout was captured to").requiredOption("--gate <gate>", "The gate that was running when the invocation STARTED (see `resolve-gate`)").requiredOption("--leg-key <key>", "The worker-generated key grouping this leg's invocations").option("--model <alias>", "The model alias this invocation actually launched with").option("--invocation-index <n>", "This invocation's 0-based position within the leg").option("--conduction-id <id>", "The conduction to record against; defaults to this worker's HARMONY_CONDUCTION_ID").option("--runtime <id>", "B-1078: override the derived runtime (adapter id)").option("--credential-kind <kind>", "B-1078: override the derived credential kind (a CredentialMode)").option("--cost-regime <regime>", "B-1078: must agree with the credential-derived regime, else ignored with a warning").option("--duration-ms <n>", "B-1149: wall-clock duration of the invocation, measured by the worker (used when the capture carries none \u2014 Codex)").action(
+  ).requiredOption("--file <path>", "The file this invocation's stdout was captured to").requiredOption("--gate <gate>", "The gate that was running when the invocation STARTED (see `resolve-gate`)").requiredOption("--leg-key <key>", "The worker-generated key grouping this leg's invocations").option("--model <alias>", "The model alias this invocation actually launched with").option("--invocation-index <n>", "This invocation's 0-based position within the leg").option("--conduction-id <id>", "The conduction to record against; defaults to this worker's HARMONY_CONDUCTION_ID").option("--runtime <id>", "B-1078: override the derived runtime (adapter id)").option("--credential-kind <kind>", "B-1078: override the derived credential kind (a CredentialMode)").option("--cost-regime <regime>", "B-1078: must agree with the credential-derived regime, else ignored with a warning").option("--duration-ms <n>", "B-1149: wall-clock duration of the invocation, measured by the worker (used when the capture carries none \u2014 Codex)").option("--request-usage-file <path>", "Codex rollout JSONL containing request records for this invocation").option("--request-usage-offset <n>", "Byte offset captured before this invocation; defaults to zero").option("--invocation-id <key>", "Stable invocation identity used as the idempotent cost-row UUID").option("--is-error", "Mark an invocation failed when its runtime did not emit a terminal event").option("--ack-file <path>", 'Write "recorded" only after the cost row was stored or an identical retry was confirmed').action(
     async (opts) => {
       const conductionId = opts.conductionId ?? getConductionId();
       if (!conductionId) {
@@ -72635,21 +72644,32 @@ function registerLegCostCommands(program3) {
       const client = await getClient();
       const context = await resolveLegCostContext(client, conductionId);
       let usage = adapterRec?.usage ?? null;
-      if (usage && adapterRec?.sessionId) {
-        const prior = await sumPriorSessionUsage(client, { conduction_id: conductionId, session_id: adapterRec.sessionId });
-        usage = ownUsageDelta(usage, prior);
+      if (facts.runtime === "codex") {
+        let requestSlice = null;
+        if (opts.requestUsageFile) {
+          try {
+            const bytes = readFileSync16(opts.requestUsageFile);
+            const offset = Number(opts.requestUsageOffset ?? "0");
+            if (Number.isSafeInteger(offset) && offset >= 0 && offset <= bytes.length) {
+              requestSlice = bytes.subarray(offset).toString("utf8");
+            }
+          } catch {
+          }
+        }
+        usage = requestSlice === null ? null : parseCodexRequestUsage(requestSlice);
       }
       const rowPrice = model && client ? await fetchCatalogPrice(client, model, facts.runtime) : null;
       let cost;
       if (parsed) cost = resolveCost(parsed, model, rowPrice);
       else {
-        const codexCost = adapterRec ? deriveCodexCostUsd(usage, model, rowPrice) : null;
+        const codexCost = facts.runtime === "codex" ? deriveCodexCostUsd(usage, model, rowPrice) : null;
         cost = codexCost !== null ? { total_cost_usd: codexCost, cost_source: "derived" } : { total_cost_usd: null, cost_source: "unknown" };
       }
       const refusal = adapterRec ? adapterRec.refusal ?? null : parseClaudeRefusal(captured);
       const workerDuration = Number(opts.durationMs);
       const durationMs = opts.durationMs !== void 0 && Number.isFinite(workerDuration) && workerDuration >= 0 ? Math.round(workerDuration) : null;
-      await recordLegCost(client, {
+      const recorded = await recordLegCost(client, {
+        id: opts.invocationId ? stableInvocationUuid(opts.invocationId) : void 0,
         conduction_id: conductionId,
         leg_key: opts.legKey,
         task_id: context?.task_id ?? null,
@@ -72669,7 +72689,7 @@ function registerLegCostCommands(program3) {
         duration_ms: parsed?.duration_ms ?? durationMs,
         duration_api_ms: parsed?.duration_api_ms ?? null,
         session_id: parsed?.session_id ?? adapterRec?.sessionId ?? null,
-        is_error: parsed?.is_error ?? adapterRec?.isError ?? false,
+        is_error: parsed?.is_error ?? (Boolean(opts.isError) || Boolean(adapterRec?.isError)),
         service_tier: parsed?.service_tier ?? null,
         runtime: facts.runtime,
         credential_kind: facts.credential_kind,
@@ -72677,8 +72697,22 @@ function registerLegCostCommands(program3) {
         refusal_kind: refusal?.kind ?? null,
         refusal_resets_at: refusal?.resets_at ?? null
       });
+      if (opts.ackFile) {
+        try {
+          writeFileSync11(opts.ackFile, recorded ? "recorded\n" : "not-recorded\n", { mode: 384 });
+        } catch (err) {
+          console.error(`harmony leg-cost record: WARNING \u2014 could not write acknowledgement (${err instanceof Error ? err.message : String(err)})`);
+        }
+      }
     }
   );
+}
+function stableInvocationUuid(key) {
+  const hex = createHash6("sha256").update(key).digest("hex").slice(0, 32).split("");
+  hex[12] = "8";
+  hex[16] = (parseInt(hex[16], 16) & 3 | 8).toString(16);
+  const value = hex.join("");
+  return `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20)}`;
 }
 
 // src/cli/commands/leg-output.ts
@@ -72823,11 +72857,11 @@ function registerLegOutputCommands(program3) {
 
 // src/cli/commands/gates.ts
 import { execFileSync as execFileSync4, spawnSync } from "node:child_process";
-import { mkdirSync as mkdirSync8, readFileSync as readFileSync18, renameSync as renameSync5, writeFileSync as writeFileSync11 } from "node:fs";
+import { mkdirSync as mkdirSync8, readFileSync as readFileSync18, renameSync as renameSync5, writeFileSync as writeFileSync12 } from "node:fs";
 import { dirname as dirname9 } from "node:path";
 
 // src/config/notify-sync.ts
-import { createHash as createHash6 } from "node:crypto";
+import { createHash as createHash7 } from "node:crypto";
 var NOTIFY_SYNC_CACHE_RELATIVE_PATH = ".harmony/.notify-sync.json";
 function notifySyncCachePath(projectRoot) {
   return `${projectRoot}/${NOTIFY_SYNC_CACHE_RELATIVE_PATH}`;
@@ -72851,7 +72885,7 @@ function normalizeNotifyDeclaration(entries) {
   return [...byEndpoint.entries()].map(([endpoint_url, transitions]) => ({ endpoint_url, transitions: [...transitions].sort() })).sort((a3, b) => a3.endpoint_url < b.endpoint_url ? -1 : a3.endpoint_url > b.endpoint_url ? 1 : 0);
 }
 function hashNotifyDeclaration(subscriptions) {
-  return createHash6("sha256").update(`v${NORMALIZATION_VERSION}
+  return createHash7("sha256").update(`v${NORMALIZATION_VERSION}
 ${JSON.stringify(subscriptions)}`).digest("hex");
 }
 function readCachedHash(io, path4) {
@@ -73116,7 +73150,7 @@ function writeGateEvidenceMarker(projectRoot, marker) {
   const filePath = gateEvidenceMarkerPath(projectRoot, marker.extension_point);
   mkdirSync8(dirname9(filePath), { recursive: true });
   const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  writeFileSync11(tmpPath, `${JSON.stringify(marker, null, 2)}
+  writeFileSync12(tmpPath, `${JSON.stringify(marker, null, 2)}
 `, "utf8");
   renameSync5(tmpPath, filePath);
 }
@@ -73145,7 +73179,7 @@ function productionNotifySyncIO() {
     writeCache: (path4, contents) => {
       mkdirSync8(dirname9(path4), { recursive: true });
       const tmpPath = `${path4}.tmp-${process.pid}-${Date.now()}`;
-      writeFileSync11(tmpPath, contents, "utf8");
+      writeFileSync12(tmpPath, contents, "utf8");
       renameSync5(tmpPath, path4);
     }
   };
