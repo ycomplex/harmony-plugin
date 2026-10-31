@@ -71839,7 +71839,8 @@ function registerAgentCommands(program3) {
   });
   agent.command("provider").description(
     "B-1178: print the model provider that serves --model (the live catalog row, matched by its alias or model id; an inactive row still answers \u2014 the run named it). `openai` / `anthropic` when the row names none. --field prints one fact for the launchers; --json prints all of them (names only, never a value). Exit 1 on an unknown model (or no reachable catalog), 2 on a provider this build does not know."
-  ).requiredOption("--model <model>", "The model the leg runs on (catalog alias or model id)").option("--agent <id>", "Agent runtime whose catalog rows to match", "codex").option("--field <field>", `One of: ${PROVIDER_FIELDS.join(", ")}`, "provider").option("--json", "Print every fact as one JSON object").action(async (opts) => {
+  ).requiredOption("--model <model>", "The model the leg runs on (catalog alias or model id)").option("--agent <id>", "Agent runtime whose catalog rows to match", "codex").option("--field <field>", `One of: ${PROVIDER_FIELDS.join(", ")}`, "provider").option("--json", "Print every fact as one JSON object").action(async (opts, cmd) => {
+    const json = Boolean(opts.json || cmd.optsWithGlobals().json);
     if (!PROVIDER_FIELDS.includes(opts.field)) {
       console.error(`harmony agent provider: unknown --field '${opts.field}' \u2014 expected one of: ${PROVIDER_FIELDS.join(", ")}`);
       process.exit(1);
@@ -71859,7 +71860,7 @@ function registerAgentCommands(program3) {
       process.exit(2);
     }
     const v2 = described.value;
-    process.stdout.write(opts.json ? `${JSON.stringify(v2)}
+    process.stdout.write(json ? `${JSON.stringify(v2)}
 ` : `${providerField(v2, opts.field)}
 `);
   });
