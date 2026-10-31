@@ -417,7 +417,7 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
    `false` (an adapter whose worker runs no switch loop) ⇒ proceed straight to step 2; make no `model ...`
    call. Anything else, or an unavailable command ⇒ continue with the check below unchanged. A Codex worker
    answers `true` since B-1148: `resolve-gate` already resolves for this run's adapter, but pass
-   `--agent codex` to `request-switch` and `list-aliases` below so the model is checked against the Codex
+   `--agent codex` to `request-switch` below so the model is checked against the Codex
    catalog rows (no `--agent` = claude-code, unchanged).
 
    ```
@@ -450,6 +450,9 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
      node "${CLAUDE_PLUGIN_ROOT}/dist/bin/harmony.js" model request-switch "<WANTED_MODEL>"
      ```
 
+     Capture its stderr too: on a refusal it prints one line naming the alias, the runtime and every
+     catalog row of that runtime (inactive ones marked ` (inactive)`), which the park comment below quotes.
+
      - **Exit 0 (the switch was accepted) → END THE TURN, doing NONE of this gate's work** — compose no
        brief, run no delegation test, make no MCP write of any kind. `container/provision.sh`'s bounded
        switch loop (the ONLY reader of this handoff file) picks the request up right after this turn's
@@ -460,19 +463,18 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
        re-enters this loop at step 1 and finds `RUNNING_MODEL` now matching. Bounded at 7 iterations (one
        per `GATES` entry, `src/daemon/gate-phase.ts`) — a tripped bound is logged by `provision.sh`, never
        silently retried forever.
-     - **Non-zero exit (REFUSED — `<WANTED_MODEL>` is not active in the live model catalog, B-881) → do
+     - **Non-zero exit (REFUSED — `<WANTED_MODEL>` is not in the live model catalog for this runtime (an
+       inactive offer named explicitly is accepted, B-1349), B-881) → do
        NOT silently end the turn.** This used to just end the turn regardless of the command's exit code —
        on a refusal that left the conductor spinning with no authored reason until B-792's no-progress timeout
        eventually caught it (the silent-spin defect). Instead, PARK — mirroring `start-work`'s own
        build-failure park path (that SKILL.md's FAILURE PATH: comment the reason, THEN park, in that
        order):
-       1. Read the currently-active catalog for the comment:
-          `node "${CLAUDE_PLUGIN_ROOT}/dist/bin/harmony.js" model list-aliases`.
-       2. `mcp__harmony__add_comment({ task_id, content: "Model switch refused — '<WANTED_MODEL>' is not in the live model catalog. Currently active: <comma-joined list-aliases output>." })` —
-          name BOTH the offending alias and the current catalog, so a human can fix either side
-          (add the alias to `model_catalog`, or repoint `run_config.model` at one that's already active)
-          without forensics.
-       3. `mcp__harmony__advance_workflow({ task_id, activity: 'parking' })`.
+       1. `mcp__harmony__add_comment({ task_id, content: "Model switch refused — <request-switch's refusal line, verbatim>." })` —
+          the refusal line already names BOTH the offending alias and the runtime's catalog rows, so a
+          human can fix either side (add the alias to `model_catalog`, or repoint `run_config.model` at
+          a row it lists) without forensics.
+       2. `mcp__harmony__advance_workflow({ task_id, activity: 'parking' })`.
        Then end the turn. This is a genuine no-progress condition for THIS leg — re-running it changes
        nothing until a human acts on one of the two sides named in the comment.
 

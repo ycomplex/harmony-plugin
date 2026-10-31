@@ -443,8 +443,16 @@ export function getModelForGate(
   const explicit = perGate || runConfig.model?.default;
   if (explicit) {
     const selection = getAgentAdapter(runConfig);
-    return catalog ? normalizeModelId(explicit, catalog, selection.ok ? selection.adapter : DEFAULT_AGENT_ADAPTER) : explicit;
+    // B-1349: an explicitly named model normalizes against inactive rows too, so a run that names an
+    // inactive offer resolves to the same bare id provision.sh launched it with (`normalize
+    // --offered-only` includes inactive) — otherwise the leg's step-1d self-check sees a mismatch.
+    return catalog
+      ? normalizeModelId(explicit, catalog, selection.ok ? selection.adapter : DEFAULT_AGENT_ADAPTER, { includeInactive: true })
+      : explicit;
   }
+
+  // B-1349: the pinned-default tier below stays active-only — getPinnedDefaultModel already skips
+  // `active === false` rows, so an inactive row is never chosen as a default.
 
   // B-1147: the pinned tier is per-adapter. A malformed `agent` reads as claude-code HERE (the
   // launch path refuses it separately — getAgentAdapter's own callers); for a non-Claude runtime
