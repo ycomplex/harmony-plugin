@@ -5,6 +5,7 @@ import { createAuthenticatedClient } from '../../supabase.js';
 import { getProject } from '../../tools/project.js';
 import { addProject, removeProject, listProjects } from '../config.js';
 import { formatTable } from '../formatter.js';
+import { resolveSupabaseTarget } from '../resolve-supabase-target.js';
 
 export function registerAuthCommands(program: Command): void {
   program
@@ -17,10 +18,37 @@ export function registerAuthCommands(program: Command): void {
     .action(async (opts) => {
       const json = program.opts().json;
       try {
-        if (opts.supabaseUrl) process.env.HARMONY_SUPABASE_URL = opts.supabaseUrl;
-        if (opts.supabaseAnonKey) process.env.HARMONY_SUPABASE_ANON_KEY = opts.supabaseAnonKey;
+        // B-1025: resolve the Supabase pair for THIS call.
+        //
+        // This used to write the flags into process.env and let the auth module read them back —
+        // but the auth module had already captured the environment at IMPORT time, so
+        // `--supabase-url` never reached the token exchange. The pair is resolved here, by name,
+        // and handed to the auth instance explicitly.
+        const target = resolveSupabaseTarget({
+          flags: { url: opts.supabaseUrl, anonKey: opts.supabaseAnonKey },
+          project: undefined,
+        });
 
-        const auth = new HarmonyAuth(opts.token);
+        // B-1025: when the user passes only one of the two flags, the OTHER side is taken from
+        // the resolver (env / default), and the half they passed is silently dropped. Surface
+        // that loudly: "harmony login --supabase-anon-key K" with HARMONY_SUPABASE_URL set used
+        // to log the user in with the env URL and the env key, ignoring K entirely — a silent
+        // surprise when they meant to register K.
+        // B-1025: surface a half-flag warning. The flag-URL case can't trigger this — when
+        // --supabase-url is set, the flag tier owns the URL and target.url always equals
+        // opts.supabaseUrl — but the flag-anon-key case can: with HARMONY_SUPABASE_URL set in env,
+        // the user passing --supabase-anon-key K (no --supabase-url) means the env owns the URL
+        // AND its key, silently dropping K. Warn loudly. Only fires when the login is non-json
+        // (json consumers don't want human prose on stderr).
+        if (!json && opts.supabaseAnonKey !== undefined && target.anonKey !== opts.supabaseAnonKey) {
+          console.error(
+            `harmony login: --supabase-anon-key was overridden by ${target.source} — the resolver ` +
+              `used ${target.source}'s anon key instead of the one you passed. Pass ` +
+              `--supabase-url <url> --supabase-anon-key <key> together to use the key you typed.`,
+          );
+        }
+
+        const auth = new HarmonyAuth(opts.token, target.url, target.anonKey);
         const client = await createAuthenticatedClient(auth);
         const projectId = auth.getProjectId();
 
@@ -30,6 +58,10 @@ export function registerAuthCommands(program: Command): void {
           name = project.name.toLowerCase().replace(/\s+/g, '-');
         }
 
+        // B-1025: store the FLAGS, not the resolved pair. A project registered without flags
+        // keeps working off the environment (the documented env-var route), and a project
+        // registered WITH flags carries the pair the founder typed — never a default URL
+        // silently recorded as if they had chosen it.
         addProject(name, opts.token, {
           supabaseUrl: opts.supabaseUrl,
           supabaseAnonKey: opts.supabaseAnonKey,

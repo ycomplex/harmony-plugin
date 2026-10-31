@@ -27,6 +27,12 @@ function fakeAuth(): HarmonyAuth & { calls: number } {
       auth.calls += 1;
       return `tok${auth.calls}`;
     }),
+    // B-1025: createAuthenticatedClient now asks the auth instance for the Supabase URL + anon
+    // key per call (instead of reading module-level constants captured at import). These tests
+    // do not assert the URL/key values — they only verify the accessToken callback contract — so
+    // we stub the accessors with stable values that match the built-in defaults.
+    getSupabaseUrl: vi.fn(() => 'https://example.supabase.co'),
+    getSupabaseAnonKey: vi.fn(() => 'fake-anon-key'),
   };
   return auth as unknown as HarmonyAuth & { calls: number };
 }
@@ -71,6 +77,8 @@ describe('createAuthenticatedClient', () => {
       getAccessToken: vi.fn(async () => {
         throw new Error('token exchange failed');
       }),
+      getSupabaseUrl: vi.fn(() => 'https://example.supabase.co'),
+      getSupabaseAnonKey: vi.fn(() => 'fake-anon-key'),
     } as unknown as HarmonyAuth;
     await expect(createAuthenticatedClient(auth)).rejects.toThrow('token exchange failed');
     expect(createClientMock).not.toHaveBeenCalled();

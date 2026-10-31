@@ -408,9 +408,18 @@ const KNOWN_REFS_FOR_MODEL: Record<string, string> = {
  *  an unrecognized/malformed/absent URL (a custom/self-hosted deployment, or a call site with no
  *  Supabase env at all) — never `undefined`: PINNED_DEFAULT_MODEL_BY_PROFILE's own "always
  *  something explicit" guarantee only holds if the LOOKUP KEY itself is never allowed to be
- *  unresolved either. */
-export function resolveDeploymentProfile(env: NodeJS.ProcessEnv = process.env): string {
-  const url = env.HARMONY_SUPABASE_URL ?? DEFAULT_SUPABASE_URL;
+ *  unresolved either.
+ *
+ *  B-1025: an `overrideUrl` (the resolved target's URL — the active project's stored URL when
+ *  one is set, ahead of env) lets the CLI caller pass the URL the exchange will actually use, so
+ *  the profile lookup matches what `harmony login` registered. Without this, a registered
+ *  staging project on a host with no `HARMONY_SUPABASE_URL` set would report 'prod' here while
+ *  the exchange talks to staging — a CLI that says one target and uses another. */
+export function resolveDeploymentProfile(
+  env: NodeJS.ProcessEnv = process.env,
+  overrideUrl?: string,
+): string {
+  const url = overrideUrl ?? env.HARMONY_SUPABASE_URL ?? DEFAULT_SUPABASE_URL;
   let ref = '';
   try {
     ref = new URL(url).hostname.split('.')[0] ?? '';

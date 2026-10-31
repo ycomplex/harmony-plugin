@@ -22527,8 +22527,8 @@ function readEnvRunConfig(env) {
     return null;
   }
 }
-async function resolveEnvironment(env = process.env, moduleUrl = import.meta.url, client) {
-  const supabase_url = harmonyEnv("HARMONY_SUPABASE_URL", env) ?? DEFAULT_SUPABASE_URL;
+async function resolveEnvironment(env = process.env, moduleUrl = import.meta.url, client, overrideUrl) {
+  const supabase_url = overrideUrl ?? harmonyEnv("HARMONY_SUPABASE_URL", env) ?? DEFAULT_SUPABASE_URL;
   let supabase_project_ref = "";
   try {
     supabase_project_ref = new URL(supabase_url).hostname.split(".")[0] ?? "";
@@ -22597,7 +22597,8 @@ async function getProject(client, projectId) {
     overrides: rawTrust.overrides ?? {}
   };
   const { workspace: _workspace, ...project } = row;
-  const environment = await resolveEnvironment(void 0, void 0, client);
+  const clientUrl = client.supabaseUrl;
+  const environment = await resolveEnvironment(void 0, void 0, client, clientUrl);
   return { ...project, agent_trust, environment };
 }
 
@@ -24459,8 +24460,8 @@ var KNOWN_REFS_FOR_MODEL = {
   eioxsunvhakmelhanmnn: "prod",
   meqkdgncdzromunylyxf: "staging"
 };
-function resolveDeploymentProfile(env = process.env) {
-  const url = env.HARMONY_SUPABASE_URL ?? DEFAULT_SUPABASE_URL2;
+function resolveDeploymentProfile(env = process.env, overrideUrl) {
+  const url = overrideUrl ?? env.HARMONY_SUPABASE_URL ?? DEFAULT_SUPABASE_URL2;
   let ref = "";
   try {
     ref = new URL(url).hostname.split(".")[0] ?? "";
@@ -24630,8 +24631,8 @@ import { fileURLToPath as fileURLToPath2 } from "node:url";
 import { randomUUID } from "node:crypto";
 
 // src/auth.ts
-var SUPABASE_URL = harmonyEnv("HARMONY_SUPABASE_URL") ?? "https://eioxsunvhakmelhanmnn.supabase.co";
-var SUPABASE_ANON_KEY = harmonyEnv("HARMONY_SUPABASE_ANON_KEY") ?? "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpb3hzdW52aGFrbWVsaGFubW5uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2NDY3NjksImV4cCI6MjA5MDIyMjc2OX0.SdbpfqRhcB21qWs6XnD6Lsj6AGX2b6tOGV3pg2iJjsw";
+var DEFAULT_SUPABASE_URL3 = "https://eioxsunvhakmelhanmnn.supabase.co";
+var DEFAULT_SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpb3hzdW52aGFrbWVsaGFubW5uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2NDY3NjksImV4cCI6MjA5MDIyMjc2OX0.SdbpfqRhcB21qWs6XnD6Lsj6AGX2b6tOGV3pg2iJjsw";
 var TokenExchangeError = class extends Error {
   endpoint;
   status;
@@ -24655,8 +24656,24 @@ var HarmonyAuth = class {
   // the moment a refresh starts, cleared on BOTH resolution and rejection (via .finally()) so a
   // failed exchange can never poison the next caller into replaying a dead promise forever.
   inFlightRefresh = null;
-  constructor(apiToken) {
+  // B-1025: the Supabase pair for THIS auth instance, when the caller resolved one explicitly
+  // (the CLI's pair resolver — src/cli/resolve-supabase-target.ts). Undefined means "no explicit
+  // pair": the environment (then the built-in default) supplies it, exactly as before B-1025.
+  supabaseUrl;
+  supabaseAnonKey;
+  constructor(apiToken, supabaseUrl, supabaseAnonKey) {
     this.apiToken = apiToken;
+    this.supabaseUrl = supabaseUrl;
+    this.supabaseAnonKey = supabaseAnonKey;
+  }
+  /** B-1025: the Supabase URL for THIS call — an explicit pair wins, then the environment (read
+   *  per call, so a later change is honoured), then the built-in default. */
+  getSupabaseUrl() {
+    return this.supabaseUrl ?? harmonyEnv("HARMONY_SUPABASE_URL") ?? DEFAULT_SUPABASE_URL3;
+  }
+  /** B-1025: the Supabase anon key for THIS call — the counterpart of getSupabaseUrl(). */
+  getSupabaseAnonKey() {
+    return this.supabaseAnonKey ?? harmonyEnv("HARMONY_SUPABASE_ANON_KEY") ?? DEFAULT_SUPABASE_ANON_KEY;
   }
   async getAccessToken() {
     if (this.accessToken && Date.now() < this.expiresAt - 6e4) {
@@ -24691,11 +24708,11 @@ var HarmonyAuth = class {
     const endpoint = "/functions/v1/auth-token";
     let res;
     try {
-      res = await fetch(`${SUPABASE_URL}${endpoint}`, {
+      res = await fetch(`${this.getSupabaseUrl()}${endpoint}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${SUPABASE_ANON_KEY}`
+          "Authorization": `Bearer ${this.getSupabaseAnonKey()}`
         },
         body: JSON.stringify({ token: this.apiToken })
       });
@@ -32936,11 +32953,9 @@ function shouldShowDeprecationWarning() {
 if (shouldShowDeprecationWarning()) console.warn("\u26A0\uFE0F  Node.js 18 and below are deprecated and will no longer be supported in future versions of @supabase/supabase-js. Please upgrade to Node.js 20 or later. For more information, visit: https://github.com/orgs/supabase/discussions/37217");
 
 // src/supabase.ts
-var SUPABASE_URL2 = harmonyEnv("HARMONY_SUPABASE_URL") ?? "https://eioxsunvhakmelhanmnn.supabase.co";
-var SUPABASE_ANON_KEY2 = harmonyEnv("HARMONY_SUPABASE_ANON_KEY") ?? "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpb3hzdW52aGFrbWVsaGFubW5uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2NDY3NjksImV4cCI6MjA5MDIyMjc2OX0.SdbpfqRhcB21qWs6XnD6Lsj6AGX2b6tOGV3pg2iJjsw";
 async function createAuthenticatedClient(auth) {
   await auth.getAccessToken();
-  return createClient(SUPABASE_URL2, SUPABASE_ANON_KEY2, {
+  return createClient(auth.getSupabaseUrl(), auth.getSupabaseAnonKey(), {
     accessToken: () => auth.getAccessToken(),
     auth: {
       persistSession: false,
