@@ -18,7 +18,11 @@ import {
   RACED_EVENT_ERROR_SUBSTRING,
   type PendingAcceptanceEvent,
   type AcceptanceEventPayloadItem,
+  canonicalJson,
+  ruleBundleDigest,
+  type RuleBundleRule,
 } from './acceptance-events.js';
+import { createHash } from 'node:crypto';
 import { manageAcceptanceCriteria } from './acceptance-criteria.js';
 import { selectEntity, AmbiguousEntitySelectionError } from './entity-selector.js';
 import { startElicitation, fileElicitationRound } from './elicitation.js';
@@ -1985,5 +1989,131 @@ describe('guard-blocked decision-only label_add (B-833)', () => {
     expect(result.status).toBe('consumed');
     expect(result.by_write_kind).toEqual({ acceptance_criterion: 1, label_add: 1 });
     expect(startElicitation).not.toHaveBeenCalled();
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+// B-1047 — the rule bundle is ONE ledgered write, applied before the design is projected.
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+describe('rule_bundle (B-1047)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const rules: RuleBundleRule[] = [
+    { ref: 'rule-one', operation: 'create', wording: 'Every list view paginates server-side.', domains: ['web'], surfaces: ['board'],
+      knowledge_scope: 'product', reach: 'this_surface', target_entry_id: null, expected_fingerprint: null },
+    { ref: 'rule-two', operation: 'reference', wording: 'Dates render in the viewer timezone.', domains: ['web'], surfaces: [],
+      knowledge_scope: 'product', reach: 'this_product', target_entry_id: 'entry-7', expected_fingerprint: 'fp-7' },
+  ];
+  const bundleItem = (): AcceptanceEventPayloadItem => ({ write_kind: 'rule_bundle', ref: 'rule-bundle', rules, decision_id: 'dec-1' });
+  const entryItem = (): AcceptanceEventPayloadItem => ({ write_kind: 'knowledge_entry_content', ref: 'entry-dec-1', content: 'the design', entry_id: 'dec-1' });
+  const designEvent = (items: AcceptanceEventPayloadItem[]): PendingAcceptanceEvent => ({
+    id: 'event-1', task_id: 'task-1', brief_id: 'brief-1', reason: 'design-decision-draft',
+    payload: { items }, pending_activity: 'designing', status: 'pending',
+  });
+  const pendingFrom = (event: PendingAcceptanceEvent) => ({
+    pending_acceptance_events: [{ data: [], error: null }, { data: event }],
+    tasks: [{ data: { pending_acceptance_event_id: 'event-1' } }],
+  });
+
+  it('the digest is sha256 hex of the sorted-keys JSON of { rules, decision_id }', () => {
+    const expected = createHash('sha256').update(canonicalJson({ decision_id: 'dec-1', rules })).digest('hex');
+    expect(ruleBundleDigest({ rules, decision_id: 'dec-1' })).toBe(expected);
+    expect(canonicalJson({ b: 1, a: [{ d: null, c: 'x' }] })).toBe('{"a":[{"c":"x","d":null}],"b":1}');
+  });
+
+  it('is a known write kind, so a structured design payload carrying it classifies structured', () => {
+    expect(classifyPayload({ items: [bundleItem(), entryItem()] })).toBe('structured');
+  });
+
+  it('a mixed payload with an unknown item stays unrecognized — the bundle is never bypassed by a partial apply', () => {
+    expect(classifyPayload({ items: [bundleItem(), { kind: 'decision', text: 'x' } as never] })).toBe('unrecognized');
+  });
+
+  it('applies the bundle BEFORE knowledge_entry_content, with the exact RPC args and digest, and counts it', async () => {
+    const client = makeClient({
+      rpcResponses: {
+        consume_rule_bundle_write: [{ data: { status: 'applied', rules: [] } }],
+        consume_knowledge_entry_content_write: [{ data: { applied: true } }],
+      },
+    });
+    // Authored entry-first: the dispatch order must still put the bundle first.
+    const result = await applyAcceptanceEventPayload(client, designEvent([entryItem(), bundleItem()]));
+    const names = client.rpcCalls.map((c: { name: string }) => c.name);
+    expect(names.indexOf('consume_rule_bundle_write')).toBeLessThan(names.indexOf('consume_knowledge_entry_content_write'));
+    expect(client.rpc).toHaveBeenCalledWith('consume_rule_bundle_write', {
+      p_event_id: 'event-1', p_external_ref: 'rule-bundle', p_bundle: { rules, decision_id: 'dec-1' },
+      p_request_digest: ruleBundleDigest({ rules, decision_id: 'dec-1' }),
+    });
+    expect(result.by_write_kind).toEqual({ rule_bundle: 1, knowledge_entry_content: 1 });
+    expect(result.applied).toBe(2);
+  });
+
+  it('an already-applied retry is counted as skipped and the rest of the payload still lands once', async () => {
+    const client = makeClient({
+      rpcResponses: {
+        consume_rule_bundle_write: [{ data: { status: 'already-applied', rules: [] } }],
+        consume_knowledge_entry_content_write: [{ data: { applied: true } }],
+      },
+    });
+    const result = await applyAcceptanceEventPayload(client, designEvent([bundleItem(), entryItem()]));
+    expect(result.skipped_already_done).toBe(1);
+    expect(result.by_write_kind).toEqual({ knowledge_entry_content: 1 });
+    expect(client.rpcCalls.filter((c: { name: string }) => c.name === 'consume_rule_bundle_write')).toHaveLength(1);
+  });
+
+  it('a refusal throws the blocker verbatim, never projects the design, and never consumes the event', async () => {
+    const client = makeClient({
+      fromResponses: pendingFrom(designEvent([bundleItem(), entryItem()])),
+      rpcResponses: {
+        consume_rule_bundle_write: [{ data: null, error: { code: 'P0001', message: 'B-1047: stale amend target entry-7' } }],
+      },
+    });
+    await expect(consumePendingAcceptanceEvent(client, PROJECT_ID, 'task-1')).rejects.toThrow('B-1047: stale amend target entry-7');
+    expect(client.rpc).not.toHaveBeenCalledWith('consume_knowledge_entry_content_write', expect.anything());
+    expect(client.rpc).not.toHaveBeenCalledWith('consume_acceptance_event', expect.anything());
+  });
+
+  it('a missing consume_rule_bundle_write degrades to payload-unrecognized and leaves the event pending', async () => {
+    const items = [bundleItem(), entryItem()];
+    const client = makeClient({
+      fromResponses: pendingFrom(designEvent(items)),
+      rpcResponses: {
+        consume_rule_bundle_write: [{ data: null, error: { code: 'PGRST202', message: 'Could not find the function public.consume_rule_bundle_write in the schema cache' } }],
+      },
+    });
+    const result = await consumePendingAcceptanceEvent(client, PROJECT_ID, 'task-1');
+    expect(result).toEqual({ status: 'payload-unrecognized', event_id: 'event-1', reason: 'design-decision-draft', items });
+    expect(client.rpc).not.toHaveBeenCalledWith('consume_knowledge_entry_content_write', expect.anything());
+    expect(client.rpc).not.toHaveBeenCalledWith('consume_acceptance_event', expect.anything());
+  });
+
+  it('an empty bundle is refused rather than applied', async () => {
+    const client = makeClient();
+    await expect(applyAcceptanceEventPayload(client, designEvent([{ ...bundleItem(), rules: [] }]))).rejects.toThrow(/carries no rules/);
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+
+  it('an unrecognized mixed payload still applies its rule bundle (and nothing else), and is NOT consumed', async () => {
+    const event = designEvent([bundleItem(), { write_kind: 'acceptance_criterion_update', ref: 'ac-x' } as never]);
+    const client = makeClient({
+      fromResponses: pendingFrom(event),
+      rpcResponses: { consume_rule_bundle_write: [{ data: { status: 'applied', rules: [] } }] },
+    });
+    const result = await consumePendingAcceptanceEvent(client, PROJECT_ID, 'task-1');
+    expect(result.status).toBe('payload-unrecognized');
+    const names = vi.mocked(client.rpc).mock.calls.map((c) => c[0]);
+    expect(names).toEqual(['consume_rule_bundle_write']);
+    expect(names).not.toContain('consume_acceptance_event');
+  });
+
+  it('an unrecognized mixed payload whose rule bundle is refused surfaces the blocker (throws, not consumed)', async () => {
+    const event = designEvent([bundleItem(), { write_kind: 'acceptance_criterion_delete', ref: 'ac-y' } as never]);
+    const client = makeClient({
+      fromResponses: pendingFrom(event),
+      rpcResponses: { consume_rule_bundle_write: [{ data: null, error: { code: 'P0001', message: 'B-1047: stale rule target entry-7' } }] },
+    });
+    await expect(consumePendingAcceptanceEvent(client, PROJECT_ID, 'task-1')).rejects.toThrow(/B-1047: stale rule target/);
+    expect(vi.mocked(client.rpc).mock.calls.map((c) => c[0])).not.toContain('consume_acceptance_event');
   });
 });
