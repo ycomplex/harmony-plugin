@@ -168,11 +168,13 @@ export interface AcceptanceEventPayloadItem {
 export interface RuleBundleRule {
   ref: string;
   operation: 'create' | 'amend' | 'reference';
-  wording: string;
+  /** null only on a 'reference' (it cites the rule, never restates it); create/amend always carry it. */
+  wording: string | null;
   domains: string[];
   surfaces: string[];
-  knowledge_scope: 'product' | 'deployment';
-  reach: 'this_surface' | 'this_product';
+  /** null only on a 'reference' — the server ignores scope and reach for a reference. */
+  knowledge_scope: 'product' | 'deployment' | null;
+  reach: 'this_surface' | 'this_product' | null;
   target_entry_id: string | null;
   expected_fingerprint: string | null;
 }

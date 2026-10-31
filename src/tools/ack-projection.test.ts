@@ -26,6 +26,8 @@ const READ_TOOLS = [
   'read_concept_names', 'preview_concept_merge',
   'read_surface_records',
   'read_feature_accounts',
+  // B-1047 — the rule registry read; no record echo to strip.
+  'read_rule_registry',
   'preview_feature_amendment',
   'preview_knowledge_questions',
   'get_project',

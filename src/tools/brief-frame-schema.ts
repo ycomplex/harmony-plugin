@@ -22,12 +22,16 @@ const floor = { floor_reviewed: strings.optional() };
 // B-1047 — a design's declared reach and the rules it creates, amends or references.
 export const REACH_LEVELS = ['this_ticket_only', 'this_surface', 'this_product'] as const;
 export const RULE_OPERATIONS = ['create', 'amend', 'reference'] as const;
+// wording / knowledge_scope / reach are optional at the SHAPE level because a 'reference' cites a rule
+// without restating it (the server ignores them for reference); designRuleIssues requires all three on
+// create and amend. `before` and `title` are display-only and never reach the payload.
 const designRule = object({
-  ref: z.string().trim().min(1), operation: z.enum(RULE_OPERATIONS), wording: z.string().trim().min(1),
-  domains: strings, surfaces: strings, knowledge_scope: z.enum(['product', 'deployment']),
-  reach: z.enum(['this_surface', 'this_product']),
+  ref: z.string().trim().min(1), operation: z.enum(RULE_OPERATIONS),
+  wording: z.string().trim().min(1).nullable().optional(),
+  domains: strings, surfaces: strings, knowledge_scope: z.enum(['product', 'deployment']).nullable().optional(),
+  reach: z.enum(['this_surface', 'this_product']).nullable().optional(),
   target_entry_id: z.string().nullable().optional(), expected_fingerprint: z.string().nullable().optional(),
-  before: z.string().optional(),
+  before: z.string().optional(), title: z.string().optional(),
 });
 export const briefFrameSchema = z.discriminatedUnion('kind', [
   object({ kind: z.literal('clarify'), solving: z.string(), in_scope: strings,
@@ -87,6 +91,12 @@ export function designRuleIssues(frame: { reach_level?: string; rules?: Array<Re
     }
     if ((op === 'amend' || op === 'reference') && (!rule.target_entry_id || !rule.expected_fingerprint)) {
       issues.push(`${at}: an '${String(op)}' rule must name target_entry_id and expected_fingerprint`);
+    }
+    if (op === 'create' || op === 'amend') {
+      for (const field of ['wording', 'knowledge_scope', 'reach'] as const) {
+        const v = rule[field];
+        if (v == null || (typeof v === 'string' && !v.trim())) issues.push(`${at}: a '${String(op)}' rule must declare ${field}`);
+      }
     }
     if (op === 'create' && (rule.target_entry_id || rule.expected_fingerprint)) {
       issues.push(`${at}: a 'create' rule names no target_entry_id or expected_fingerprint`);

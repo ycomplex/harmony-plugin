@@ -5934,6 +5934,43 @@ describe('B-1047 design reach and rules', () => {
     expect(bundle?.rules?.map((r) => r.operation)).toEqual(['reference']);
   });
 
+  it('a reference with no restated wording renders "Cites rule" and emits explicit nulls; title stays display-only', async () => {
+    const bare = { ref: 'rule-cite', operation: 'reference', domains: ['web'], surfaces: [], target_entry_id: 'entry-7',
+      expected_fingerprint: 'fp-7', title: 'Viewer timezone' };
+    const out = renderBrief(designDoc({ reach_level: 'this_ticket_only', rules: [bare] }), null, { reason: 'design-decision-draft' });
+    expect(out).toContain('- **reference** `rule-cite` — Cites rule entry-7 — Viewer timezone');
+    expect(out).toContain('  - expected fingerprint: fp-7');
+    expect(out).not.toContain('"undefined"');
+    const client = makeClient([{ data: null }, { data: briefRow }, { data: null }], capable);
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'design-decision-draft', pending_activity: null as any, decision_ref: DESIGN_REF as any,
+      doc: designDoc({ reach_level: 'this_ticket_only', rules: [bare] }) as any,
+    });
+    const inserted = client.insert.mock.calls[0][0] as { doc: BriefDoc };
+    const bundle = (inserted.doc.payload ?? []).find((p) => p.write_kind === 'rule_bundle');
+    expect(bundle?.rules).toEqual([{
+      ref: 'rule-cite', operation: 'reference', wording: null, domains: ['web'], surfaces: [],
+      knowledge_scope: null, reach: null, target_entry_id: 'entry-7', expected_fingerprint: 'fp-7',
+    }]);
+  });
+
+  it('a reference without a title renders just the cited id', () => {
+    const out = renderBrief(designDoc({ reach_level: 'this_ticket_only', rules: [{ ...reference, wording: undefined }] }), null, { reason: 'design-decision-draft' });
+    expect(out).toContain('- **reference** `rule-ref` — Cites rule entry-7\n');
+  });
+
+  it('create and amend without wording are still refused at compose', async () => {
+    for (const r of [create, amend]) {
+      const { wording: _omit, ...noWording } = r;
+      const client = makeClient([{ data: null }, { data: briefRow }, { data: null }], capable);
+      await expect(composeBrief(client, PROJECT_ID, USER_ID, {
+        task_id: 'task-1', reason: 'design-decision-draft', pending_activity: null as any, decision_ref: DESIGN_REF as any,
+        doc: designDoc({ reach_level: 'this_product', rules: [noWording] }) as any,
+      })).rejects.toThrow(/must declare wording/);
+      expect(client.insert).not.toHaveBeenCalled();
+    }
+  });
+
   it('refuses a ticket-only design that creates a rule, and a beyond-ticket design with zero rules', async () => {
     for (const frame of [{ reach_level: 'this_ticket_only', rules: [create] }, { reach_level: 'this_surface', rules: [] }]) {
       const client = makeClient([{ data: null }, { data: briefRow }, { data: null }], capable);
@@ -5976,6 +6013,8 @@ describe('B-1047 harmony-design-decide prose pins', () => {
     'a design that restates an existing rule must instead reference it',
     'ambiguous or conflicting candidates ⇒ do not guess',
     '`query_knowledge` with type `convention`\n  and tag `rule`',
+    '`read_rule_registry({ entry_id: "<candidate id>" })`',
+    'never guess a\n  fingerprint',
   ])('pins %s', (phrase) => {
     expect(prose).toContain(phrase);
   });

@@ -116,4 +116,22 @@ describe('design reach and rules (B-1047)', () => {
     expect(() => validateBriefFrame(design({ reach_level: 'this_surface', rules: [rule({ wording: '  ' })] }), 'design')).toThrow(/wording/);
     expect(() => validateBriefFrame(design({ rules: [rule()] }), 'design')).toThrow(/rules need a declared doc\.frame\.reach_level/);
   });
+
+  it('a reference needs no wording, knowledge_scope or reach (it cites, never restates)', () => {
+    const bare = { ref: 'rule-r', operation: 'reference', domains: [], surfaces: [], target_entry_id: 'entry-7', expected_fingerprint: 'fp-7', title: 'Viewer timezone' };
+    expect(() => validateBriefFrame(design({ reach_level: 'this_ticket_only', rules: [bare] }), 'design')).not.toThrow();
+    expect(() => validateBriefFrame(design({ reach_level: 'this_product', rules: [{ ...bare, wording: null, knowledge_scope: null, reach: null }] }), 'design')).not.toThrow();
+  });
+
+  it.each(['create', 'amend'])('%s still requires wording, knowledge_scope and reach', (operation) => {
+    const target = operation === 'amend' ? { target_entry_id: 'entry-7', expected_fingerprint: 'fp-7' } : {};
+    for (const field of ['wording', 'knowledge_scope', 'reach']) {
+      const r: Record<string, unknown> = rule({ operation, ...target });
+      delete r[field];
+      expect(() => validateBriefFrame(design({ reach_level: 'this_product', rules: [r] }), 'design'))
+        .toThrow(new RegExp(`a '${operation}' rule must declare ${field}`));
+      expect(() => validateBriefFrame(design({ reach_level: 'this_product', rules: [{ ...r, [field]: null }] }), 'design'))
+        .toThrow(new RegExp(`a '${operation}' rule must declare ${field}`));
+    }
+  });
 });

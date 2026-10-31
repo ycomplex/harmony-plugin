@@ -355,9 +355,12 @@ says all of it:
   `reference` rules (citing an existing one); `create` / `amend` are refused.
 - **Each rule** is `{ ref, operation: create|amend|reference, wording, domains[], surfaces[],
   knowledge_scope: product|deployment, reach: this_surface|this_product, target_entry_id,
-  expected_fingerprint, before? }`. `wording` is the exact obligation, shown verbatim before acceptance.
-  `amend` and `reference` name `target_entry_id` + `expected_fingerprint`; `amend` also carries
-  `before` (the target's current content) so the brief shows before and after.
+  expected_fingerprint, before?, title? }`. `create` and `amend` require `wording`, `knowledge_scope`
+  and `reach`; `wording` is the exact obligation, shown verbatim before acceptance. `amend` and
+  `reference` name `target_entry_id` + `expected_fingerprint`; `amend` also carries `before` (the
+  target's current content) so the brief shows before and after. A `reference` carries **no**
+  `wording` (and no `knowledge_scope` / `reach`; the server ignores them): it renders as "Cites rule
+  <target_entry_id>", plus the optional display-only `title`. `before` and `title` never reach the payload.
 - **Match before you declare.** Search Accepted rules first: `query_knowledge` with type `convention`
   and tag `rule`, same project, the same domains and surfaces. Read every candidate in full, then:
   - equivalent obligation and applicability ⇒ `reference` it. **Reference the existing rule, never
@@ -365,6 +368,17 @@ says all of it:
   - same rule, changed wording ⇒ an explicit `amend` with the target and its expected fingerprint.
   - ambiguous or conflicting candidates ⇒ do not guess; return to design or elicit from the human.
   - a different obligation ⇒ `create`.
+- **Obtain the target from the registry, never guess it.** For each candidate you will amend or
+  reference, read its registry row: `read_rule_registry({ entry_id: "<candidate id>" })` (or
+  `read_rule_registry({ search: "<claim words>", domains: [...], surfaces: [...] })` to scan; CLI
+  `harmony knowledge rules --entry <id>`). It returns `{ availability, rules: [{ entry_id, fingerprint,
+  normalized_claim, scope, reach, domains, surfaces, title, status, content }] }`. Set
+  `target_entry_id` = `entry_id` and `expected_fingerprint` = `fingerprint` (the sha256 of the entry's
+  current content). For an `amend`, quote that row's `content` verbatim as `before`; for a `reference`,
+  you may pass its `title`. A candidate with no registry row is not a registered rule: it cannot be an
+  amend/reference target. If `availability` is `'unavailable'`, the rule registry is not on this
+  environment yet: amend and reference cannot be declared here. Say so in the brief and never guess a
+  fingerprint.
 - **Compose derives the payload** item `rule_bundle` from `frame.rules`; never hand-author it. On an
   environment without the B-1047 database support, a brief with rules is refused at compose: say so,
   never drop the rules to get it through.
@@ -396,6 +410,9 @@ mcp__harmony__compose_brief({
       rules: [{ ref: "rule-<slug>", operation: "create", wording: "<the exact obligation>",
                 domains: ["<domain>"], surfaces: ["<surface>"], knowledge_scope: "product",
                 reach: "this_surface", target_entry_id: null, expected_fingerprint: null }],
+      // a reference cites, never restates: rules: [{ ref: "rule-<slug>", operation: "reference",
+      //   domains: [...], surfaces: [...], target_entry_id: "<entry_id>",
+      //   expected_fingerprint: "<fingerprint from read_rule_registry>", title: "<its title>" }]
       not_reopened: ["<the upstream decisions this brief does NOT reopen>"],
       derisk: { run: ["<what you actually executed, with the observation>"],
                 not_run: ["<what was NOT run and is NOT claimed>"] }
