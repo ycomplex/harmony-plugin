@@ -67,7 +67,15 @@ export async function getProject(client: SupabaseClient, projectId: string): Pro
   // gate-boundary re-read) rather than the frozen launch env. `undefined` for the first two
   // arguments keeps their defaults — in particular `moduleUrl`, which must stay environment.ts's
   // OWN import.meta.url for the plugin-version walk-up to resolve.
+  //
+  // B-1025: pass the URL the token exchange actually used as the fourth arg, so
+  // `environment.target` reflects where the call landed — not just what `HARMONY_SUPABASE_URL`
+  // env says. Without it, a registered staging project on a host with no `HARMONY_SUPABASE_URL`
+  // would report target='prod' here while talking to staging. supabase-js's `supabaseUrl` field
+  // is `protected` in its types but is set on the instance at construction; the cast reads the
+  // runtime value without leaking the protected field to typechecking outside this file.
   const { workspace: _workspace, ...project } = row;
-  const environment = await resolveEnvironment(undefined, undefined, client);
+  const clientUrl = (client as unknown as { supabaseUrl?: string }).supabaseUrl;
+  const environment = await resolveEnvironment(undefined, undefined, client, clientUrl);
   return { ...project, agent_trust, environment } as unknown as ProjectWithTrust;
 }

@@ -1,6 +1,23 @@
 import { harmonyEnv } from './env.js';
-const SUPABASE_URL = harmonyEnv('HARMONY_SUPABASE_URL') ?? 'https://eioxsunvhakmelhanmnn.supabase.co';
-const SUPABASE_ANON_KEY = harmonyEnv('HARMONY_SUPABASE_ANON_KEY') ?? 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpb3hzdW52aGFrbWVsaGFubW5uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2NDY3NjksImV4cCI6MjA5MDIyMjc2OX0.SdbpfqRhcB21qWs6XnD6Lsj6AGX2b6tOGV3pg2iJjsw';
+
+/** B-1025: the built-in Supabase pair, used when no source names one.
+ *
+ *  These were module-level CONSTANTS until B-1025 — captured at IMPORT time, before any CLI
+ *  command ran. That freeze is the defect this ticket fixes: `harmony login --supabase-url …` and
+ *  an active project's stored `supabaseUrl` never reached the token exchange, because the module
+ *  had already read the environment. The URL is now resolved PER CALL (see getSupabaseUrl()).
+ *
+ *  The URL literal mirrors `src/tools/environment.ts`'s `DEFAULT_SUPABASE_URL` — deliberately
+ *  duplicated, the same tradeoff `src/config/run-config.ts` already documents, so this module
+ *  stays free of the heavier environment/run-config import graph. */
+export const DEFAULT_SUPABASE_URL = 'https://eioxsunvhakmelhanmnn.supabase.co';
+
+/** B-1025: the built-in anon key. There is no shared export of this literal elsewhere — the
+ *  URL was already duplicated in `src/tools/environment.ts` and `src/config/run-config.ts`, and a
+ *  third copy lived as a frozen module-level read in the OLD `src/supabase.ts` (both removed in
+ *  this ticket). This module is now the single source of truth for the prod baked-in pair, so a
+ *  future rotate touches one line. */
+export const DEFAULT_SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpb3hzdW52aGFrbWVsaGFubW5uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2NDY3NjksImV4cCI6MjA5MDIyMjc2OX0.SdbpfqRhcB21qWs6XnD6Lsj6AGX2b6tOGV3pg2iJjsw';
 
 interface TokenExchangeResult {
   access_token: string;
@@ -35,9 +52,27 @@ export class HarmonyAuth {
   // the moment a refresh starts, cleared on BOTH resolution and rejection (via .finally()) so a
   // failed exchange can never poison the next caller into replaying a dead promise forever.
   private inFlightRefresh: Promise<void> | null = null;
+  // B-1025: the Supabase pair for THIS auth instance, when the caller resolved one explicitly
+  // (the CLI's pair resolver — src/cli/resolve-supabase-target.ts). Undefined means "no explicit
+  // pair": the environment (then the built-in default) supplies it, exactly as before B-1025.
+  private supabaseUrl?: string;
+  private supabaseAnonKey?: string;
 
-  constructor(apiToken: string) {
+  constructor(apiToken: string, supabaseUrl?: string, supabaseAnonKey?: string) {
     this.apiToken = apiToken;
+    this.supabaseUrl = supabaseUrl;
+    this.supabaseAnonKey = supabaseAnonKey;
+  }
+
+  /** B-1025: the Supabase URL for THIS call — an explicit pair wins, then the environment (read
+   *  per call, so a later change is honoured), then the built-in default. */
+  getSupabaseUrl(): string {
+    return this.supabaseUrl ?? harmonyEnv('HARMONY_SUPABASE_URL') ?? DEFAULT_SUPABASE_URL;
+  }
+
+  /** B-1025: the Supabase anon key for THIS call — the counterpart of getSupabaseUrl(). */
+  getSupabaseAnonKey(): string {
+    return this.supabaseAnonKey ?? harmonyEnv('HARMONY_SUPABASE_ANON_KEY') ?? DEFAULT_SUPABASE_ANON_KEY;
   }
 
   async getAccessToken(): Promise<string> {
@@ -77,11 +112,11 @@ export class HarmonyAuth {
     const endpoint = '/functions/v1/auth-token';
     let res: Response;
     try {
-      res = await fetch(`${SUPABASE_URL}${endpoint}`, {
+      res = await fetch(`${this.getSupabaseUrl()}${endpoint}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+          'Authorization': `Bearer ${this.getSupabaseAnonKey()}`,
         },
         body: JSON.stringify({ token: this.apiToken }),
       });
