@@ -1028,11 +1028,6 @@ case "$MODE" in
       if [ -z "$REQUESTED_MODEL" ]; then
         break
       fi
-      if [ "${HARMONY_MODEL_HANDOFF_CONSUMER:-}" = "1" ]; then
-        node "$PLUGIN_DIR/dist/bin/harmony.js" model clear-handoff >/dev/null 2>&1 || true
-        echo "B-1050: model handoff to '$REQUESTED_MODEL' was recorded; ending this leg for daemon relaunch." >&2
-        break
-      fi
       # B-1148: a Codex leg validates against the Codex catalog rows; Claude's call is unchanged.
       if [ "${AGENT_ID:-claude-code}" = "codex" ]; then
         B1148_CHECK_AGENT=(--agent codex)
@@ -1045,6 +1040,15 @@ case "$MODE" in
         break
       fi
       node "$PLUGIN_DIR/dist/bin/harmony.js" model clear-handoff >/dev/null 2>&1 || true
+      if [ -n "$B1167_STOP_SIGNAL" ]; then
+        LEG_EXIT="$(_b1167_stop_exit_code "$LEG_EXIT")"
+        echo "B-1167: stop received — starting no further agent invocation (exit $LEG_EXIT)." >&2
+        break
+      fi
+      if [ "${HARMONY_MODEL_HANDOFF_CONSUMER:-}" = "1" ]; then
+        echo "B-1050: model handoff to '$REQUESTED_MODEL' was recorded; ending this leg for daemon relaunch." >&2
+        break
+      fi
       echo "B-772: model-switch handoff — re-invoking claude with --model $REQUESTED_MODEL (iteration $((ITERATION + 1)) of $MAX_MODEL_SWITCH_ITERATIONS)." >&2
       CURRENT_MODEL="$REQUESTED_MODEL"
       ITERATION=$((ITERATION + 1))

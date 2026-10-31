@@ -682,9 +682,8 @@ describe.skipIf(!SUBPROCESS_CAPABLE)('provision.sh: B-718 resume discovery + AC5
       return claudeStub;
     }
 
-    it('one valid handoff re-invocation: cold-starts a SECOND time with the requested --model, then stops', () => {
-      // First invocation requests claude-opus-5; a fake claude that only requests a switch the
-      // FIRST time it runs (keyed on a counter file) so the loop naturally settles after 2 turns.
+    it('one valid handoff ends this container leg for daemon relaunch without a second invocation', () => {
+      // The agent requests claude-opus-5 once; the daemon owns the next leg and model override.
       const claudeStub = mkdtempSync(join(tmpdir(), 'b772-loop-fake-claude-'));
       const harmonyJs = join(REAL_PLUGIN_DIR, 'dist', 'bin', 'harmony.js');
       writeFileSync(
@@ -708,11 +707,9 @@ describe.skipIf(!SUBPROCESS_CAPABLE)('provision.sh: B-718 resume discovery + AC5
 
       const combined = runLoopCombined({ HARMONY_MODEL: 'claude-sonnet-5' }, claudeStub);
       expect(combined).toContain('INVOKED model=claude-sonnet-5');
-      expect(combined).toContain('INVOKED model=claude-opus-5');
-      expect(combined).toContain('--model claude-opus-5');
-      // Only ONE re-invocation happened (2 total) — the second turn requested no further switch.
-      expect(combined.split('INVOKED').length - 1).toBe(2);
-      expect(combined).toContain('model-switch handoff — re-invoking claude with --model claude-opus-5');
+      expect(combined).not.toContain('INVOKED model=claude-opus-5');
+      expect(combined.split('INVOKED').length - 1).toBe(1);
+      expect(combined).toContain("B-1050: model handoff to 'claude-opus-5' was recorded; ending this leg for daemon relaunch");
     });
 
     it('an invalid alias is rejected: logs, does NOT loop further, and the first turn\'s exit code stands', () => {
@@ -741,14 +738,15 @@ describe.skipIf(!SUBPROCESS_CAPABLE)('provision.sh: B-718 resume discovery + AC5
     });
 
     it(
-      'trips the 7-iteration bound when every turn keeps requesting a (valid) switch, and logs it',
+      'a valid handoff exits after one invocation instead of entering the legacy bounded loop',
       () => {
-        // Always requests a switch to claude-opus-5 (a real allowlisted alias) — every turn asks
-        // again, so the loop must stop itself at the bound rather than spinning forever.
+        // A container handoff is consumed by the daemon. It must never invoke the agent twice in
+        // one leg, even when each fresh invocation would request the same switch again.
         const claudeStub = fakeSwitchingClaude({ requestSwitchTo: 'claude-opus-5' });
         const combined = runLoopCombined({ HARMONY_MODEL: 'claude-sonnet-5' }, claudeStub);
-        expect(combined.split('INVOKED').length - 1).toBe(7); // exactly MAX_MODEL_SWITCH_ITERATIONS
-        expect(combined).toContain('model-switch loop hit its 7-iteration bound');
+        expect(combined.split('INVOKED').length - 1).toBe(1);
+        expect(combined).toContain("B-1050: model handoff to 'claude-opus-5' was recorded");
+        expect(combined).not.toContain('model-switch loop hit its 7-iteration bound');
       },
       // B-881: `model request-switch` (called once per iteration here, both by the fake claude AND
       // by provision.sh's own defense-in-depth check-alias re-validation) now takes a best-effort

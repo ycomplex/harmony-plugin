@@ -183,6 +183,16 @@ function makeHarness(opts: HarnessOpts) {
       if (!row) throw new Error(`no task ${taskId}`);
       return { ...row };
     }),
+    clearModelHandoff: vi.fn(async (taskId, marker) => {
+      const row = tasks[taskId] as DaemonTask;
+      const fieldValues = { ...(row.field_values ?? {}) } as Record<string, unknown>;
+      const current = (row.waiting_on ?? fieldValues.waiting_on) as { kind?: unknown; ref?: unknown; since?: unknown } | null | undefined;
+      if (current?.kind !== 'model-handoff' || current.ref !== marker.ref || current.since !== marker.since) return false;
+      fieldValues.waiting_on = null;
+      row.field_values = fieldValues;
+      row.waiting_on = null;
+      return true;
+    }),
     countNonArchivedChildren: vi.fn(async () => opts.childCount ?? 0),
     updateConduction: vi.fn(async (id: string, patch: Record<string, unknown>) => {
       const row = conductions.find((c) => c.id === id);
@@ -4961,7 +4971,10 @@ describe('B-1157: a declared external wait HOLDS the conduction instead of parki
       tasks: { 'task-1': pausedTask() },
       config: { ...config, profile: { ...config.profile, launch: "launch {conduction_id} {ticket} --model '{model}'" } },
     });
+    let declarations = 0;
     h.hooks.onLaunch = () => {
+      declarations += 1;
+      if (declarations !== 1) return;
       const t = h.tasks['task-1'] as DaemonTask;
       t.field_values = { ...(t.field_values ?? {}), waiting_on: marker(h, { kind: 'model-handoff', ref: 'claude-opus-5' }) };
     };
@@ -4969,6 +4982,8 @@ describe('B-1157: a declared external wait HOLDS the conduction instead of parki
     await h.pass();
     expect(h.launches()).toHaveLength(2);
     expect(h.launches()[1]).toContain("--model 'claude-opus-5'");
+    expect((h.tasks['task-1'] as DaemonTask).field_values?.waiting_on).toBeNull();
+    expect(h.deps.clearModelHandoff).toHaveBeenCalledTimes(1);
   });
 
   /** Arm the fake leg to declare a wait while it runs (writes the marker on the task row). */

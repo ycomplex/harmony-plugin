@@ -214,23 +214,21 @@ describe.skipIf(!CAPABLE)('provision.sh B-1148: Codex model, resume and switch (
     expect(r.argv[0]).not.toContain('resume');
   });
 
-  it('AC4: a gate on another model ⇒ the thread is resumed with -m <new> and the output says "switched in place"', () => {
-    const r = runBlock({ AGENT_ID: 'codex', RUN_CONFIG: CODEX_RC_OFF, FAKE_PINNED: 'gpt-a', FAKE_CODEX_MODELS: 'gpt-a,gpt-b', FAKE_SWITCH_TO: 'gpt-b', FAKE_NEW_THREAD: 'thr-1' });
-    expect(r.status, r.stderr).toBe(0);
-    expect(r.argv).toHaveLength(2);
-    expect(r.argv[1]).toMatch(/^codex \| exec \| resume \| thr-1 \| .* \| -m \| gpt-b/);
-    expect(r.stderr).toContain("model switch to 'gpt-b' — switched in place");
-    expect(r.modelCalls).toContain('model check-alias --agent codex gpt-b');
-    expect(threadFile(r.home)).toMatchObject({ thread_id: 'thr-1', model: 'gpt-b' });
-  });
+  it('AC4: a gate on another model records the handoff and ends this leg; the next leg resumes the same Codex thread on that model', () => {
+    const first = runBlock({ AGENT_ID: 'codex', RUN_CONFIG: CODEX_RC_OFF, HARMONY_MODEL: 'gpt-a', FAKE_CODEX_MODELS: 'gpt-a,gpt-b', FAKE_SWITCH_TO: 'gpt-b', FAKE_NEW_THREAD: 'thr-1' });
+    expect(first.status, first.stderr).toBe(0);
+    expect(first.argv).toHaveLength(1);
+    expect(first.argv[0]).toContain(' | -m | gpt-a');
+    expect(first.stderr).toContain("B-1050: model handoff to 'gpt-b' was recorded; ending this leg for daemon relaunch");
+    expect(first.modelCalls).toContain('model check-alias --agent codex gpt-b');
+    const savedThread = threadFile(first.home);
+    expect(savedThread).toMatchObject({ thread_id: 'thr-1' });
 
-  it('AC4: when the in-place resume fails the switch starts a new thread on the new model, and says so', () => {
-    const r = runBlock({ AGENT_ID: 'codex', RUN_CONFIG: CODEX_RC_OFF, FAKE_PINNED: 'gpt-a', FAKE_CODEX_MODELS: 'gpt-a,gpt-b', FAKE_SWITCH_TO: 'gpt-b', FAKE_RESUME_FAIL: '1' });
-    expect(r.status, r.stderr).toBe(0);
-    expect(r.argv).toHaveLength(3);
-    expect(r.argv[2]).not.toContain('resume');
-    expect(r.argv[2]).toContain(' | -m | gpt-b');
-    expect(r.stderr).toContain("model switch to 'gpt-b' — started a new thread");
+    const next = runBlock({ AGENT_ID: 'codex', RUN_CONFIG: CODEX_RC_ON, HARMONY_MODEL: 'gpt-b', FAKE_CODEX_MODELS: 'gpt-a,gpt-b' }, (home) => writeThreadFile(home, savedThread));
+    expect(next.status, next.stderr).toBe(0);
+    expect(next.argv).toHaveLength(1);
+    expect(next.argv[0]).toMatch(/^codex \| exec \| resume \| thr-1 \| .* \| -m \| gpt-b/);
+    expect(next.stderr).not.toContain('model switch');
   });
 
   it('AC4: a requested model outside the Codex catalog rows is rejected (no second invocation)', () => {
@@ -257,18 +255,27 @@ describe.skipIf(!CAPABLE)('provision.sh B-1178: a non-OpenAI offer (shell level,
     expect(r.stderr + r.stdout + config(r.home)).not.toContain(KEY);
   });
 
-  it('AC3: a per-gate switch on the same provider resumes in place with -c model_provider on exec resume too', () => {
-    const r = runBlock({
-      AGENT_ID: 'codex', RUN_CONFIG: CODEX_RC_OFF, FAKE_PINNED: 'qwen/a', FAKE_CODEX_MODELS: 'qwen/a,qwen/b', FAKE_SWITCH_TO: 'qwen/b', FAKE_NEW_THREAD: 'thr-or',
-      FAKE_PROVIDERS: JSON.stringify({ 'qwen/a': OR('qwen/a', 100000), 'qwen/b': OR('qwen/b', 200000) }), OPENROUTER_API_KEY: KEY,
+  it('B-1178: the daemon-relaunched leg resumes on the requested provider with its key binding and window', () => {
+    const providers = JSON.stringify({ 'qwen/a': OR('qwen/a', 100000), 'qwen/b': OR('qwen/b', 200000) });
+    const first = runBlock({
+      AGENT_ID: 'codex', RUN_CONFIG: CODEX_RC_OFF, HARMONY_MODEL: 'qwen/a', FAKE_CODEX_MODELS: 'qwen/a,qwen/b', FAKE_SWITCH_TO: 'qwen/b', FAKE_NEW_THREAD: 'thr-or',
+      FAKE_PROVIDERS: providers, OPENROUTER_API_KEY: KEY,
     });
-    expect(r.status, r.stderr).toBe(0);
-    expect(r.argv).toHaveLength(2);
-    expect(r.argv[0]).toContain(' | -m | qwen/a | -c | model_provider=openrouter | ');
-    expect(r.argv[1]).toMatch(/^codex \| exec \| resume \| thr-or \| .* \| -m \| qwen\/b \| -c \| model_provider=openrouter \| /);
-    expect(r.stderr).toContain("model switch to 'qwen/b' — switched in place");
-    // re-rendered for the new model's window
-    expect(config(r.home)).toContain('model_context_window = 200000');
+    expect(first.status, first.stderr).toBe(0);
+    expect(first.argv).toHaveLength(1);
+    expect(first.argv[0]).toContain(' | -m | qwen/a | -c | model_provider=openrouter | ');
+    expect(first.stderr).toContain("B-1050: model handoff to 'qwen/b' was recorded");
+    const savedThread = threadFile(first.home);
+
+    const next = runBlock({
+      AGENT_ID: 'codex', RUN_CONFIG: CODEX_RC_ON, HARMONY_MODEL: 'qwen/b', FAKE_CODEX_MODELS: 'qwen/a,qwen/b',
+      FAKE_PROVIDERS: providers, OPENROUTER_API_KEY: KEY,
+    }, (home) => writeThreadFile(home, savedThread));
+    expect(next.status, next.stderr).toBe(0);
+    expect(next.argv).toHaveLength(1);
+    expect(next.argv[0]).toMatch(/^codex \| exec \| resume \| thr-or \| .* \| -m \| qwen\/b \| -c \| model_provider=openrouter \| /);
+    expect(config(next.home)).toContain('model_context_window = 200000');
+    expect(next.stdout + next.stderr + config(next.home)).not.toContain(KEY);
   });
 
   it('AC2/AC6: an openai offer — or a model the catalog does not know — launches exactly as before (no -c, no config rewrite)', () => {
