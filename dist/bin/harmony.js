@@ -45522,7 +45522,7 @@ function getModelForGate(runConfig, gate, env2 = process.env, catalog) {
   const explicit = perGate || runConfig.model?.default;
   if (explicit) {
     const selection2 = getAgentAdapter(runConfig);
-    return catalog ? normalizeModelId(explicit, catalog, selection2.ok ? selection2.adapter : DEFAULT_AGENT_ADAPTER) : explicit;
+    return catalog ? normalizeModelId(explicit, catalog, selection2.ok ? selection2.adapter : DEFAULT_AGENT_ADAPTER, { includeInactive: true }) : explicit;
   }
   const selection = getAgentAdapter(runConfig);
   const adapter = selection.ok ? selection.adapter : DEFAULT_AGENT_ADAPTER;
@@ -71293,7 +71293,7 @@ function registerModelCommands(program3) {
     }
   });
   model.command("list-aliases").description(
-    "Print every currently-active model-catalog alias, one per line \u2014 live when the catalog is reachable, else the embedded degrade-only list. Always exits 0. Consumed by skills/harmony-conduct/SKILL.md step 1d's park-on-refusal comment (B-881), so a human reviewing the park sees exactly which aliases were selectable at the time."
+    "Print every currently-active model-catalog alias, one per line \u2014 live when the catalog is reachable, else the embedded degrade-only list. Always exits 0. Lists ACTIVE aliases only: an inactive offer stays hidden here (B-1178), even though a run may still name it explicitly."
   ).option("--agent <id>", "Agent runtime whose model ids to list (B-1147)", DEFAULT_AGENT_ADAPTER).action(async (opts) => {
     const client = await getCatalogClient();
     const { entries } = await resolveModelCatalog(client);
@@ -71338,22 +71338,22 @@ function registerModelCommands(program3) {
       return;
     }
     const client = await getCatalogClient();
-    const { entries } = await resolveModelCatalog(client);
+    const { entries } = await resolveModelCatalog(client, { includeInactive: true });
     console.log(getModelForGate(runConfig, gate, process.env, entries));
   });
   model.command("request-switch").description(
-    "Write a model-switch handoff request for container/provision.sh's switch loop to pick up. Validates <alias> against the live model catalog FIRST \u2014 refuses (exit 1, no file written) on an alias that is not active in the catalog (nor in the embedded fallback list when the catalog itself is unreachable)."
+    "Write a model-switch handoff request for container/provision.sh's switch loop to pick up. Validates <alias> against the live model catalog FIRST \u2014 refuses (exit 1, no file written) on an alias that is not in the catalog for --agent's runtime (nor in the embedded fallback list when the catalog itself is unreachable). An inactive offer named explicitly is accepted (B-1349); the refusal lists every row of the runtime, marking inactive ones."
   ).argument("<alias>").option("--agent <id>", "Agent runtime the alias must belong to (B-1147)", DEFAULT_AGENT_ADAPTER).action(async (alias, opts) => {
     const agent = opts.agent ?? DEFAULT_AGENT_ADAPTER;
     const client = await getCatalogClient();
-    const { entries } = await resolveModelCatalog(client);
-    const entry = findModelEntry(alias, entries, agent);
+    const { entries } = await resolveModelCatalog(client, { includeInactive: true });
+    const entry = findModelEntry(alias, entries, agent, { includeInactive: true });
     if (!entry) {
       console.error(
         `harmony model request-switch: '${alias}' is not in the live model catalog for runtime '${agent}' (${catalogEntriesForAgent(
           entries,
           agent
-        ).map((entry2) => entryModelId(entry2)).join(", ")})`
+        ).map((entry2) => `${entryModelId(entry2)}${entry2.active === false ? " (inactive)" : ""}`).join(", ")})`
       );
       process.exit(1);
       return;

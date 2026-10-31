@@ -24473,7 +24473,7 @@ function getModelForGate(runConfig, gate, env = process.env, catalog) {
   const explicit = perGate || runConfig.model?.default;
   if (explicit) {
     const selection2 = getAgentAdapter(runConfig);
-    return catalog ? normalizeModelId(explicit, catalog, selection2.ok ? selection2.adapter : DEFAULT_AGENT_ADAPTER) : explicit;
+    return catalog ? normalizeModelId(explicit, catalog, selection2.ok ? selection2.adapter : DEFAULT_AGENT_ADAPTER, { includeInactive: true }) : explicit;
   }
   const selection = getAgentAdapter(runConfig);
   const adapter = selection.ok ? selection.adapter : DEFAULT_AGENT_ADAPTER;

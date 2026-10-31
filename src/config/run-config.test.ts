@@ -396,6 +396,30 @@ describe('getModelForGate (B-772 three-level fallback)', () => {
     expect(() => getModelForGate(EMPTY_RUN_CONFIG, 'build')).not.toThrow();
     expect(typeof getModelForGate(EMPTY_RUN_CONFIG, 'build')).toBe('string');
   });
+
+  // B-1349: an explicitly named inactive offer normalizes; an inactive pinned row is never the default.
+  const inactiveCodexRow = {
+    alias: 'codex:or-retired',
+    label: 'Retired',
+    context_budget_bytes: 5555,
+    active: false,
+    verified_at: null,
+    agent: 'codex',
+    model_id: 'or/retired',
+    pinned_default_profiles: ['prod', 'staging'],
+  } as unknown as ModelCatalogEntry;
+
+  it('B-1349: normalizes an explicitly named inactive offer to its bare model id', () => {
+    const runConfig = { agent: { adapter: 'codex' }, model: { default: 'codex:or-retired' } } as RunConfig;
+    expect(getModelForGate(runConfig, 'build', PROD_ENV, [inactiveCodexRow])).toBe('or/retired');
+    const perGate = { agent: { adapter: 'codex' }, model: { per_gate: { build: 'codex:or-retired' } } } as RunConfig;
+    expect(getModelForGate(perGate, 'build', STAGING_ENV, [inactiveCodexRow])).toBe('or/retired');
+  });
+
+  it('B-1349: never chooses an inactive row as the pinned default, even one pinned for the profile', () => {
+    const runConfig = { agent: { adapter: 'codex' } } as RunConfig;
+    expect(getModelForGate(runConfig, 'build', PROD_ENV, [inactiveCodexRow])).toBe('');
+  });
 });
 
 describe('RunConfigSchema auto_approve_gates (B-773)', () => {
