@@ -658,6 +658,11 @@ export async function getKnowledgeEntry(
 
   const { data, error } = await query.single();
   if (error) throw error;
+  if (data && (data.tags?.includes('rule') || ['product-design', 'technical-design', 'ux-ui-design'].includes(data.type))) {
+    const citationRead = await client.rpc('read_rule_citations', { _entry_id: data.id });
+    if (citationRead.error && !['PGRST202', '42883'].includes(citationRead.error.code ?? '')) throw citationRead.error;
+    if (citationRead.data) Object.assign(data, { rule_citations: citationRead.data.citations, rule_fingerprint: citationRead.data.fingerprint });
+  }
   return (await withRetiredWording(client,projectId,await withClaimContexts(client, await withInvalidations(client, [{ ...data, ...claimFields(data), ...questionProjection(data), verified_against: data.verified_against ?? null, rollout_state: data.rollout_state ?? null, open_steps: data.open_steps ?? null } as KnowledgeEntryFull]))))[0];
 }
 

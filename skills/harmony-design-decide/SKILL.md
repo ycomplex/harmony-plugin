@@ -15,6 +15,42 @@ allowed-tools: mcp__harmony__* Read Grep Glob WebSearch WebFetch
 
 # Harmony Design-Decide
 
+## Canonical rules in every design track (B-1047)
+
+At §4 composition, declare `frame.decision_reach` as `this_ticket_only`,
+`this_surface` or `this_product`, alongside the readable `frame.reach`. Author
+`frame.rules`: each rule has a stable `ref`, `operation` (`create`, `amend`,
+`reference`), exact `wording`, `reach`, `scope`, `domains` and `surfaces`.
+Broader reach requires at least one rule. Ticket-only decisions may reference
+existing rules but cannot create or amend them. Keep local implementation choices
+outside the rule wording.
+
+Search Accepted tagged `rule` entries in the relevant domains, including product
+and surface constraints. Read each candidate fully. Equivalent obligation and
+applicability means `reference`, never restatement or automatic amendment. A
+reference or amendment names its explicit `entry_id` and `expected_fingerprint`
+from the full entry read's `rule_fingerprint`; amendment additionally shows
+`before` and the exact replacement `wording`. Resolve ambiguous targets at design.
+Never infer a target from title similarity. Reuse preserves wording and metadata.
+
+Composition probes database capability before promising writes. If rule support
+is unavailable, preserve the declarations and surface the blocker; never strip
+rules or downgrade a broader decision to ticket-only. Legacy briefs remain usable.
+The rendered brief previews each rule's exact sentences and applicability before
+the human accepts. Compose derives one `rule_bundle` payload; do not author a
+second copy of it or manually create rule entries.
+
+At §5 acceptance, use the existing ledger consumer for ALL tracks, including
+delegated UX/UI and product payloads with criterion updates/deletes. The consumer
+applies the rule bundle before projecting the decision. In an unrecognized mixed
+payload it still applies the approved bundle, while the owning fallback performs
+only its confirmed criterion edits. A missing substrate or failed bundle remains
+a visible blocker; do not report acceptance complete or bypass it with a direct
+knowledge write. Retry the same event and request. The database completion guard
+also protects non-last tracks with no state transition. Full decision reads expose
+resolved `rule_citations`; cite these canonical entries instead of copying rules
+into each later design.
+
 Implements one sub-track of the `designing` activity (state-machine §5): Decomposed → Designed. "Design"
 is the **umbrella** for three sub-tracks — always name the sub-track explicitly. The skill must NOT
 write code (discovery role): it produces design *decisions*, not implementations.

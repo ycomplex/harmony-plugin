@@ -33,6 +33,40 @@ vi.mock('./resolve-task-id.js', () => ({
 
 const PROJECT_ID = 'project-1';
 
+describe('rule bundle ledger ordering', () => {
+  const event: PendingAcceptanceEvent = { id: 'event-rules', task_id: 'task-1', brief_id: 'brief-1',
+    reason: 'design-decision-draft', pending_activity: null, status: 'pending', payload: { payload: [
+      { write_kind: 'knowledge_entry_content', ref: 'projection', content: 'Approved design.' },
+      { write_kind: 'rule_bundle', ref: 'design-rules', rules: [] },
+    ] } };
+  it('applies the transactional bundle before projecting the design', async () => {
+    const client = makeClient();
+    await applyAcceptanceEventPayload(client, event);
+    expect(client.rpcCalls.map((call: { name: string }) => call.name).indexOf('consume_rule_bundle_write'))
+      .toBeLessThan(client.rpcCalls.map((call: { name: string }) => call.name).indexOf('consume_knowledge_entry_content_write'));
+  });
+  it('does not project a design after a bundle write fails', async () => {
+    const client = makeClient({ rpcResponses: { consume_rule_bundle_write: [{ data: null, error: { message: 'stale fingerprint' } }] } });
+    await expect(applyAcceptanceEventPayload(client, event)).rejects.toThrow('stale fingerprint');
+    expect(client.rpcCalls.map((call: { name: string }) => call.name)).not.toContain('consume_knowledge_entry_content_write');
+  });
+  it('leaves unsupported promises pending on a database without the bundle RPC', async () => {
+    const client = makeClient({ rpcResponses: { consume_rule_bundle_write: [{ data: null,
+      error: { code: 'PGRST202', message: 'function consume_rule_bundle_write does not exist' } }] } });
+    expect(await applyAcceptanceEventPayload(client, event)).toMatchObject({ substrate_absent_for: 'rule_bundle' });
+  });
+  it('applies bundles in a mixed fallback without projecting or consuming the event', async () => {
+    const mixed = { ...event, payload: { payload: [...event.payload.payload as unknown[],
+      { write_kind: 'future_criterion_edit', ref: 'edit-one' }] } };
+    const client = makeClient({ fromResponses: {
+      pending_acceptance_events: [{ data: [] }, { data: mixed }],
+      tasks: [{ data: { id: 'task-1', pending_acceptance_event_id: event.id } }],
+    } });
+    expect(await consumePendingAcceptanceEvent(client, PROJECT_ID, 'task-1')).toMatchObject({ status: 'payload-unrecognized' });
+    expect(client.rpcCalls.map((call: { name: string }) => call.name)).toEqual(['consume_rule_bundle_write']);
+  });
+});
+
 /** A minimal chainable `.from()` mock: each call to a chain method advances to the queued response for
  *  that TABLE. `.rpc()` is a separate queue keyed by function name. */
 function makeClient(opts: {

@@ -8,6 +8,7 @@ import { validateRemovals, requireRemovalCapability, removalLines, type RemovalD
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveTaskId } from './resolve-task-id.js';
 import { validateBriefFrame } from './brief-frame-schema.js';
+import { renderRules, withRuleBundle, type DesignRule } from './design-rules.js';
 import { settlementWarning } from './build-settlement.js';
 import { detectRiskClasses } from './risk-class.js';
 import type { AcceptanceEventPayloadItem } from './acceptance-events.js';
@@ -264,6 +265,8 @@ export type GateFrame =
       tracks: DesignTrackEntry[];
       /** `[]` is a real answer ("this reaches nothing beyond the ticket"); an ABSENT key is not. */
       reach: string[];
+      decision_reach?: 'this_ticket_only' | 'this_surface' | 'this_product';
+      rules?: DesignRule[];
       not_reopened?: string[];
       derisk?: { run: string[]; not_run: string[] };
       /** Product track only — the AC manifest this accept files. */
@@ -741,7 +744,7 @@ function walkLines(frame: Extract<GateFrame, { kind: 'verify' }>): string[] {
 }
 
 /** The frame block for one gate, as Markdown lines (no trailing blank — the caller adds it). */
-function renderFrame(frame: GateFrame): string[] {
+function renderFrame(frame: GateFrame, projection = false): string[] {
   const out: string[] = [];
   switch (frame.kind) {
     case 'clarify': {
@@ -779,6 +782,9 @@ function renderFrame(frame: GateFrame): string[] {
       break;
     }
     case 'design': {
+      out.push(...(projection && frame.rules?.length
+        ? ['**Decision reach:** ' + frame.decision_reach, '**Rule citations:**', ...frame.rules.map(rule => `- ${rule.operation === 'create' ? rule.ref : rule.entry_id} — resolved through this decision’s structured rule citations`)]
+        : renderRules(frame.decision_reach, frame.rules)));
       if (frame.design_artefact) out.push(...renderDesignArtefact(frame.design_artefact), '');
       if (frame.designer_frames?.length) out.push(...renderDesignerFrames(frame.designer_frames), '');
       const others = (frame.tracks ?? [])
@@ -970,6 +976,8 @@ function proposedAcLines(payload: AcceptanceEventPayloadItem[] | undefined): str
 function promisedWriteLine(item: AcceptanceEventPayloadItem): string | null {
   const text = (v: string | null | undefined): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null);
   switch (item.write_kind) {
+    case 'rule_bundle':
+      return '- approved canonical rules, decision citations and ticket references — one transactional bundle';
     case 'acceptance_criterion': {
       const content = text(item.content);
       return content ? `- acceptance criterion — ${content}` : null;
@@ -1272,7 +1280,7 @@ export function renderEntry(doc: BriefDoc, ctx?: EntryRenderContext): string {
   out.push(`**Decision:** ${doc.recommend ? mark(doc.recommend.text) : '(the brief made no recommendation)'}`, '');
   out.push(`**Question put to the human:** ${mark(doc.decide)}`, '');
 
-  if (doc.frame) out.push(...markAll(renderFrame(doc.frame)), '');
+  if (doc.frame) out.push(...markAll(renderFrame(doc.frame, true)), '');
 
   const research = researchLines(doc);
   if (research.length) out.push('**Research first:**', ...markAll(research), '');
@@ -3059,8 +3067,9 @@ export async function composeBrief(
     await validateDesignerFrameAttachments(client, taskId, docWithContradiction.frame.designer_frames);
   }
   const manifestEvidence = await withManifestEvidence(client, taskId, docWithContradiction, args);
+  const ruleDoc = await withRuleBundle(client, manifestEvidence.doc, args.reason);
   const doc = withDerivedEntryContent(
-    withDerivedGateSlot(manifestEvidence.doc, args.reason),
+    withDerivedGateSlot(ruleDoc, args.reason),
     args.reason,
     mergedDecisionRef,
     renderCtx,

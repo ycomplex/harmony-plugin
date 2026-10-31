@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { designRuleSchema, ruleReachSchema } from './design-rules.js';
 
 // Validate structure only. Keep additive fields and never substitute parsed output for authored data.
 const object = <T extends z.ZodRawShape>(shape: T) => z.object(shape).passthrough();
@@ -28,7 +29,7 @@ export const briefFrameSchema = z.discriminatedUnion('kind', [
     coverage: z.string(), existing_children_checked: z.boolean(), ...floor }),
   object({ kind: z.literal('design'), track,
     tracks: z.array(object({ track, status: z.enum(['accepted', 'this-brief', 'pending', 'not-required']), note: z.string().optional() })),
-    reach: strings, not_reopened: strings.optional(),
+    reach: strings, decision_reach: ruleReachSchema.optional(), rules: z.array(designRuleSchema).optional(), not_reopened: strings.optional(),
     derisk: object({ run: strings, not_run: strings }).optional(), files_on_accept: strings.optional(),
     designer_frames: z.array(object({ id: z.string(), name: z.string(), file_key: z.string(),
       verdict: z.enum(['adopted', 'off-library', 'not-covering', 'unreadable', 'not-checked']), reason: z.string(),
@@ -65,5 +66,15 @@ export function validateBriefFrame(frame: unknown, expectedKind?: string): void 
   }
   if (expectedKind && result.data.kind !== expectedKind) {
     throw new Error(`Invalid brief frame: doc.frame.kind must be '${expectedKind}', received '${result.data.kind}'`);
+  }
+  if (result.data.kind === 'design') {
+    const frame = result.data;
+    if (frame.rules?.length && !frame.decision_reach) throw new Error('Rules require decision_reach');
+    if (frame.decision_reach && frame.decision_reach !== 'this_ticket_only' && !frame.rules?.length) {
+      throw new Error('Broader decision reach requires a non-empty rules array');
+    }
+    if (frame.decision_reach === 'this_ticket_only' && frame.rules?.some(rule => rule.operation !== 'reference')) {
+      throw new Error('Ticket-only decisions cannot create or amend rules');
+    }
   }
 }

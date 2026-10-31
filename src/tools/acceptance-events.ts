@@ -1,6 +1,7 @@
 import { selectEntity, AmbiguousEntitySelectionError, type SelectedEntity } from './entity-selector.js';
 import { startElicitation, fileElicitationRound } from './elicitation.js';
 import { metadataCapable, type KnowledgeScope } from './knowledge-metadata.js';
+import type { DesignRule } from './design-rules.js';
 // B-797 (extended by B-904) — the conductor's consume path for an accepted gate brief's deferred payload.
 // Accept becomes a consumed EVENT for the agent-owned-payload reasons — clarification-draft,
 // decomposition-proposal, plan-draft, design-decision-draft (EVERY track: product, technical, ux-ui — B-904
@@ -102,7 +103,8 @@ export const DECISION_ONLY_LABEL_CONTRACT = {
  *  the `write_gate_slot` MCP tool. */
 export interface AcceptanceEventPayloadItem {
   scope?: KnowledgeScope;
-  write_kind: 'acceptance_criterion' | 'child_ticket' | 'checklist_item' | 'ac_transfer' | 'label_add' | 'knowledge_entry_content' | 'gate_slot' | 'supersede_decision' | 'implements_entities' | 'entity_link';
+  write_kind: 'rule_bundle' | 'acceptance_criterion' | 'child_ticket' | 'checklist_item' | 'ac_transfer' | 'label_add' | 'knowledge_entry_content' | 'gate_slot' | 'supersede_decision' | 'implements_entities' | 'entity_link';
+  rules?: DesignRule[];
   ref: string;
   content?: string;
   title?: string;
@@ -285,7 +287,7 @@ export async function getPendingAcceptanceEvent(
   return (event as PendingAcceptanceEvent | null) ?? null;
 }
 
-const KNOWN_WRITE_KINDS = new Set(['acceptance_criterion', 'child_ticket', 'checklist_item', 'ac_transfer', 'label_add', 'knowledge_entry_content', 'gate_slot', 'supersede_decision', 'implements_entities', 'entity_link']);
+const KNOWN_WRITE_KINDS = new Set(['rule_bundle', 'acceptance_criterion', 'child_ticket', 'checklist_item', 'ac_transfer', 'label_add', 'knowledge_entry_content', 'gate_slot', 'supersede_decision', 'implements_entities', 'entity_link']);
 
 /** B-816 — the live snapshot shape from `resolve_brief` (which snapshots a brief's whole `doc` VERBATIM)
  *  is `event.payload.payload` (an array): B-810's `compose_brief` call sites author the structured
@@ -468,6 +470,7 @@ export async function applyAcceptanceEventPayload(
   // B-1317: resolve every entity_link BEFORE the first write (an ambiguous name must not leave a partial apply).
   const resolvedLinks = await preflightEntityLinks(client, event, items, opts);
   const order: AcceptanceEventPayloadItem['write_kind'][] = [
+    'rule_bundle',
     'child_ticket', 'checklist_item', 'acceptance_criterion', 'ac_transfer',
     // B-867 sits HERE — after every concrete materialization, before the entry promotion. Same reasoning
     // as the line below, one notch weaker: the slot is the ticket's DISPLAYED record of what this accept
@@ -522,7 +525,16 @@ export async function applyAcceptanceEventPayload(
       if (!item.ref) throw new Error(`payload item of write_kind '${item.write_kind}' is missing its stable 'ref' — cannot derive an idempotent external_ref`);
 
       let result: { applied?: boolean } | null = null;
-      if (item.write_kind === 'acceptance_criterion') {
+      if (item.write_kind === 'rule_bundle') {
+        const { data, error } = await client.rpc('consume_rule_bundle_write', {
+          _event_id: event.id, _external_ref: item.ref, _rules: item.rules,
+        });
+        if (error) {
+          if (isMissingRelationOrFunction(error)) throw new WriteKindSubstrateAbsentError('rule_bundle');
+          throw new Error(error.message);
+        }
+        result = data;
+      } else if (item.write_kind === 'acceptance_criterion') {
         if (!item.content) throw new Error(`acceptance_criterion item '${item.ref}' is missing content`);
         const { data, error } = await client.rpc('consume_ac_add_write', {
           _event_id: event.id, _external_ref: item.ref, _content: item.content,
@@ -912,6 +924,11 @@ export async function consumePendingAcceptanceEvent(
   // route to the gate's existing materialization mechanism and then call consumeAcceptanceEvent directly
   // once it has confirmed the work is done.
   if (classifyPayload(event.payload) === 'unrecognized') {
+    const bundles = rawItemsOf(event.payload).filter(item =>
+      typeof item === 'object' && item !== null && (item as AcceptanceEventPayloadItem).write_kind === 'rule_bundle');
+    if (bundles.length) {
+      await applyAcceptanceEventPayload(client, { ...event, payload: { ...event.payload, payload: bundles } });
+    }
     return { status: 'payload-unrecognized', event_id: event.id, reason: event.reason, items: rawItemsOf(event.payload) };
   }
 
