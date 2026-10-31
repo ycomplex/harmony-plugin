@@ -1148,6 +1148,7 @@ export function waitHoldActive(
   nowMs: number,
 ): WaitingOn | null {
   const w = liveWaitingOn(waitingOnFieldValues(current), { nowMs });
+  if (w?.kind === 'model-handoff') return null;
   if (!w || nowMs >= waitResumeAtMs(w)) return null;
   if (baseline) {
     if (baseline.awaitingHumanInput === true && current.awaiting_human_input !== true) return null;
@@ -1284,7 +1285,8 @@ async function handleHeldConduction(
     state.set(row.id, captureBaseline(current));
     return;
   }
-  const wake = detectWake(baseline, current);
+  const handoff = liveWaitingOn(waitingOnFieldValues(current), { nowMs: deps.now() });
+  const wake = handoff?.kind === 'model-handoff' ? 'agent-ball' : detectWake(baseline, current);
   if (wake === null) {
     // B-691: ROLL the baseline on a no-wake pass — see watch.ts's own header for the defect class
     // this prevents.
@@ -2548,7 +2550,14 @@ async function fireLaunch(
     .runCommand(
       renderTemplate(
         deps.config.profile.launch,
-        templateVars(gkeLaunch ? { ...row, worker_ref: workerRef ?? null } : row, current, deps.projectKey, deps.workerImage, deps.getModelPolicy?.(), catalog),
+        templateVars((() => {
+          const marker = liveWaitingOn(waitingOnFieldValues(current), { nowMs: deps.now() });
+          const launchRow = gkeLaunch ? { ...row, worker_ref: workerRef ?? null } : row;
+          if (marker?.kind !== 'model-handoff') return launchRow;
+          const config = (launchRow.run_config ?? {}) as RunConfig;
+          const gate = resolveLegGate(config, current);
+          return gate ? { ...launchRow, run_config: { ...config, model: { ...(config.model ?? {}), per_gate: { ...(config.model?.per_gate ?? {}), [gate]: marker.ref } } } } : launchRow;
+        })(), current, deps.projectKey, deps.workerImage, deps.getModelPolicy?.(), catalog),
       ),
       {
         env: {

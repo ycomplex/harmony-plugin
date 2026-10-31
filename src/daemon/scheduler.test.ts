@@ -4955,6 +4955,22 @@ describe('B-1157: a declared external wait HOLDS the conduction instead of parki
     };
   }
 
+  it('B-1050: model-handoff immediately relaunches with the requested alias', async () => {
+    const h = makeHarness({
+      conductions: [conduction()],
+      tasks: { 'task-1': pausedTask() },
+      config: { ...config, profile: { ...config.profile, launch: "launch {conduction_id} {ticket} --model '{model}'" } },
+    });
+    h.hooks.onLaunch = () => {
+      const t = h.tasks['task-1'] as DaemonTask;
+      t.field_values = { ...(t.field_values ?? {}), waiting_on: marker(h, { kind: 'model-handoff', ref: 'claude-opus-5' }) };
+    };
+    await runOneLeg(h);
+    await h.pass();
+    expect(h.launches()).toHaveLength(2);
+    expect(h.launches()[1]).toContain("--model 'claude-opus-5'");
+  });
+
   /** Arm the fake leg to declare a wait while it runs (writes the marker on the task row). */
   function declareWaitDuringLeg(h: ReturnType<typeof makeHarness>, over: Record<string, unknown> = {}) {
     h.hooks.onLaunch = () => {

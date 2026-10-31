@@ -890,6 +890,9 @@ case "$MODE" in
     MAX_MODEL_SWITCH_ITERATIONS=7
     ITERATION=1
     LEG_EXIT=0
+    # B-1050: this process can persist a requested alias on the ticket and the daemon
+    # relaunches the next leg. Interactive workers omit this explicit capability.
+    export HARMONY_MODEL_HANDOFF_CONSUMER=1
 
     while :; do
       # B-1167: a stop that arrived before this iteration (before the first invocation, or between
@@ -1023,6 +1026,11 @@ case "$MODE" in
       # --- did that turn ask to switch models? -----------------------------------------------
       REQUESTED_MODEL="$(node "$PLUGIN_DIR/dist/bin/harmony.js" model read-handoff 2>/dev/null || true)"
       if [ -z "$REQUESTED_MODEL" ]; then
+        break
+      fi
+      if [ "${HARMONY_MODEL_HANDOFF_CONSUMER:-}" = "1" ]; then
+        node "$PLUGIN_DIR/dist/bin/harmony.js" model clear-handoff >/dev/null 2>&1 || true
+        echo "B-1050: model handoff to '$REQUESTED_MODEL' was recorded; ending this leg for daemon relaunch." >&2
         break
       fi
       # B-1148: a Codex leg validates against the Codex catalog rows; Claude's call is unchanged.
