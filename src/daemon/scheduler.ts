@@ -206,9 +206,17 @@ export type DaemonTask = Taskish & {
   /** B-1157: already part of the meta projection (B-818) — read ONLY by the pre-park re-read's
    *  stranded-work check (strandedWorkSignal). */
   pending_acceptance_event_id?: string | null;
-  /** B-1157: the declared external wait, as the `view:'meta'` projection carries it (that view omits
-   *  `field_values`). Read ONLY through waiting-on.ts `waitingOnFieldValues`. */
+  /** B-1157: the declared external wait, as the `view:'meta'` projection carries it (that view's
+   *  `field_values` is branch-only — B-1058 — so the wait rides its own top-level key). Read ONLY
+   *  through waiting-on.ts `waitingOnFieldValues`. */
   waiting_on?: unknown;
+  /** B-1058: the branch-only `field_values` the meta projection now carries — exactly
+   *  `{ build_pr: { branch }, work_branch: { branch } }`, values uncoerced (null when absent).
+   *  Read ONLY by resolveWorkRef; gate_slots and unrelated custom fields never ride the meta view. */
+  field_values?: {
+    build_pr?: { branch?: unknown } | null;
+    work_branch?: { branch?: unknown } | null;
+  } | null;
 };
 
 export interface SchedulerDeps extends WriteRetryDeps {
