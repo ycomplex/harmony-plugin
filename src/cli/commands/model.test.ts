@@ -45,6 +45,7 @@ function tempHandoffPath(): string {
 }
 
 beforeEach(() => {
+  vi.stubEnv('HARMONY_MODEL_HANDOFF_CONSUMER', '1');
   logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
   errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
   exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
@@ -148,6 +149,16 @@ describe('harmony model resolve-gate <workflow-state>', () => {
 });
 
 describe('harmony model request-switch / read-handoff / clear-handoff', () => {
+  it('warns and continues on the current model when no consumer is advertised', async () => {
+    vi.stubEnv('HARMONY_MODEL_HANDOFF_CONSUMER', '');
+    vi.stubEnv('HARMONY_MODEL', 'claude-sonnet-5');
+    const handoffPath = tempHandoffPath();
+    vi.stubEnv('HARMONY_MODEL_HANDOFF_PATH', handoffPath);
+    await expect(run(['model', 'request-switch', 'claude-opus-5'])).rejects.toThrow(ExitSentinel);
+    expect(exitSpy).toHaveBeenCalledWith(2);
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("requested 'claude-opus-5', continuing on 'claude-sonnet-5'"));
+    expect(existsSync(handoffPath)).toBe(false);
+  });
   it('request-switch writes a handoff file for an allowlisted alias', async () => {
     const handoffPath = tempHandoffPath();
     vi.stubEnv('HARMONY_MODEL_HANDOFF_PATH', handoffPath);

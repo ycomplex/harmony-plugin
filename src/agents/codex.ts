@@ -394,6 +394,8 @@ interface CodexEvent {
   type?: string;
   thread_id?: string;
   usage?: Record<string, unknown>;
+  response_id?: string;
+  payload?: { response_id?: string; usage?: Record<string, unknown> } | null;
   message?: unknown;
   error?: unknown;
   item?: { type?: unknown } | null;
@@ -497,6 +499,30 @@ export function codexTelemetryUsage(stdout: string): TelemetryUsage | null {
   const u = parseCodexUsage(stdout);
   if (!u) return null;
   return { inputTokens: u.inputTokens, cacheReadInputTokens: u.cachedInputTokens, outputTokens: u.outputTokens };
+}
+
+/** Sum invocation-bounded request records from a rollout slice. Each response is counted once;
+ * malformed records make the whole slice unknown so partial evidence cannot look complete. */
+export function parseCodexRequestUsage(stdout: string): TelemetryUsage | null {
+  const rows = events(stdout).filter((e) => e.type === 'token_usage_record');
+  if (rows.length === 0) return null;
+  const seen = new Set<string>();
+  const total = { inputTokens: 0, cacheReadInputTokens: 0, outputTokens: 0 };
+  for (const row of rows) {
+    const id = row.response_id ?? row.payload?.response_id;
+    const usage = row.payload?.usage ?? row.usage;
+    if (typeof id !== 'string' || id.length === 0 || !usage) return null;
+    if (seen.has(id)) continue;
+    const input = usage.input_tokens;
+    const cached = usage.cached_input_tokens ?? usage.cache_read_input_tokens;
+    const output = usage.output_tokens;
+    if (![input, cached, output].every((n) => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0)) return null;
+    seen.add(id);
+    total.inputTokens += input as number;
+    total.cacheReadInputTokens += cached as number;
+    total.outputTokens += output as number;
+  }
+  return total;
 }
 
 // --- B-1149: refusal verdict + turn count -----------------------------------------------------------

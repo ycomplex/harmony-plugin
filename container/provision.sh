@@ -709,6 +709,62 @@ case "$MODE" in
       fi
     }
 
+    # B-1353: snapshot the selected Codex rollout BEFORE each invocation. Request rows appended
+    # after this byte offset belong to this invocation, regardless of terminal cumulative totals.
+    B1353_REQUEST_FILE=""
+    B1353_REQUEST_OFFSET=0
+    B1353_PENDING_DIR="$CODEX_SESSIONS_DIR/.harmony-pending-costs"
+    B1353_PENDING_FILE=""
+    _b1353_save_pending() {
+      [ "${AGENT_ID:-claude-code}" = "codex" ] || return 0
+      [ -n "${HARMONY_CONDUCTION_ID:-}" ] || return 0
+      mkdir -p "$B1353_PENDING_DIR" 2>/dev/null || return 0
+      B1353_PENDING_FILE="$B1353_PENDING_DIR/${LEG_KEY}-${INVOCATION_INDEX}.json"
+      local tmp="${B1353_PENDING_FILE}.tmp"
+      jq -n --arg conduction_id "$HARMONY_CONDUCTION_ID" --arg leg_key "$LEG_KEY" \
+        --arg gate "$LEG_GATE" --arg model "$CURRENT_MODEL" --arg id "${LEG_KEY}:${INVOCATION_INDEX}" \
+        --arg usage_file "$B1353_REQUEST_FILE" --argjson offset "$B1353_REQUEST_OFFSET" \
+        --argjson index "$INVOCATION_INDEX" '{conduction_id:$conduction_id,leg_key:$leg_key,gate:$gate,model:$model,id:$id,usage_file:$usage_file,offset:$offset,index:$index}' \
+        > "$tmp" 2>/dev/null && chmod 600 "$tmp" && mv -f "$tmp" "$B1353_PENDING_FILE" || rm -f "$tmp"
+    }
+    _b1353_recover_pending() {
+      [ "${AGENT_ID:-claude-code}" = "codex" ] || return 0
+      [ -d "$B1353_PENDING_DIR" ] || return 0
+      local pending capture ack cid lkey gate model usage_file offset idx id
+      for pending in "$B1353_PENDING_DIR"/*.json; do
+        [ -f "$pending" ] || continue
+        usage_file="$(jq -r '.usage_file // empty' "$pending" 2>/dev/null || true)"
+        # A cold invocation killed before it returned may not have exposed its new thread id yet.
+        # Keep that manifest until the request boundary can be identified; never guess from a
+        # cumulative terminal summary or charge it to the next invocation.
+        [ -n "$usage_file" ] && [ -f "$usage_file" ] || continue
+        cid="$(jq -r '.conduction_id' "$pending")"; lkey="$(jq -r '.leg_key' "$pending")"
+        gate="$(jq -r '.gate' "$pending")"; model="$(jq -r '.model' "$pending")"
+        offset="$(jq -r '.offset' "$pending")"; idx="$(jq -r '.index' "$pending")"; id="$(jq -r '.id' "$pending")"
+        capture="$(mktemp)"; ack="$(mktemp)"
+        node "$PLUGIN_DIR/dist/bin/harmony.js" leg-cost record --file "$capture" --gate "$gate" \
+          --leg-key "$lkey" --invocation-index "$idx" --invocation-id "$id" --conduction-id "$cid" \
+          --model "$model" --request-usage-file "$usage_file" --request-usage-offset "$offset" \
+          --is-error --ack-file "$ack" >/dev/null 2>&1 || true
+        if [ "$(cat "$ack" 2>/dev/null || true)" = "recorded" ]; then rm -f "$pending"; fi
+        rm -f "$capture" "$ack"
+      done
+    }
+    _b1353_begin_request_slice() {
+      [ "${AGENT_ID:-claude-code}" = "codex" ] || return 0
+      local thread_id="${1:-}" f
+      [ -n "$thread_id" ] || { _b1353_save_pending; return 0; }
+      for f in "$CODEX_SESSIONS_DIR"/*/*/*/rollout-*-${thread_id}.jsonl; do
+        [ -f "$f" ] || continue
+        B1353_REQUEST_FILE="$f"
+        B1353_REQUEST_OFFSET="$(stat -c '%s' "$f" 2>/dev/null || echo unknown)"
+        [[ "$B1353_REQUEST_OFFSET" =~ ^[0-9]+$ ]] || B1353_REQUEST_OFFSET=-1
+        _b1353_save_pending
+        return 0
+      done
+      _b1353_save_pending
+    }
+
     # --- B-772 round 2: bounded in-worker model-switch loop --------------------------------------
     # The WORKER (skills/harmony-conduct/SKILL.md step 1d), not this conductor-fired guess, is what
     # actually enforces which model a gate runs on: at step 1 of every gate the running session
@@ -840,16 +896,34 @@ case "$MODE" in
     # to belong to and therefore nothing to record. $1 = the capture file.
     _b916_record_invocation() {
       if [ -n "${HARMONY_CONDUCTION_ID:-}" ]; then
-        local model_args=() duration_args=()
+        local model_args=() duration_args=() usage_args=() error_args=() invocation_id="${LEG_KEY}:${INVOCATION_INDEX}" f invocation_exit="${2:-0}" ack_file
+        ack_file="$(mktemp)"
         if [ -n "$CURRENT_MODEL" ]; then
           model_args=(--model "$CURRENT_MODEL")
         fi
         if [ -n "${B1149_LAST_DURATION_MS:-}" ]; then
           duration_args=(--duration-ms "$B1149_LAST_DURATION_MS")
         fi
+        if [ "${AGENT_ID:-claude-code}" = "codex" ]; then
+          if [ -n "$B1353_REQUEST_FILE" ]; then
+            usage_args=(--request-usage-file "$B1353_REQUEST_FILE" --request-usage-offset "$B1353_REQUEST_OFFSET")
+          elif [ -n "$CODEX_CURRENT_THREAD" ]; then
+            for f in "$CODEX_SESSIONS_DIR"/*/*/*/rollout-*-${CODEX_CURRENT_THREAD}.jsonl; do
+              [ -f "$f" ] || continue
+              B1353_REQUEST_FILE="$f"; B1353_REQUEST_OFFSET=0
+              usage_args=(--request-usage-file "$f" --request-usage-offset 0)
+              break
+            done
+          fi
+          [ "$invocation_exit" -eq 0 ] || error_args=(--is-error)
+          _b1353_save_pending
+        fi
         node "$PLUGIN_DIR/dist/bin/harmony.js" leg-cost record \
           --file "$1" --gate "$LEG_GATE" --leg-key "$LEG_KEY" \
-          --invocation-index "$INVOCATION_INDEX" "${model_args[@]}" "${duration_args[@]}" >/dev/null 2>&1 || true
+          --invocation-index "$INVOCATION_INDEX" --invocation-id "$invocation_id" \
+          "${model_args[@]}" "${duration_args[@]}" "${usage_args[@]}" "${error_args[@]}" --ack-file "$ack_file" >/dev/null 2>&1 || true
+        if [ "$(cat "$ack_file" 2>/dev/null || true)" = "recorded" ]; then rm -f "$B1353_PENDING_FILE"; fi
+        rm -f "$ack_file"
       fi
       INVOCATION_INDEX=$((INVOCATION_INDEX + 1))
       rm -f "$1"
@@ -890,6 +964,14 @@ case "$MODE" in
     MAX_MODEL_SWITCH_ITERATIONS=7
     ITERATION=1
     LEG_EXIT=0
+    # B-1050: this process can persist a requested alias on the ticket and the daemon
+    # relaunches the next leg. Interactive workers omit this explicit capability.
+    export HARMONY_MODEL_HANDOFF_CONSUMER=1
+
+    # Retry cost rows whose invocation already ended but whose recorder could not reach the board.
+    # The pending manifest keeps the original leg/model/gate and request byte boundary on the
+    # session volume, so a later leg cannot absorb that usage into its own row.
+    _b1353_recover_pending
 
     while :; do
       # B-1167: a stop that arrived before this iteration (before the first invocation, or between
@@ -935,6 +1017,7 @@ case "$MODE" in
         _agent_argv "$RESUME_SESSION_ID"
         RESUME_STDERR_FILE="$(mktemp)"
         RESUME_STDOUT_FILE="$(mktemp)"
+        _b1353_begin_request_slice "$RESUME_SESSION_ID"
         set +e
         _b772_run "${AGENT_ARGV[@]}" >"$RESUME_STDOUT_FILE" 2>"$RESUME_STDERR_FILE"
         RESUME_EXIT=$?
@@ -951,7 +1034,7 @@ case "$MODE" in
         _b720_record_output "$RESUME_STDOUT_FILE" "$RESUME_STDERR_FILE"
         rm -f "$RESUME_STDERR_FILE"
         _b1148_record_thread "$RESUME_STDOUT_FILE"
-        _b916_record_invocation "$RESUME_STDOUT_FILE"
+        _b916_record_invocation "$RESUME_STDOUT_FILE" "$RESUME_EXIT"
         # B-1167: a stopped resume attempt is not a failed attach — no cold fallback, no further iteration.
         if _b1167_stop_requested "$RESUME_EXIT"; then
           LEG_EXIT="$(_b1167_stop_exit_code "$RESUME_EXIT")"
@@ -967,6 +1050,8 @@ case "$MODE" in
           echo "B-718: --resume $RESUME_SESSION_ID failed to attach (exit $RESUME_EXIT; see stderr above) — falling back to a COLD start. Resume was attempted and degraded gracefully; this is expected to be rare — investigate the persisted transcript mount if it recurs." >&2
           _agent_argv ""
           FALLBACK_STDOUT_FILE="$(mktemp)"
+          B1353_REQUEST_FILE=""; B1353_REQUEST_OFFSET=0; INVOCATION_EXIT=0
+          _b1353_begin_request_slice ""
           set +e
           _b772_run "${AGENT_ARGV[@]}" >"$FALLBACK_STDOUT_FILE"
           INVOCATION_EXIT=$?
@@ -974,7 +1059,7 @@ case "$MODE" in
           _b916_echo_result "$FALLBACK_STDOUT_FILE"
           _b720_record_output "$FALLBACK_STDOUT_FILE"
           _b1148_record_thread "$FALLBACK_STDOUT_FILE"
-          _b916_record_invocation "$FALLBACK_STDOUT_FILE"
+          _b916_record_invocation "$FALLBACK_STDOUT_FILE" "$INVOCATION_EXIT"
           LEG_EXIT=$INVOCATION_EXIT
           # B-916: before this ticket a nonzero exit here ended the script on the spot, via `set -e`.
           # That is preserved EXACTLY — as an explicit exit taken only AFTER the capture above has
@@ -1000,6 +1085,8 @@ case "$MODE" in
         # boundary (this ticket's accepted design), so there is never a `--resume` on iteration 2+.
         _agent_argv ""
         COLD_STDOUT_FILE="$(mktemp)"
+        B1353_REQUEST_FILE=""; B1353_REQUEST_OFFSET=0; INVOCATION_EXIT=0
+        _b1353_begin_request_slice ""
         set +e
         _b772_run "${AGENT_ARGV[@]}" >"$COLD_STDOUT_FILE"
         INVOCATION_EXIT=$?
@@ -1007,7 +1094,7 @@ case "$MODE" in
         _b916_echo_result "$COLD_STDOUT_FILE"
         _b720_record_output "$COLD_STDOUT_FILE"
         _b1148_record_thread "$COLD_STDOUT_FILE"
-        _b916_record_invocation "$COLD_STDOUT_FILE"
+        _b916_record_invocation "$COLD_STDOUT_FILE" "$INVOCATION_EXIT"
         LEG_EXIT=$INVOCATION_EXIT
         # B-916: same preserved-`set -e` exit as the resume-fallback branch above — see its comment
         # (including why it names $INVOCATION_EXIT rather than $LEG_EXIT).
@@ -1037,6 +1124,15 @@ case "$MODE" in
         break
       fi
       node "$PLUGIN_DIR/dist/bin/harmony.js" model clear-handoff >/dev/null 2>&1 || true
+      if [ -n "$B1167_STOP_SIGNAL" ]; then
+        LEG_EXIT="$(_b1167_stop_exit_code "$LEG_EXIT")"
+        echo "B-1167: stop received — starting no further agent invocation (exit $LEG_EXIT)." >&2
+        break
+      fi
+      if [ "${HARMONY_MODEL_HANDOFF_CONSUMER:-}" = "1" ]; then
+        echo "B-1050: model handoff to '$REQUESTED_MODEL' was recorded; ending this leg for daemon relaunch." >&2
+        break
+      fi
       echo "B-772: model-switch handoff — re-invoking claude with --model $REQUESTED_MODEL (iteration $((ITERATION + 1)) of $MAX_MODEL_SWITCH_ITERATIONS)." >&2
       CURRENT_MODEL="$REQUESTED_MODEL"
       ITERATION=$((ITERATION + 1))

@@ -171,14 +171,15 @@ describe('the Stop hook is wired up and degrades safely (B-870)', () => {
 // imports the daemon's own liveWaitingOn. classifyCleanRowShape is untouched (no clean kind for it).
 describe('a declared external wait is honoured by BOTH the stop gate and the daemon classifier (B-1157)', () => {
   const NOW = Date.parse('2026-10-21T12:00:00.000Z');
-  const waiting = (sinceMs: number, firstMs = sinceMs) => ({
-    waiting_on: { kind: 'ci', ref: 'pr#9', since: new Date(sinceMs).toISOString(), first_since: new Date(firstMs).toISOString() },
+  const waiting = (sinceMs: number, firstMs = sinceMs, kind = 'ci', ref = 'pr#9') => ({
+    waiting_on: { kind, ref, since: new Date(sinceMs).toISOString(), first_since: new Date(firstMs).toISOString() },
   });
   const midFlight = { workflow_state: 'Built', awaiting_human_input: false };
   const day = 24 * 60 * 60 * 1000;
 
   it.each([
     ['live', waiting(NOW - 60_000), NOW - 3_600_000, true],
+    ['live model handoff', waiting(NOW - 60_000, NOW - 60_000, 'model-handoff', 'gpt-6.1-sol'), NOW - 3_600_000, true],
     ['left over from before the leg started', waiting(NOW - 7_200_000), NOW - 3_600_000, false],
     ['past the 24h ceiling', waiting(NOW - 60_000, NOW - day - 1), NOW - 2 * day, false],
     ['absent', {}, NOW - 3_600_000, false],
@@ -196,7 +197,7 @@ describe('a declared external wait is honoured by BOTH the stop gate and the dae
       timedOut: false,
       operatorReaped: false,
       repoProgressed: false,
-      waitingOn: live ? { kind: 'ci', ref: 'pr#9', since: '', first_since: '' } : null,
+      waitingOn: live ? { kind: (field_values as { waiting_on?: { kind?: string } }).waiting_on?.kind ?? 'ci', ref: 'pr#9', since: '', first_since: '' } : null,
     } as ClassifyArgs);
     expect(outcome.action).toBe(live ? 'wait' : 'park');
   });

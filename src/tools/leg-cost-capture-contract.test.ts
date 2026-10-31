@@ -308,8 +308,7 @@ describe('provision.sh: B-916 per-invocation cost capture', () => {
     expect(attempt['leg-key']).toBe(fallback['leg-key']); // ONE leg, two invocations
   });
 
-  it('records EVERY B-772 model-switch iteration, all under the same leg key', () => {
-    // The fake claude requests a switch on its FIRST invocation only, so the loop settles at two.
+  it('records the actual model for the one-shot leg before the daemon relaunches on the requested model (B-1050)', () => {
     const h = runBlock({
       env: { HARMONY_MODEL: 'claude-sonnet-5' },
       claudeBody: [
@@ -325,12 +324,11 @@ describe('provision.sh: B-916 per-invocation cost capture', () => {
     });
 
     const calls = recordCalls(h).map(flags);
-    expect(calls).toHaveLength(2);
-    expect(calls.map((f) => f['invocation-index'])).toEqual(['0', '1']);
-    expect(calls[0]['leg-key']).toBe(calls[1]['leg-key']);
-    // Each invocation records the model IT actually launched with, not the leg's first choice.
+    expect(calls).toHaveLength(1);
+    expect(calls[0]['invocation-index']).toBe('0');
+    expect(calls[0]['leg-key']).toBeTruthy();
     expect(calls[0].model).toBe('claude-sonnet-5');
-    expect(calls[1].model).toBe('claude-opus-5');
+    expect(h.combined).toContain("B-1050: model handoff to 'claude-opus-5' was recorded; ending this leg for daemon relaunch");
   });
 
   it('records the FAILING invocation too, and still exits with its code — a capture must never change what the daemon sees', () => {
