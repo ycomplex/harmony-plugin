@@ -45565,8 +45565,19 @@ function catalogEntriesForAgent(entries, agent = DEFAULT_AGENT_ADAPTER) {
   return entries.filter((entry) => entryAgent(entry) === agent);
 }
 function findModelEntry(model, entries, agent = DEFAULT_AGENT_ADAPTER, opts = {}) {
+  assertModelIdUnambiguous(model, entries, agent);
   return catalogEntriesForAgent(entries, agent).find(
     (entry) => (entry.active || opts.includeInactive === true) && (entry.alias === model || entryModelId(entry) === model)
+  );
+}
+function assertModelIdUnambiguous(model, entries, agent = DEFAULT_AGENT_ADAPTER) {
+  const matches = catalogEntriesForAgent(entries, agent).filter(
+    (entry) => entry.active && entryModelId(entry) === model
+  );
+  if (matches.length < 2) return;
+  const providers = [...new Set(matches.map(entryProvider))].sort((a3, b) => a3.localeCompare(b));
+  throw new Error(
+    `Ambiguous model id '${model}' for runtime '${agent}': active offers are provided by ${providers.join(", ")}. Use a provider-specific alias; this lookup will not choose by catalog row order.`
   );
 }
 function normalizeModelId(model, entries, agent = DEFAULT_AGENT_ADAPTER, opts = {}) {
