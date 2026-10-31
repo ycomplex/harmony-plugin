@@ -55,9 +55,11 @@ describe('fetchCatalogPrice — row matching', () => {
       input_per_mtok: 4,
       cached_input_per_mtok: 0.2,
       output_per_mtok: 20,
+      long_context_threshold_tokens: null,
+      long_context_price: null,
     });
     expect(calls.table).toBe('model_catalog');
-    expect(calls.columns).toBe('alias, model_id, agent, input_usd_per_mtok, cached_input_usd_per_mtok, output_usd_per_mtok');
+    expect(calls.columns).toBe('alias, model_id, agent, input_usd_per_mtok, cached_input_usd_per_mtok, output_usd_per_mtok, long_context_threshold_tokens, long_context_input_usd_per_mtok, long_context_cached_input_usd_per_mtok, long_context_output_usd_per_mtok');
     // B-1179: no activation filter on the price read.
     expect(calls.eq).toBeUndefined();
     expect(errorSpy).not.toHaveBeenCalled();
@@ -73,7 +75,7 @@ describe('fetchCatalogPrice — row matching', () => {
       cached_input_usd_per_mtok: 0.06,
       output_usd_per_mtok: 2.4,
     };
-    const want = { input_per_mtok: 0.6, cached_input_per_mtok: 0.06, output_per_mtok: 2.4 };
+    const want = { input_per_mtok: 0.6, cached_input_per_mtok: 0.06, output_per_mtok: 2.4, long_context_threshold_tokens: null, long_context_price: null };
     const byAlias = fakeClient({ data: [row], error: null });
     expect(await fetchCatalogPrice(byAlias.client, 'codex:openrouter-offer', 'codex')).toEqual(want);
     expect(byAlias.calls.eq).toBeUndefined();
@@ -91,10 +93,32 @@ describe('fetchCatalogPrice — row matching', () => {
 
   it('matches by model_id with an optional, case-insensitive codex: prefix', async () => {
     const row = { agent: 'codex', alias: 'codex:gpt-6.1-sol', model_id: 'gpt-6.1-sol', input_usd_per_mtok: 2, cached_input_usd_per_mtok: 0.1, output_usd_per_mtok: 10 };
-    const want = { input_per_mtok: 2, cached_input_per_mtok: 0.1, output_per_mtok: 10 };
+    const want = { input_per_mtok: 2, cached_input_per_mtok: 0.1, output_per_mtok: 10, long_context_threshold_tokens: null, long_context_price: null };
     expect(await fetchCatalogPrice(fakeClient({ data: [row], error: null }).client, 'gpt-6.1-sol', 'codex')).toEqual(want);
     expect(await fetchCatalogPrice(fakeClient({ data: [row], error: null }).client, 'CODEX:gpt-6.1-sol', 'codex')).toEqual(want);
     expect(await fetchCatalogPrice(fakeClient({ data: [row], error: null }).client, 'codex:gpt-6.1-sol', 'codex')).toEqual(want);
+  });
+
+  it('reads the OpenAI threshold and all three long-context prices from the same offer row', async () => {
+    const row = {
+      agent: 'codex',
+      alias: 'codex:gpt-6.1-sol',
+      model_id: 'gpt-6.1-sol',
+      input_usd_per_mtok: 2,
+      cached_input_usd_per_mtok: 0.1,
+      output_usd_per_mtok: 10,
+      long_context_threshold_tokens: 272000,
+      long_context_input_usd_per_mtok: 4,
+      long_context_cached_input_usd_per_mtok: 0.2,
+      long_context_output_usd_per_mtok: 15,
+    };
+    expect(await fetchCatalogPrice(fakeClient({ data: [row], error: null }).client, 'codex:gpt-6.1-sol', 'codex')).toEqual({
+      input_per_mtok: 2,
+      cached_input_per_mtok: 0.1,
+      output_per_mtok: 10,
+      long_context_threshold_tokens: 272000,
+      long_context_price: { input_per_mtok: 4, cached_input_per_mtok: 0.2, output_per_mtok: 15 },
+    });
   });
 
   it('only uses a row of the leg runtime — a claude-code row is not used for a codex runtime', async () => {
@@ -106,6 +130,8 @@ describe('fetchCatalogPrice — row matching', () => {
       input_per_mtok: 5,
       cached_input_per_mtok: 0.5,
       output_per_mtok: 25,
+      long_context_threshold_tokens: null,
+      long_context_price: null,
     });
   });
 
@@ -120,6 +146,8 @@ describe('fetchCatalogPrice — row matching', () => {
       input_per_mtok: 3,
       cached_input_per_mtok: 0.3,
       output_per_mtok: 6,
+      long_context_threshold_tokens: null,
+      long_context_price: null,
     });
   });
 
@@ -146,6 +174,7 @@ describe('fetchCatalogPrice — row matching', () => {
 describe('fetchCatalogPrice — degrades to null, never throws', () => {
   it.each([
     ['42703 (undefined column)', { code: '42703', message: 'column model_catalog.input_usd_per_mtok does not exist' }],
+    ['B-1176 long-context columns absent during rollout', { code: '42703', message: 'column model_catalog.long_context_threshold_tokens does not exist' }],
     ['PGRST204 (schema-cache miss)', { code: 'PGRST204', message: "Could not find the 'input_usd_per_mtok' column" }],
     ['any other error', { code: '500', message: 'boom' }],
   ])('a %s read returns null with ONE warning line', async (_label, error) => {

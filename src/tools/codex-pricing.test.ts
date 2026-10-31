@@ -67,6 +67,34 @@ describe('B-1179: deriveCodexCostUsd priced from the catalog row', () => {
     expect(after).toBeCloseTo(0.8 * 3 + 0.2 * 0.1 + 0.1 * 10, 10);
   });
 
+  it('uses Standard through the threshold, including exactly at 272K input tokens', () => {
+    const row = {
+      ...CODEX_PRICING['gpt-6.1-sol'],
+      long_context_threshold_tokens: 272000,
+      long_context_price: { input_per_mtok: 4, cached_input_per_mtok: 0.2, output_per_mtok: 15 },
+    };
+    expect(deriveCodexCostUsd({ inputTokens: 100000, cacheReadInputTokens: 10000, outputTokens: 1000 }, 'gpt-6.1-sol', row))
+      .toBeCloseTo((90000 * 2 + 10000 * 0.1 + 1000 * 10) / 1e6, 12);
+    expect(deriveCodexCostUsd({ inputTokens: 272000, cacheReadInputTokens: 100000, outputTokens: 10000 }, 'gpt-6.1-sol', row))
+      .toBeCloseTo((172000 * 2 + 100000 * 0.1 + 10000 * 10) / 1e6, 12);
+  });
+
+  it('uses long-context rates when invocation input exceeds the threshold', () => {
+    const row = {
+      ...CODEX_PRICING['gpt-6.1-sol'],
+      long_context_threshold_tokens: 272000,
+      long_context_price: { input_per_mtok: 4, cached_input_per_mtok: 0.2, output_per_mtok: 15 },
+    };
+    expect(deriveCodexCostUsd({ inputTokens: 272001, cacheReadInputTokens: 100000, outputTokens: 10000 }, 'gpt-6.1-sol', row))
+      .toBeCloseTo((172001 * 4 + 100000 * 0.2 + 10000 * 15) / 1e6, 12);
+  });
+
+  it('keeps the Standard fallback for a long input when catalog columns are unavailable', () => {
+    const usage = { inputTokens: 300000, cacheReadInputTokens: 100000, outputTokens: 10000 };
+    expect(deriveCodexCostUsd(usage, 'gpt-6.1-sol'))
+      .toBeCloseTo((200000 * 2 + 100000 * 0.1 + 10000 * 10) / 1e6, 12);
+  });
+
   it('no row and no table entry stays null (not captured)', () => {
     expect(deriveCodexCostUsd(usage, 'codex:openrouter/some-model', null)).toBeNull();
     expect(deriveCodexCostUsd(usage, 'codex:openrouter/some-model')).toBeNull();

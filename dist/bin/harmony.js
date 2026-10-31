@@ -67733,11 +67733,13 @@ function resolveCodexPricing(model) {
   return Object.prototype.hasOwnProperty.call(CODEX_PRICING, id) ? CODEX_PRICING[id] : null;
 }
 function deriveCodexCostUsd(usage, model, rowPrice) {
-  const pricing = rowPrice ?? resolveCodexPricing(model);
+  const standardPricing = rowPrice ?? resolveCodexPricing(model);
+  const inputTokens = Math.max(0, usage?.inputTokens ?? 0);
+  const pricing = rowPrice && rowPrice.long_context_threshold_tokens !== null && rowPrice.long_context_threshold_tokens !== void 0 && inputTokens > rowPrice.long_context_threshold_tokens && rowPrice.long_context_price ? rowPrice.long_context_price : standardPricing;
   if (!pricing || !usage) return null;
   const measured = [usage.inputTokens, usage.cacheReadInputTokens, usage.outputTokens].some((v2) => typeof v2 === "number");
   if (!measured) return null;
-  const input = Math.max(0, usage.inputTokens ?? 0);
+  const input = inputTokens;
   const cached2 = Math.min(input, Math.max(0, usage.cacheReadInputTokens ?? 0));
   const output = Math.max(0, usage.outputTokens ?? 0);
   return ((input - cached2) * pricing.input_per_mtok + cached2 * pricing.cached_input_per_mtok + output * pricing.output_per_mtok) / MTOK;
@@ -71624,6 +71626,7 @@ function registerConductorLogsCommand(program3, makeDeps = defaultLogsDeps) {
 var warn = (msg) => console.error(`harmony leg-cost: WARNING \u2014 ${msg}`);
 var stripCodexPrefix = (s) => s.trim().replace(/^codex:/i, "");
 var isPrice = (v2) => typeof v2 === "number" && Number.isFinite(v2) && v2 >= 0;
+var isTokenThreshold = (v2) => typeof v2 === "number" && Number.isSafeInteger(v2) && v2 >= 0;
 function matchRow(rows, model, runtime) {
   const inRuntime = rows.filter((row) => (row.agent || DEFAULT_AGENT_ADAPTER) === runtime);
   const byAlias = inRuntime.filter((row) => row.alias === model);
@@ -71637,7 +71640,7 @@ function matchRow(rows, model, runtime) {
 async function fetchCatalogPrice(client, model, runtime) {
   if (!client || !model) return null;
   try {
-    const { data, error: error2 } = await client.from("model_catalog").select("alias, model_id, agent, input_usd_per_mtok, cached_input_usd_per_mtok, output_usd_per_mtok");
+    const { data, error: error2 } = await client.from("model_catalog").select("alias, model_id, agent, input_usd_per_mtok, cached_input_usd_per_mtok, output_usd_per_mtok, long_context_threshold_tokens, long_context_input_usd_per_mtok, long_context_cached_input_usd_per_mtok, long_context_output_usd_per_mtok");
     if (error2) {
       warn(
         isMissingCatalogColumnError(error2) ? `model_catalog has no price columns on this board yet (${error2.message ?? error2.code}); pricing from the in-code tables` : `could not read model_catalog prices (${error2.message ?? String(error2)}); pricing from the in-code tables`
@@ -71647,9 +71650,24 @@ async function fetchCatalogPrice(client, model, runtime) {
     if (!Array.isArray(data)) return null;
     const row = matchRow(data, model, runtime || DEFAULT_AGENT_ADAPTER);
     if (!row) return null;
-    const { input_usd_per_mtok: input, cached_input_usd_per_mtok: cached2, output_usd_per_mtok: output } = row;
+    const {
+      input_usd_per_mtok: input,
+      cached_input_usd_per_mtok: cached2,
+      output_usd_per_mtok: output,
+      long_context_threshold_tokens: threshold,
+      long_context_input_usd_per_mtok: longInput,
+      long_context_cached_input_usd_per_mtok: longCached,
+      long_context_output_usd_per_mtok: longOutput
+    } = row;
     if (!isPrice(input) || !isPrice(cached2) || !isPrice(output)) return null;
-    return { input_per_mtok: input, cached_input_per_mtok: cached2, output_per_mtok: output };
+    const long_context_price = isPrice(longInput) && isPrice(longCached) && isPrice(longOutput) ? { input_per_mtok: longInput, cached_input_per_mtok: longCached, output_per_mtok: longOutput } : null;
+    return {
+      input_per_mtok: input,
+      cached_input_per_mtok: cached2,
+      output_per_mtok: output,
+      long_context_threshold_tokens: isTokenThreshold(threshold) ? threshold : null,
+      long_context_price
+    };
   } catch (err) {
     warn(`reading model_catalog prices threw (${err instanceof Error ? err.message : String(err)}); pricing from the in-code tables`);
     return null;
