@@ -27,6 +27,13 @@ export interface CatalogRowPrice {
   input_per_mtok: number;
   cached_input_per_mtok: number;
   output_per_mtok: number;
+  /** OpenAI's input threshold and second rate set, when the offer publishes a long-context tier. */
+  long_context_threshold_tokens?: number | null;
+  long_context_price?: {
+    input_per_mtok: number;
+    cached_input_per_mtok: number;
+    output_per_mtok: number;
+  } | null;
 }
 
 /** The columns read here — a narrow select, so nothing else on the row can fail the read. */
@@ -37,6 +44,10 @@ interface PricedCatalogRow {
   input_usd_per_mtok?: unknown;
   cached_input_usd_per_mtok?: unknown;
   output_usd_per_mtok?: unknown;
+  long_context_threshold_tokens?: unknown;
+  long_context_input_usd_per_mtok?: unknown;
+  long_context_cached_input_usd_per_mtok?: unknown;
+  long_context_output_usd_per_mtok?: unknown;
 }
 
 const warn = (msg: string): void => console.error(`harmony leg-cost: WARNING — ${msg}`);
@@ -46,6 +57,7 @@ const stripCodexPrefix = (s: string): string => s.trim().replace(/^codex:/i, '')
 
 /** A price counts only when it is a finite number >= 0. */
 const isPrice = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0;
+const isTokenThreshold = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
 
 /** The ONE row `model` names within `runtime`, or null when none or several do. An EXACT alias
  *  match wins; otherwise a row matches when its model_id (or its alias), prefix-stripped, equals the
@@ -79,7 +91,7 @@ export async function fetchCatalogPrice(
   try {
     const { data, error } = (await client
       .from('model_catalog')
-      .select('alias, model_id, agent, input_usd_per_mtok, cached_input_usd_per_mtok, output_usd_per_mtok')) as { data: unknown; error: { code?: string; message?: string } | null };
+      .select('alias, model_id, agent, input_usd_per_mtok, cached_input_usd_per_mtok, output_usd_per_mtok, long_context_threshold_tokens, long_context_input_usd_per_mtok, long_context_cached_input_usd_per_mtok, long_context_output_usd_per_mtok')) as { data: unknown; error: { code?: string; message?: string } | null };
     if (error) {
       warn(
         isMissingCatalogColumnError(error)
@@ -91,9 +103,26 @@ export async function fetchCatalogPrice(
     if (!Array.isArray(data)) return null;
     const row = matchRow(data as PricedCatalogRow[], model, runtime || DEFAULT_AGENT_ADAPTER);
     if (!row) return null;
-    const { input_usd_per_mtok: input, cached_input_usd_per_mtok: cached, output_usd_per_mtok: output } = row;
+    const {
+      input_usd_per_mtok: input,
+      cached_input_usd_per_mtok: cached,
+      output_usd_per_mtok: output,
+      long_context_threshold_tokens: threshold,
+      long_context_input_usd_per_mtok: longInput,
+      long_context_cached_input_usd_per_mtok: longCached,
+      long_context_output_usd_per_mtok: longOutput,
+    } = row;
     if (!isPrice(input) || !isPrice(cached) || !isPrice(output)) return null;
-    return { input_per_mtok: input, cached_input_per_mtok: cached, output_per_mtok: output };
+    const long_context_price = isPrice(longInput) && isPrice(longCached) && isPrice(longOutput)
+      ? { input_per_mtok: longInput, cached_input_per_mtok: longCached, output_per_mtok: longOutput }
+      : null;
+    return {
+      input_per_mtok: input,
+      cached_input_per_mtok: cached,
+      output_per_mtok: output,
+      long_context_threshold_tokens: isTokenThreshold(threshold) ? threshold : null,
+      long_context_price,
+    };
   } catch (err: unknown) {
     warn(`reading model_catalog prices threw (${err instanceof Error ? err.message : String(err)}); pricing from the in-code tables`);
     return null;
