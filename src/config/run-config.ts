@@ -582,8 +582,28 @@ export function findModelEntry(
   agent: string = DEFAULT_AGENT_ADAPTER,
   opts: CatalogReadOptions = {},
 ): ModelCatalogEntry | undefined {
+  assertModelIdUnambiguous(model, entries, agent);
   return catalogEntriesForAgent(entries, agent).find(
     (entry) => (entry.active || opts.includeInactive === true) && (entry.alias === model || entryModelId(entry) === model),
+  );
+}
+
+/** B-1152: a bare runtime model id that names multiple active provider offers is ambiguous. Check
+ * before alias matching too: a legacy alias may have the same spelling as the shared bare id, but
+ * choosing that row would still silently choose a provider. */
+export function assertModelIdUnambiguous(
+  model: string,
+  entries: readonly ModelCatalogEntry[],
+  agent: string = DEFAULT_AGENT_ADAPTER,
+): void {
+  const matches = catalogEntriesForAgent(entries, agent).filter(
+    (entry) => entry.active && entryModelId(entry) === model,
+  );
+  if (matches.length < 2) return;
+  const providers = [...new Set(matches.map(entryProvider))].sort((a, b) => a.localeCompare(b));
+  throw new Error(
+    `Ambiguous model id '${model}' for runtime '${agent}': active offers are provided by ${providers.join(', ')}. ` +
+      'Use a provider-specific alias; this lookup will not choose by catalog row order.',
   );
 }
 
