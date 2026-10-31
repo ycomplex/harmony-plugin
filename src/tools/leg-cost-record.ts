@@ -292,6 +292,21 @@ export async function recordLegCost(
     let refusalFields: Record<string, unknown> =
       args.refusal_kind ? { refusal_kind: args.refusal_kind, refusal_resets_at: args.refusal_resets_at ?? null } : {};
     let withRuntime = true;
+    if (args.id) {
+      // Diagnose a reused invocation key before the idempotent DO NOTHING write. A retry with the
+      // same measurements is expected; a key collision with different usage must be visible.
+      const { data: prior, error: readError } = await client
+        .from('conduction_leg_costs')
+        .select('input_tokens, output_tokens, cache_read_input_tokens, total_cost_usd, is_error')
+        .eq('id', args.id)
+        .maybeSingle();
+      if (!readError && prior) {
+        const expected = ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'total_cost_usd', 'is_error'];
+        const mismatch = expected.some((key) => (prior as Record<string, unknown>)[key] !== row[key]);
+        if (mismatch) warn(`invocation id ${args.id} already has different usage/cost values; preserving the existing row`);
+        return true;
+      }
+    }
     const write = (payload: Record<string, unknown>) => args.id
       ? client.from('conduction_leg_costs').upsert(payload, { onConflict: 'id', ignoreDuplicates: true })
       : client.from('conduction_leg_costs').insert(payload);

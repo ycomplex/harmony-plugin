@@ -17,7 +17,7 @@
 // captured operator tail; a nonzero exit or a stray stdout line from a cost accessor would be a
 // diagnostic nicety corrupting the thing it is meant to describe.
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { Command } from 'commander';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -206,6 +206,7 @@ export function registerLegCostCommands(program: Command): void {
     .option('--request-usage-offset <n>', 'Byte offset captured before this invocation; defaults to zero')
     .option('--invocation-id <key>', 'Stable invocation identity used as the idempotent cost-row UUID')
     .option('--is-error', 'Mark an invocation failed when its runtime did not emit a terminal event')
+    .option('--ack-file <path>', 'Write "recorded" only after the cost row was stored or an identical retry was confirmed')
     .action(
       async (opts: {
         file: string;
@@ -222,6 +223,7 @@ export function registerLegCostCommands(program: Command): void {
         requestUsageOffset?: string;
         invocationId?: string;
         isError?: boolean;
+        ackFile?: string;
       }) => {
         const conductionId = opts.conductionId ?? getConductionId();
         if (!conductionId) {
@@ -301,7 +303,7 @@ export function registerLegCostCommands(program: Command): void {
         const workerDuration = Number(opts.durationMs);
         const durationMs = opts.durationMs !== undefined && Number.isFinite(workerDuration) && workerDuration >= 0 ? Math.round(workerDuration) : null;
 
-        await recordLegCost(client, {
+        const recorded = await recordLegCost(client, {
           id: opts.invocationId ? stableInvocationUuid(opts.invocationId) : undefined,
           conduction_id: conductionId,
           leg_key: opts.legKey,
@@ -330,6 +332,10 @@ export function registerLegCostCommands(program: Command): void {
           refusal_kind: refusal?.kind ?? null,
           refusal_resets_at: refusal?.resets_at ?? null,
         });
+        if (opts.ackFile) {
+          try { writeFileSync(opts.ackFile, recorded ? 'recorded\n' : 'not-recorded\n', { mode: 0o600 }); }
+          catch (err: unknown) { console.error(`harmony leg-cost record: WARNING — could not write acknowledgement (${err instanceof Error ? err.message : String(err)})`); }
+        }
       },
     );
 }

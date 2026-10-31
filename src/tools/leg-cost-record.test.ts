@@ -45,10 +45,18 @@ const baseArgs = { conduction_id: 'cond-1', leg_key: 'leg-1', invocation_index: 
 
 describe('recordLegCost', () => {
   it('uses an invocation UUID as an idempotent primary-key upsert when supplied', async () => {
-    const client = makeClient([{ error: null }]);
+    const client = makeClient([{ data: null, error: null }, { error: null }]);
     expect(await recordLegCost(client, { ...baseArgs, id: 'stable-uuid' })).toBe(true);
     expect(client.upsert).toHaveBeenCalledWith(expect.objectContaining({ id: 'stable-uuid' }), { onConflict: 'id', ignoreDuplicates: true });
     expect(client.insert).not.toHaveBeenCalled();
+  });
+  it('keeps an existing invocation row and diagnoses a conflicting retry', async () => {
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const client = makeClient([{ data: { input_tokens: 10, output_tokens: 20, cache_read_input_tokens: 0, total_cost_usd: 0.1, is_error: true }, error: null }]);
+    expect(await recordLegCost(client, { ...baseArgs, id: 'stable-uuid', input_tokens: 11, output_tokens: 20, cache_read_input_tokens: 0, total_cost_usd: 0.1, is_error: true })).toBe(true);
+    expect(client.upsert).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('already has different usage/cost values'));
+    warn.mockRestore();
   });
   it('inserts ONE row per invocation, carrying every measured column', async () => {
     const client = makeClient([{ error: null }]);

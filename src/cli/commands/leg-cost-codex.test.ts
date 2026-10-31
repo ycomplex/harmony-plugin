@@ -4,8 +4,10 @@
 // cost_regime=plan-included, cost null/'unknown'. Driven through the real command with a fixture
 // capture; only the board write and the auth are stubbed.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { Command } from 'commander';
 
 const recordLegCost = vi.fn(async () => true);
@@ -93,6 +95,15 @@ describe('resolveAdapterTelemetry (codex fixture)', () => {
 });
 
 describe('harmony leg-cost record — a Codex capture', () => {
+  it('writes a durable acknowledgement only after the recorder succeeds', async () => {
+    setEnv({ ...CODEX_ENV, HARMONY_RUN_CONFIG_JSON: CODEX_RC, HARMONY_RUN_CONFIG_PATH: undefined, CLAUDE_CODE_OAUTH_TOKEN: undefined, OPENAI_API_KEY: undefined, CODEX_API_KEY: undefined, CODEX_ACCESS_TOKEN: undefined });
+    const dir = mkdtempSync(join(tmpdir(), 'b1353-ack-'));
+    const ack = join(dir, 'ack');
+    writeFileSync(ack, 'stale');
+    await record(['--file', FIXTURE, ...REQUEST_ARGS, '--gate', 'build', '--leg-key', 'leg-ack', '--conduction-id', 'cond-ack', '--ack-file', ack]);
+    expect(readFileSync(ack, 'utf8')).toBe('recorded\n');
+  });
+
   it('retains request usage when the worker reports a failed invocation and creates a stable row ID', async () => {
     setEnv({ ...CODEX_ENV, HARMONY_RUN_CONFIG_JSON: CODEX_RC, HARMONY_RUN_CONFIG_PATH: undefined, CLAUDE_CODE_OAUTH_TOKEN: undefined, OPENAI_API_KEY: undefined, CODEX_API_KEY: undefined, CODEX_ACCESS_TOKEN: undefined });
     await record(['--file', FIXTURE, ...REQUEST_ARGS, '--gate', 'build', '--leg-key', 'leg-failed', '--conduction-id', 'cond-1', '--model', 'gpt-6.1-sol', '--invocation-id', 'leg-failed:0', '--is-error']);
@@ -104,6 +115,13 @@ describe('harmony leg-cost record — a Codex capture', () => {
   it('does not fall back to cumulative terminal usage when the invocation boundary is missing', async () => {
     setEnv({ ...CODEX_ENV, HARMONY_RUN_CONFIG_JSON: CODEX_RC, HARMONY_RUN_CONFIG_PATH: undefined, CLAUDE_CODE_OAUTH_TOKEN: undefined, OPENAI_API_KEY: undefined, CODEX_API_KEY: undefined, CODEX_ACCESS_TOKEN: undefined });
     await record(['--file', FIXTURE, '--gate', 'build', '--leg-key', 'leg-unknown', '--conduction-id', 'cond-1', '--model', 'gpt-6.1-sol']);
+    const row = (recordLegCost.mock.calls[0] as unknown[])[1] as Record<string, unknown>;
+    expect(row).toMatchObject({ input_tokens: null, output_tokens: null, total_cost_usd: null, cost_source: 'unknown' });
+  });
+
+  it('treats a truncated request slice as unknown instead of pricing the terminal cumulative totals', async () => {
+    setEnv({ ...CODEX_ENV, HARMONY_RUN_CONFIG_JSON: CODEX_RC, HARMONY_RUN_CONFIG_PATH: undefined, CLAUDE_CODE_OAUTH_TOKEN: undefined, OPENAI_API_KEY: undefined, CODEX_API_KEY: undefined, CODEX_ACCESS_TOKEN: undefined });
+    await record(['--file', FIXTURE, '--request-usage-file', REQUEST_FIXTURE, '--request-usage-offset', '999999', '--gate', 'build', '--leg-key', 'leg-truncated', '--conduction-id', 'cond-1', '--model', 'gpt-6.1-sol']);
     const row = (recordLegCost.mock.calls[0] as unknown[])[1] as Record<string, unknown>;
     expect(row).toMatchObject({ input_tokens: null, output_tokens: null, total_cost_usd: null, cost_source: 'unknown' });
   });

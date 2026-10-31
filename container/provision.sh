@@ -713,17 +713,56 @@ case "$MODE" in
     # after this byte offset belong to this invocation, regardless of terminal cumulative totals.
     B1353_REQUEST_FILE=""
     B1353_REQUEST_OFFSET=0
+    B1353_PENDING_DIR="$CODEX_SESSIONS_DIR/.harmony-pending-costs"
+    B1353_PENDING_FILE=""
+    _b1353_save_pending() {
+      [ "${AGENT_ID:-claude-code}" = "codex" ] || return 0
+      [ -n "${HARMONY_CONDUCTION_ID:-}" ] || return 0
+      mkdir -p "$B1353_PENDING_DIR" 2>/dev/null || return 0
+      B1353_PENDING_FILE="$B1353_PENDING_DIR/${LEG_KEY}-${INVOCATION_INDEX}.json"
+      local tmp="${B1353_PENDING_FILE}.tmp"
+      jq -n --arg conduction_id "$HARMONY_CONDUCTION_ID" --arg leg_key "$LEG_KEY" \
+        --arg gate "$LEG_GATE" --arg model "$CURRENT_MODEL" --arg id "${LEG_KEY}:${INVOCATION_INDEX}" \
+        --arg usage_file "$B1353_REQUEST_FILE" --argjson offset "$B1353_REQUEST_OFFSET" \
+        --argjson index "$INVOCATION_INDEX" '{conduction_id:$conduction_id,leg_key:$leg_key,gate:$gate,model:$model,id:$id,usage_file:$usage_file,offset:$offset,index:$index}' \
+        > "$tmp" 2>/dev/null && chmod 600 "$tmp" && mv -f "$tmp" "$B1353_PENDING_FILE" || rm -f "$tmp"
+    }
+    _b1353_recover_pending() {
+      [ "${AGENT_ID:-claude-code}" = "codex" ] || return 0
+      [ -d "$B1353_PENDING_DIR" ] || return 0
+      local pending capture ack cid lkey gate model usage_file offset idx id
+      for pending in "$B1353_PENDING_DIR"/*.json; do
+        [ -f "$pending" ] || continue
+        usage_file="$(jq -r '.usage_file // empty' "$pending" 2>/dev/null || true)"
+        # A cold invocation killed before it returned may not have exposed its new thread id yet.
+        # Keep that manifest until the request boundary can be identified; never guess from a
+        # cumulative terminal summary or charge it to the next invocation.
+        [ -n "$usage_file" ] && [ -f "$usage_file" ] || continue
+        cid="$(jq -r '.conduction_id' "$pending")"; lkey="$(jq -r '.leg_key' "$pending")"
+        gate="$(jq -r '.gate' "$pending")"; model="$(jq -r '.model' "$pending")"
+        offset="$(jq -r '.offset' "$pending")"; idx="$(jq -r '.index' "$pending")"; id="$(jq -r '.id' "$pending")"
+        capture="$(mktemp)"; ack="$(mktemp)"
+        node "$PLUGIN_DIR/dist/bin/harmony.js" leg-cost record --file "$capture" --gate "$gate" \
+          --leg-key "$lkey" --invocation-index "$idx" --invocation-id "$id" --conduction-id "$cid" \
+          --model "$model" --request-usage-file "$usage_file" --request-usage-offset "$offset" \
+          --is-error --ack-file "$ack" >/dev/null 2>&1 || true
+        if [ "$(cat "$ack" 2>/dev/null || true)" = "recorded" ]; then rm -f "$pending"; fi
+        rm -f "$capture" "$ack"
+      done
+    }
     _b1353_begin_request_slice() {
       [ "${AGENT_ID:-claude-code}" = "codex" ] || return 0
       local thread_id="${1:-}" f
-      [ -n "$thread_id" ] || return 0
+      [ -n "$thread_id" ] || { _b1353_save_pending; return 0; }
       for f in "$CODEX_SESSIONS_DIR"/*/*/*/rollout-*-${thread_id}.jsonl; do
         [ -f "$f" ] || continue
         B1353_REQUEST_FILE="$f"
         B1353_REQUEST_OFFSET="$(stat -c '%s' "$f" 2>/dev/null || echo unknown)"
         [[ "$B1353_REQUEST_OFFSET" =~ ^[0-9]+$ ]] || B1353_REQUEST_OFFSET=-1
+        _b1353_save_pending
         return 0
       done
+      _b1353_save_pending
     }
 
     # --- B-772 round 2: bounded in-worker model-switch loop --------------------------------------
@@ -857,7 +896,8 @@ case "$MODE" in
     # to belong to and therefore nothing to record. $1 = the capture file.
     _b916_record_invocation() {
       if [ -n "${HARMONY_CONDUCTION_ID:-}" ]; then
-        local model_args=() duration_args=() usage_args=() error_args=() invocation_id="${LEG_KEY}:${INVOCATION_INDEX}" f invocation_exit="${2:-0}"
+        local model_args=() duration_args=() usage_args=() error_args=() invocation_id="${LEG_KEY}:${INVOCATION_INDEX}" f invocation_exit="${2:-0}" ack_file
+        ack_file="$(mktemp)"
         if [ -n "$CURRENT_MODEL" ]; then
           model_args=(--model "$CURRENT_MODEL")
         fi
@@ -870,16 +910,20 @@ case "$MODE" in
           elif [ -n "$CODEX_CURRENT_THREAD" ]; then
             for f in "$CODEX_SESSIONS_DIR"/*/*/*/rollout-*-${CODEX_CURRENT_THREAD}.jsonl; do
               [ -f "$f" ] || continue
+              B1353_REQUEST_FILE="$f"; B1353_REQUEST_OFFSET=0
               usage_args=(--request-usage-file "$f" --request-usage-offset 0)
               break
             done
           fi
           [ "$invocation_exit" -eq 0 ] || error_args=(--is-error)
+          _b1353_save_pending
         fi
         node "$PLUGIN_DIR/dist/bin/harmony.js" leg-cost record \
           --file "$1" --gate "$LEG_GATE" --leg-key "$LEG_KEY" \
           --invocation-index "$INVOCATION_INDEX" --invocation-id "$invocation_id" \
-          "${model_args[@]}" "${duration_args[@]}" "${usage_args[@]}" "${error_args[@]}" >/dev/null 2>&1 || true
+          "${model_args[@]}" "${duration_args[@]}" "${usage_args[@]}" "${error_args[@]}" --ack-file "$ack_file" >/dev/null 2>&1 || true
+        if [ "$(cat "$ack_file" 2>/dev/null || true)" = "recorded" ]; then rm -f "$B1353_PENDING_FILE"; fi
+        rm -f "$ack_file"
       fi
       INVOCATION_INDEX=$((INVOCATION_INDEX + 1))
       rm -f "$1"
@@ -920,6 +964,11 @@ case "$MODE" in
     MAX_MODEL_SWITCH_ITERATIONS=7
     ITERATION=1
     LEG_EXIT=0
+
+    # Retry cost rows whose invocation already ended but whose recorder could not reach the board.
+    # The pending manifest keeps the original leg/model/gate and request byte boundary on the
+    # session volume, so a later leg cannot absorb that usage into its own row.
+    _b1353_recover_pending
 
     while :; do
       # B-1167: a stop that arrived before this iteration (before the first invocation, or between
