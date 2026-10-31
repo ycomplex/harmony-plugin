@@ -427,6 +427,11 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
    RUNNING_MODEL="$(node "${CLAUDE_PLUGIN_ROOT}/dist/bin/harmony.js" model running-model)"
    ```
 
+   If the ticket's `waiting_on` is a `model-handoff` whose `ref` equals `RUNNING_MODEL`, consume it before
+   gate work: `mcp__harmony__update_task({task_id, field_values:{waiting_on:null}})` and add
+   `WAITING-ON-CONSUMED ref=<RUNNING_MODEL>`. This prevents the daemon from applying the one-shot override
+   to later gates. Other wait kinds are untouched.
+
    **`RUNNING_MODEL` empty ⇒ skip this entire step, proceed to step 2.** An empty result means this
    deployment's launch profile never rendered `{model}` into the minted env at all (an older conductor build,
    or a profile that hasn't adopted B-772) — there is no baseline to compare against, and nothing to
@@ -456,16 +461,19 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
      Capture its stderr too: on a refusal it prints one line naming the alias, the runtime and every
      catalog row of that runtime (inactive ones marked ` (inactive)`), which the park comment below quotes.
 
-     - **Exit 0 (the switch was accepted) → END THE TURN, doing NONE of this gate's work** — compose no
-       brief, run no delegation test, make no MCP write of any kind. `container/provision.sh`'s bounded
-       switch loop (the ONLY reader of this handoff file) picks the request up right after this turn's
-       `claude` invocation exits, validates `<WANTED_MODEL>` against the LIVE model catalog itself
-       (`src/config/run-config.ts`'s `resolveModelCatalog`/`isAllowedModelAlias`, B-881 — never trust this
-       turn's own request blindly), and — if still valid at that point — cold-starts a fresh
-       `claude -p --model <WANTED_MODEL>` invocation of this SAME prompt in the SAME container, which
-       re-enters this loop at step 1 and finds `RUNNING_MODEL` now matching. Bounded at 7 iterations (one
-       per `GATES` entry, `src/daemon/gate-phase.ts`) — a tripped bound is logged by `provision.sh`, never
-       silently retried forever.
+   - **Exit 0 (the worker has an explicit handoff consumer) → declare the handoff, then END THE TURN.**
+     Write `field_values.waiting_on` with `{kind:'model-handoff', ref:<WANTED_MODEL>, since:<now ISO>,
+     first_since:<now ISO>}` using `mcp__harmony__update_task`, then add a `WAITING-ON ref=<WANTED_MODEL>`
+     comment. Do no gate work. The container consumes its local request and exits; the daemon immediately
+     launches a fresh leg with this alias in that gate's effective `run_config`, then the next pickup
+     clears `waiting_on` and continues the gate. This is an explicit consumer capability, not an adapter
+     identity check.
+   - **Exit 2 (no handoff consumer) → do not write a wait marker.** The CLI has already printed a one-line
+     warning naming the requested alias, current model and reason. Continue this gate on the current model.
+   - **Exit 1 → REFUSED.** The alias is not in the live model catalog for this runtime (an inactive offer
+     named explicitly is accepted, B-1349), B-881. Do not silently end the turn. PARK, mirroring
+     `start-work`'s build-failure path: add a comment quoting the refusal line, then
+     `mcp__harmony__advance_workflow({ task_id, activity: 'parking' })`, and end the turn.
      - **Non-zero exit (REFUSED — `<WANTED_MODEL>` is not in the live model catalog for this runtime (an
        inactive offer named explicitly is accepted, B-1349), B-881) → do
        NOT silently end the turn.** This used to just end the turn regardless of the command's exit code —

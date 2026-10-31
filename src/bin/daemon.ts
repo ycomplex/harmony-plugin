@@ -44,7 +44,7 @@ import { randomUUID } from 'node:crypto';
 
 import { HarmonyAuth } from '../auth.js';
 import { createAuthenticatedClient } from '../supabase.js';
-import { getTask } from '../tools/tasks.js';
+import { getTask, updateTask } from '../tools/tasks.js';
 import { getProject } from '../tools/project.js';
 import { listSubtasks } from '../tools/decomposition.js';
 import {
@@ -671,6 +671,13 @@ async function main(): Promise<void> {
     listConductions: (args) => listConductions(client, args),
     getTaskMeta: async (taskId) =>
       (await getTask(client, projectId, { task_id: taskId, view: 'meta' })) as unknown as DaemonTask,
+    clearModelHandoff: async (taskId, marker) => {
+      const task = (await getTask(client, projectId, { task_id: taskId, view: 'meta' })) as unknown as DaemonTask;
+      const live = task.waiting_on as { kind?: unknown; ref?: unknown; since?: unknown } | null | undefined;
+      if (live?.kind !== 'model-handoff' || live.ref !== marker.ref || live.since !== marker.since) return false;
+      await updateTask(client, projectId, { task_id: taskId, field_values: { waiting_on: null } });
+      return true;
+    },
     countNonArchivedChildren: async (taskId) => {
       const children = (await listSubtasks(client, projectId, { task_id: taskId })) as Array<{
         archived?: boolean | null;

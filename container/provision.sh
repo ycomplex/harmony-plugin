@@ -890,6 +890,9 @@ case "$MODE" in
     MAX_MODEL_SWITCH_ITERATIONS=7
     ITERATION=1
     LEG_EXIT=0
+    # B-1050: this process can persist a requested alias on the ticket and the daemon
+    # relaunches the next leg. Interactive workers omit this explicit capability.
+    export HARMONY_MODEL_HANDOFF_CONSUMER=1
 
     while :; do
       # B-1167: a stop that arrived before this iteration (before the first invocation, or between
@@ -1037,6 +1040,15 @@ case "$MODE" in
         break
       fi
       node "$PLUGIN_DIR/dist/bin/harmony.js" model clear-handoff >/dev/null 2>&1 || true
+      if [ -n "$B1167_STOP_SIGNAL" ]; then
+        LEG_EXIT="$(_b1167_stop_exit_code "$LEG_EXIT")"
+        echo "B-1167: stop received — starting no further agent invocation (exit $LEG_EXIT)." >&2
+        break
+      fi
+      if [ "${HARMONY_MODEL_HANDOFF_CONSUMER:-}" = "1" ]; then
+        echo "B-1050: model handoff to '$REQUESTED_MODEL' was recorded; ending this leg for daemon relaunch." >&2
+        break
+      fi
       echo "B-772: model-switch handoff — re-invoking claude with --model $REQUESTED_MODEL (iteration $((ITERATION + 1)) of $MAX_MODEL_SWITCH_ITERATIONS)." >&2
       CURRENT_MODEL="$REQUESTED_MODEL"
       ITERATION=$((ITERATION + 1))
