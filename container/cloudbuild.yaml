@@ -20,7 +20,7 @@
 #
 # B-1076: the image is the Dockerfile's `agent-codex` target (FROM agent), a superset carrying BOTH
 # the Claude Code and the Codex CLIs, so the single deployment worker_image serves either adapter.
-# resolve-codex-version applies the same unpinned-latest policy to @openai/codex, and smoke.sh
+# resolve-codex-version reads the committed supported pin for @openai/codex, and smoke.sh
 # requires `codex --version` to run before anything is published.
 #
 # B-1162: the Docker-capable worker image (container/docker-engine/Dockerfile, FROM the base just
@@ -52,7 +52,7 @@ steps:
       - -c
       - |
         set -euo pipefail
-        npm view @openai/codex version > /workspace/codex_version.txt
+        cat container/codex-version > /workspace/codex_version.txt
         echo "Resolved Codex version: $(cat /workspace/codex_version.txt)"
 
   - id: resolve-commit-time

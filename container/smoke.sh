@@ -100,6 +100,9 @@ if docker run --rm --entrypoint /bin/sh "$IMAGE" -c 'command -v claude >/dev/nul
     || fail "codex is not on PATH for the image's default user (the agent-codex target installs it)"
   codex_out="$(docker run --rm --entrypoint /bin/sh "$IMAGE" -c 'codex --version' 2>&1)" \
     || fail "'codex --version' does not run; got: $codex_out"
+  . "$(dirname "${BASH_SOURCE[0]}")/codex-version.sh"
+  codex_version_matches "$(dirname "${BASH_SOURCE[0]}")/codex-version" "$codex_out" \
+    || fail "'codex --version' ($codex_out) does not match the committed supported Codex version"
   baked="$(docker run --rm --entrypoint /bin/sh "$IMAGE" -c 'cat /etc/harmony-codex-version' 2>/dev/null || true)"
   case "$codex_out" in
     *"$baked"*) [ -n "$baked" ] || fail "/etc/harmony-codex-version is missing or empty" ;;
