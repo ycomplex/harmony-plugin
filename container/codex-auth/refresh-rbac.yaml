@@ -1,0 +1,7 @@
+# No Kubernetes Secret read/write permission. The owner needs only its PVC and workload identity.
+# IAM is granted on the ONE access-only Secret Manager resource, per the founder runbook.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: harmony-codex-refresh
+  namespace: harmony-conductor

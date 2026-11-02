@@ -73,8 +73,10 @@ if [ "$CODEX_RUN" = "1" ]; then
   . "$HERE/../codex-provider-launch.sh"
   codex_provider_context gke-worker-launch "$MODEL" "no Job created"
 fi
+. "$HERE/../codex-token-launch.sh"
+codex_token_context
 CODEX_LOGIN_CACHE_RUN=0
-if [ "$CODEX_RUN" = "1" ] && [ "$CODEX_PROVIDER" = "openai" ]; then CODEX_LOGIN_CACHE_RUN=1; fi
+if [ "$CODEX_RUN" = "1" ] && [ "$CODEX_PROVIDER" = "openai" ] && [ "$CODEX_TOKEN_ONLY" = 0 ]; then CODEX_LOGIN_CACHE_RUN=1; fi
 
 : "${HARMONY_GKE_NAMESPACE:=harmony-legs}"
 : "${HARMONY_GKE_BASE_SECRET:=harmony-worker-secrets}"
@@ -195,6 +197,10 @@ fi
     done
     if [ -n "$REPOS_JSON" ]; then echo "HARMONY_REPOS_JSON=$(printf '%s' "$REPOS_JSON" | base64 | tr -d '\n')"; fi
     if [ "$CODEX_LOGIN_CACHE_RUN" = "1" ]; then echo "HARMONY_CODEX_AUTH_FILE=$CODEX_AUTH_CONTAINER_PATH"; fi
+    if [ "$CODEX_TOKEN_ONLY" = 1 ]; then
+      echo "HARMONY_CODEX_TOKEN_ONLY=1"
+      echo "HARMONY_CODEX_ACCESS_RESOURCE=$HARMONY_CODEX_ACCESS_RESOURCE"
+    fi
     # B-1178: a provider leg names its provider (a NAME); the key itself is bound from its Secret by the Job.
     if [ "$CODEX_PROVIDER" != "openai" ]; then echo "HARMONY_CODEX_PROVIDER=$CODEX_PROVIDER"; fi
   } > "$LEG_ENV_FILE"

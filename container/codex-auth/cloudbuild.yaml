@@ -1,0 +1,5 @@
+# Explicit founder build; never automatically enables the suspended refresher.
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: [build, -f, container/codex-auth/Dockerfile, -t, '${_IMAGE}', .]
+images: ['${_IMAGE}']

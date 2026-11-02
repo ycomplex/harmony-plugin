@@ -322,6 +322,15 @@ case "$MODE" in
     # is unset or the file is missing. This script never opens, prints or copies that file itself,
     # and neither does anything it calls except the adapter's own byte copy.
     AGENT_ID="$(node "$PLUGIN_DIR/dist/bin/harmony.js" agent resolve)" || exit 1
+    # B-1306: the enabled path never mounts or copies a full login. Initialize access before render.
+    if [ "$AGENT_ID" = codex ] && [ "${HARMONY_CODEX_TOKEN_ONLY:-0}" = 1 ]; then
+      export CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
+      [ "$(codex --version)" = "codex-cli 0.166.0" ] || { echo 'codex-login-configuration-missing: token reload requires proven CLI 0.166.0' >&2; exit 1; }
+      node "$PLUGIN_DIR/dist/bin/codex-auth.js" worker --once || exit 1
+      export HARMONY_CODEX_AUTH_FILE="$CODEX_HOME/auth.json"
+      node "$PLUGIN_DIR/dist/bin/codex-auth.js" worker --watch &
+      B1306_UPDATER_PID=$!
+    fi
     if [ "$AGENT_ID" != "claude-code" ]; then
       RENDER_REPO_ARGS=()
       while IFS= read -r B1076_REPO_PATH; do
@@ -820,6 +829,7 @@ case "$MODE" in
         kill -s "$1" "$MODEL_SWITCH_CHILD_PID" 2>/dev/null || true
       fi
     }
+    trap '[ -z "${B1306_UPDATER_PID:-}" ] || kill "$B1306_UPDATER_PID" 2>/dev/null || true' EXIT
     trap '_b772_forward_signal TERM' TERM
     trap '_b772_forward_signal INT' INT
     # B-1149: the wall-clock duration of each invocation, measured HERE around the agent process and
@@ -868,6 +878,9 @@ case "$MODE" in
     # invocation wrote to stdout can ever be swallowed by this feature.
     _b916_echo_result() {
       [ -s "$1" ] || return 0
+      if [ "${AGENT_ID:-claude-code}" = codex ] && [ "${HARMONY_CODEX_TOKEN_ONLY:-0}" = 1 ]; then
+        node "$PLUGIN_DIR/dist/bin/codex-auth.js" check-output "$1" || exit 1
+      fi
       if jq -e 'type == "object" and has("result")' "$1" >/dev/null 2>&1; then
         jq -r '.result // ""' "$1"
       else
