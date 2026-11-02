@@ -1,3 +1,4 @@
+import { addComment } from './comments.js';
 import { type DesignArtefact, type DesignerFrame, validateDesignAttachments, validateDesignerFrameAttachments, renderDesignArtefact, renderDesignerFrames } from './design-artefact.js';
 import { encodeClaim, isSingleSentenceShaped, proposeClaim } from './knowledge-claim.js';
 import { validateRemovals, requireRemovalCapability, removalLines, type RemovalDeclaration } from './knowledge-invalidations.js';
@@ -4272,17 +4273,56 @@ export function validateResolutionProvenance(raw: unknown): string {
   );
 }
 
+/** A refusal must remain actionable even if its comment failed with an RLS/not-found error. */
+export class WorkerBriefAuthorityError extends Error {}
+
+/** B-1364: process-context guard, not a credential boundary. Never infer worker identity from
+ * actor=agent (the seat uses that too). Read context on every call, before validation or mutations. */
+async function refuseWorkerImpersonation(
+  client: SupabaseClient,
+  projectId: string,
+  task: string,
+  raw: unknown,
+  operation: 'resolve_brief' | 'reshape_brief',
+  userId?: string,
+): Promise<void> {
+  const conductionId = getConductionId();
+  if (!conductionId) return;
+  const value = typeof raw === 'string' ? raw.trim() : '';
+  // Match the validator's suffix trimming, including "agent-synthesized: orchestrator".
+  const provenance = value.startsWith(`${PROVENANCE_AGENT_SYNTHESIZED}:`)
+    ? `${PROVENANCE_AGENT_SYNTHESIZED}:${value.slice(PROVENANCE_AGENT_SYNTHESIZED.length + 1).trim()}`
+    : value;
+  if (![`${PROVENANCE_AGENT_SYNTHESIZED}:orchestrator`, PROVENANCE_HUMAN_IN_SESSION, PROVENANCE_WEB_ONLY].includes(provenance)) return;
+
+  const refusal = `${operation} refused: conduction worker '${conductionId}' cannot claim '${provenance}'. A worker may file a brief, iterate on feedback, or elicit; the seat or human must make this decision. Nothing was resolved or reshaped.`;
+  try {
+    if (!userId) throw new Error('authenticated caller user id unavailable');
+    await addComment(client, projectId, userId, {
+      task_id: task,
+      content: `WORKER-BRIEF-REFUSED operation=${operation} provenance=${provenance} conduction_id=${conductionId}\n\n${refusal}`,
+    });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message
+      : typeof error === 'object' && error !== null && 'message' in error ? String(error.message) : String(error);
+    throw new WorkerBriefAuthorityError(`${refusal} Refusal audit comment failed: ${detail}`);
+  }
+  throw new WorkerBriefAuthorityError(refusal);
+}
+
 export interface ResolveBriefArgs { task_id: string; command: string; detail?: string; remark?: string; provenance: string; }
 
 export async function resolveBrief(
   client: SupabaseClient,
   projectId: string,
   args: ResolveBriefArgs,
+  userId?: string,
 ): Promise<unknown> {
   if (!args.task_id) throw new Error('task_id is required');
   if (args.command !== 'accept' && args.command !== 'defer') {
     throw new Error('resolve_brief handles only accept/defer; edit/iterate are skill-side, expand/related are reads on get_brief');
   }
+  await refuseWorkerImpersonation(client, projectId, args.task_id, args.provenance, 'resolve_brief', userId);
   const provenance = validateResolutionProvenance(args.provenance);
   // B-883: a remark rides on ACCEPT only. A deferred ticket parks, so a remark attached to a defer would
   // sit unconsumed forever — and quietly storing it would be the very silent-loss failure this change
@@ -4432,10 +4472,12 @@ export async function reshapeBrief(
   client: SupabaseClient,
   projectId: string,
   args: ReshapeBriefArgs,
+  userId?: string,
 ): Promise<unknown> {
   if (!args.task_id) throw new Error('task_id is required');
   // Same fail-closed validator resolve_brief uses — never a second one. 'human-in-browser' is rejected
   // here too: the plugin is never the browser, and a reshape is precisely the act whose author matters.
+  await refuseWorkerImpersonation(client, projectId, args.task_id, args.provenance, 'reshape_brief', userId);
   const provenance = validateResolutionProvenance(args.provenance);
 
   // Feedback is REQUIRED, and blank is not feedback (B-883's remark convention: blank ≡ absent — here

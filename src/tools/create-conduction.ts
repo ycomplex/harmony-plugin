@@ -30,7 +30,7 @@ import {
 } from './conduction-record.js';
 import { RunConfigSchema, type RunConfig } from '../config/run-config.js';
 import { getProjectConductionDefaults, fillRunConfigDefaults } from '../config/conduction-defaults.js';
-import { assertRunConfigPolicy, assertRunConfigRuntime } from '../config/runtime-validation.js';
+import { assertRunConfigPolicy, assertRunConfigRuntime, normalizeExplicitModelRuntime } from '../config/runtime-validation.js';
 import { resolveUnparkRunConfig } from './unpark-inheritance.js';
 
 export interface CreateConductionArgs {
@@ -77,7 +77,7 @@ export async function createConduction(
   // B-743: validate run_config BEFORE the task-id resolution round-trip — a malformed payload is a
   // caller bug that should fail fast, not after an otherwise-wasted network call.
   const explicitRunConfig =
-    args.run_config !== undefined ? RunConfigSchema.parse(args.run_config) : undefined;
+    normalizeExplicitModelRuntime(args.run_config !== undefined ? RunConfigSchema.parse(args.run_config) : undefined);
   // B-925: fill in whichever run_config field the caller left absent from this project's own
   // stored conduction defaults (settings, web-side) — field-by-field, never overriding a field the
   // caller explicitly set. Tolerant of the column not existing yet (see getProjectConductionDefaults).

@@ -17,6 +17,27 @@ import {
 } from './run-config.js';
 import { getWorkspaceModelPolicy } from './model-policy.js';
 
+/** Normalize ONLY new caller options, before inheritance/defaults erase their provenance.
+ * A registered prefix supplies an omitted adapter; it never overrides an explicit one.
+ * Saved/default/per-gate model strings do not select a runtime. */
+export function normalizeExplicitModelRuntime(runConfig: RunConfig | undefined): RunConfig | undefined {
+  const model = runConfig?.model?.default;
+  if (!model) return runConfig;
+  const prefix = model.trim().split(':', 1)[0];
+  if (!model.trim().includes(':') || !hasAdapter(prefix)) return runConfig;
+  const selection = getAgentAdapter(runConfig);
+  if (!selection.ok) throw new Error(selection.error);
+  const explicitAdapter = selection.explicit;
+  if (explicitAdapter && selection.adapter !== prefix) {
+    throw new Error(
+      `Model '${model}' selects runtime '${prefix}' but explicit runtime '${selection.adapter}' conflicts — ` +
+      `use --agent ${prefix} (run_config.agent.adapter='${prefix}') or choose a model for '${selection.adapter}'`,
+    );
+  }
+  if (explicitAdapter) return runConfig;
+  return { ...runConfig, agent: { ...(runConfig?.agent as Record<string, unknown> | undefined), adapter: prefix } };
+}
+
 /** The run default and every per-gate model a run_config names (duplicates kept). */
 function requestedModels(runConfig: RunConfig): string[] {
   const requested: string[] = [];
@@ -55,9 +76,13 @@ export async function assertRunConfigRuntime(
     .map((entry) => entryModelId(entry));
   const bad = [...new Set(requested.filter((model) => !findModelEntry(model, entries, adapter, { includeInactive: true })))];
   if (bad.length > 0) {
+    const hints = bad.flatMap((model) => listAdapterIds()
+      .filter((other) => other !== adapter && findModelEntry(model, entries, other, { includeInactive: true }))
+      .map((other) => `For '${model}', did you mean --agent ${other} (run_config.agent.adapter='${other}')?`));
     throw new Error(
       `Model${bad.length > 1 ? 's' : ''} ${bad.map((m) => `'${m}'`).join(', ')} not available on runtime '${adapter}' — ` +
-        `available models for '${adapter}': ${available.length > 0 ? available.join(', ') : '(none in the catalog)'}`,
+        `available models for '${adapter}': ${available.length > 0 ? available.join(', ') : '(none in the catalog)'}` +
+        (hints.length ? ` — ${hints.join(' ')}` : ''),
     );
   }
 }
