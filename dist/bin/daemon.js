@@ -28275,17 +28275,23 @@ async function composeBrief(client, projectId, userId, args) {
     } else {
       throw new Error(revisionErr.message);
     }
+    const successorId = brief.id;
+    const couplingIds = [.../* @__PURE__ */ new Set([briefId, successorId])];
+    const checkClaimError = (error) => {
+      if (!error) return;
+      const missingColumn = /underwriting_brief_id/.test(error.message ?? "") && /(does not exist|could not find|schema cache)/i.test(error.message ?? "");
+      if (!missingColumn) throw new Error(error.message);
+    };
     if (args.underwriting_claim_ids !== void 0) {
       const kept = args.underwriting_claim_ids;
-      let prune = client.from("knowledge_decisions").update({ status: "Archived" }).eq("underwriting_brief_id", briefId).eq("status", "Asserted");
-      if (kept.length > 0) {
-        prune = prune.not("id", "in", `(${kept.join(",")})`);
-      }
-      const { error: pruneErr } = await prune;
-      if (pruneErr) {
-        const missingClaimColumn = /underwriting_brief_id/.test(pruneErr.message ?? "") && /(does not exist|could not find|schema cache|column)/i.test(pruneErr.message ?? "");
-        if (!missingClaimColumn) throw new Error(pruneErr.message);
-      }
+      let prune = client.from("knowledge_decisions").update({ status: "Archived" }).in("underwriting_brief_id", couplingIds).eq("status", "Asserted");
+      if (kept.length > 0) prune = prune.not("id", "in", `(${kept.join(",")})`);
+      const { error } = await prune;
+      checkClaimError(error);
+    }
+    if (successorId !== briefId) {
+      const { error } = await client.from("knowledge_decisions").update({ underwriting_brief_id: successorId }).eq("underwriting_brief_id", briefId).eq("status", "Asserted");
+      checkClaimError(error);
     }
   } else {
     const insertBriefRow = async () => {
