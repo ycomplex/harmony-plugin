@@ -5360,3 +5360,28 @@ describe.each(['claude-code', 'codex'] as const)('B-1251: %s question continuity
     expect(h.getConduction('cond-1').id).toBe('cond-1');
   });
 });
+
+describe('B-1363 comment-only recovery at settlement', () => {
+  it('persists a current-leg wait before classification, logs the leg and holds across passes', async () => {
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() } });
+    h.deps.recoverDeclaredWait = vi.fn(async (taskId, firedAt, now) => {
+      expect(taskId).toBe('task-1'); expect(firedAt).toBeLessThanOrEqual(now);
+      const m = { kind: 'human-step' as const, ref: 'pr#1363', since: iso(now), first_since: iso(now) };
+      h.tasks['task-1'].waiting_on = m;
+      return m;
+    });
+    await wakeAndFire(h); await h.pass();
+    expect(h.getConduction('cond-1').status).toBe('active');
+    expect(h.getConduction('cond-1').last_worker_exit_class).toBe('waiting-on');
+    expect(h.logs.some(l => l.includes('recovered comment-only WAITING-ON ref=pr#1363'))).toBe(true);
+    await h.pass(); await h.pass();
+    expect(h.launches()).toHaveLength(1);
+  });
+  it('a failed recovery retains ordinary no-progress classification', async () => {
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() } });
+    h.deps.recoverDeclaredWait = vi.fn().mockRejectedValue(new Error('unavailable'));
+    await wakeAndFire(h); await h.pass();
+    expect(h.getConduction('cond-1').status).toBe('parked');
+    expect(h.logs.some(l => l.includes('recovery failed'))).toBe(true);
+  });
+});

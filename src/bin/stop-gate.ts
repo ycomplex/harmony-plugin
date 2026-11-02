@@ -42,10 +42,10 @@ const exitCode = runStopGate({
   writeBlockCount: (sessionId, count) => {
     writeFileSync(blockCountPath(sessionId), `${count}\n`, 'utf8');
   },
-  queryRow: (taskRef) => {
+  queryRow: (taskRef, legStartedAt) => {
     const out = execFileSync(
       process.execPath,
-      [harmonyCli, '--json', 'tasks', 'clean-check', taskRef],
+      [harmonyCli, '--json', 'tasks', 'clean-check', taskRef, ...(legStartedAt ? ['--leg-started-at', legStartedAt] : [])],
       { encoding: 'utf8', timeout: CLI_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] },
     );
     return JSON.parse(out) as StopGateRow;

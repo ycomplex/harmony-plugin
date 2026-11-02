@@ -1,3 +1,4 @@
+import { recoverDeclaredWait } from '../../tools/wait.js';
 import { Command } from 'commander';
 import { listTasks, getTask, createTask, updateTask } from '../../tools/tasks.js';
 import { listSubtasks } from '../../tools/decomposition.js';
@@ -102,8 +103,13 @@ export function registerTaskCommands(program: Command): void {
   tasks.command('clean-check')
     .description('Report whether a task row is a clean place for a ticket-driving session to stop')
     .argument('<id>', 'Task ID (UUID, number, or B-123)')
-    .action(async (id) => {
+    .option('--leg-started-at <iso>', 'Current session start for comment-only wait recovery')
+    .action(async (id, opts) => {
       await runCommand(program.opts(), async (ctx) => {
+        if (opts.legStartedAt) {
+          const recovered = await recoverDeclaredWait(ctx.client, ctx.projectId, id, Date.parse(opts.legStartedAt), Date.now());
+          if (recovered) process.stderr.write(`Recovered current-session comment-only wait on ${recovered.ref}\n`);
+        }
         const task = (await getTask(ctx.client, ctx.projectId, { task_id: id, view: 'meta' })) as unknown as CleanCheckTask;
         let nonArchivedChildCount = 0;
         if (task.workflow_state === 'Decomposed') {

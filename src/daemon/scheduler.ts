@@ -230,6 +230,8 @@ export interface SchedulerDeps extends WriteRetryDeps {
   sleep(ms: number): Promise<void>;
   listConductions(args: { status?: ConductionStatus }): Promise<ConductionRecord[]>;
   getTaskMeta(taskId: string): Promise<DaemonTask>;
+  /** B-1363: persist a bounded wait inferred from this leg's standalone declaration. */
+  recoverDeclaredWait?(taskId: string, firedAtMs: number, nowMs: number): Promise<WaitingOn | null>;
   /** B-1050: clear the exact model-handoff marker after the relaunch command has been issued. */
   clearModelHandoff?(taskId: string, marker: WaitingOn): Promise<boolean>;
   countNonArchivedChildren(taskId: string): Promise<number>;
@@ -1748,6 +1750,23 @@ async function settleTrackedLaunch(
       refusal = await deps.getLastLegRefusal(row.id, iso(tracked.firedAt));
     } catch {
       refusal = null;
+    }
+  }
+
+  // B-1363: a comment-only declaration is repaired only for a successful leg that would
+  // otherwise have no wait. The classifier still owns failure/timeout/human-ball precedence.
+  if (tracked.exitCode === 0 && !tracked.timedOut && !tracked.operatorReaped &&
+      !after.stale && !after.awaiting_human_input && !after.pending_acceptance_event_id &&
+      tracked.firedAt !== undefined && deps.recoverDeclaredWait &&
+      !liveWaitingOn(waitingOnFieldValues(after), { firedAtMs: tracked.firedAt, nowMs: deps.now() })) {
+    try {
+      const recovered = await deps.recoverDeclaredWait(row.task_id, tracked.firedAt, deps.now());
+      if (recovered) {
+        after.waiting_on = recovered;
+        deps.log(`${label(row, after, deps.projectKey)}: leg ${iso(tracked.firedAt)} recovered comment-only WAITING-ON ref=${recovered.ref} as human-step`);
+      }
+    } catch (err) {
+      deps.log(`${label(row, after, deps.projectKey)}: comment-only wait recovery failed: ${String(err)}`);
     }
   }
 

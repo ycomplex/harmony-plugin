@@ -107,3 +107,26 @@ describe('strandedWorkSignal (B-1157)', () => {
     expect(strandedWorkSignal({ active_exchange: {} })).toBeNull();
   });
 });
+
+// B-1363: the same parser is used by daemon recovery and the stop-gate CLI.
+import { recoverCommentWait, waitCommentEvents } from './waiting-on.js';
+describe('comment-only declaration freshness', () => {
+  const c = (content: string, at = T0) => ({ content, created_at: iso(at) });
+  const opts = { firedAtMs: T0, nowMs: T0 + 1000 };
+  it('ignores quoted examples, fenced markers, prose, consumed and future declarations', () => {
+    const comments = [c('> WAITING-ON ref=quoted'), c('```\nWAITING-ON ref=example\n```'), c('said WAITING-ON ref=prose'), c('WAITING-ON ref=gone'), c('WAITING-ON-CONSUMED ref=gone', T0 + 1), c('WAITING-ON ref=future', T0 + 2000)];
+    expect(recoverCommentWait(comments, {}, opts)).toBeNull();
+    expect(waitCommentEvents(comments).map(e => e.ref)).toEqual(['gone', 'gone', 'future']);
+  });
+  it('rejects earlier legs and missing start evidence; chooses the latest eligible ref', () => {
+    expect(recoverCommentWait([c('WAITING-ON ref=old', T0 - 1)], {}, opts)).toBeNull();
+    expect(recoverCommentWait([c('WAITING-ON ref=x')], {}, { nowMs: T0 })).toBeNull();
+    expect(recoverCommentWait([c('WAITING-ON ref=a'), c('WAITING-ON ref=b', T0 + 1)], {}, opts)?.ref).toBe('b');
+  });
+  it('cannot reset an expired marker or a repeated same-ref comment chain', () => {
+    const comments = [c('WAITING-ON ref=pr#12')];
+    expect(recoverCommentWait(comments, marker({ first_since: iso(T0 - WAIT_CEILING_MS) }), opts)).toBeNull();
+    expect(recoverCommentWait([c('WAITING-ON ref=x', T0 - WAIT_CEILING_MS), c('WAITING-ON ref=x')], {}, opts)).toBeNull();
+    expect(recoverCommentWait([c('WAITING-ON ref=x', T0 - WAIT_CEILING_MS), c('WAITING-ON-CONSUMED ref=x', T0 - 1), c('WAITING-ON ref=x')], {}, opts)?.first_since).toBe(iso(T0));
+  });
+});

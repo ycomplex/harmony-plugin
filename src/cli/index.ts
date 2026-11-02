@@ -1,3 +1,4 @@
+import { registerWaitCommands } from './commands/wait.js';
 import { createRequire } from 'node:module';
 import { Command } from 'commander';
 import { registerAuthCommands } from './commands/auth.js';
@@ -52,6 +53,7 @@ program
 registerAuthCommands(program);
 registerFigmaCommands(program);
 registerTaskCommands(program);
+registerWaitCommands(program);
 registerDesignCommands(program);
 registerQueryCommand(program);
 registerCommentCommands(program);

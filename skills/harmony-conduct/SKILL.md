@@ -471,9 +471,8 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
      catalog row of that runtime (inactive ones marked ` (inactive)`), which the park comment below quotes.
 
    - **Exit 0 (the worker has an explicit handoff consumer) → declare the handoff, then END THE TURN.**
-     Write `field_values.waiting_on` with `{kind:'model-handoff', ref:<WANTED_MODEL>, since:<now ISO>,
-     first_since:<now ISO>}` using `mcp__harmony__update_task`, then add a `WAITING-ON ref=<WANTED_MODEL>`
-     comment. Do no gate work. The container consumes its local request and exits; the daemon immediately
+     Run `harmony wait declare --task <ticket> --kind model-handoff --ref <WANTED_MODEL>`
+     to save the marker and comment together (timestamps and retry ceiling are automatic). Do no gate work. The container consumes its local request and exits; the daemon immediately
      launches a fresh leg with this alias in that gate's effective `run_config`, then the next pickup
      clears `waiting_on` and continues the gate. This is an explicit consumer capability, not an adapter
      identity check.
