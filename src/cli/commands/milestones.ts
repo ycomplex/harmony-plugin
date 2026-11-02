@@ -65,6 +65,8 @@ export function registerMilestoneCommands(program: Command): void {
       await runCommand(program.opts(), async (ctx) =>
         shipMilestone(ctx.client, ctx.projectId, { milestone_id: id }),
         (result) => [
+          `Follow-up check: ${result.rollup_scan.scanned_host_count} tickets scanned; ${result.rollup_scan.open_rollup_count} undrained rollups.`,
+          ...result.rollup_scan.rollups.map(r => `${r.visual_id} — ${r.title}: ${r.item_count} items\n${r.items.map(i => `  [${i.tag}] ${i.id}: ${i.text}`).join('\n')}`),
           `Shipped milestone: ${result.milestone.name}`,
           `  Shipped tasks: ${result.shipped_task_count}`,
           `  Removed (non-Done) tasks: ${result.removed_tasks.length}`,

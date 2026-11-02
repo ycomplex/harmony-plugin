@@ -25,6 +25,10 @@ function createMockClient(opts: {
 
   const client: any = {
     nulledIds,
+    rpc: vi.fn().mockImplementation(async () => ({ data: {
+      schema_version: 1, scanned_host_count: opts.tasks.length, open_rollup_count: 0,
+      members: opts.tasks, rollups: [], needs_review: [],
+    }, error: null })),
     from: vi.fn((table: string) => {
       if (table === 'projects') {
         return {
@@ -243,5 +247,49 @@ describe('listMilestones', () => {
 
     expect(orderCalls).toEqual(['position', 'created_at']);
     expect(result).toEqual([{ id: 'ms-1' }]);
+  });
+});
+
+
+describe('B-1193 shared ship preflight', () => {
+  const tasks: TaskRow[] = [{ id: 't-open', title: 'Open', status: 'Backlog', workflow_state: 'Captured' }];
+  it('refuses absent, failed and incomplete scans before any writes', async () => {
+    for (const response of [
+      { data: null, error: { code: 'PGRST202' } },
+      { data: null, error: { code: '42501', message: 'Denied' } },
+      { data: { schema_version: 1 }, error: null },
+    ]) {
+      const client = createMockClient({ mode: 'opinionated', tasks });
+      client.rpc.mockResolvedValue(response);
+      await expect(shipMilestone(client, PROJECT_ID, { milestone_id: MILESTONE_ID })).rejects.toThrow();
+      expect(client.from).not.toHaveBeenCalled();
+      expect(client.nulledIds).toEqual([]);
+    }
+  });
+  it('returns all host counts/tags, including an outstanding host removed by ship', async () => {
+    const client = createMockClient({ mode: 'opinionated', tasks });
+    const scan = { schema_version: 1, scanned_host_count: 1, open_rollup_count: 1, members: tasks,
+      needs_review: [], rollups: [{ task_id: 't-open', title: 'Open', visual_id: 'B-1', comment_id: 'c',
+        rollup_key: 'key', item_count: 1, needs_review: false,
+        items: [{ id: 'one', tag: 'defer-with-trigger', text: 'After launch' }] }] };
+    client.rpc.mockResolvedValue({ data: scan, error: null });
+    const result = await shipMilestone(client, PROJECT_ID, { milestone_id: MILESTONE_ID });
+    expect(result.rollup_scan).toEqual(scan);
+    expect(result.removed_tasks[0].id).toBe('t-open');
+    expect(client.rpc).toHaveBeenCalledWith('milestone_rollup_scan', { p_project_id: PROJECT_ID, p_milestone_id: MILESTONE_ID });
+  });
+  it('refuses changed membership between scan and mutation', async () => {
+    const client = createMockClient({ mode: 'manual', tasks });
+    client.rpc.mockResolvedValueOnce({ data: { schema_version: 1, scanned_host_count: 0, open_rollup_count: 0, members: [], rollups: [], needs_review: [] }, error: null });
+    await expect(shipMilestone(client, PROJECT_ID, { milestone_id: MILESTONE_ID })).rejects.toThrow('changed');
+    expect(client.nulledIds).toEqual([]);
+    expect(client.from.mock.calls.map((c: string[]) => c[0])).not.toContain('milestones');
+  });
+  it('refuses legacy records with unknown counts', async () => {
+    const client = createMockClient({ mode: 'manual', tasks });
+    client.rpc.mockResolvedValue({ data: { schema_version: 1, scanned_host_count: 1, open_rollup_count: 0, members: tasks, rollups: [],
+      needs_review: [{ task_id: 't-open', visual_id: 'B-1', title: 'Open', comment_id: 'c', item_count: null, reason: 'Legacy' }] }, error: null });
+    await expect(shipMilestone(client, PROJECT_ID, { milestone_id: MILESTONE_ID })).rejects.toThrow('reconciliation');
+    expect(client.from).not.toHaveBeenCalled();
   });
 });
