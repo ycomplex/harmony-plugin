@@ -10,9 +10,7 @@
 // classified afterward as `last_worker_exit_class: 'operator-reap'` (classify.ts), never a new write
 // site or a new kill path.
 //
-// A request against a conduction the daemon is NOT currently tracking (already settled, parked,
-// completed, or never actually running) is harmless: the write lands, but nothing ever reads
-// `reap_requested_at` for a row with no tracked in-flight launch, so it is simply inert.
+// B-1243: paused launch-less runs now settle through conductor maintenance.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { getConduction, updateConduction, type ConductionRecord } from './conduction-record.js';
@@ -35,29 +33,35 @@ export async function requestConductionReap(
   const existing = await getConduction(client, args.conduction_id);
   if (!existing) throw new Error(`Not found: no conduction with id ${args.conduction_id}`);
 
-  const conduction = await updateConduction(client, args.conduction_id, {
-    reap_requested_at: new Date().toISOString(),
-  });
+  if (existing.status === 'completed' || existing.status === 'cancelled' || existing.reap_requested_at) {
+    return { conduction: existing, message: `Conduction ${existing.id}: already settled or reap already requested; no new request.` };
+  }
+
+  // Atomic signal after promotion; old boards retain their ordinary live-worker request path.
+  const { data, error } = await client.rpc('request_conduction_cleanup', { p_id: args.conduction_id });
+  const missing = error && ['42883', 'PGRST202'].includes(error.code ?? '') &&
+    /request_conduction_cleanup/.test(error.message ?? '');
+  if (error && !missing) throw error;
+  const conduction = missing
+    ? await updateConduction(client, args.conduction_id, { reap_requested_at: new Date().toISOString() })
+    : data?.[0] as ConductionRecord | undefined;
+  if (!conduction) throw new Error('Conduction not writable or no longer visible');
 
   return {
     conduction,
     message:
       `Reap requested for conduction ${conduction.id}. The conductor will notice on its ` +
-      "next pass (only while a launch is genuinely tracked and unsettled) and escalate the SAME " +
-      'reap sequence its own per-launch deadline uses — this call never kills the worker directly.',
+      "next pass: stop tracked work through the existing sequence, or settle a paused run with no worker. " +
+      'This call never kills the worker directly.',
   };
 }
 
 export const requestConductionReapTool = {
   name: 'request_conduction_reap',
   description:
-    "B-740: request an early reap of a hung active conduction's currently-running leg — CLI/agent " +
-    "parity with the web Conductors view's \"Reap now\" button. Sets `conductions.reap_requested_at` " +
-    'to now(); this tool NEVER performs the kill itself — the conductor remains the sole ' +
-    'process that reaps a worker, and only notices/acts on this flag while it is actively tracking ' +
-    "an in-flight launch for the conduction (a request against an already-settled/parked/completed " +
-    "conduction is harmless but inert). The eventual park is recorded as " +
-    "`last_worker_exit_class: 'operator-reap'`.",
+    'Request conductor cleanup: reap a tracked worker or settle a paused run with no worker. ' +
+    'This call only signals the conductor; it never kills workers or bypasses a live lease. ' +
+    'Already completed/cancelled runs and repeated requests are no-ops.',
   inputSchema: {
     type: 'object' as const,
     properties: {

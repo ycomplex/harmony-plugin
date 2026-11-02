@@ -565,6 +565,22 @@ describe.skipIf(!CAPABLE)('gke-worker-probe.sh', () => {
 });
 
 describe.skipIf(!CAPABLE)('gke-worker-reap.sh', () => {
+  it('B-1243: retirement waits for exact Job and pod deletion before success', () => {
+    const w=makeWorld({HARMONY_CONFIRM_WORKER_STOP:'1',STUB_PODS_SEQ:'[{"items":[]}]'});
+    expect(run(w,REAP,[CID,TICKET,'exact-job']).status).toBe(0);
+    expect(verbs(w)).toContain('-n harmony-legs delete job exact-job --ignore-not-found --cascade=foreground --wait=false');
+    expect(verbs(w)).toContain('-n harmony-legs get job exact-job --ignore-not-found -o name');
+  });
+  it.each([{STUB_STRICT_JOB_PRESENT:'1'},{STUB_STRICT_READ_FAILS:'1'},{STUB_DELETE_FAILS:'1'},
+    {STUB_PODS_SEQ:'["ERR"]'},{STUB_PODS_SEQ:'[{"items":[{"status":{"phase":"Running"}}]}]'}])(
+    'B-1243: unconfirmed shutdown fails closed (%j)', extra=>{
+      const w=makeWorld({HARMONY_CONFIRM_WORKER_STOP:'1',...extra});
+      expect(run(w,REAP,[CID,TICKET,'exact-job']).status).toBe(1);
+    });
+  it('B-1243: malformed fallback discovery cannot mean no worker',()=>{
+    const w=makeWorld({HARMONY_CONFIRM_WORKER_STOP:'1',STUB_JOBS_JSON:'garbage'});
+    expect(run(w,REAP,[CID,TICKET]).status).toBe(1);
+  });
   it('deletes only the recorded Job when an identity is available', () => {
     const w = makeWorld();
     expect(run(w, REAP, [CID, TICKET, 'leg-recorded-2']).status).toBe(0);
