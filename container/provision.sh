@@ -325,7 +325,8 @@ case "$MODE" in
     # B-1306: the enabled path never mounts or copies a full login. Initialize access before render.
     if [ "$AGENT_ID" = codex ] && [ "${HARMONY_CODEX_TOKEN_ONLY:-0}" = 1 ] && [ "${HARMONY_CODEX_PROVIDER:-openai}" = openai ]; then
       export CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
-      [ "$(codex --version)" = "codex-cli 0.166.0" ] || { echo 'codex-login-configuration-missing: token reload requires proven CLI 0.166.0' >&2; exit 1; }
+      . "$PLUGIN_DIR/container/codex-version.sh" || { echo 'codex-login-configuration-missing: supported CLI guard unavailable' >&2; exit 1; }
+      codex_version_matches "$PLUGIN_DIR/container/codex-version" "$(codex --version)" || { echo 'codex-login-configuration-missing: token reload requires the committed supported CLI' >&2; exit 1; }
       node "$PLUGIN_DIR/dist/bin/codex-auth.js" worker --once || exit 1
       node "$PLUGIN_DIR/dist/bin/codex-auth.js" worker --watch &
       B1306_UPDATER_PID=$!

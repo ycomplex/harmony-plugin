@@ -134,18 +134,14 @@ ENV HARMONY_BUILD_CONTAINER=1
 
 FROM agent AS agent-codex
 
-# B-1076: the Codex layer. Same policy as the Claude Code install above
-# (B-1074): the CLI version is NOT pinned in this file. container/cloudbuild.yaml
-# resolves the current @openai/codex release from npm at build time and passes
-# it as CODEX_VERSION, so every promote rebuild carries a current CLI; the
-# resolved version is reported by /etc/harmony-codex-version, the
-# harmony.codex_version label and provision.sh's startup echo. A bad release is
-# kept off :latest by container/smoke.sh (it runs `codex --version`).
+# B-1382: direct builds and Cloud Build use the same proven Codex pin.
+# An explicit build argument may attest that pin, never override it.
 USER root
-ARG CODEX_VERSION=latest
+ARG CODEX_VERSION
+COPY codex-version /etc/harmony-codex-supported-version
+COPY codex-version.sh /usr/local/lib/harmony-codex-version.sh
 
-RUN npm install -g @openai/codex@${CODEX_VERSION} \
-    && codex --version | awk '{print $NF}' | tee /etc/harmony-codex-version
+RUN bash -ec '. /usr/local/lib/harmony-codex-version.sh; supported="$(codex_supported_version /etc/harmony-codex-supported-version)"; test -z "${CODEX_VERSION:-}" || test "$CODEX_VERSION" = "$supported"; npm install -g "@openai/codex@$supported"; codex_version_matches /etc/harmony-codex-supported-version "$(codex --version)"; printf "%s\n" "$supported" > /etc/harmony-codex-version'
 
 LABEL harmony.codex_version="${CODEX_VERSION}"
 

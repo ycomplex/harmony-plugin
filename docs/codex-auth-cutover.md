@@ -21,6 +21,15 @@ The updater validates it and atomically installs a private file every 30 seconds
 Codex reloads it after a 401. The supported CLI is exactly **0.166.0**; a different
 version refuses the enabled path until its compatibility is proved.
 
+The single supported-version source is `container/codex-version` (B-1382).
+Cloud Build, direct Docker builds, image smoke and token-only provisioning use it.
+To upgrade deliberately: edit that one file, install that candidate CLI in an
+isolated test environment, run `node scripts/test-codex-token-reload.mjs` against
+it, then rebuild. The proof reads the same pin; its successful reload and missing-user
+negative control are mandatory. Never use a real login for this proof. Publish the
+compatible worker image before enabled legs use a checkout with the newer pin.
+This fix keeps the pin at 0.166.0 and does not enable token-only delivery.
+
 Set these names on the founder machine; none is a credential value:
 
 ```bash

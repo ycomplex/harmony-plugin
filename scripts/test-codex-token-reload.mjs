@@ -1,13 +1,16 @@
 // B-1306: no inherited login, config or secrets; all credentials below are synthetic.
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { mkdtempSync, writeFileSync, renameSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, renameSync, rmSync, readFileSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const version = spawnSync('codex', ['--version'], { encoding: 'utf8', env: { PATH: process.env.PATH } });
-assert.match(version.stdout, /\b0\.166\.0\b/, 'proof requires Codex 0.166.0');
+const supported = readFileSync(new URL('../container/codex-version', import.meta.url), 'utf8').trim();
+assert.match(supported, /^[0-9]+\.[0-9]+\.[0-9]+$/, 'supported Codex pin must be an exact version');
+assert.equal(version.status, 0, 'candidate Codex CLI must run');
+assert.equal(version.stdout.trim(), `codex-cli ${supported}`, 'proof requires the committed supported Codex CLI');
 async function scenario(withUser) {
   const home = mkdtempSync(join(tmpdir(), 'b1306-fixture-'));
   const jwt = generation => `${Buffer.from('{}').toString('base64url')}.${Buffer.from(JSON.stringify({
