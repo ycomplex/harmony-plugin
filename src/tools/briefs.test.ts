@@ -2078,7 +2078,7 @@ describe('composeBrief — B-645 elicitation-claim iterate-prune', () => {
     expect(client.update).toHaveBeenCalledWith({ status: 'Archived' });
     // Scoped to THIS brief's coupled Asserted claims (drop1 matches; keep1 is spared by the not-in;
     // an uncoupled or other-brief force-quit claim never matches the underwriting_brief_id filter).
-    expect(client.eq).toHaveBeenCalledWith('underwriting_brief_id', 'brief-1');
+    expect(client.in).toHaveBeenCalledWith('underwriting_brief_id', ['brief-1']);
     expect(client.eq).toHaveBeenCalledWith('status', 'Asserted');
     expect(client.not).toHaveBeenCalledWith('id', 'in', '(keep1)');
   });
@@ -2090,7 +2090,7 @@ describe('composeBrief — B-645 elicitation-claim iterate-prune', () => {
       underwriting_claim_ids: [],
     });
     expect(client.update).toHaveBeenCalledWith({ status: 'Archived' });
-    expect(client.eq).toHaveBeenCalledWith('underwriting_brief_id', 'brief-1');
+    expect(client.in).toHaveBeenCalledWith('underwriting_brief_id', ['brief-1']);
     expect(client.not).not.toHaveBeenCalled();
   });
 
@@ -2145,6 +2145,78 @@ describe('composeBrief — B-645 elicitation-claim iterate-prune', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────────
+describe('composeBrief — B-1383 revision coupling compatibility', () => {
+  it.each([false, true].flatMap(atomic => [undefined, [], ['keep']].map(kept => ({ atomic, kept }))))('prunes and retains across repeated revisions ($atomic / $kept)', async ({ atomic, kept }) => {
+    const claims = [
+      { id: 'keep', status: 'Asserted', underwriting_brief_id: 'prior' },
+      { id: 'drop', status: 'Asserted', underwriting_brief_id: 'prior' },
+      { id: 'foreign', status: 'Asserted', underwriting_brief_id: 'other' },
+      { id: 'accepted', status: 'Accepted', underwriting_brief_id: 'prior' },
+    ];
+    let activeId = 'prior';
+    for (const successorId of ['successor', 'third']) {
+      const client = makeClient([{ data: { id: activeId, iteration: 1 } }, { data: null }]);
+      client.rpc.mockImplementation(async () => {
+        if (atomic) for (const c of claims) {
+          if (c.status === 'Asserted' && c.underwriting_brief_id === activeId) c.underwriting_brief_id = successorId;
+        }
+        return { data: { id: successorId }, error: null };
+      });
+      const originalFrom = client.from;
+      client.from = vi.fn((table: string) => {
+        if (table !== 'knowledge_decisions') return originalFrom(table);
+        let patch: Record<string, string> = {};
+        const filters: Array<(c: typeof claims[number]) => boolean> = [];
+        const query: any = {
+          update: (value: typeof patch) => { patch = value; return query; },
+          eq: (key: keyof typeof claims[number], value: string) => { filters.push(c => c[key] === value); return query; },
+          in: (key: keyof typeof claims[number], values: string[]) => { filters.push(c => values.includes(c[key])); return query; },
+          not: (_key: string, _op: string, value: string) => { filters.push(c => !value.slice(1, -1).split(',').includes(c.id)); return query; },
+          then: (resolve: (r: unknown) => unknown) => {
+            for (const c of claims) if (filters.every(f => f(c))) Object.assign(c, patch);
+            return resolve({ error: null });
+          },
+        };
+        return query;
+      });
+      await composeBrief(client, PROJECT_ID, USER_ID, {
+        task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+        underwriting_claim_ids: kept,
+      });
+      if (kept?.length !== 0) expect(claims[0]).toMatchObject({ status: 'Asserted', underwriting_brief_id: successorId });
+      else expect(claims[0].status).toBe('Archived');
+      expect(claims[1].status).toBe(kept === undefined ? 'Asserted' : 'Archived');
+      expect(claims[2].underwriting_brief_id).toBe('other');
+      expect(claims[3]).toMatchObject({ status: 'Accepted', underwriting_brief_id: 'prior' });
+      activeId = successorId;
+    }
+  });
+
+  it('moves remaining claims even when kept-set is omitted', async () => {
+    const client = makeClient([{ data: { id: 'prior' } }, { data: null }, { data: null }], {
+      compose_brief_revision: { data: { id: 'successor' } },
+    });
+    await composeBrief(client, PROJECT_ID, USER_ID, { task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any });
+    expect(client.update).toHaveBeenCalledWith({ underwriting_brief_id: 'successor' });
+    expect(client.eq).toHaveBeenCalledWith('underwriting_brief_id', 'prior');
+    expect(client.eq).toHaveBeenCalledWith('status', 'Asserted');
+    expect(client.update).not.toHaveBeenCalledWith({ status: 'Archived' });
+  });
+
+  it.each([
+    ['column knowledge_decisions.underwriting_brief_id does not exist', false],
+    ['permission denied for table knowledge_decisions', true],
+    ['permission denied for column underwriting_brief_id', true],
+  ])('guards transfer failures narrowly: %s', async (message, rejects) => {
+    const client = makeClient([{ data: { id: 'prior' } }, { data: null, error: { message } }, { data: null }], {
+      compose_brief_revision: { data: { id: 'successor' } },
+    });
+    const run = composeBrief(client, PROJECT_ID, USER_ID, { task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any });
+    if (rejects) await expect(run).rejects.toThrow(message);
+    else await expect(run).resolves.toHaveProperty('brief.id', 'successor');
+  });
+});
+
 // B-736 — the mint-then-accept race: a claim minted moments before a fast accept could be orphaned
 // because the old first-compose path was a bare insert with no coupling at all. `compose_brief_initial`
 // inserts the brief AND couples the pre-minted claim ids in ONE transaction; a PGRST202/42883 "function
