@@ -4609,7 +4609,8 @@ describe('reshapeBrief (B-896)', () => {
     process.env.HARMONY_LEG = '2';
     try {
       const client = makeReshapeClient({ active: { id: 'brief-7', reason: 'plan-draft' } });
-      await reshape(client);
+      // B-1364: a worker can attribute a delegated decision, never a human's.
+      await reshape(client, { provenance: 'agent-synthesized:override' });
       expect(client.rpcCalls[0].params).toEqual(expect.objectContaining({
         p_source: 'rpc-typed', p_conduction_id: 'cond-xyz', p_leg: 2,
       }));

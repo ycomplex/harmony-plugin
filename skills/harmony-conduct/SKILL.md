@@ -84,6 +84,15 @@ control choice for no safety gain. Neither weakens the controlled default or the
    no-op). `balanced` and `autonomous` both permit per-run forward delegation. The dial can only *restrict*
    the per-run flag, never *expand* it.
 
+**Conduction worker authority (B-1364).** A worker never resolves or reshapes its own controlled
+brief as the orchestrator or a human. An operator note or elicitation answer saying who accepts
+is not permission to perform their decision: file the brief, iterate on feedback, or elicit, then
+pause for the named decision-maker. Never claim `agent-synthesized:orchestrator`, `human-in-session`
+or `human-in-browser` from a worker. The shared plugin handlers refuse and audit those attempts.
+Explicitly delegated gates remain the exception: follow the delegation test and owning skill's
+accept path using `agent-synthesized:<mode>` (including `override`), with all existing gate floors.
+The worker must not infer delegation from the provenance it supplies.
+
 ## State-driven and resumable — the loop's memory is the ticket row
 
 The conduct loop holds **no lifecycle state in the session**. The loop's entire memory is the ticket row
