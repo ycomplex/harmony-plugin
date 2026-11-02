@@ -68888,15 +68888,15 @@ async function assertRunConfigPolicy(client, projectId, runConfig) {
 var INHERITED_FROM_KEY = "inherited_from";
 var isPlainObject6 = (v2) => typeof v2 === "object" && v2 !== null && !Array.isArray(v2);
 function mergeRunConfig(base2, override) {
-  const merge2 = (a3, b) => {
+  const merge2 = (a3, b, root = false) => {
     const out = { ...a3 };
     for (const [key, value] of Object.entries(b)) {
       if (value === void 0) continue;
-      out[key] = isPlainObject6(value) && isPlainObject6(out[key]) ? merge2(out[key], value) : value;
+      out[key] = !(root && key === "model") && isPlainObject6(value) && isPlainObject6(out[key]) ? merge2(out[key], value) : value;
     }
     return out;
   };
-  return RunConfigSchema.parse(merge2(base2, override ?? {}));
+  return RunConfigSchema.parse(merge2(base2, override ?? {}, true));
 }
 async function resolveUnparkRunConfig(client, taskId, args) {
   if (!args.unpark) return args.explicit;

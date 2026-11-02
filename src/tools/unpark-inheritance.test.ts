@@ -1,5 +1,6 @@
 // B-1274: unpark inherits the previous conduction's run_config.
 
+import { getModelForGate } from '../config/run-config.js';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mergeRunConfig, resolveUnparkRunConfig, INHERITED_FROM_KEY } from './unpark-inheritance.js';
 
@@ -81,15 +82,73 @@ describe('resolveUnparkRunConfig', () => {
 });
 
 describe('mergeRunConfig', () => {
-  it('replaces arrays and scalars, deep-merges objects, and ignores undefined overrides', () => {
+  it('replaces model selection, arrays and scalars, and ignores undefined overrides', () => {
     const merged = mergeRunConfig(
       { model: { default: 'a', per_gate: { plan: 'b' } }, auto_approve_gates: ['plan', 'build'], note: 'x' } as never,
       { model: { per_gate: { build: 'c' } }, auto_approve_gates: [], note: undefined } as never,
     );
     expect(merged).toEqual({
-      model: { default: 'a', per_gate: { plan: 'b', build: 'c' } },
+      model: { per_gate: { build: 'c' } },
       auto_approve_gates: [],
       note: 'x',
     });
+  });
+});
+
+
+describe('B-1352 model selection boundary', () => {
+  const base = {
+    model: { default: 'old', per_gate: { plan: 'old-plan', build: 'old-build' } },
+    session_resume: { enabled: true },
+    extension: { model: { first: 1 } },
+    inherited_from: 'cond-old',
+  };
+
+  it.each([
+    { default: 'new' },
+    { per_gate: { build: 'new-build' } },
+    { default: 'new', per_gate: { build: 'new-build' } },
+    {},
+  ])('replaces the complete top-level selection with %j without mutating inputs', model => {
+    const snapshot = structuredClone(base);
+    const override = { model, session_resume: { enabled: false }, extension: { model: { second: 2 } } };
+    const overrideSnapshot = structuredClone(override);
+    expect(mergeRunConfig(base, override)).toEqual({
+      ...base, model, session_resume: { enabled: false },
+      extension: { model: { first: 1, second: 2 } },
+    });
+    expect(base).toEqual(snapshot);
+    expect(override).toEqual(overrideSnapshot);
+  });
+
+  it.each([undefined, {}, { model: undefined }, { note: 'changed' }])('inherits omitted model with override %j', override => {
+    expect(mergeRunConfig(base, override).model).toEqual(base.model);
+  });
+
+  it('retains schema validation for invalid explicit model settings', () => {
+    expect(() => mergeRunConfig(base, { model: null } as never)).toThrow();
+  });
+
+  it('replaces saved per-gate settings and stamps the immediate source conduction', async () => {
+    mocks.listConductions.mockResolvedValue([{ ...previous, run_config: { ...previous.run_config, model: base.model } }]);
+    const result = await resolveUnparkRunConfig(clientFor('Parked'), 't1', {
+      unpark: true, explicit: { model: { default: 'new' } },
+    });
+    expect(result).toEqual({ ...previous.run_config, model: { default: 'new' }, inherited_from: 'cond-old' });
+  });
+});
+
+
+describe('B-1352 effective gate choices', () => {
+  const base = { model: { default: 'old', per_gate: { plan: 'old-plan' } } };
+  it('uses a new default for both previously overridden and other gates', () => {
+    const merged = mergeRunConfig(base, { model: { default: 'new' } });
+    expect(getModelForGate(merged, 'plan', {})).toBe('new');
+    expect(getModelForGate(merged, 'build', {})).toBe('new');
+  });
+  it('uses only supplied per-gate choices and normal fallback for omitted gates', () => {
+    const merged = mergeRunConfig(base, { model: { per_gate: { build: 'new-build' } } });
+    expect(getModelForGate(merged, 'build', {})).toBe('new-build');
+    expect(getModelForGate(merged, 'plan', {})).toBe(getModelForGate({}, 'plan', {}));
   });
 });
