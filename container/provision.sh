@@ -956,7 +956,7 @@ case "$MODE" in
           stderr_args=(--stderr-file "$2")
         fi
         node "$PLUGIN_DIR/dist/bin/harmony.js" leg-output record \
-          --file "$1" --source worker --leg-key "$LEG_KEY" --gate "$LEG_GATE" \
+          --file "$1" --source worker --agent "${AGENT_ID:-claude-code}" --leg-key "$LEG_KEY" --gate "$LEG_GATE" \
           "${stderr_args[@]}" >/dev/null 2>&1 || true
       fi
     }

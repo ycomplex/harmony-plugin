@@ -8,6 +8,7 @@
 // on tracing that would print it. Each rule has a positive control.
 
 import { describe, it, expect } from 'vitest';
+import { prepareStoredOutput } from '../cli/commands/leg-output.js';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -84,7 +85,10 @@ describe('no script or source reads, cats or logs the Codex login cache', () => 
   it('the recorded-output path redacts bearer / refresh-token shapes before bounding the tail', () => {
     const src = readFileSync(join(ROOT, 'src/cli/commands/leg-output.ts'), 'utf8');
     expect(src).toContain("from '../../agents/redaction.js'");
-    expect(src).toMatch(/const storedText = redactSecrets\(/);
+    const output = prepareStoredOutput('x'.repeat(70000) + ' Bearer secret123456789', '', 'codex');
+    expect(output.tail).toContain('Bearer [REDACTED]');
+    expect(output.tail).not.toContain('secret123456789');
+    expect(Buffer.byteLength(output.tail)).toBeLessThanOrEqual(64 * 1024);
   });
 
   it('the adapter resolves the credential from env without opening the file', () => {
