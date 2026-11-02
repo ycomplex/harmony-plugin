@@ -457,4 +457,24 @@ describe('B-1374 CLI runtime-prefix creation boundary', () => {
     await expect(run(['conduct', 'B-1374', '--unpark'])).rejects.toBeInstanceOf(ExitSentinel);
     expect(mocks.createConduction).not.toHaveBeenCalled();
   });
+
+  it('B-1352 --model replaces saved per-gate choices after runtime inference', async () => {
+    mocks.resolveUnparkRunConfig.mockResolvedValue({
+      agent: { adapter: 'claude-code' },
+      model: { default: 'claude-opus-5', per_gate: { plan: 'claude-opus-5' } },
+      note: 'saved', inherited_from: 'cond-old',
+    });
+    await run(['conduct', 'B-1352', '--unpark', '--model', 'codex:gpt-6.1-sol']);
+    expect(mocks.createConduction.mock.calls[0][1].run_config).toEqual({
+      agent: { adapter: 'codex' }, model: { default: 'codex:gpt-6.1-sol' },
+      note: 'saved', inherited_from: 'cond-old',
+    });
+  });
+
+  it('B-1352 an unrelated flag preserves the saved model selection', async () => {
+    const model = { default: 'claude-opus-5', per_gate: { plan: 'claude-opus-5' } };
+    mocks.resolveUnparkRunConfig.mockResolvedValue({ model, note: 'saved', inherited_from: 'cond-old' });
+    await run(['conduct', 'B-1352', '--unpark', '--no-session-resume']);
+    expect(mocks.createConduction.mock.calls[0][1].run_config).toMatchObject({ model, note: 'saved', session_resume: { enabled: false }, inherited_from: 'cond-old' });
+  });
 });

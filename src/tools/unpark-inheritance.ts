@@ -19,19 +19,23 @@ export const INHERITED_FROM_KEY = 'inherited_from';
 const isPlainObject = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
 
-/** Deep-merge `override` over `base`: plain objects merge key by key, everything else (scalars,
+/** Merge `override` over `base`: an explicit top-level model replaces the whole selection.
+ *  Other plain objects merge key by key, everything else (scalars,
  *  arrays — so a caller can drop a gate by passing a shorter list) is replaced. `undefined` in the
  *  override never clobbers the base. */
 export function mergeRunConfig(base: RunConfig, override: RunConfig | undefined): RunConfig {
-  const merge = (a: Record<string, unknown>, b: Record<string, unknown>): Record<string, unknown> => {
+  const merge = (a: Record<string, unknown>, b: Record<string, unknown>, root = false): Record<string, unknown> => {
     const out: Record<string, unknown> = { ...a };
     for (const [key, value] of Object.entries(b)) {
       if (value === undefined) continue;
-      out[key] = isPlainObject(value) && isPlainObject(out[key]) ? merge(out[key] as Record<string, unknown>, value) : value;
+      // Model choices form one selection; only unrelated objects merge recursively.
+      out[key] = !(root && key === 'model') && isPlainObject(value) && isPlainObject(out[key])
+        ? merge(out[key] as Record<string, unknown>, value)
+        : value;
     }
     return out;
   };
-  return RunConfigSchema.parse(merge(base as Record<string, unknown>, (override ?? {}) as Record<string, unknown>));
+  return RunConfigSchema.parse(merge(base as Record<string, unknown>, (override ?? {}) as Record<string, unknown>, true));
 }
 
 /** For an explicit unpark of a Parked ticket, the run_config the new conduction should carry: the
