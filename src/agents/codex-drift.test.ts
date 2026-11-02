@@ -1,7 +1,7 @@
 // B-1076 drift guard for the Codex adapter, in two halves.
 //
 // A. SCRIPTS (always runs): the Dockerfile / cloudbuild / smoke / provision / launcher text still agree with
-//    the adapter — the unpinned `CODEX_VERSION` policy, base and `agent` staying Codex-free, the mount
+//    the adapter — the shared supported Codex pin policy, base and `agent` staying Codex-free, the mount
 //    targets pre-created worker-owned, the launch going THROUGH the adapter, the env allowlist. Each check
 //    is a pure function of the file text with a positive control proving it catches a mutation.
 //
@@ -68,9 +68,10 @@ function dockerfileProblems(d: string): string[] {
   const p: string[] = [];
   const codex = stage(d, 'agent-codex');
   if (!/^FROM agent AS agent-codex\s*$/m.test(d)) p.push('no `FROM agent AS agent-codex` stage (the superset must build on `agent`)');
-  if (!/^ARG CODEX_VERSION=latest\s*$/m.test(codex)) p.push('CODEX_VERSION must default to `latest` (B-1074 policy: resolved at build time, never pinned in the file)');
+  if (!/^ARG CODEX_VERSION\s*$/m.test(codex)) p.push('CODEX_VERSION must defer to the shared supported pin by default');
   if (/CODEX_VERSION=\d/.test(d)) p.push('CODEX_VERSION is pinned to an exact version in the Dockerfile');
-  if (!codex.includes('npm install -g @openai/codex@${CODEX_VERSION}')) p.push('the stage does not install @openai/codex@${CODEX_VERSION}');
+  if (!codex.includes('npm install -g "@openai/codex@$supported"')) p.push('the stage does not install the supported Codex version');
+  if (!codex.includes('COPY codex-version /etc/harmony-codex-supported-version')) p.push('shared supported pin is not copied');
   if (!codex.includes('/etc/harmony-codex-version')) p.push('the resolved version is not written to /etc/harmony-codex-version');
   if (!/LABEL harmony\.codex_version="\$\{CODEX_VERSION\}"/.test(codex)) p.push('no harmony.codex_version label');
   for (const dir of ['/home/worker/.codex/sessions', '/home/worker/.codex-auth-src']) {
@@ -89,7 +90,7 @@ function dockerfileProblems(d: string): string[] {
 
 function cloudbuildProblems(c: string): string[] {
   const p: string[] = [];
-  if (!c.includes('npm view @openai/codex version > /workspace/codex_version.txt')) p.push('no resolve-codex-version step');
+  if (!c.includes('cat container/codex-version > /workspace/codex_version.txt')) p.push('no resolve-codex-version step');
   if (!c.includes('--build-arg CODEX_VERSION="$(cat /workspace/codex_version.txt)"')) p.push('CODEX_VERSION is not passed as a build-arg');
   if (!c.includes('--target agent-codex')) p.push('the image is not built from the agent-codex target');
   if (!/container\/smoke\.sh/.test(c)) p.push('the smoke gate is gone');
@@ -172,10 +173,10 @@ function envProblems(cloudLaunch: string): string[] {
 }
 
 describe('scripts ⇄ Codex adapter drift', () => {
-  it('Dockerfile: agent-codex is FROM agent, unpinned, version-reporting, ~/.codex pre-created; base and agent stay Codex-free', () => {
+  it('Dockerfile: agent-codex is FROM agent, shared-pin version-reporting, ~/.codex pre-created; base and agent stay Codex-free', () => {
     expect(dockerfileProblems(DOCKERFILE)).toEqual([]);
   });
-  it('cloudbuild: resolves @openai/codex at build time, passes CODEX_VERSION, builds the agent-codex target, keeps the smoke gate', () => {
+  it('cloudbuild: reads the supported @openai/codex pin at build time, passes CODEX_VERSION, builds the agent-codex target, keeps the smoke gate', () => {
     expect(cloudbuildProblems(CLOUDBUILD)).toEqual([]);
   });
   it('smoke.sh: runs codex --version and checks the adapter\'s flags against `codex exec --help`', () => {
@@ -206,7 +207,7 @@ describe('scripts ⇄ Codex adapter drift', () => {
 
 describe('Codex drift checks catch a mutation (positive controls)', () => {
   it.each<[string, () => string[]]>([
-    ['Dockerfile: CODEX_VERSION pinned', () => dockerfileProblems(DOCKERFILE.replace('ARG CODEX_VERSION=latest', 'ARG CODEX_VERSION=0.163.0'))],
+    ['Dockerfile: CODEX_VERSION pinned', () => dockerfileProblems(DOCKERFILE.replace('ARG CODEX_VERSION\n', 'ARG CODEX_VERSION=0.163.0\n'))],
     ['Dockerfile: codex leaks into agent', () => dockerfileProblems(DOCKERFILE.replace('ARG CLAUDE_CODE_VERSION=latest', 'ARG CLAUDE_CODE_VERSION=latest\nRUN npm i -g @openai/codex'))],
     ['Dockerfile: ~/.codex not pre-created', () => dockerfileProblems(DOCKERFILE.split('/home/worker/.codex/sessions').join('/home/worker/.codex-x'))],
     ['Dockerfile: stage no longer FROM agent', () => dockerfileProblems(DOCKERFILE.replace('FROM agent AS agent-codex', 'FROM base AS agent-codex'))],
