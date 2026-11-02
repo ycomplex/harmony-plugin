@@ -1,0 +1,58 @@
+# Founder applies only AFTER promotion. Replace image with the reviewed worker digest first.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: harmony-codex-refresh
+  namespace: harmony-conductor
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: harmony-codex-refresh
+  namespace: harmony-conductor
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: harmony-codex-refresh
+  namespace: harmony-conductor
+spec:
+  suspend: true
+  schedule: '* * * * *'
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 90
+      template:
+        spec:
+          serviceAccountName: harmony-codex-refresh
+          restartPolicy: Never
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+          containers:
+            - name: refresh
+              # Deliberately unusable until the founder pins a reviewed image containing this bundle.
+              image: REPLACE_WITH_REVIEWED_WORKER_IMAGE_DIGEST
+              command: [node, /app/codex-auth.mjs, owner]
+              env:
+                - name: HARMONY_CODEX_TOKEN_ONLY
+                  value: '1'
+                - name: HARMONY_CODEX_AUTH_OWNER_DIR
+                  value: /private/codex-owner
+                - name: HARMONY_CODEX_ACCESS_RESOURCE
+                  value: projects/REPLACE_PROJECT/secrets/harmony-codex-access
+              volumeMounts:
+                - name: owner
+                  mountPath: /private/codex-owner
+          volumes:
+            - name: owner
+              persistentVolumeClaim:
+                claimName: harmony-codex-refresh

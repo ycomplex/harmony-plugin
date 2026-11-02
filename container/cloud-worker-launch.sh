@@ -168,6 +168,9 @@ fi
 # `harmony agent render` refuses after a full cold start, so refusing here costs nothing. The parse is
 # best-effort over `gcloud run jobs describe --format=json` (a secret volume whose mount path is the
 # copy-in source dir); a describe that fails is also a refusal — the mount cannot be confirmed.
+. "$(dirname "${BASH_SOURCE[0]}")/codex-token-launch.sh"
+codex_token_context
+
 if [ "$CODEX_RUN" = "1" ]; then
   set +e
   JOB_DESCRIBE_JSON="$(gcloud run jobs describe "$HARMONY_CLOUD_RUN_JOB" --region="$HARMONY_CLOUD_RUN_REGION" --format=json 2>/dev/null)"
@@ -182,6 +185,12 @@ if [ "$CODEX_RUN" = "1" ]; then
   if [ "$CODEX_PROVIDER" != "openai" ]; then
     if ! printf '%s\n' "$JOB_SECRET_ENV" | grep -qxF "$CODEX_PROVIDER_ENV_KEY=$CODEX_PROVIDER_SECRET"; then
       echo "cloud-worker-launch: Refusing to start: this run's model is served by provider '$CODEX_PROVIDER' but Cloud Run job $HARMONY_CLOUD_RUN_JOB does not bind $CODEX_PROVIDER_ENV_KEY from secret $CODEX_PROVIDER_SECRET — run 'gcloud run jobs update $HARMONY_CLOUD_RUN_JOB --update-secrets=$CODEX_PROVIDER_ENV_KEY=$CODEX_PROVIDER_SECRET:latest' (container/README.md \"Provider API key runbook\", Cloud). No execution started" >&2
+      exit 1
+    fi
+  elif [ "$CODEX_TOKEN_ONLY" = 1 ]; then
+    # The founder must remove the full-login volume before enabling the new path.
+    if printf '%s' "$JOB_DESCRIBE_JSON" | grep -q 'harmony-codex-auth'; then
+      echo "codex-login-configuration-missing: remove the legacy login mount before token-only delivery" >&2
       exit 1
     fi
   else
@@ -445,7 +454,9 @@ write_exec_env_file() {
       # B-1076: a Codex leg's login-cache PATH (never the secret) — the job's secret volume puts the file
       # there; provision.sh's `harmony agent render` copies it into ~/.codex.
       # B-1178: a provider leg gets its provider's NAME instead (its key is the job's secret env).
-      if [ "${CODEX_RUN:-0}" = "1" ] && [ "${CODEX_PROVIDER:-openai}" = "openai" ]; then
+      if [ "${CODEX_TOKEN_ONLY:-0}" = 1 ]; then
+        printf 'HARMONY_CODEX_TOKEN_ONLY: "1"\nHARMONY_CODEX_ACCESS_RESOURCE: "%s"\n' "$HARMONY_CODEX_ACCESS_RESOURCE"
+      elif [ "${CODEX_RUN:-0}" = "1" ] && [ "${CODEX_PROVIDER:-openai}" = "openai" ]; then
         printf 'HARMONY_CODEX_AUTH_FILE: "%s"\n' "$CODEX_AUTH_CONTAINER_PATH"
       fi
       if [ "${CODEX_RUN:-0}" = "1" ] && [ "${CODEX_PROVIDER:-openai}" != "openai" ]; then
