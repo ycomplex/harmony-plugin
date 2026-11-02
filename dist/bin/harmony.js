@@ -61838,6 +61838,54 @@ function registerLabelCommands(program3) {
   });
 }
 
+// src/tools/milestone-rollup-scan.ts
+var member = external_exports.object({ id: external_exports.string(), title: external_exports.string(), status: external_exports.string(), workflow_state: external_exports.string().nullable() });
+var rollup = external_exports.object({
+  task_id: external_exports.string(),
+  visual_id: external_exports.string(),
+  title: external_exports.string(),
+  comment_id: external_exports.string(),
+  rollup_key: external_exports.string(),
+  item_count: external_exports.number().int().nonnegative().nullable(),
+  needs_review: external_exports.boolean(),
+  items: external_exports.array(external_exports.object({ id: external_exports.string(), tag: external_exports.enum(["do-now", "defer-with-trigger", "drop"]), text: external_exports.string() }))
+});
+var scanSchema = external_exports.object({
+  schema_version: external_exports.literal(1),
+  scanned_host_count: external_exports.number().int().nonnegative(),
+  open_rollup_count: external_exports.number().int().nonnegative(),
+  rollups: external_exports.array(rollup),
+  members: external_exports.array(member),
+  needs_review: external_exports.array(external_exports.object({
+    task_id: external_exports.string(),
+    visual_id: external_exports.string(),
+    title: external_exports.string(),
+    comment_id: external_exports.string(),
+    item_count: external_exports.null(),
+    reason: external_exports.string()
+  }))
+});
+var RollupScanUnavailable = class extends Error {
+  constructor() {
+    super("The follow-up check is not yet available in this environment. Retry after deployment.");
+  }
+};
+function parseRollupScan(data) {
+  const scan = scanSchema.parse(data);
+  if (scan.scanned_host_count !== scan.members.length || scan.open_rollup_count !== scan.rollups.length || new Set(scan.members.map((m) => m.id)).size !== scan.members.length || scan.rollups.some((r) => !scan.members.some((m) => m.id === r.task_id) || !r.needs_review && r.item_count !== r.items.length)) throw new Error("Incomplete follow-up check");
+  return scan;
+}
+function scanNeedsReview(scan) {
+  return scan.needs_review.length > 0 || scan.rollups.some((r) => r.needs_review || r.item_count === null);
+}
+function scanToken(scan) {
+  return JSON.stringify(scan);
+}
+function scanError(error2) {
+  if (error2.code === "PGRST202") throw new RollupScanUnavailable();
+  throw new Error(error2.message || "Follow-up check failed");
+}
+
 // src/tools/milestones.ts
 async function listMilestones(client, projectId, args) {
   let query = client.from("milestones").select("*").eq("project_id", projectId).order("position").order("created_at");
@@ -61868,22 +61916,38 @@ async function updateMilestone(client, projectId, args) {
   return data;
 }
 async function shipMilestone(client, projectId, args) {
-  const { data: project } = await client.from("projects").select("custom_statuses, mode").eq("id", projectId).single();
+  const { data: rawScan, error: scanFailure } = await client.rpc("milestone_rollup_scan", {
+    p_project_id: projectId,
+    p_milestone_id: args.milestone_id
+  });
+  if (scanFailure) scanError(scanFailure);
+  const rollupScan = parseRollupScan(rawScan);
+  if (scanNeedsReview(rollupScan)) throw new Error("Follow-up records need reconciliation before shipping: " + JSON.stringify(rollupScan));
+  const { data: project, error: projectError } = await client.from("projects").select("custom_statuses, mode").eq("id", projectId).single();
+  if (projectError) throw projectError;
   const statuses = project?.custom_statuses ?? ["Backlog", "To Do", "In Progress", "In Review", "Done"];
   const doneStatus = statuses[statuses.length - 1];
   const isOpinionated = project?.mode === "opinionated";
-  const { data: tasks } = await client.from("tasks").select("id, status, title, workflow_state").eq("milestone_id", args.milestone_id);
+  const tasks = rollupScan.members;
   const isDone = (t) => isOpinionated ? t.workflow_state === "Verified" || t.status === doneStatus : t.status === doneStatus;
   const isCancelled = (t) => isOpinionated && t.workflow_state === "Cancelled";
   const outstanding = (tasks ?? []).filter((t) => !isDone(t) && !isCancelled(t));
   const resolved = (tasks ?? []).filter((t) => isDone(t) || isCancelled(t));
+  const { data: freshRaw, error: freshError } = await client.rpc("milestone_rollup_scan", {
+    p_project_id: projectId,
+    p_milestone_id: args.milestone_id
+  });
+  if (freshError) scanError(freshError);
+  if (scanToken(parseRollupScan(freshRaw)) !== scanToken(rollupScan)) throw new Error("Follow-up check changed; retry shipping to review the latest result.");
   if (outstanding.length > 0) {
-    await client.from("tasks").update({ milestone_id: null }).in("id", outstanding.map((t) => t.id));
+    const { error: unlinkError } = await client.from("tasks").update({ milestone_id: null }).in("id", outstanding.map((t) => t.id));
+    if (unlinkError) throw unlinkError;
   }
   const { data, error: error2 } = await client.from("milestones").update({ status: "shipped", shipped_at: (/* @__PURE__ */ new Date()).toISOString() }).eq("id", args.milestone_id).select().single();
   if (error2) throw error2;
   return {
     milestone: data,
+    rollup_scan: rollupScan,
     shipped_task_count: resolved.length,
     retained_cancelled_count: resolved.filter(isCancelled).length,
     removed_tasks: outstanding.map((t) => ({ id: t.id, title: t.title, status: t.status }))
@@ -61937,6 +62001,9 @@ function registerMilestoneCommands(program3) {
       program3.opts(),
       async (ctx) => shipMilestone(ctx.client, ctx.projectId, { milestone_id: id }),
       (result) => [
+        `Follow-up check: ${result.rollup_scan.scanned_host_count} tickets scanned; ${result.rollup_scan.open_rollup_count} undrained rollups.`,
+        ...result.rollup_scan.rollups.map((r) => `${r.visual_id} \u2014 ${r.title}: ${r.item_count} items
+${r.items.map((i) => `  [${i.tag}] ${i.id}: ${i.text}`).join("\n")}`),
         `Shipped milestone: ${result.milestone.name}`,
         `  Shipped tasks: ${result.shipped_task_count}`,
         `  Removed (non-Done) tasks: ${result.removed_tasks.length}`

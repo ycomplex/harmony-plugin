@@ -1597,3 +1597,7 @@ surface tags onto the ticket's referenced entries and preserves existing ticket 
 metadata-free operations too, so it does not wait for a production schema promote. On failure retain
 the exact invocation as a release failure to fix before verification; never claim tags were derived
 without verified paths. Compose release with repository-prefixed `changed_paths` for the same mapping.
+
+## Follow-up comment protocol (B-1193)
+
+When buffering or draining findings, follow `skills/harmony-shared/disposition-discipline.md`'s exact append-only versioned protocol: first line `Follow-ups rollup v1 id=<key>`, full item snapshot `- [do-now|defer-with-trigger|drop] id=<item-key> <text>` (choose exactly one tag); drain first line `Follow-ups rollup drained v1 id=<key>` with each item's terminal disposition and evidence. Preserve rollup/item keys, replace snapshots by appending, and use a new rollup key after drain. Never rewrite another author's comment. A split umbrella, decision-only, Parked or Cancelled host has no release gate: route to a live release-bearing ticket whose gate is next or drain as the host leaves the flow. Resolve legacy/malformed records explicitly. Keep the four outcomes and drain → surface → verify unchanged; surface the drained buffer on the release brief.

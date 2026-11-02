@@ -1080,3 +1080,7 @@ Follow `skills/harmony-shared/knowledge-discipline.md` §Scope, vocabulary and s
 knowledge writes: new entries declare product/deployment scope, authored tags use the explicit project
 vocabulary, type is advisory, and composed entries carry `doc.knowledge_scope`. Keep legacy operations
 usable before schema promotion; never drop an explicitly requested scope or filter on error.
+
+## Follow-up comment protocol (B-1193)
+
+When buffering or draining findings, follow `skills/harmony-shared/disposition-discipline.md`'s exact append-only versioned protocol: first line `Follow-ups rollup v1 id=<key>`, full item snapshot `- [do-now|defer-with-trigger|drop] id=<item-key> <text>` (choose exactly one tag); drain first line `Follow-ups rollup drained v1 id=<key>` with each item's terminal disposition and evidence. Preserve rollup/item keys, replace snapshots by appending, and use a new rollup key after drain. Never rewrite another author's comment. A split umbrella, decision-only, Parked or Cancelled host has no release gate: route to a live release-bearing ticket whose gate is next or drain as the host leaves the flow. Resolve legacy/malformed records explicitly. Keep the four outcomes and drain → surface → verify unchanged; surface the drained buffer on the release brief.

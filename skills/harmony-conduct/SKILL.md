@@ -1770,3 +1770,7 @@ Browser auto-pickup (B-485) is **orthogonal and equally non-decisional**:
 - **Skills reading the dial generally** (F5 / B-355): the dial mirror here exists for the conduct loop's
   cautious kill-switch; a shared/db-driven trust source replaces the hand-maintained mirror in
   `src/tools/trust-model.ts` (see its drift-sync note) later.
+
+## Follow-up comment protocol (B-1193)
+
+When buffering or draining findings, follow `skills/harmony-shared/disposition-discipline.md`'s exact append-only versioned protocol: first line `Follow-ups rollup v1 id=<key>`, full item snapshot `- [do-now|defer-with-trigger|drop] id=<item-key> <text>` (choose exactly one tag); drain first line `Follow-ups rollup drained v1 id=<key>` with each item's terminal disposition and evidence. Preserve rollup/item keys, replace snapshots by appending, and use a new rollup key after drain. Never rewrite another author's comment. A split umbrella, decision-only, Parked or Cancelled host has no release gate: route to a live release-bearing ticket whose gate is next or drain as the host leaves the flow. Resolve legacy/malformed records explicitly. Keep the four outcomes and drain → surface → verify unchanged; surface the drained buffer on the release brief.

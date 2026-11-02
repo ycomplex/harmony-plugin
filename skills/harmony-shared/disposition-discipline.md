@@ -6,10 +6,26 @@ When you work a ticket through a gate (build, release, code-review) you will sur
 
 **1. Fix-first.** If the item is trivial, in-scope, or fixable in the same PR → **fix it inline now** (or record an explicit human waiver not to). The default for a small adjacent item discovered mid-build is to fix it in the same PR, not file it.
 
-**2. Otherwise → accumulate it in the per-parent "Follow-ups rollup" (a within-run buffer).** Do NOT create a ticket yet. The rollup is a single consolidated **comment** on the ticket being worked (`add_comment`), posted by the **main session** at the release gate, alongside the B-560 build-evidence comments. Accumulate follow-ups in-session and tag each with a *working* tag:
-- `do-now` — fixed this run/PR;
-- `defer-with-trigger` — revisit when <condition>;
-- `drop` — won't do (record why).
+**2. Otherwise → accumulate on a live host that WILL reach a release gate.** Split umbrellas, decision-only hosts completing at a deliverable gate, Parked and Cancelled tickets cannot host the buffer. Route findings to the live release-bearing ticket whose gate is next, or drain them as the host leaves the flow. Verify that destination is live with `get_task`. This is one no-release-gate rule, not per-class lifecycle machinery; umbrella auto-advance is unchanged.
+
+Use append-only `add_comment` snapshots with this exact first-line protocol (no Markdown heading prefix):
+
+```text
+Follow-ups rollup v1 id=<key>
+- [do-now] id=<item-key> <text>
+- [defer-with-trigger] id=<item-key> <text including trigger>
+- [drop] id=<item-key> <text including reason>
+```
+
+Keys contain lowercase letters, digits and hyphens, beginning with a letter or digit. Each item ID is unique within its full snapshot. Working tags mean fixed this run (`do-now`), revisit when the stated condition occurs (`defer-with-trigger`), or won't do with a reason (`drop`). Updating a buffer appends a complete replacement snapshot with the same rollup key. Never rewrite another author's comment.
+
+To drain, append a comment whose first line is exactly:
+
+```text
+Follow-ups rollup drained v1 id=<key>
+```
+
+Follow that line with every item ID, one terminal disposition and its evidence/destination or drop reason. The latest event by `(created_at, comment UUID)` for the same host plus rollup key wins. A drain for another key closes nothing. New findings after a drain use a new key. Legacy/malformed rollup-looking headings require explicit reconciliation of their source comments; never treat unknown counts as zero or silently auto-drain them.
 
 These tags describe an item **mid-run**; **they are not terminal states.** Consolidate *within* the rollup: group related follow-ups into one entry rather than listing near-duplicates separately.
 
@@ -48,3 +64,7 @@ This discipline is **portable**. WHERE a given workspace routes specific follow-
 
 
 When choosing an epic, filter `list_epics` to `retired_at == null` (missing means active during schema compatibility). Retired epics are historical lookup only; never assign new work to them.
+
+## Milestone ship backstop
+
+Web, CLI and agent shipping use the same permission-checked database scan over all pre-ship milestone members, including archived, Verified, Cancelled and hosts removed by that ship. It reports each undrained host, item count and working tags, with scanned-host count and explicit empty success. Missing capability, failed/incomplete scans and unresolved legacy/malformed records prevent ship mutations. The web requires acknowledgement of undrained items; changed results clear that acknowledgement and require review again. This reports residual bookkeeping without adding an umbrella advance blocker.
