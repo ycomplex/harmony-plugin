@@ -101,7 +101,7 @@ Leave the ticket in exactly one of the sanctioned shapes before you stop:
   * COMPOSE THE BRIEF for the gate you are at and pause on it (compose_brief \u2014 the pause happens ON the brief, never in the gap before it);
   * FILE AN ELICITATION ROUND (file_elicitation_round, trigger 'worker-question') if you hit a judgment call or a capability denial you cannot decide alone;
   * DEFER / PARK the ticket with an authored reason, or drive it to a terminal state, or decompose it into live children;
-  * DECLARE AN EXTERNAL WAIT (update_task field_values.waiting_on + a WAITING-ON ref=<ref> comment) if you are waiting on CI, a PR state or an off-board human step.
+  * DECLARE AN EXTERNAL WAIT (harmony wait declare --task <ticket> --kind <kind> --ref <ref>) if you are waiting on CI, a PR state or an off-board human step.
 If the question is too small to be worth the human's time, DECIDE it, record the decision and its rationale as a ticket comment, and continue \u2014 do not stop for it.`
   };
 }
@@ -121,7 +121,7 @@ function runStopGate(deps) {
     if (taskRef === "") return 0;
     if (typeof breadcrumb.session_id === "string" && breadcrumb.session_id !== sessionId) return 0;
     const ticket = breadcrumb.ticket || taskRef;
-    const row = deps.queryRow(taskRef);
+    const row = deps.queryRow(taskRef, breadcrumb.started_at);
     const stopHookActive = payload.stop_hook_active === true;
     let blocksSoFar = 0;
     try {
@@ -195,11 +195,11 @@ var exitCode = runStopGate({
     writeFileSync(blockCountPath(sessionId), `${count}
 `, "utf8");
   },
-  queryRow: (taskRef) => {
+  queryRow: (taskRef, legStartedAt) => {
     const out = execFileSync(
       process.execPath,
-      [harmonyCli, "--json", "tasks", "clean-check", taskRef],
-      { encoding: "utf8", timeout: CLI_TIMEOUT_MS, stdio: ["ignore", "pipe", "pipe"] }
+      [harmonyCli, "--json", "tasks", "clean-check", taskRef, ...legStartedAt ? ["--leg-started-at", legStartedAt] : []],
+      { encoding: "utf8", timeout: CLI_TIMEOUT_MS, stdio: ["ignore", "pipe", "inherit"] }
     );
     return JSON.parse(out);
   },

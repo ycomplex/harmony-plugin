@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { recoverDeclaredWait } from '../tools/wait.js';
 // B-696: the conductor daemon entrypoint.
 //
 // Two ways to select the launch profile (B-800 — see src/daemon/config.ts for the full
@@ -671,6 +672,7 @@ async function main(): Promise<void> {
     listConductions: (args) => listConductions(client, args),
     getTaskMeta: async (taskId) =>
       (await getTask(client, projectId, { task_id: taskId, view: 'meta' })) as unknown as DaemonTask,
+    recoverDeclaredWait: (taskId, firedAtMs, nowMs) => recoverDeclaredWait(client, projectId, taskId, firedAtMs, nowMs),
     clearModelHandoff: async (taskId, marker) => {
       const task = (await getTask(client, projectId, { task_id: taskId, view: 'meta' })) as unknown as DaemonTask;
       const live = task.waiting_on as { kind?: unknown; ref?: unknown; since?: unknown } | null | undefined;

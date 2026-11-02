@@ -1104,19 +1104,19 @@ rather than a state that ran ahead of reality (the B-60 conflation — review F4
 If the leg must end while something OUTSIDE the board is still pending — the PR's checks are still in
 flight, or the release is accepted but an off-board step has not landed (the founder's `./promote-prod.sh`
 in an ordered release, or the merge itself) — do **not** just exit: a clean exit that moved nothing is
-parked `no-progress`. Declare the wait instead, with the existing `update_task` (top-level `field_values`
-merges; no new tool):
+parked `no-progress`. Declare the wait with one action:
 
+```bash
+harmony wait declare --task B-123 --kind ci --ref pr#42-checks --resume-after <ISO>
 ```
-mcp__harmony__update_task({ task_id, field_values: { waiting_on: {
-  kind: "ci" | "pr-state" | "human-step",
-  ref: "<what you wait on, e.g. pr#42 checks>",
-  since: "<now, ISO>",
-  first_since: "<ISO of the FIRST declaration — copy it forward unchanged on every re-declaration>",
-  resume_after: "<ISO, ~10-15 min ahead for CI>"
-} } })
-mcp__harmony__add_comment({ task_id, content: "WAITING-ON ref=<ref>" })
-```
+
+Kinds are `ci`, `pr-state`, `human-step` and `model-handoff`. Use a nonblank single-token ref.
+The command supplies timestamps, preserves the first declaration's ceiling on retry, and succeeds only
+when both the structured marker and the exact `WAITING-ON ref=<ref>` comment are saved. If the comment
+write fails after the marker, it reports that partial result; retry the same declaration.
+A current-leg standalone comment without a live marker is diagnosed and recovered as a `human-step`
+wait (15-minute default recheck, 24-hour ceiling). Old-leg, quoted, fenced and consumed comments do not
+create a new hold; recovery never extends the original ceiling.
 
 Then exit. The conductor HOLDS the conduction (stays active, never parked) and queues the next leg at
 `resume_after`, or earlier if the ball flips or an exchange changes. The declaration only counts while it is
