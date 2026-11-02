@@ -68517,6 +68517,19 @@ function events(stdout) {
   }
   return out;
 }
+function parseCodexFinalStatement(stdout) {
+  let inTurn = false;
+  let statement = null;
+  for (const event of events(stdout)) {
+    if (event.type === "turn.started") {
+      inTurn = true;
+      statement = null;
+    } else if (inTurn && event.type === "item.completed" && event.item?.type === "agent_message" && typeof event.item.text === "string" && event.item.text.trim() !== "") {
+      statement = event.item.text;
+    }
+  }
+  return statement;
+}
 function parseCodexThreadId(stdout) {
   const e = events(stdout).find((x2) => x2.type === "thread.started" && typeof x2.thread_id === "string" && x2.thread_id !== "");
   return e ? e.thread_id : null;
@@ -72954,6 +72967,7 @@ function boundedTail(text4, limitBytes = LEG_OUTPUT_TAIL_BYTES) {
     if (Buffer.byteLength(text4.slice(mid), "utf8") > limitBytes) lo = mid + 1;
     else hi = mid;
   }
+  if (lo > 0 && /[\uDC00-\uDFFF]/.test(text4[lo]) && /[\uD800-\uDBFF]/.test(text4[lo - 1])) lo++;
   return text4.slice(lo);
 }
 async function recordLegOutput(client, args) {
@@ -73035,13 +73049,37 @@ function resolveWorkerStoredText(captured) {
   const parsed = parseClaudeResultJson(captured);
   return parsed?.result !== null && parsed?.result !== void 0 ? parsed.result : captured;
 }
+var CODEX_DIAGNOSTIC_BYTES = 8 * 1024;
+var CODEX_UNAVAILABLE_NOTE = "No closing statement was captured for the final turn.";
+function prepareStoredOutput(stdout, stderr = "", agent, source = "worker") {
+  const captured = stdout + stderr;
+  let storedText;
+  if (source === "worker" && agent === "codex") {
+    const statement = parseCodexFinalStatement(stdout);
+    storedText = statement === null ? JSON.stringify({
+      type: "result",
+      result: CODEX_UNAVAILABLE_NOTE,
+      harmony_codex_output: {
+        version: 1,
+        status: "unavailable",
+        raw_excerpt: boundedTail(redactSecrets(captured), CODEX_DIAGNOSTIC_BYTES)
+      }
+    }) : redactSecrets(statement);
+  } else {
+    storedText = redactSecrets(source === "worker" ? resolveWorkerStoredText(captured) : captured);
+  }
+  return {
+    tail: boundedTail(storedText, LEG_OUTPUT_TAIL_BYTES),
+    totalBytes: Buffer.byteLength(storedText, "utf8")
+  };
+}
 function registerLegOutputCommands(program3) {
   const legOutput = program3.command("leg-output").description(
     "B-720 worker-output capture \u2014 the ONE place container/provision.sh records what a leg's `claude` invocation actually wrote, from inside the container where it is genuinely the WORKER's output on every launch profile. Capture for DISPLAY only: nothing the conductor decides ever reads these rows."
   );
   legOutput.command("record").description(
-    'Record ONE invocation\'s captured output as a conduction_leg_output row. Reads the given capture file(s), stores the LAST 64 KB as the tail and the TOTAL byte count alongside it (so the board can say "showing the last N of M"), and stamps the producer as `--source` (default: worker). Always exits 0 and NEVER throws: a missing conduction id, an unreadable capture, an unreachable board or a not-yet-migrated table all degrade to "nothing recorded" with one STDERR warning. Diagnostics never touch stdout \u2014 stdout is the thing being captured. The leg is never affected.'
-  ).requiredOption("--file <path>", "The file this invocation's stdout was captured to").option("--stderr-file <path>", "The file this invocation's stderr was captured to, appended after the stdout capture").requiredOption("--leg-key <key>", "The worker-generated key grouping this leg's invocations (the SAME key `leg-cost record` is given, so a leg's output and cost join)").option("--gate <gate>", "The gate that was running when the invocation STARTED (see `leg-cost resolve-gate`)").option("--source <source>", "Who wrote these bytes: 'worker' (default) or 'launcher'", "worker").option("--conduction-id <id>", "The conduction to record against; defaults to this worker's HARMONY_CONDUCTION_ID").action(
+    'Record ONE invocation\'s captured output as a conduction_leg_output row. Reads the given capture file(s), selects Codex final-turn prose when --agent codex is given, then stores up to 64 KB and its total byte count (so the board can say "showing the last N of M"), and stamps the producer as `--source` (default: worker). Always exits 0 and NEVER throws: a missing conduction id, an unreadable capture, an unreachable board or a not-yet-migrated table all degrade to "nothing recorded" with one STDERR warning. Diagnostics never touch stdout \u2014 stdout is the thing being captured. The leg is never affected.'
+  ).requiredOption("--file <path>", "The file this invocation's stdout was captured to").option("--stderr-file <path>", "The file this invocation's stderr was captured to, appended after the stdout capture").requiredOption("--leg-key <key>", "The worker-generated key grouping this leg's invocations (the SAME key `leg-cost record` is given, so a leg's output and cost join)").option("--gate <gate>", "The gate that was running when the invocation STARTED (see `leg-cost resolve-gate`)").option("--source <source>", "Who wrote these bytes: 'worker' (default) or 'launcher'", "worker").option("--agent <agent>", "Worker runtime (codex selects final-turn prose; omitted preserves Claude capture)").option("--conduction-id <id>", "The conduction to record against; defaults to this worker's HARMONY_CONDUCTION_ID").action(
     async (opts) => {
       const conductionId = opts.conductionId ?? getConductionId();
       if (!conductionId) {
@@ -73055,12 +73093,9 @@ function registerLegOutputCommands(program3) {
           `harmony leg-output record: WARNING \u2014 unknown --source '${opts.source}' (expected ${SOURCES.join(" | ")}); recording as 'worker'`
         );
       }
-      const parts = [readCapture(opts.file)];
-      if (opts.stderrFile) parts.push(readCapture(opts.stderrFile));
-      const captured = parts.filter((p) => p !== null).join("");
-      const storedText = redactSecrets(source === "worker" ? resolveWorkerStoredText(captured) : captured);
-      const totalBytes = Buffer.byteLength(storedText, "utf8");
-      const tail = boundedTail(storedText, LEG_OUTPUT_TAIL_BYTES);
+      const stdout = readCapture(opts.file) ?? "";
+      const stderr = opts.stderrFile ? readCapture(opts.stderrFile) ?? "" : "";
+      const { tail, totalBytes } = prepareStoredOutput(stdout, stderr, opts.agent, source);
       const client = await getClient2();
       const context = await resolveLegCostContext(client, conductionId);
       await recordLegOutput(client, {

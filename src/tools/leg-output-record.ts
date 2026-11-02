@@ -126,6 +126,8 @@ export function boundedTail(text: string, limitBytes: number = LEG_OUTPUT_TAIL_B
     if (Buffer.byteLength(text.slice(mid), 'utf8') > limitBytes) lo = mid + 1;
     else hi = mid;
   }
+  // Do not start on the low half of an emoji: that would encode a replacement character.
+  if (lo > 0 && /[\uDC00-\uDFFF]/.test(text[lo]) && /[\uD800-\uDBFF]/.test(text[lo - 1])) lo++;
   return text.slice(lo);
 }
 

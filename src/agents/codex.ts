@@ -398,7 +398,7 @@ interface CodexEvent {
   payload?: { response_id?: string; usage?: Record<string, unknown> } | null;
   message?: unknown;
   error?: unknown;
-  item?: { type?: unknown } | null;
+  item?: { type?: unknown; text?: unknown } | null;
 }
 
 function events(stdout: string): CodexEvent[] {
@@ -414,6 +414,24 @@ function events(stdout: string): CodexEvent[] {
     }
   }
   return out;
+}
+
+/** Display-only extraction from a COMPLETE invocation, using the same tolerant event reader as
+ * telemetry. A new turn invalidates every earlier candidate, including when it fails or is empty.
+ * Never use this on an already-bounded historical tail: its turn boundary may have been lost. */
+export function parseCodexFinalStatement(stdout: string): string | null {
+  let inTurn = false;
+  let statement: string | null = null;
+  for (const event of events(stdout)) {
+    if (event.type === 'turn.started') {
+      inTurn = true;
+      statement = null;
+    } else if (inTurn && event.type === 'item.completed' && event.item?.type === 'agent_message'
+      && typeof event.item.text === 'string' && event.item.text.trim() !== '') {
+      statement = event.item.text;
+    }
+  }
+  return statement;
 }
 
 /** The thread id from the first `thread.started` event, or null. */

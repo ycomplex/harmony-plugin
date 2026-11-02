@@ -352,6 +352,11 @@ const outputCalls = (h: Harness) =>
   h.accessorCalls.filter((argv) => argv[0] === 'leg-output' && argv[1] === 'record');
 
 describe('provision.sh: B-720 worker-side output capture', () => {
+  it('passes the explicit Codex runtime to the output recorder', () => {
+    const h = runBlock({ env: { AGENT_ID: 'codex' }, claudeBody: ['echo done', 'exit 0'] });
+    expect(outputCalls(h).map(flags)[0].agent).toBe('codex');
+  });
+
   it('records EVERY invocation\'s output as a WORKER row, under the same leg key as its cost row', () => {
     const h = runBlock({ claudeBody: [`echo '${resultEnvelope('done')}'`, 'exit 0'] });
 
@@ -360,6 +365,7 @@ describe('provision.sh: B-720 worker-side output capture', () => {
     // `--source worker` is the WHOLE fix: the web selects worker output by this label alone, so a
     // row written under any other source would put these bytes under the wrong heading.
     expect(calls[0].source).toBe('worker');
+    expect(calls[0].agent).toBe('claude-code');
     expect(calls[0].gate).toBe('build');
     // ONE leg key across both features, so a leg's output row and its B-916 cost rows join.
     expect(calls[0]['leg-key']).toBe(flags(recordCalls(h)[0])['leg-key']);

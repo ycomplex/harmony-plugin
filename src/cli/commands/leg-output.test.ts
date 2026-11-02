@@ -9,7 +9,7 @@
 // wiring around it.
 
 import { describe, it, expect } from 'vitest';
-import { resolveWorkerStoredText } from './leg-output.js';
+import { resolveWorkerStoredText, prepareStoredOutput, CODEX_DIAGNOSTIC_BYTES } from './leg-output.js';
 import { boundedTail, LEG_OUTPUT_TAIL_BYTES } from '../../tools/leg-output-record.js';
 
 /** The observed `claude -p --output-format json` envelope shape (CLI 2.1.252) — mirrors
@@ -121,5 +121,63 @@ describe('resolveWorkerStoredText (B-947)', () => {
     const launcherStored = captured; // mirrors `source === 'worker' ? resolveWorkerStoredText(captured) : captured`
     expect(launcherStored).toBe(captured);
     expect(launcherStored).not.toBe(prose);
+  });
+});
+
+// B-1368: capture selection is BEFORE storage bounds and stderr never supplies agent events.
+
+const codexStream = (text: string) => [
+  JSON.stringify({ type: 'turn.started' }),
+  JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text } }),
+  JSON.stringify({ type: 'turn.completed' }),
+].join('\n');
+
+describe('Codex worker storage (B-1368)', () => {
+  it('extracts before the raw stream is bounded and counts statement bytes only', () => {
+    const stream = codexStream('Finished — 東京.') + '\n' + JSON.stringify({ type: 'item.completed', item: { type: 'mcp_tool_call', text: 'x'.repeat(100000) } });
+    const result = prepareStoredOutput(stream, '', 'codex');
+    expect(result).toEqual({ tail: 'Finished — 東京.', totalBytes: Buffer.byteLength('Finished — 東京.') });
+  });
+  it('does not use stderr messages as final statements', () => {
+    const { tail } = prepareStoredOutput(codexStream('real'), codexStream('fake'), 'codex');
+    expect(tail).toBe('real');
+  });
+  it('redacts prose before bounding and counts redacted bytes', () => {
+    const result = prepareStoredOutput(codexStream('Bearer secret123456789'), '', 'codex');
+    expect(result).toEqual({ tail: 'Bearer [REDACTED]', totalBytes: Buffer.byteLength('Bearer [REDACTED]') });
+  });
+  it('serializes a valid fallback with a redacted bounded UTF-8 excerpt including stderr', () => {
+    const { tail, totalBytes } = prepareStoredOutput('東京😀'.repeat(10000), '\nBearer secret123456789', 'codex');
+    const envelope = JSON.parse(tail);
+    expect(envelope.type).toBe('result');
+    expect(envelope.result).toBe('No closing statement was captured for the final turn.');
+    expect(envelope.harmony_codex_output).toMatchObject({ version: 1, status: 'unavailable' });
+    expect(Buffer.byteLength(envelope.harmony_codex_output.raw_excerpt)).toBeLessThanOrEqual(CODEX_DIAGNOSTIC_BYTES);
+    expect(envelope.harmony_codex_output.raw_excerpt).toContain('Bearer [REDACTED]');
+    expect(tail).not.toContain('secret123456789');
+    expect(tail).not.toContain('�');
+    expect(totalBytes).toBe(Buffer.byteLength(tail));
+    expect(totalBytes).toBeLessThanOrEqual(LEG_OUTPUT_TAIL_BYTES);
+  });
+  it('keeps worst-case JSON escaping valid within the whole-row bound', () => {
+    const { tail } = prepareStoredOutput('\u0000'.repeat(100000), '', 'codex');
+    expect(JSON.parse(tail).harmony_codex_output.raw_excerpt.length).toBe(CODEX_DIAGNOSTIC_BYTES);
+    expect(Buffer.byteLength(tail)).toBeLessThanOrEqual(LEG_OUTPUT_TAIL_BYTES);
+  });
+  it('states absent output explicitly and retains no excerpt', () => {
+    expect(JSON.parse(prepareStoredOutput('', '', 'codex').tail).harmony_codex_output.raw_excerpt).toBe('');
+  });
+  it('bounds large prose without splitting a Unicode character', () => {
+    const result = prepareStoredOutput(codexStream('😀'.repeat(20000)), '', 'codex');
+    expect(result.totalBytes).toBe(80000);
+    expect(Buffer.byteLength(result.tail)).toBeLessThanOrEqual(LEG_OUTPUT_TAIL_BYTES);
+    expect(result.tail).not.toContain('�');
+    expect(boundedTail('😀', 3)).toBe('');
+  });
+  it('preserves default Claude and launcher behavior even with a Codex hint', () => {
+    const claude = resultEnvelope('Claude done');
+    expect(prepareStoredOutput(claude).tail).toBe('Claude done');
+    expect(prepareStoredOutput(claude, '', 'codex', 'launcher').tail).toBe(claude);
+    expect(prepareStoredOutput('plain crash').tail).toBe('plain crash');
   });
 });
