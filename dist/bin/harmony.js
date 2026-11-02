@@ -68379,6 +68379,7 @@ var LOGIN_HOWTO = `On the conductor host run 'CODEX_HOME=~/.harmony/codex-automa
 function resolveCodexCredential(env2, provider2) {
   let name = provider2;
   if (name === void 0 && present2(env2, CODEX_PROVIDER_ENV)) name = env2[CODEX_PROVIDER_ENV];
+  if (name === void 0 && env2.HARMONY_CODEX_TOKEN_ONLY === "1") name = "openai";
   if (name === void 0) {
     const keyed = CODEX_PROVIDERS.filter((p) => present2(env2, p.envKey));
     if (keyed.length > 0 && present2(env2, CODEX_AUTH_FILE_ENV)) {
@@ -68424,7 +68425,7 @@ function resolveLoginCache(env2) {
       error: `${refused.join(" and ")} ${refused.length > 1 ? "are" : "is"} set \u2014 the Codex adapter runs on the plan-included login cache (${CODEX_AUTH_FILE_ENV}) and refuses a metered or token credential beside it (B-934: no silent fallback between regimes). Unset ${refused.join(" and ")}.`
     };
   }
-  if (present2(env2, CODEX_AUTH_FILE_ENV)) return { ok: true, credential: "login-cache" };
+  if (present2(env2, CODEX_AUTH_FILE_ENV) || env2.HARMONY_CODEX_TOKEN_ONLY === "1") return { ok: true, credential: "login-cache" };
   return {
     ok: false,
     error: `headless Codex needs auth: set ${CODEX_AUTH_FILE_ENV} to the path of the mounted login-cache file (login-cache, plan-included). ${LOGIN_HOWTO}`
@@ -72548,7 +72549,8 @@ function registerAgentCommands(program3) {
       console.error(`harmony agent render: ${adapter.displayName} needs no rendered runtime config.`);
       return;
     }
-    const authFile = process.env[CODEX_AUTH_FILE_ENV];
+    const codexHome = opts.codexHome || process.env.CODEX_HOME || join16(homedir6(), ".codex");
+    const authFile = process.env.HARMONY_CODEX_TOKEN_ONLY === "1" && (process.env.HARMONY_CODEX_PROVIDER ?? "openai") === "openai" ? join16(codexHome, "auth.json") : process.env[CODEX_AUTH_FILE_ENV];
     const providerKeyLeg = !authFile && (() => {
       const v2 = resolveCodexCredential(process.env);
       return v2.ok && v2.credential === "api-key";
@@ -72558,7 +72560,7 @@ function registerAgentCommands(program3) {
       const r = provisionCodex({
         pluginDir: opts.pluginDir,
         workspaceDir: opts.workspace,
-        codexHome: opts.codexHome || process.env.CODEX_HOME || join16(homedir6(), ".codex"),
+        codexHome,
         authFile: authFile || void 0,
         extraRepoPaths: opts.extraRepo
       });

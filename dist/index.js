@@ -55943,6 +55943,7 @@ var LOGIN_HOWTO = `On the conductor host run 'CODEX_HOME=~/.harmony/codex-automa
 function resolveCodexCredential(env, provider2) {
   let name = provider2;
   if (name === void 0 && present2(env, CODEX_PROVIDER_ENV)) name = env[CODEX_PROVIDER_ENV];
+  if (name === void 0 && env.HARMONY_CODEX_TOKEN_ONLY === "1") name = "openai";
   if (name === void 0) {
     const keyed = CODEX_PROVIDERS.filter((p) => present2(env, p.envKey));
     if (keyed.length > 0 && present2(env, CODEX_AUTH_FILE_ENV)) {
@@ -55988,7 +55989,7 @@ function resolveLoginCache(env) {
       error: `${refused.join(" and ")} ${refused.length > 1 ? "are" : "is"} set \u2014 the Codex adapter runs on the plan-included login cache (${CODEX_AUTH_FILE_ENV}) and refuses a metered or token credential beside it (B-934: no silent fallback between regimes). Unset ${refused.join(" and ")}.`
     };
   }
-  if (present2(env, CODEX_AUTH_FILE_ENV)) return { ok: true, credential: "login-cache" };
+  if (present2(env, CODEX_AUTH_FILE_ENV) || env.HARMONY_CODEX_TOKEN_ONLY === "1") return { ok: true, credential: "login-cache" };
   return {
     ok: false,
     error: `headless Codex needs auth: set ${CODEX_AUTH_FILE_ENV} to the path of the mounted login-cache file (login-cache, plan-included). ${LOGIN_HOWTO}`
