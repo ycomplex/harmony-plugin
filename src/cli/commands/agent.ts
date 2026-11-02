@@ -250,7 +250,9 @@ export function registerAgentCommands(program: Command): void {
         console.error(`harmony agent render: ${adapter.displayName} needs no rendered runtime config.`);
         return;
       }
-      const authFile = process.env[CODEX_AUTH_FILE_ENV];
+      const codexHome = opts.codexHome || process.env.CODEX_HOME || join(homedir(), '.codex');
+      const authFile = process.env.HARMONY_CODEX_TOKEN_ONLY === '1' && (process.env.HARMONY_CODEX_PROVIDER ?? 'openai') === 'openai'
+        ? join(codexHome, 'auth.json') : process.env[CODEX_AUTH_FILE_ENV];
       // B-1178: a leg on a provider's API key has no login cache to install; any other missing path refuses
       // exactly as before.
       const providerKeyLeg = !authFile && (() => {
@@ -262,7 +264,7 @@ export function registerAgentCommands(program: Command): void {
         const r = provisionCodex({
           pluginDir: opts.pluginDir,
           workspaceDir: opts.workspace,
-          codexHome: opts.codexHome || process.env.CODEX_HOME || join(homedir(), '.codex'),
+          codexHome,
           authFile: authFile || undefined,
           extraRepoPaths: opts.extraRepo,
         });

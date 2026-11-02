@@ -112,6 +112,7 @@ const LOGIN_HOWTO =
 export function resolveCodexCredential(env: Readonly<Record<string, string | undefined>>, provider?: string): CredentialResolution {
   let name = provider;
   if (name === undefined && present(env, CODEX_PROVIDER_ENV)) name = env[CODEX_PROVIDER_ENV];
+  if (name === undefined && env.HARMONY_CODEX_TOKEN_ONLY === '1') name = 'openai';
   if (name === undefined) {
     // No provider said: infer it from the credential env, and refuse an ambiguous one (B-934).
     const keyed = CODEX_PROVIDERS.filter((p) => present(env, p.envKey));
@@ -173,7 +174,7 @@ function resolveLoginCache(env: Readonly<Record<string, string | undefined>>): C
         `fallback between regimes). Unset ${refused.join(' and ')}.`,
     };
   }
-  if (present(env, CODEX_AUTH_FILE_ENV)) return { ok: true, credential: 'login-cache' };
+  if (present(env, CODEX_AUTH_FILE_ENV) || env.HARMONY_CODEX_TOKEN_ONLY === '1') return { ok: true, credential: 'login-cache' };
   return {
     ok: false,
     error: `headless Codex needs auth: set ${CODEX_AUTH_FILE_ENV} to the path of the mounted login-cache file (login-cache, plan-included). ${LOGIN_HOWTO}`,
