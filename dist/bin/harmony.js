@@ -71955,11 +71955,21 @@ function registerModelCommands(program3) {
     }
   });
   model.command("list").description(
-    'B-1346: print every active catalog offer of --agent, one tab-separated line each: model id, runtime, provider, and input / cached-input / output USD per million tokens ("not captured" when the catalog has no price). A header line comes first. Always exits 0.'
+    'B-1346: print every active catalog offer of --agent, one tab-separated line each: model id, runtime, provider, and input / cached-input / output USD per million tokens ("not captured" when the catalog has no price). A header line comes first. Exits 1 with a stderr diagnostic and no table when authentication or the live catalog is unavailable.'
   ).option("--agent <id>", "Agent runtime whose offers to list", DEFAULT_AGENT_ADAPTER).action(async (opts) => {
     const agent = opts.agent ?? DEFAULT_AGENT_ADAPTER;
     const client = await getCatalogClient();
-    const { entries } = await resolveModelCatalog(client);
+    if (!client) {
+      console.error("harmony model list: authentication unavailable. Run `harmony login` and try again.");
+      process.exitCode = 1;
+      return;
+    }
+    const { entries, source } = await resolveModelCatalog(client);
+    if (source !== "live") {
+      console.error("harmony model list: live catalog unavailable; refusing to show embedded fallback offers with unknown prices.");
+      process.exitCode = 1;
+      return;
+    }
     const price = (v2) => typeof v2 === "number" && Number.isFinite(v2) ? String(v2) : "not captured";
     console.log(["model", "runtime", "provider", "input_usd_per_mtok", "cached_input_usd_per_mtok", "output_usd_per_mtok"].join("	"));
     for (const entry of catalogEntriesForAgent(entries, agent)) {
