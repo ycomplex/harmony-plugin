@@ -1,3 +1,4 @@
+import { parseRollupScan, scanNeedsReview, scanError, scanToken } from './milestone-rollup-scan.js';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 export const listMilestonesTool = {
@@ -104,7 +105,7 @@ export async function updateMilestone(
 
 export const shipMilestoneTool = {
   name: 'ship_milestone',
-  description: "Ship a milestone. Outstanding tasks (mode-aware: in opinionated mode a task is resolved when its workflow_state is Verified or Cancelled, or its status is the terminal status; in manual mode when its status is the terminal status — Cancelled is not specially retained) are removed from the milestone (returned in response). Resolved tasks (Done or, in opinionated mode, Cancelled) become hidden from board/list views and stay on the shipped milestone; the response's `retained_cancelled_count` reports how many of those were retained specifically because they were Cancelled (B-706, mirrors the web ship gate's B-704 fix).",
+  description: "Ship a milestone after a complete shared follow-up scan (missing/failed/needs-review scans refuse before mutation). The response reports all undrained hosts, counts and working tags. Outstanding tasks (mode-aware: in opinionated mode a task is resolved when its workflow_state is Verified or Cancelled, or its status is the terminal status; in manual mode when its status is the terminal status — Cancelled is not specially retained) are removed from the milestone (returned in response). Resolved tasks (Done or, in opinionated mode, Cancelled) become hidden from board/list views and stay on the shipped milestone; the response's `retained_cancelled_count` reports how many of those were retained specifically because they were Cancelled (B-706, mirrors the web ship gate's B-704 fix).",
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -118,31 +119,33 @@ export async function shipMilestone(
   client: SupabaseClient, projectId: string,
   args: { milestone_id: string }
 ) {
+  const { data: rawScan, error: scanFailure } = await client.rpc('milestone_rollup_scan', {
+    p_project_id: projectId, p_milestone_id: args.milestone_id,
+  });
+  if (scanFailure) scanError(scanFailure);
+  const rollupScan = parseRollupScan(rawScan);
+  if (scanNeedsReview(rollupScan)) throw new Error('Follow-up records need reconciliation before shipping: ' + JSON.stringify(rollupScan));
+
   // Get project statuses to determine what "Done" means, plus the project mode.
   // In opinionated mode the legacy `status` column is inert (read-only) and completion
   // lives in `workflow_state` (terminal = 'Verified'); in manual mode `status` governs.
-  const { data: project } = await client
+  const { data: project, error: projectError } = await client
     .from('projects')
     .select('custom_statuses, mode')
     .eq('id', projectId)
     .single();
+  if (projectError) throw projectError;
   const statuses = project?.custom_statuses ?? ['Backlog', 'To Do', 'In Progress', 'In Review', 'Done'];
   const doneStatus = statuses[statuses.length - 1];
   const isOpinionated = project?.mode === 'opinionated';
 
-  // Get tasks in this milestone. Carry `workflow_state` so opinionated-mode completion
-  // can be read off the lifecycle, not the inert legacy `status` (B-571).
-  const { data: tasks } = await client
-    .from('tasks')
-    .select('id, status, title, workflow_state')
-    .eq('milestone_id', args.milestone_id) as unknown as {
-      data: Array<{ id: string; status: string; title: string; workflow_state: string }> | null;
-    };
+  // The complete shared scan supplies the pre-ship membership, including archived hosts.
+  const tasks = rollupScan.members;
 
   // Mode-aware union: opinionated-mode treats a task as done when its workflow_state is
   // Verified OR its status is terminal (covers Manual→Opinionated tasks whose terminal
   // status predates the lifecycle); manual-mode is purely status === doneStatus.
-  const isDone = (t: { status: string; workflow_state: string }) =>
+  const isDone = (t: { status: string; workflow_state: string | null }) =>
     isOpinionated
       ? (t.workflow_state === 'Verified' || t.status === doneStatus)
       : (t.status === doneStatus);
@@ -150,7 +153,7 @@ export async function shipMilestone(
   // B-706: Cancelled is terminal record at ship — mirrors web's isTaskCancelled
   // (web/src/lib/completionAxis.ts). Opinionated mode only: manual mode has no
   // workflow_state axis, so Cancelled is never specially retained there.
-  const isCancelled = (t: { workflow_state: string }) =>
+  const isCancelled = (t: { workflow_state: string | null }) =>
     isOpinionated && t.workflow_state === 'Cancelled';
 
   // Widened partition: a task is resolved (stays on the shipped milestone, hidden from
@@ -159,13 +162,20 @@ export async function shipMilestone(
   const outstanding = (tasks ?? []).filter(t => !isDone(t) && !isCancelled(t));
   const resolved = (tasks ?? []).filter(t => isDone(t) || isCancelled(t));
 
+  const { data: freshRaw, error: freshError } = await client.rpc('milestone_rollup_scan', {
+    p_project_id: projectId, p_milestone_id: args.milestone_id,
+  });
+  if (freshError) scanError(freshError);
+  if (scanToken(parseRollupScan(freshRaw)) !== scanToken(rollupScan)) throw new Error('Follow-up check changed; retry shipping to review the latest result.');
+
   // Remove only outstanding tasks from the milestone; resolved tasks (including retained
   // Cancelled ones) are left alone.
   if (outstanding.length > 0) {
-    await client
+    const { error: unlinkError } = await client
       .from('tasks')
       .update({ milestone_id: null })
       .in('id', outstanding.map(t => t.id));
+    if (unlinkError) throw unlinkError;
   }
 
   // Ship the milestone
@@ -179,6 +189,7 @@ export async function shipMilestone(
 
   return {
     milestone: data,
+    rollup_scan: rollupScan,
     shipped_task_count: resolved.length,
     retained_cancelled_count: resolved.filter(isCancelled).length,
     removed_tasks: outstanding.map(t => ({ id: t.id, title: t.title, status: t.status })),
