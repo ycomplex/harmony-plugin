@@ -1,3 +1,4 @@
+import * as runConfigModule from '../../config/run-config.js';
 import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
 import { Command } from 'commander';
 import { registerConductCommand } from './conduct.js';
@@ -18,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   reviveParkedTicketIfNeeded: vi.fn(),
   getProjectConductionDefaults: vi.fn(),
   getWorkspaceModelPolicy: vi.fn(),
+  resolveUnparkRunConfig: vi.fn(),
 }));
 
 vi.mock('../auth.js', () => ({ getAuthenticatedContext: mocks.getAuthenticatedContext }));
@@ -58,7 +60,7 @@ vi.mock('../../config/model-policy.js', () => ({ getWorkspaceModelPolicy: mocks.
 // passthrough so this suite's fake client is never queried.
 vi.mock('../../tools/unpark-inheritance.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../tools/unpark-inheritance.js')>();
-  return { ...actual, resolveUnparkRunConfig: async (_c: unknown, _t: unknown, a: { explicit?: unknown }) => a.explicit };
+  return { ...actual, resolveUnparkRunConfig: mocks.resolveUnparkRunConfig };
 });
 
 const ctx = { client: { fake: 'client' }, projectId: 'proj-1', userId: 'user-1' };
@@ -94,6 +96,7 @@ beforeEach(() => {
   mocks.reviveParkedTicketIfNeeded.mockResolvedValue(undefined);
   mocks.getProjectConductionDefaults.mockResolvedValue({});
   mocks.getWorkspaceModelPolicy.mockResolvedValue({ allowed: [] });
+  mocks.resolveUnparkRunConfig.mockImplementation(async (_c, _t, a) => a.explicit);
   logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
   errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
   exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
@@ -411,5 +414,47 @@ describe('harmony conduct <ticket> — workspace model policy (B-1346)', () => {
     await run(['conduct', 'B-696', '--model', 'claude-haiku-5-5']);
     const call = mocks.createConduction.mock.calls[0][1] as { run_config?: unknown };
     expect(call.run_config).toEqual({ model: { default: 'claude-haiku-5-5' } });
+  });
+});
+
+describe('B-1374 CLI runtime-prefix creation boundary', () => {
+  beforeEach(() => {
+    vi.spyOn(runConfigModule, 'resolveModelCatalog').mockResolvedValue({ source: 'live', entries: [
+      ...runConfigModule.MODEL_CATALOG_FALLBACK,
+      { ...runConfigModule.MODEL_CATALOG_FALLBACK[0], alias: 'codex:gpt-6.1-sol', model_id: 'gpt-6.1-sol', agent: 'codex' },
+    ] });
+  });
+  afterEach(() => vi.mocked(runConfigModule.resolveModelCatalog).mockRestore());
+
+  it.each([{}, { agent: { adapter: 'claude-code' } }])('infers Codex before project defaults %j', async defaults => {
+    mocks.getProjectConductionDefaults.mockResolvedValue(defaults);
+    await run(['conduct', 'B-1374', '--model', 'codex:gpt-6.1-sol']);
+    expect(mocks.createConduction.mock.calls[0][1].run_config).toEqual({ agent: { adapter: 'codex' }, model: { default: 'codex:gpt-6.1-sol' } });
+  });
+  it('refuses a contradictory explicit runtime before revive or insert with the shared message', async () => {
+    await expect(run(['conduct', 'B-1374', '--unpark', '--agent', 'claude-code', '--model', 'codex:gpt-6.1-sol'])).rejects.toBeInstanceOf(ExitSentinel);
+    expect(mocks.reviveParkedTicketIfNeeded).not.toHaveBeenCalled();
+    expect(mocks.createConduction).not.toHaveBeenCalled();
+    expect(errSpy.mock.calls.map(c => c.join(' ')).join('\n')).toContain("Model 'codex:gpt-6.1-sol' selects runtime 'codex' but explicit runtime 'claude-code' conflicts — use --agent codex (run_config.agent.adapter='codex') or choose a model for 'claude-code'");
+  });
+  it.each([['gpt-6.1-sol', 'codex'], ['codex:gpt-6.1-sol', 'codex'], ['claude-opus-5', 'claude-code']])('preserves explicit matching/bare selection %s', async (model, agent) => {
+    await run(['conduct', 'B-1374', '--agent', agent, '--model', model]);
+    expect(mocks.createConduction.mock.calls[0][1].run_config.agent.adapter).toBe(agent);
+  });
+  it('retains policy refusal after inference', async () => {
+    mocks.getWorkspaceModelPolicy.mockResolvedValue({ allowed: ['claude-opus-5'] });
+    await expect(run(['conduct', 'B-1374', '--model', 'codex:gpt-6.1-sol'])).rejects.toBeInstanceOf(ExitSentinel);
+    expect(mocks.reviveParkedTicketIfNeeded).not.toHaveBeenCalled();
+    expect(mocks.createConduction).not.toHaveBeenCalled();
+  });
+  it('overrides an inherited runtime only with new prefixed input', async () => {
+    mocks.resolveUnparkRunConfig.mockResolvedValue({ agent: { adapter: 'claude-code' }, note: 'inherited' });
+    await run(['conduct', 'B-1374', '--unpark', '--model', 'codex:gpt-6.1-sol']);
+    expect(mocks.createConduction.mock.calls[0][1].run_config).toMatchObject({ agent: { adapter: 'codex' }, note: 'inherited' });
+  });
+  it('does not reinterpret inherited prefixed models', async () => {
+    mocks.resolveUnparkRunConfig.mockResolvedValue({ agent: { adapter: 'claude-code' }, model: { default: 'codex:gpt-6.1-sol' } });
+    await expect(run(['conduct', 'B-1374', '--unpark'])).rejects.toBeInstanceOf(ExitSentinel);
+    expect(mocks.createConduction).not.toHaveBeenCalled();
   });
 });
