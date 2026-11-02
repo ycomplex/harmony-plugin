@@ -56653,11 +56653,35 @@ function validateResolutionProvenance(raw) {
     `unrecognised provenance '${value}' \u2014 accepted values are ${ACCEPTED_PROVENANCE}. Rejected rather than stored: an unrecognised value renders as unattributed forever, so a near-miss (e.g. the British 'agent-synthesised') would look like a data problem instead of a typo.`
   );
 }
-async function resolveBrief(client, projectId, args) {
+var WorkerBriefAuthorityError = class extends Error {
+};
+async function refuseWorkerImpersonation(client, projectId, task, raw, operation2, userId) {
+  const conductionId = getConductionId();
+  if (!conductionId) return;
+  const value = typeof raw === "string" ? raw.trim() : "";
+  const provenance = value.startsWith(`${PROVENANCE_AGENT_SYNTHESIZED}:`) ? `${PROVENANCE_AGENT_SYNTHESIZED}:${value.slice(PROVENANCE_AGENT_SYNTHESIZED.length + 1).trim()}` : value;
+  if (![`${PROVENANCE_AGENT_SYNTHESIZED}:orchestrator`, PROVENANCE_HUMAN_IN_SESSION, PROVENANCE_WEB_ONLY].includes(provenance)) return;
+  const refusal = `${operation2} refused: conduction worker '${conductionId}' cannot claim '${provenance}'. A worker may file a brief, iterate on feedback, or elicit; the seat or human must make this decision. Nothing was resolved or reshaped.`;
+  try {
+    if (!userId) throw new Error("authenticated caller user id unavailable");
+    await addComment(client, projectId, userId, {
+      task_id: task,
+      content: `WORKER-BRIEF-REFUSED operation=${operation2} provenance=${provenance} conduction_id=${conductionId}
+
+${refusal}`
+    });
+  } catch (error2) {
+    const detail = error2 instanceof Error ? error2.message : typeof error2 === "object" && error2 !== null && "message" in error2 ? String(error2.message) : String(error2);
+    throw new WorkerBriefAuthorityError(`${refusal} Refusal audit comment failed: ${detail}`);
+  }
+  throw new WorkerBriefAuthorityError(refusal);
+}
+async function resolveBrief(client, projectId, args, userId) {
   if (!args.task_id) throw new Error("task_id is required");
   if (args.command !== "accept" && args.command !== "defer") {
     throw new Error("resolve_brief handles only accept/defer; edit/iterate are skill-side, expand/related are reads on get_brief");
   }
+  await refuseWorkerImpersonation(client, projectId, args.task_id, args.provenance, "resolve_brief", userId);
   const provenance = validateResolutionProvenance(args.provenance);
   const remark = typeof args.remark === "string" ? args.remark.trim() : "";
   if (remark && args.command === "defer") {

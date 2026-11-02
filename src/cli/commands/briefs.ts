@@ -8,6 +8,7 @@ import { formatTable } from '../formatter.js';
  * every retained revision, at every status). A READ only — briefs are composed/resolved through the
  * conductor skills, never from here.
  */
+// B-1364: any future resolve/reshape command MUST call the guarded shared handler with ctx.userId.
 export function registerBriefCommands(program: Command): void {
   const briefs = program.command('briefs').description("Read a task's brief history");
 
