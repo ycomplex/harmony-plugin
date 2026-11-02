@@ -1,3 +1,4 @@
+import { mergeRunConfig } from './unpark-inheritance.js';
 import * as runConfigModule from '../config/run-config.js';
 // B-758: `create_conduction` — the MCP tool test suite.
 //
@@ -430,5 +431,21 @@ describe('B-1374 MCP runtime-prefix creation boundary', () => {
     mocks.resolveUnparkRunConfig.mockResolvedValue({ agent: { adapter: 'claude-code' }, model: { default: 'codex:gpt-6.1-sol' } });
     await expect(createConduction(client, 'proj-1', 'user-7', { task_id: 'B-1374', unpark: true })).rejects.toThrow(/not available on runtime 'claude-code'/);
     expect(mocks.insertConduction).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { default: 'codex:gpt-6.1-sol' },
+    { per_gate: { build: 'codex:gpt-6.1-sol' } },
+  ])('B-1352 replaces saved selection through normalization, merge and validation: %j', async model => {
+    mocks.resolveUnparkRunConfig.mockImplementation(async (_c, _t, a) => mergeRunConfig({
+      agent: { adapter: 'claude-code' },
+      model: { default: 'claude-opus-5', per_gate: { plan: 'claude-opus-5' } },
+      note: 'saved', inherited_from: 'cond-old',
+    }, a.explicit));
+    await createConduction(client, 'proj-1', 'user-7', { task_id: 'B-1352', unpark: true, run_config: { agent: { adapter: 'codex' }, model } });
+    expect(mocks.insertConduction.mock.calls[0][1].run_config).toEqual({
+      agent: { adapter: 'codex' }, model, note: 'saved', inherited_from: 'cond-old',
+    });
+    expect(mocks.reviveParkedTicketIfNeeded).toHaveBeenCalled();
   });
 });
