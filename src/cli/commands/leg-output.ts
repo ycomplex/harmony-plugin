@@ -83,7 +83,7 @@ export function resolveWorkerStoredText(captured: string): string {
 
 export const CODEX_DIAGNOSTIC_BYTES = 8 * 1024;
 export const CODEX_UNAVAILABLE_NOTE =
-  "No closing statement could be recovered from the final Codex turn. The full event stream is in GCP session logs.";
+  "No closing statement was captured for the final turn.";
 
 /** Select from stdout alone: stderr is diagnostic material, never agent event authority.
  * Redact BEFORE bounding. Even worst-case JSON escaping of 8 KiB fits the 64 KiB row bound,

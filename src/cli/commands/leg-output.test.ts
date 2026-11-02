@@ -150,7 +150,7 @@ describe('Codex worker storage (B-1368)', () => {
     const { tail, totalBytes } = prepareStoredOutput('東京😀'.repeat(10000), '\nBearer secret123456789', 'codex');
     const envelope = JSON.parse(tail);
     expect(envelope.type).toBe('result');
-    expect(envelope.result).toContain('No closing statement');
+    expect(envelope.result).toBe('No closing statement was captured for the final turn.');
     expect(envelope.harmony_codex_output).toMatchObject({ version: 1, status: 'unavailable' });
     expect(Buffer.byteLength(envelope.harmony_codex_output.raw_excerpt)).toBeLessThanOrEqual(CODEX_DIAGNOSTIC_BYTES);
     expect(envelope.harmony_codex_output.raw_excerpt).toContain('Bearer [REDACTED]');
