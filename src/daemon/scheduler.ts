@@ -1,3 +1,4 @@
+import type { ConductionCleanup, CleanupClaim } from '../tools/conduction-cleanup.js';
 // B-696: the daemon loop — one pass over every active conduction.
 //
 // Pure dependency-injected core (the B-532 poll-loop pattern): time, sleeping, every read, every
@@ -196,6 +197,7 @@ export type DaemonTask = Taskish & {
    *  flag. Gates ONLY a new fire (see handleHeldConduction's wake-detection block) — an already-
    *  tracked in-flight conduction is unaffected. */
   archived?: boolean | null;
+  subsumed_by_task_id?: string | null;
   /** B-1052: already part of the `getTask view:'meta'` projection (src/tools/tasks.ts) — read here
    *  ONLY for the brief-less umbrella-auto-verify sentinel belt (handleHeldConduction), never for
    *  anything else on this axis (the daemon's clean-pause detection stays keyed on
@@ -220,6 +222,8 @@ export type DaemonTask = Taskish & {
 };
 
 export interface SchedulerDeps extends WriteRetryDeps {
+  /** Optional production-schema cleanup seam; absent helpers leave ordinary scheduling usable. */
+  cleanup?: ConductionCleanup;
   /** Live catalog at launch only; probe/reap keep their synchronous rendering. */
   getModelCatalog?(): Promise<readonly ModelCatalogEntry[]>;
   now(): number;
@@ -969,11 +973,14 @@ export async function runSchedulerPass(
   // touches a single row — see SchedulerRuntime.fatal / PersistentReapFailure.
   if (runtime.fatal) throw runtime.fatal;
 
-  const rows = await deps.listConductions({ status: 'active' });
+  // Cleanup includes parked rows and runs before wake, adoption or settlement.
+  const cleaning = await maintainConductions(deps, state, keeper, runtime);
+  const allRows = await deps.listConductions({ status: 'active' });
+  const rows = allRows.filter(r => !cleaning.has(r.id));
 
   // Prune baselines, heartbeat timers, AND the fire-and-track maps for conductions that left the
   // active set (completed/parked elsewhere) — all four live on the same lifecycle.
-  const activeIds = new Set(rows.map((r) => r.id));
+  const activeIds = new Set([...allRows.map((r) => r.id), ...cleaning]);
   for (const id of [...state.keys()]) if (!activeIds.has(id)) state.delete(id);
   const excluded = exclusionSetFor(state);
   for (const id of [...excluded]) if (!activeIds.has(id)) excluded.delete(id);
@@ -1052,6 +1059,77 @@ export async function runSchedulerPass(
   announceWaiting(deps, state, waitingCandidates);
 
   return { attempted: rows.length, authShapedFailures };
+}
+
+/** Cleanup owns a separate lease without putting parked rows through the active index. */
+async function maintainConductions(
+  deps: SchedulerDeps, state: Map<string, WatchBaseline>, keeper: HeartbeatKeeper,
+  runtime: SchedulerRuntime,
+): Promise<Set<string>> {
+  const ids = new Set<string>();
+  if (!deps.cleanup) return ids;
+  const candidates = await deps.cleanup.list();
+  if (candidates === null) {
+    deps.log('conduction cleanup helpers absent (pre-promote) — new maintenance skipped');
+    return ids;
+  }
+  for (const row of candidates) {
+    ids.add(row.id);
+    runtime.ready.delete(row.id);
+    keeper.stop(row.id);
+    state.delete(row.id);
+    const prior = runtime.running.get(row.id);
+    if (prior && row.lease_holder !== deps.leaseHolder) {
+      prior.cancelDeadline();
+      runtime.running.delete(row.id);
+    }
+    try {
+      const cleanup = deps.cleanup;
+      const claimed = await withWriteRetry(deps, { class: 'cas', endpoint: 'claim_conduction_cleanup' },
+        () => cleanup.claim(row));
+      if (!claimed) continue; // live foreign owner, changed identity, or concurrent Resume
+      const tracked = runtime.running.get(row.id);
+      tracked?.cancelDeadline();
+      let failure: string | undefined;
+      if (claimed.worker_ref || claimed.leg_started_at || tracked) {
+        const templates = await resolveAdoptionTemplates(deps, runtime, claimed, true);
+        if (!templates) failure = 'recorded worker backend unavailable; stop not confirmed';
+        else {
+          let task: DaemonTask | null = null;
+          try { task = await deps.getTaskMeta(row.task_id); } catch { /* identity is persisted */ }
+          try {
+            const outcome = await boundedCleanupCommand(deps, renderTemplate(templates.reap,
+              templateVars(claimed, task, deps.projectKey, deps.workerImage)));
+            if (outcome !== 0 && outcome !== 3) failure = `worker stop unconfirmed (exit ${outcome})`;
+          } catch (err) { failure = `worker stop unconfirmed: ${formatDaemonError(err)}`; }
+        }
+      }
+      if (failure) deps.log(`conduction ${row.id}: ${failure}; retaining worker identity for retry`);
+      const completed = await withWriteRetry(deps, { class: 'cas', endpoint: 'finish_conduction_cleanup' },
+        () => cleanup.finish(claimed as CleanupClaim, failure));
+      if (completed) {
+        runtime.running.delete(row.id);
+        deps.log(`conduction ${row.id}: cleanup completed after confirmed worker absence`);
+      }
+    } catch (err) {
+      deps.log(`conduction ${row.id}: cleanup failed; no launch (${formatDaemonError(err)})`);
+    }
+  }
+  return ids;
+}
+
+/** A hung runtime must not hang the scheduler or renew an expired cleanup claim implicitly. */
+async function boundedCleanupCommand(deps: SchedulerDeps, command: string): Promise<number | null> {
+  let cancel = () => {};
+  try {
+    return await Promise.race([
+      deps.runCommand(command, { quiet: true, quietRender: renderQuietReapOutcome,
+        env: { ...process.env, HARMONY_CONFIRM_WORKER_STOP: '1' } }).then(r => r.exitCode),
+      new Promise<never>((_, reject) => {
+        cancel = deps.startTimeout(30_000, () => reject(new Error('stop timed out after 30 seconds')));
+      }),
+    ]);
+  } finally { cancel(); }
 }
 
 /** B-1107: the pre-fire terminal-decline patch. An already-Parked ticket PARKS its conduction (stays
@@ -1503,6 +1581,7 @@ async function resolveAdoptionTemplates(
   deps: SchedulerDeps,
   runtime: SchedulerRuntime,
   row: ConductionRecord,
+  strict = false,
 ): Promise<{ reap: string; probe?: string | false } | null> {
   const own = { reap: deps.config.profile.reap, probe: deps.config.profile.probe };
   const lb = deps.legBackend;
@@ -1511,6 +1590,10 @@ async function resolveAdoptionTemplates(
   try {
     recorded = await lb.read(row.id);
   } catch (err) {
+    if (strict) {
+      deps.log(`conduction ${row.id}: cleanup backend read failed (${formatDaemonError(err)})`);
+      return null;
+    }
     deps.log(
       `conduction ${row.id}: could not read the recorded leg backend (${formatDaemonError(err)}) — ` +
         `adopting with this conductor's own ${lb.tag} templates`,
@@ -2366,6 +2449,12 @@ async function fireLaunch(
   retryCount: number,
 ): Promise<void> {
   const current = preReadCurrent ?? (await deps.getTaskMeta(row.task_id));
+  // A ready entry can retire after the maintenance scan. Never fire from that stale queue.
+  if (current.archived || current.subsumed_by_task_id) {
+    runtime.ready.delete(row.id);
+    deps.log(`conduction ${row.id}: retired before launch — waiting for cleanup`);
+    return;
+  }
   const modelHandoff = liveWaitingOn(waitingOnFieldValues(current), { nowMs: deps.now() });
 
   // B-1073 (post-review wiring) — the fast-track ADMISSION CHECK, run BEFORE leg_started_at (and

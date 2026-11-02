@@ -17390,6 +17390,43 @@ var require_main3 = __commonJS({
   }
 });
 
+// src/tools/conduction-cleanup.ts
+var absent = (e) => ["42883", "PGRST202"].includes(e.code ?? "") && /conduction_cleanup/.test(e.message ?? "");
+function createConductionCleanup(client, projectId, holder, staleMs) {
+  return {
+    async list() {
+      const { data, error } = await client.rpc("list_conduction_cleanup", { p_project_id: projectId });
+      if (error) {
+        if (absent(error)) return null;
+        throw error;
+      }
+      return data;
+    },
+    async claim(row) {
+      const { data, error } = await client.rpc("claim_conduction_cleanup", {
+        p_id: row.id,
+        p_updated_at: row.updated_at,
+        p_holder: holder,
+        p_stale_before: new Date(Date.now() - staleMs).toISOString()
+      });
+      if (error) throw error;
+      return data?.[0] ?? null;
+    },
+    async finish(row, errorText2) {
+      const { data, error } = await client.rpc("finish_conduction_cleanup", {
+        p_id: row.id,
+        p_token: row.cleanup_token,
+        p_holder: holder,
+        p_worker_ref: row.worker_ref,
+        p_leg_started_at: row.leg_started_at,
+        p_error: errorText2 ?? null
+      });
+      if (error) throw error;
+      return data === true;
+    }
+  };
+}
+
 // src/tools/epic-order.ts
 function sortEpics(epics) {
   const lexical = (a, b) => a < b ? -1 : a > b ? 1 : 0;
@@ -23242,7 +23279,7 @@ async function searchKnowledge(client, projectId, args, started = performance.no
     await definitions;
     return finish();
   }
-  let absent = false;
+  let absent2 = false;
   let scoredCompleted = false;
   const completedSignals = /* @__PURE__ */ new Set();
   const candidates = /* @__PURE__ */ new Map();
@@ -23268,7 +23305,7 @@ async function searchKnowledge(client, projectId, args, started = performance.no
       return response;
     });
     if (!rows || sealed) {
-      if (!sealed && name === "lexical" && routes.some((r) => r.route === name && r.reason === "missing-capability")) absent = true;
+      if (!sealed && name === "lexical" && routes.some((r) => r.route === name && r.reason === "missing-capability")) absent2 = true;
       return;
     }
     scoredCompleted = true;
@@ -23302,7 +23339,7 @@ async function searchKnowledge(client, projectId, args, started = performance.no
       routes.push({ route: "semantic", outcome: "unavailable", reason: "embedding-unavailable" });
       return;
     }
-    if (absent) return;
+    if (absent2) return;
     await signal("semantic", JSON.stringify(data.embedding));
   })();
   const suggestions = args.context_tags?.length ? bounded("tag-suggestions", (signal2) => client.rpc("knowledge_search_context_tags", {
@@ -23311,7 +23348,7 @@ async function searchKnowledge(client, projectId, args, started = performance.no
     _context_tags: normalizeTags(args.context_tags)
   }).abortSignal(signal2)) : Promise.resolve(void 0);
   await lexical;
-  if (absent) {
+  if (absent2) {
     result.capability = "scores-unavailable";
     result.reason = "scored search is not deployed in this environment yet";
     incomplete = true;
@@ -23353,12 +23390,12 @@ async function searchKnowledge(client, projectId, args, started = performance.no
   for (const name of ["lexical", "semantic"]) {
     result.relevance_admission.enforcement[name] = completedSignals.has(name) ? validPolicy ? "enforced" : "unknown" : "not-run";
   }
-  if (absent && routes.some((r) => r.route === "legacy" && r.outcome === "completed")) {
+  if (absent2 && routes.some((r) => r.route === "legacy" && r.outcome === "completed")) {
     result.relevance_admission.enforcement.lexical = validPolicy ? "enforced" : "unknown";
   }
   const tags = await suggestions;
   result.tag_suggestions = normalizeTags(tags ?? []).slice(0, 8);
-  if (!absent && scoredCompleted) {
+  if (!absent2 && scoredCompleted) {
     result.capability = "scored";
     const all = [...candidates.values()];
     result.below_cutoff_count = all.filter((c) => c.score < SCORE_CUTOFF).length;
@@ -41446,8 +41483,10 @@ function agedPriorityRank(entry, now, readyAgeMs) {
 }
 async function runSchedulerPass(deps, state, keeper, runtime) {
   if (runtime.fatal) throw runtime.fatal;
-  const rows = await deps.listConductions({ status: "active" });
-  const activeIds = new Set(rows.map((r) => r.id));
+  const cleaning = await maintainConductions(deps, state, keeper, runtime);
+  const allRows = await deps.listConductions({ status: "active" });
+  const rows = allRows.filter((r) => !cleaning.has(r.id));
+  const activeIds = /* @__PURE__ */ new Set([...allRows.map((r) => r.id), ...cleaning]);
   for (const id of [...state.keys()]) if (!activeIds.has(id)) state.delete(id);
   const excluded = exclusionSetFor(state);
   for (const id of [...excluded]) if (!activeIds.has(id)) excluded.delete(id);
@@ -41496,6 +41535,89 @@ async function runSchedulerPass(deps, state, keeper, runtime) {
   authShapedFailures += await fireStealCandidates(deps, state, keeper, runtime, stealCandidates, byId);
   announceWaiting(deps, state, waitingCandidates);
   return { attempted: rows.length, authShapedFailures };
+}
+async function maintainConductions(deps, state, keeper, runtime) {
+  const ids = /* @__PURE__ */ new Set();
+  if (!deps.cleanup) return ids;
+  const candidates = await deps.cleanup.list();
+  if (candidates === null) {
+    deps.log("conduction cleanup helpers absent (pre-promote) \u2014 new maintenance skipped");
+    return ids;
+  }
+  for (const row of candidates) {
+    ids.add(row.id);
+    runtime.ready.delete(row.id);
+    keeper.stop(row.id);
+    state.delete(row.id);
+    const prior = runtime.running.get(row.id);
+    if (prior && row.lease_holder !== deps.leaseHolder) {
+      prior.cancelDeadline();
+      runtime.running.delete(row.id);
+    }
+    try {
+      const cleanup = deps.cleanup;
+      const claimed = await withWriteRetry(
+        deps,
+        { class: "cas", endpoint: "claim_conduction_cleanup" },
+        () => cleanup.claim(row)
+      );
+      if (!claimed) continue;
+      const tracked = runtime.running.get(row.id);
+      tracked?.cancelDeadline();
+      let failure;
+      if (claimed.worker_ref || claimed.leg_started_at || tracked) {
+        const templates = await resolveAdoptionTemplates(deps, runtime, claimed, true);
+        if (!templates) failure = "recorded worker backend unavailable; stop not confirmed";
+        else {
+          let task = null;
+          try {
+            task = await deps.getTaskMeta(row.task_id);
+          } catch {
+          }
+          try {
+            const outcome = await boundedCleanupCommand(deps, renderTemplate(
+              templates.reap,
+              templateVars(claimed, task, deps.projectKey, deps.workerImage)
+            ));
+            if (outcome !== 0 && outcome !== 3) failure = `worker stop unconfirmed (exit ${outcome})`;
+          } catch (err) {
+            failure = `worker stop unconfirmed: ${formatDaemonError(err)}`;
+          }
+        }
+      }
+      if (failure) deps.log(`conduction ${row.id}: ${failure}; retaining worker identity for retry`);
+      const completed = await withWriteRetry(
+        deps,
+        { class: "cas", endpoint: "finish_conduction_cleanup" },
+        () => cleanup.finish(claimed, failure)
+      );
+      if (completed) {
+        runtime.running.delete(row.id);
+        deps.log(`conduction ${row.id}: cleanup completed after confirmed worker absence`);
+      }
+    } catch (err) {
+      deps.log(`conduction ${row.id}: cleanup failed; no launch (${formatDaemonError(err)})`);
+    }
+  }
+  return ids;
+}
+async function boundedCleanupCommand(deps, command) {
+  let cancel = () => {
+  };
+  try {
+    return await Promise.race([
+      deps.runCommand(command, {
+        quiet: true,
+        quietRender: renderQuietReapOutcome,
+        env: { ...process.env, HARMONY_CONFIRM_WORKER_STOP: "1" }
+      }).then((r) => r.exitCode),
+      new Promise((_, reject) => {
+        cancel = deps.startTimeout(3e4, () => reject(new Error("stop timed out after 30 seconds")));
+      })
+    ]);
+  } finally {
+    cancel();
+  }
 }
 function terminalDeclinePatch(workflowState) {
   return workflowState === "Parked" ? { status: "parked", last_worker_exit_code: null, last_worker_exit_class: "ticket-parked-no-leg" } : { status: "completed", last_worker_exit_code: null, last_worker_exit_class: "terminal-no-leg" };
@@ -41709,7 +41831,7 @@ async function handleForeignConduction(deps, state, keeper, excluded, runtime, r
   if (row.leg_started_at !== null) return;
   stealCandidates.push({ row, current });
 }
-async function resolveAdoptionTemplates(deps, runtime, row) {
+async function resolveAdoptionTemplates(deps, runtime, row, strict = false) {
   const own = { reap: deps.config.profile.reap, probe: deps.config.profile.probe };
   const lb = deps.legBackend;
   if (!lb || runtime.legBackendAbsent) return own;
@@ -41717,6 +41839,10 @@ async function resolveAdoptionTemplates(deps, runtime, row) {
   try {
     recorded = await lb.read(row.id);
   } catch (err) {
+    if (strict) {
+      deps.log(`conduction ${row.id}: cleanup backend read failed (${formatDaemonError(err)})`);
+      return null;
+    }
     deps.log(
       `conduction ${row.id}: could not read the recorded leg backend (${formatDaemonError(err)}) \u2014 adopting with this conductor's own ${lb.tag} templates`
     );
@@ -42209,6 +42335,11 @@ function beginReapEscalation(deps, runtime, row, current, tracked, flag) {
 }
 async function fireLaunch(deps, state, keeper, runtime, row, preReadCurrent, retryCount) {
   const current = preReadCurrent ?? await deps.getTaskMeta(row.task_id);
+  if (current.archived || current.subsumed_by_task_id) {
+    runtime.ready.delete(row.id);
+    deps.log(`conduction ${row.id}: retired before launch \u2014 waiting for cleanup`);
+    return;
+  }
   const modelHandoff = liveWaitingOn(waitingOnFieldValues(current), { nowMs: deps.now() });
   const runConfig = row.run_config ?? {};
   if (isFastTrackBuildLeg(runConfig, current)) {
@@ -43020,6 +43151,7 @@ ${err instanceof Error ? err.message : String(err)}
     getModelCatalog: async () => (await resolveModelCatalog(client)).entries,
     now: Date.now,
     sleep,
+    cleanup: createConductionCleanup(client, projectId, leaseHolder, config.staleMs),
     listConductions: (args) => listConductions(client, args),
     getTaskMeta: async (taskId) => await getTask(client, projectId, { task_id: taskId, view: "meta" }),
     recoverDeclaredWait: (taskId, firedAtMs, nowMs) => recoverDeclaredWait(client, projectId, taskId, firedAtMs, nowMs),

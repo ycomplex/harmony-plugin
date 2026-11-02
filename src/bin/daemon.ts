@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createConductionCleanup } from '../tools/conduction-cleanup.js';
 import { recoverDeclaredWait } from '../tools/wait.js';
 // B-696: the conductor daemon entrypoint.
 //
@@ -669,6 +670,7 @@ async function main(): Promise<void> {
     getModelCatalog: async () => (await resolveModelCatalog(client)).entries,
     now: Date.now,
     sleep,
+    cleanup: createConductionCleanup(client, projectId, leaseHolder, config.staleMs),
     listConductions: (args) => listConductions(client, args),
     getTaskMeta: async (taskId) =>
       (await getTask(client, projectId, { task_id: taskId, view: 'meta' })) as unknown as DaemonTask,

@@ -32,6 +32,28 @@ export CLOUDSDK_CORE_PROJECT CLOUDSDK_CORE_ACCOUNT
 RUN_DIR="$HOME/.harmony-conductions/$TICKET/$CONDUCTION_ID"
 ENV_FILE="$RUN_DIR/run.env"
 
+# Retirement needs confirmed absence. The ordinary asynchronous deadline path below is unchanged.
+if [ "${HARMONY_CONFIRM_WORKER_STOP:-}" = 1 ]; then
+  list_running() {
+    gcloud run jobs executions list --job="$HARMONY_CLOUD_RUN_JOB" \
+      --region="$HARMONY_CLOUD_RUN_REGION" \
+      --filter="metadata.labels.conduction-id=$CONDUCTION_ID AND status.completionTime=''" \
+      --format='value(metadata.name)'
+  }
+  RUNNING="$(list_running)" || exit 1
+  [ -z "$RUNNING" ] && exit 3
+  for execution in $RUNNING; do
+    gcloud run jobs executions cancel "$execution" --region="$HARMONY_CLOUD_RUN_REGION" --quiet || exit 1
+  done
+  for attempt in 1 2 3 4 5; do
+    RUNNING="$(list_running)" || exit 1
+    if [ -z "$RUNNING" ]; then rm -f "$ENV_FILE"; exit 0; fi
+    sleep 2
+  done
+  echo 'cloud-worker-reap: cancellation not yet confirmed' >&2
+  exit 1
+fi
+
 # Resolve the still-incomplete execution for this conduction (status.completionTime=='' means it
 # has not reached a terminal state yet — the same field the launch wrapper's authoritative read
 # checks for a terminal outcome, applied here as "hasn't got one yet").

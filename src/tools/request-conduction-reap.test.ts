@@ -21,7 +21,8 @@ vi.mock('./conduction-record.js', async (importOriginal) => {
   };
 });
 
-const client = { fake: 'client' } as never;
+const rpc = vi.fn();
+const client = { rpc } as never;
 
 const existingRow = {
   id: 'cond-1',
@@ -34,6 +35,7 @@ const patchedRow = { ...existingRow, reap_requested_at: '2026-08-26T00:00:00.000
 
 beforeEach(() => {
   vi.clearAllMocks();
+  rpc.mockResolvedValue({data:null,error:{code:"PGRST202",message:"request_conduction_cleanup missing"}});
   mocks.getConduction.mockResolvedValue(existingRow);
   mocks.updateConduction.mockResolvedValue(patchedRow);
 });
@@ -57,6 +59,24 @@ describe('requestConductionReap (request_conduction_reap MCP tool handler)', () 
     expect(result.message).toMatch(/never kill/i);
   });
 
+  it('uses the atomic signal when available and propagates operational failures', async () => {
+    rpc.mockResolvedValueOnce({data:[patchedRow],error:null});
+    expect((await requestConductionReap(client,{conduction_id:'cond-1'})).conduction).toEqual(patchedRow);
+    expect(mocks.updateConduction).not.toHaveBeenCalled();
+    rpc.mockResolvedValueOnce({data:null,error:new Error('permission denied')});
+    await expect(requestConductionReap(client,{conduction_id:'cond-1'})).rejects.toThrow('permission denied');
+  });
+  it.each(['completed','cancelled'])('does not request cleanup for %s history', async status => {
+    mocks.getConduction.mockResolvedValue({...existingRow,status});
+    await requestConductionReap(client,{conduction_id:'cond-1'});
+    expect(rpc).not.toHaveBeenCalled();
+    expect(mocks.updateConduction).not.toHaveBeenCalled();
+  });
+  it('does not replace an existing reap request', async () => {
+    mocks.getConduction.mockResolvedValue(patchedRow);
+    await requestConductionReap(client,{conduction_id:'cond-1'});
+    expect(rpc).not.toHaveBeenCalled();
+  });
   it('requires conduction_id', async () => {
     await expect(requestConductionReap(client, { conduction_id: '' })).rejects.toThrow(
       /conduction_id is required/,

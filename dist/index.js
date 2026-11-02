@@ -54913,17 +54913,22 @@ async function requestConductionReap(client, args) {
   if (!args.conduction_id) throw new Error("conduction_id is required");
   const existing = await getConduction(client, args.conduction_id);
   if (!existing) throw new Error(`Not found: no conduction with id ${args.conduction_id}`);
-  const conduction = await updateConduction(client, args.conduction_id, {
-    reap_requested_at: (/* @__PURE__ */ new Date()).toISOString()
-  });
+  if (existing.status === "completed" || existing.status === "cancelled" || existing.reap_requested_at) {
+    return { conduction: existing, message: `Conduction ${existing.id}: already settled or reap already requested; no new request.` };
+  }
+  const { data, error: error2 } = await client.rpc("request_conduction_cleanup", { p_id: args.conduction_id });
+  const missing3 = error2 && ["42883", "PGRST202"].includes(error2.code ?? "") && /request_conduction_cleanup/.test(error2.message ?? "");
+  if (error2 && !missing3) throw error2;
+  const conduction = missing3 ? await updateConduction(client, args.conduction_id, { reap_requested_at: (/* @__PURE__ */ new Date()).toISOString() }) : data?.[0];
+  if (!conduction) throw new Error("Conduction not writable or no longer visible");
   return {
     conduction,
-    message: `Reap requested for conduction ${conduction.id}. The conductor will notice on its next pass (only while a launch is genuinely tracked and unsettled) and escalate the SAME reap sequence its own per-launch deadline uses \u2014 this call never kills the worker directly.`
+    message: `Reap requested for conduction ${conduction.id}. The conductor will notice on its next pass: stop tracked work through the existing sequence, or settle a paused run with no worker. This call never kills the worker directly.`
   };
 }
 var requestConductionReapTool = {
   name: "request_conduction_reap",
-  description: "B-740: request an early reap of a hung active conduction's currently-running leg \u2014 CLI/agent parity with the web Conductors view's \"Reap now\" button. Sets `conductions.reap_requested_at` to now(); this tool NEVER performs the kill itself \u2014 the conductor remains the sole process that reaps a worker, and only notices/acts on this flag while it is actively tracking an in-flight launch for the conduction (a request against an already-settled/parked/completed conduction is harmless but inert). The eventual park is recorded as `last_worker_exit_class: 'operator-reap'`.",
+  description: "Request conductor cleanup: reap a tracked worker or settle a paused run with no worker. This call only signals the conductor; it never kills workers or bypasses a live lease. Already completed/cancelled runs and repeated requests are no-ops.",
   inputSchema: {
     type: "object",
     properties: {
