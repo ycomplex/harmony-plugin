@@ -46,7 +46,7 @@ const exitCode = runStopGate({
     const out = execFileSync(
       process.execPath,
       [harmonyCli, '--json', 'tasks', 'clean-check', taskRef, ...(legStartedAt ? ['--leg-started-at', legStartedAt] : [])],
-      { encoding: 'utf8', timeout: CLI_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] },
+      { encoding: 'utf8', timeout: CLI_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'inherit'] },
     );
     return JSON.parse(out) as StopGateRow;
   },

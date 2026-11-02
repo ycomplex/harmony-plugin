@@ -108,7 +108,7 @@ export function registerTaskCommands(program: Command): void {
       await runCommand(program.opts(), async (ctx) => {
         if (opts.legStartedAt) {
           const recovered = await recoverDeclaredWait(ctx.client, ctx.projectId, id, Date.parse(opts.legStartedAt), Date.now());
-          if (recovered) process.stderr.write(`Recovered current-session comment-only wait on ${recovered.ref}\n`);
+          if (recovered) process.stderr.write(`Recovered leg ${opts.legStartedAt} comment-only WAITING-ON ref=${recovered.ref} as human-step\n`);
         }
         const task = (await getTask(ctx.client, ctx.projectId, { task_id: id, view: 'meta' })) as unknown as CleanCheckTask;
         let nonArchivedChildCount = 0;
