@@ -673,3 +673,13 @@ describe('B-1267 startup infrastructure exit', () => {
     expect(classifyWorkerExit(args({ exitCode: 74, timedOut: true }))).toEqual({ action: 'park', reason: 'worker-timeout' });
   });
 });
+
+
+describe.each(['claude-code', 'codex'])('B-1251: %s question-only classifier contract', () => {
+  it('an unanswered question is a clean pause even without other progress', () => {
+    const a = args({ row: { workflow_state: 'Proposed', awaiting_human_input: true }, progressed: false });
+    const outcome = classifyWorkerExit(a);
+    expect(outcome).toEqual({ action: 'wait' });
+    expect(exitClass(outcome, a)).toBe('clean-pause');
+  });
+});

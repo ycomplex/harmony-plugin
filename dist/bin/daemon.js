@@ -41880,7 +41880,7 @@ async function settleTrackedLaunch(deps, state, keeper, runtime, row, tracked) {
     } catch (err) {
       deps.log(`${label(row, after, deps.projectKey)}: pre-park re-read failed (${formatDaemonError(err)}) \u2014 parking as classified`);
     }
-    const stranded = fresh ? strandedWorkSignal(fresh, [after, tracked.current]) : null;
+    const stranded = fresh ? strandedWorkSignal(fresh, [tracked.current]) : null;
     if (fresh && stranded) {
       deps.log(`${label(row, after, deps.projectKey)}: pre-park re-read shows stranded work (${stranded}) \u2014 staying active instead of parking`);
       if (!await writeLastLegEndedAt(deps, state, keeper, row, { last_worker_exit_class: stranded, last_worker_exit_code: tracked.exitCode })) return;

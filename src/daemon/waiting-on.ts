@@ -115,8 +115,9 @@ function strandedValue(row: StrandedWorkRow, code: 'answers' | 'reshape' | 'acce
  *  accepted after the leg's last read)? Returns the `late-<reason>` exit class, else null. Order is the
  *  priority when several are present.
  *
- *  `seen` are the rows the leg already had its chance at — the post-exit read that classified the exit
- *  and the fire-time read it launched from. A signal whose value is the SAME on any of them is NOT late:
+ *  `seen` are worker launch snapshots: input those legs already had their chance at. A conductor's
+ *  post-exit read is not a worker observation and must not be included (B-1251). A signal whose value
+ *  is the SAME on any launch snapshot is NOT late:
  *  the leg could have consumed it and did not (a bug, a refused consume, a malformed answer), and
  *  keeping the conduction active on it would loop legs forever instead of parking no-progress as today.
  *  Only a signal that DIFFERS from every seen row (new, or changed) counts. `late-human-ball` is not
