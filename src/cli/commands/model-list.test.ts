@@ -39,6 +39,7 @@ const lines = () => logSpy.mock.calls.map((c) => c[0] as string);
 const HEADER = 'model\truntime\tprovider\tinput_usd_per_mtok\tcached_input_usd_per_mtok\toutput_usd_per_mtok';
 
 beforeEach(() => {
+  process.exitCode = 0;
   vi.clearAllMocks();
   client = catalogClient(ROWS);
   mocks.getAuthenticatedContext.mockResolvedValue({ client, projectId: 'p', userId: 'u' });
@@ -47,11 +48,38 @@ beforeEach(() => {
   errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 });
 afterEach(() => {
+  process.exitCode = 0;
   logSpy.mockRestore();
   errSpy.mockRestore();
 });
 
 describe('harmony model list (B-1346)', () => {
+  it.each(['claude-code', 'codex'])('refuses missing authentication without printing a table (%s)', async (agent) => {
+    mocks.getAuthenticatedContext.mockRejectedValue(new Error('No active project'));
+    await run(['model', 'list', '--agent', agent]);
+    expect(process.exitCode).toBe(1);
+    expect(lines()).toEqual([]);
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('harmony login'));
+    expect(mocks.fetchCatalogPrice).not.toHaveBeenCalled();
+  });
+
+  it.each(['claude-code', 'codex'])('refuses a failed catalog read without printing fallback offers (%s)', async (agent) => {
+    mocks.getAuthenticatedContext.mockResolvedValue({ client: { from: () => { throw new Error('network down'); } } });
+    await run(['model', 'list', '--agent', agent]);
+    expect(process.exitCode).toBe(1);
+    expect(lines()).toEqual([]);
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('refusing to show embedded fallback'));
+    expect(mocks.fetchCatalogPrice).not.toHaveBeenCalled();
+  });
+
+  it('refuses an empty live catalog that degrades to fallback', async () => {
+    mocks.getAuthenticatedContext.mockResolvedValue({ client: catalogClient([]) });
+    await run(['model', 'list', '--agent', 'codex']);
+    expect(process.exitCode).toBe(1);
+    expect(lines()).toEqual([]);
+    expect(errSpy).toHaveBeenCalledWith(expect.stringContaining('live catalog unavailable'));
+  });
+
   it('prints a header, then each active offer of the runtime with its provider and prices', async () => {
     mocks.fetchCatalogPrice.mockImplementation(async (_c: unknown, model: string) =>
       model === 'gpt-6.1-sol'
@@ -59,6 +87,7 @@ describe('harmony model list (B-1346)', () => {
         : { input_per_mtok: 0.6, cached_input_per_mtok: 0.15, output_per_mtok: 2.5 },
     );
     await run(['model', 'list', '--agent', 'codex']);
+    expect(process.exitCode).toBe(0);
     expect(lines()).toEqual([
       HEADER,
       'gpt-6.1-sol\tcodex\topenai\t1.25\t0.125\t10',

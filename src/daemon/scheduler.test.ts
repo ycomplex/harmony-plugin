@@ -5273,3 +5273,115 @@ describe('B-1267 startup-unavailable settlement', () => {
     expect(h.logs.some(line => line.includes('startup-unavailable') && line.includes(captured ? 'quota exhausted' : 'diagnostic unavailable'))).toBe(true);
   });
 });
+
+
+describe.each(['claude-code', 'codex'] as const)('B-1251: %s question continuity', (adapter) => {
+  function harness() {
+    return makeHarness({
+      conductions: [conduction({ run_config: { agent: { adapter } } })],
+      config: { ...config, profile: { ...config.profile, agents: ['claude-code', 'codex'], launch: 'launch {conduction_id} {ticket} {run_config_json}' } },
+      tasks: { 'task-1': pausedTask() },
+    });
+  }
+  const answered = {
+    exchange_id: 'question-1251', status: 'active', round: 1,
+    answers_submitted_at: '2026-11-02T12:00:00Z',
+  };
+
+  it('an answer already visible at the first settle read launches one successor, then bounds an ignored answer', async () => {
+    const h = harness();
+    await wakeAndFire(h);
+    (h.tasks['task-1'] as DaemonTask).active_exchange = answered;
+    await h.pass();
+    expect(h.getConduction('cond-1').status).toBe('active');
+    expect(h.getConduction('cond-1').last_worker_exit_class).toBe('late-answers-landed');
+    await h.pass();
+    expect(h.launches()).toHaveLength(2);
+    await h.pass(); // successor ignored the SAME answer it had at launch
+    expect(h.getConduction('cond-1').status).toBe('parked');
+    expect(h.getConduction('cond-1').last_worker_exit_class).toBe('no-progress');
+    await h.pass();
+    expect(h.launches()).toHaveLength(2);
+  });
+
+  it('an answer arriving at the final pre-park read also wakes the same conduction', async () => {
+    const h = harness();
+    await wakeAndFire(h);
+    const read = h.deps.getTaskMeta;
+    let reads = 0;
+    h.deps.getTaskMeta = vi.fn(async (id: string) => {
+      if (++reads >= 2) (h.tasks[id] as DaemonTask).active_exchange = answered;
+      return read(id);
+    });
+    await h.pass();
+    expect(h.getConduction('cond-1').status).toBe('active');
+    await h.pass();
+    expect(h.launches()).toHaveLength(2);
+  });
+
+  it('a structured meta wait holds and resumes without a no-progress park', async () => {
+    const h = harness();
+    h.hooks.onLaunch = () => {
+      (h.tasks['task-1'] as DaemonTask).waiting_on = {
+        kind: 'ci', ref: 'gh-run-1251', since: iso(h.now()), first_since: iso(h.now()),
+        resume_after: iso(h.now() + 60_000),
+      };
+    };
+    await wakeAndFire(h);
+    await h.pass();
+    expect(h.getConduction('cond-1').last_worker_exit_class).toBe('waiting-on');
+    expect(h.getConduction('cond-1').status).toBe('active');
+    await h.pass();
+    expect(h.launches()).toHaveLength(1);
+    h.setNow(h.now() + 60_000);
+    await h.pass();
+    expect(h.launches()).toHaveLength(2);
+  });
+
+  it('a question-only leg holds until answered and continues on the same conduction', async () => {
+    const h = harness();
+    h.hooks.onLaunch = () => {
+      const t = h.tasks['task-1'] as DaemonTask;
+      t.awaiting_human_input = true;
+      t.active_exchange = { exchange_id: 'question-1251', status: 'active', round: 1 };
+    };
+    await wakeAndFire(h);
+    await h.pass();
+    expect(h.getConduction('cond-1').last_worker_exit_class).toBe('clean-pause');
+    expect(h.getConduction('cond-1').status).toBe('active');
+    await h.pass();
+    expect(h.launches()).toHaveLength(1);
+    h.hooks.onLaunch = undefined;
+    const t = h.tasks['task-1'] as DaemonTask;
+    t.awaiting_human_input = false;
+    t.active_exchange = answered;
+    await h.pass();
+    expect(h.launches()).toHaveLength(2);
+    expect(h.getConduction('cond-1').id).toBe('cond-1');
+  });
+});
+
+describe('B-1363 comment-only recovery at settlement', () => {
+  it('persists a current-leg wait before classification, logs the leg and holds across passes', async () => {
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() } });
+    h.deps.recoverDeclaredWait = vi.fn(async (taskId, firedAt, now) => {
+      expect(taskId).toBe('task-1'); expect(firedAt).toBeLessThanOrEqual(now);
+      const m = { kind: 'human-step' as const, ref: 'pr#1363', since: iso(now), first_since: iso(now) };
+      h.tasks['task-1'].waiting_on = m;
+      return m;
+    });
+    await wakeAndFire(h); await h.pass();
+    expect(h.getConduction('cond-1').status).toBe('active');
+    expect(h.getConduction('cond-1').last_worker_exit_class).toBe('waiting-on');
+    expect(h.logs.some(l => l.includes('recovered comment-only WAITING-ON ref=pr#1363'))).toBe(true);
+    await h.pass(); await h.pass();
+    expect(h.launches()).toHaveLength(1);
+  });
+  it('a failed recovery retains ordinary no-progress classification', async () => {
+    const h = makeHarness({ conductions: [conduction()], tasks: { 'task-1': pausedTask() } });
+    h.deps.recoverDeclaredWait = vi.fn().mockRejectedValue(new Error('unavailable'));
+    await wakeAndFire(h); await h.pass();
+    expect(h.getConduction('cond-1').status).toBe('parked');
+    expect(h.logs.some(l => l.includes('recovery failed'))).toBe(true);
+  });
+});

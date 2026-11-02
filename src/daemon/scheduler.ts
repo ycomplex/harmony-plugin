@@ -230,6 +230,8 @@ export interface SchedulerDeps extends WriteRetryDeps {
   sleep(ms: number): Promise<void>;
   listConductions(args: { status?: ConductionStatus }): Promise<ConductionRecord[]>;
   getTaskMeta(taskId: string): Promise<DaemonTask>;
+  /** B-1363: persist a bounded wait inferred from this leg's standalone declaration. */
+  recoverDeclaredWait?(taskId: string, firedAtMs: number, nowMs: number): Promise<WaitingOn | null>;
   /** B-1050: clear the exact model-handoff marker after the relaunch command has been issued. */
   clearModelHandoff?(taskId: string, marker: WaitingOn): Promise<boolean>;
   countNonArchivedChildren(taskId: string): Promise<number>;
@@ -1751,6 +1753,23 @@ async function settleTrackedLaunch(
     }
   }
 
+  // B-1363: a comment-only declaration is repaired only for a successful leg that would
+  // otherwise have no wait. The classifier still owns failure/timeout/human-ball precedence.
+  if (tracked.exitCode === 0 && !tracked.timedOut && !tracked.operatorReaped &&
+      !after.stale && !after.awaiting_human_input && !after.pending_acceptance_event_id &&
+      tracked.firedAt !== undefined && deps.recoverDeclaredWait &&
+      !liveWaitingOn(waitingOnFieldValues(after), { firedAtMs: tracked.firedAt, nowMs: deps.now() })) {
+    try {
+      const recovered = await deps.recoverDeclaredWait(row.task_id, tracked.firedAt, deps.now());
+      if (recovered) {
+        after.waiting_on = recovered;
+        deps.log(`${label(row, after, deps.projectKey)}: leg ${iso(tracked.firedAt)} recovered comment-only WAITING-ON ref=${recovered.ref} as human-step`);
+      }
+    } catch (err) {
+      deps.log(`${label(row, after, deps.projectKey)}: comment-only wait recovery failed: ${String(err)}`);
+    }
+  }
+
   const classifyArgs: ClassifyArgs = {
     row: after,
     nonArchivedChildCount,
@@ -1874,9 +1893,12 @@ async function settleTrackedLaunch(
     } catch (err) {
       deps.log(`${label(row, after, deps.projectKey)}: pre-park re-read failed (${formatDaemonError(err)}) — parking as classified`);
     }
-    // Only a signal NEW relative to what this leg already saw (the post-exit read + its fire-time read) is a late
-    // write; one it already had its chance at must park as classified, never loop legs (seat review of #364).
-    const stranded = fresh ? strandedWorkSignal(fresh, [after, tracked.current]) : null;
+    // B-1251: only the launch snapshot describes input the worker had its chance to consume.
+    // The conductor's first post-exit read is NOT a worker observation: an answer may already be
+    // present there even though it arrived during this leg. Comparing against `after` strands it.
+    // On the successor leg the same answer IS in tracked.current, so ignoring it still parks;
+    // a single unconsumed input cannot keep re-launching workers forever (seat review of #364).
+    const stranded = fresh ? strandedWorkSignal(fresh, [tracked.current]) : null;
     if (fresh && stranded) {
       deps.log(`${label(row, after, deps.projectKey)}: pre-park re-read shows stranded work (${stranded}) — staying active instead of parking`);
       if (!(await writeLastLegEndedAt(deps, state, keeper, row, { last_worker_exit_class: stranded, last_worker_exit_code: tracked.exitCode }))) return;

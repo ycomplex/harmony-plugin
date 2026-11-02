@@ -160,8 +160,7 @@ export function decideStop(args: {
       `hit a judgment call or a capability denial you cannot decide alone;\n` +
       `  * DEFER / PARK the ticket with an authored reason, or drive it to a terminal state, or ` +
       `decompose it into live children;\n` +
-      `  * DECLARE AN EXTERNAL WAIT (update_task field_values.waiting_on + a WAITING-ON ref=<ref> ` +
-      `comment) if you are waiting on CI, a PR state or an off-board human step.\n` +
+      `  * DECLARE AN EXTERNAL WAIT (harmony wait declare --task <ticket> --kind <kind> --ref <ref>) if you are waiting on CI, a PR state or an off-board human step.\n` +
       `If the question is too small to be worth the human's time, DECIDE it, record the decision ` +
       `and its rationale as a ticket comment, and continue — do not stop for it.`,
   };
@@ -181,7 +180,7 @@ export interface StopGateDeps {
   /** Persists the blocks-so-far; MAY throw (a throw is swallowed — the cap degrades, never wedges). */
   writeBlockCount: (sessionId: string, count: number) => void;
   /** The row read — a CLI call in production. MAY throw / time out; any throw is a fail-open. */
-  queryRow: (taskRef: string) => StopGateRow;
+  queryRow: (taskRef: string, legStartedAt?: string) => StopGateRow;
   /** stderr. */
   log: (line: string) => void;
 }
@@ -211,7 +210,7 @@ export function runStopGate(deps: StopGateDeps): number {
     if (typeof breadcrumb.session_id === 'string' && breadcrumb.session_id !== sessionId) return 0;
 
     const ticket = breadcrumb.ticket || taskRef;
-    const row = deps.queryRow(taskRef);
+    const row = deps.queryRow(taskRef, breadcrumb.started_at);
     const stopHookActive = payload.stop_hook_active === true;
 
     let blocksSoFar = 0;
