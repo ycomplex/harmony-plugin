@@ -323,11 +323,10 @@ case "$MODE" in
     # and neither does anything it calls except the adapter's own byte copy.
     AGENT_ID="$(node "$PLUGIN_DIR/dist/bin/harmony.js" agent resolve)" || exit 1
     # B-1306: the enabled path never mounts or copies a full login. Initialize access before render.
-    if [ "$AGENT_ID" = codex ] && [ "${HARMONY_CODEX_TOKEN_ONLY:-0}" = 1 ]; then
+    if [ "$AGENT_ID" = codex ] && [ "${HARMONY_CODEX_TOKEN_ONLY:-0}" = 1 ] && [ "${HARMONY_CODEX_PROVIDER:-openai}" = openai ]; then
       export CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
       [ "$(codex --version)" = "codex-cli 0.166.0" ] || { echo 'codex-login-configuration-missing: token reload requires proven CLI 0.166.0' >&2; exit 1; }
       node "$PLUGIN_DIR/dist/bin/codex-auth.js" worker --once || exit 1
-      export HARMONY_CODEX_AUTH_FILE="$CODEX_HOME/auth.json"
       node "$PLUGIN_DIR/dist/bin/codex-auth.js" worker --watch &
       B1306_UPDATER_PID=$!
     fi
@@ -878,7 +877,7 @@ case "$MODE" in
     # invocation wrote to stdout can ever be swallowed by this feature.
     _b916_echo_result() {
       [ -s "$1" ] || return 0
-      if [ "${AGENT_ID:-claude-code}" = codex ] && [ "${HARMONY_CODEX_TOKEN_ONLY:-0}" = 1 ]; then
+      if [ "${AGENT_ID:-claude-code}" = codex ] && [ "${HARMONY_CODEX_TOKEN_ONLY:-0}" = 1 ] && [ "${HARMONY_CODEX_PROVIDER:-openai}" = openai ]; then
         node "$PLUGIN_DIR/dist/bin/codex-auth.js" check-output "$1" || exit 1
       fi
       if jq -e 'type == "object" and has("result")' "$1" >/dev/null 2>&1; then

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { parseAllDocuments } from 'yaml';
+import { resolveCodexCredential } from '../agents/codex.js';
 const read = (path: string) => readFileSync(path, 'utf8');
 describe('inert token-only deployment', () => {
   it('does nothing without the explicit flag, even with inaccessible credential paths', () => {
@@ -9,6 +10,12 @@ describe('inert token-only deployment', () => {
       env: { PATH: process.env.PATH, CODEX_RUN: '1', CODEX_PROVIDER: 'openai' }, encoding: 'utf8',
     });
     expect(result.status).toBe(0); expect(result.stdout.trim()).toBe('0');
+  });
+  it('keeps token-only selection inside the Codex adapter and never changes provider-key credentials', () => {
+    expect(resolveCodexCredential({})).toMatchObject({ ok: false });
+    expect(resolveCodexCredential({ HARMONY_CODEX_TOKEN_ONLY: '1' })).toEqual({ ok: true, credential: 'login-cache' });
+    expect(resolveCodexCredential({ HARMONY_CODEX_TOKEN_ONLY: '1', OPENAI_API_KEY: 'fixture-key' })).toMatchObject({ ok: false });
+    expect(resolveCodexCredential({ HARMONY_CODEX_TOKEN_ONLY: '1', HARMONY_CODEX_PROVIDER: 'openrouter', OPENROUTER_API_KEY: 'fixture-key' })).toEqual({ ok: true, credential: 'api-key' });
   });
   it('enables only the OpenAI Codex path with an exact access-only resource name', () => {
     for (const [provider, resource, status, output] of [
@@ -25,8 +32,8 @@ describe('inert token-only deployment', () => {
     for (const path of ['container/cloud-worker-launch.sh', 'container/docker-host-worker-launch.sh', 'container/gke/gke-worker-launch.sh']) {
       const source = read(path);
       expect(source).toContain('codex_token_context');
-      expect(source).toContain('HARMONY_CODEX_TOKEN_ONLY');
-      expect(source).toContain('HARMONY_CODEX_ACCESS_RESOURCE');
+      expect(source + read('container/codex-token-launch.sh')).toContain('HARMONY_CODEX_TOKEN_ONLY');
+      expect(source + read('container/codex-token-launch.sh')).toContain('HARMONY_CODEX_ACCESS_RESOURCE');
       expect(spawnSync('bash', ['-n', path]).status).toBe(0);
     }
     const source = read('container/provision.sh');

@@ -25,13 +25,14 @@ Set these names on the founder machine; none is a credential value:
 
 ```bash
 PROJECT=harmony-conductor
-REGION=europe-west1
+REGION=us-central1
 OWNER_GSA="harmony-codex-refresh@$PROJECT.iam.gserviceaccount.com"
 LEG_GSA="harmony-gke-leg@$PROJECT.iam.gserviceaccount.com"
 # Set these to the actual Cloud Run job and Docker VM service-account names.
+CLOUD_JOB=harmony-build-worker
 CLOUD_GSA=REPLACE_CLOUD_RUN_SERVICE_ACCOUNT
 DOCKER_GSA=REPLACE_DOCKER_VM_SERVICE_ACCOUNT
-OWNER_IMAGE="$REGION-docker.pkg.dev/$PROJECT/harmony/codex-auth:B1306"
+OWNER_IMAGE="$REGION-docker.pkg.dev/$PROJECT/harmony-workers/codex-auth:B1306"
 # Use a founder-selected reviewed worker image containing Codex 0.166.0.
 WORKER_IMAGE=REPLACE_REVIEWED_WORKER_IMAGE_DIGEST
 ```
@@ -195,7 +196,7 @@ successful board update. No code path emits credential values in these messages.
 
 ```bash
 node scripts/test-codex-token-reload.mjs
-npx vitest run src/tools/codex-auth.test.ts src/tools/codex-auth-files.test.ts src/tools/codex-auth-launch.test.ts
+npx vitest run src/tools/codex-auth.test.ts src/tools/codex-auth-files.test.ts src/tools/codex-auth-runtime.test.ts src/tools/codex-auth-launch.test.ts
 ```
 
 The first check requires installed Codex 0.166.0, supplies only synthetic auth in

@@ -14,3 +14,8 @@ codex_token_context() {
   fi
   CODEX_TOKEN_ONLY=1
 }
+
+# Enabled-only extension; the legacy adapter's per-leg allowlist is unchanged.
+codex_token_exec_env() {
+  printf 'HARMONY_CODEX_TOKEN_ONLY: "1"\nHARMONY_CODEX_ACCESS_RESOURCE: "%s"\n' "$HARMONY_CODEX_ACCESS_RESOURCE"
+}

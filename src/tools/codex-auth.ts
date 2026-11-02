@@ -94,3 +94,18 @@ export function codexLoginFailure(output: string): 'codex-login-expired' | null 
   }
   return null;
 }
+
+export async function persistCodexAuthFailure(ports: {
+  comment(): Promise<void>;
+  park(): Promise<void>;
+  boardWriteFailed(): void;
+}): Promise<boolean> {
+  try {
+    await ports.comment();
+    await ports.park();
+    return true;
+  } catch {
+    ports.boardWriteFailed();
+    return false;
+  }
+}

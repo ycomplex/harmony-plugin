@@ -189,7 +189,8 @@ if [ "$CODEX_RUN" = "1" ]; then
     fi
   elif [ "$CODEX_TOKEN_ONLY" = 1 ]; then
     # The founder must remove the full-login volume before enabling the new path.
-    if printf '%s' "$JOB_DESCRIBE_JSON" | grep -q 'harmony-codex-auth'; then
+    LEGACY_CODEX_SECRET=harmony-codex-auth
+    if printf '%s' "$JOB_DESCRIBE_JSON" | grep -q "$LEGACY_CODEX_SECRET"; then
       echo "codex-login-configuration-missing: remove the legacy login mount before token-only delivery" >&2
       exit 1
     fi
@@ -455,7 +456,7 @@ write_exec_env_file() {
       # there; provision.sh's `harmony agent render` copies it into ~/.codex.
       # B-1178: a provider leg gets its provider's NAME instead (its key is the job's secret env).
       if [ "${CODEX_TOKEN_ONLY:-0}" = 1 ]; then
-        printf 'HARMONY_CODEX_TOKEN_ONLY: "1"\nHARMONY_CODEX_ACCESS_RESOURCE: "%s"\n' "$HARMONY_CODEX_ACCESS_RESOURCE"
+        codex_token_exec_env
       elif [ "${CODEX_RUN:-0}" = "1" ] && [ "${CODEX_PROVIDER:-openai}" = "openai" ]; then
         printf 'HARMONY_CODEX_AUTH_FILE: "%s"\n' "$CODEX_AUTH_CONTAINER_PATH"
       fi

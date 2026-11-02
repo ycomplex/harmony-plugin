@@ -1,9 +1,9 @@
 import { mkdtemp, readFile, rm, writeFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { atomicPrivateJson, claimRefresh } from './codex-auth-files.js';
-import { codexLoginFailure } from './codex-auth.js';
+import { codexLoginFailure, persistCodexAuthFailure } from './codex-auth.js';
 
 describe('private credential publication', () => {
   it('parallel readers see complete generations and permissions stay private', async () => {
@@ -30,6 +30,23 @@ describe('private credential publication', () => {
       expect(await claimRefresh(marker)).toBe(false);
       expect(await readFile(marker, 'utf8')).toBe('refresh attempt claimed\n');
     } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+  it('records named failure before parking and makes either board-write failure observable', async () => {
+    const order: string[] = [];
+    const comment = vi.fn(async () => { order.push('comment'); });
+    const park = vi.fn(async () => { order.push('park'); });
+    const warning = vi.fn();
+    expect(await persistCodexAuthFailure({ comment, park, boardWriteFailed: warning })).toBe(true);
+    expect(order).toEqual(['comment', 'park']);
+    for (const point of ['comment', 'park']) {
+      comment.mockClear(); park.mockClear();
+      const fail = async () => { throw new Error('fixture-sensitive-error'); };
+      expect(await persistCodexAuthFailure({ comment: point === 'comment' ? fail : comment,
+        park: point === 'park' ? fail : park, boardWriteFailed: warning })).toBe(false);
+      if (point === 'comment') expect(park).not.toHaveBeenCalled();
+    }
+    expect(warning).toHaveBeenCalledTimes(2);
+    expect(warning.mock.calls).toEqual([[], []]);
   });
   it('recognizes only explicit structured login errors, without returning their contents', () => {
     expect(codexLoginFailure(JSON.stringify({ type: 'error', message: 'token_expired fixture-sensitive' }))).toBe('codex-login-expired');

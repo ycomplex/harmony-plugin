@@ -224,13 +224,13 @@ fi
 #     docs/codex-phase0-findings.md) and the image's chown step below hands the mount to `worker`.
 CODEX_MOUNTS=""
 CODEX_CHOWN=""
-if [ "$CODEX_TOKEN_ONLY" = 1 ]; then
-  CODEX_MOUNTS="-v \"$REMOTE_RUN/codex-sessions\":/home/worker/.codex/sessions -e HARMONY_CODEX_TOKEN_ONLY=1 -e HARMONY_CODEX_ACCESS_RESOURCE=$HARMONY_CODEX_ACCESS_RESOURCE"
-  CODEX_CHOWN="/r/codex-sessions"
-elif [ "$CODEX_RUN" = "1" ] && [ "$CODEX_PROVIDER" = "openai" ]; then
+if [ "$CODEX_RUN" = "1" ] && [ "$CODEX_PROVIDER" = "openai" ] && [ "$CODEX_TOKEN_ONLY" = 0 ]; then
   dh_ssh_setup "$CODEX_AUTH_SRC" "umask 077; cat > \"$REMOTE_RUN/codex-auth.json\""
   CODEX_MOUNTS="-v \"$REMOTE_RUN/codex-sessions\":/home/worker/.codex/sessions -v \"$REMOTE_RUN/codex-auth.json\":$CODEX_AUTH_CONTAINER_PATH:ro -e HARMONY_CODEX_AUTH_FILE=$CODEX_AUTH_CONTAINER_PATH"
   CODEX_CHOWN="/r/codex-sessions /r/codex-auth.json"
+elif [ "$CODEX_TOKEN_ONLY" = 1 ]; then
+  CODEX_MOUNTS="-v \"$REMOTE_RUN/codex-sessions\":/home/worker/.codex/sessions -e HARMONY_CODEX_TOKEN_ONLY=1 -e HARMONY_CODEX_ACCESS_RESOURCE=$HARMONY_CODEX_ACCESS_RESOURCE"
+  CODEX_CHOWN="/r/codex-sessions"
 elif [ "$CODEX_RUN" = "1" ]; then
   # B-1178: a provider leg — the sessions mount and the provider's NAME; its key rides run.env (step 4).
   CODEX_MOUNTS="-v \"$REMOTE_RUN/codex-sessions\":/home/worker/.codex/sessions -e HARMONY_CODEX_PROVIDER=$CODEX_PROVIDER"
