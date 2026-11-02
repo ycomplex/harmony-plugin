@@ -105,7 +105,7 @@ describe('decideStop — the pure decision', () => {
       legStartedAtMs: Date.parse('2026-10-21T11:00:00.000Z'),
     });
     expect(stale.action).toBe('block');
-    expect(stale.action === 'block' ? stale.message : '').toMatch(/waiting_on/);
+    expect(stale.action === 'block' ? stale.message : '').toMatch(/harmony wait declare/);
   });
 
   it('AC6: the cap — two blocks, then the third attempt is allowed through with a loud line', () => {
@@ -239,4 +239,16 @@ describe('runStopGate — the exit code and the fail-open floor', () => {
     }
     expect(codes).toEqual([2, 2, 0]);
   });
+});
+
+
+it('passes the breadcrumb leg boundary into the real row-query seam', () => {
+  const started = '2026-11-02T10:00:00.000Z';
+  const calls: unknown[][] = [];
+  const h = harness({
+    readFile: () => JSON.stringify({ session_id: 'sess-1', task_id: 'uuid-1', ticket: 'B-870', started_at: started }),
+    queryRow: (...args) => { calls.push(args); return CLEAN_ROW; },
+  });
+  runStopGate(h.deps);
+  expect(calls).toEqual([['uuid-1', started]]);
 });
