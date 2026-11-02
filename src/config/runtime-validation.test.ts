@@ -3,7 +3,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach, type MockInstance } from 'vitest';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { assertRunConfigPolicy, assertRunConfigRuntime } from './runtime-validation.js';
+import { assertRunConfigPolicy, assertRunConfigRuntime, normalizeExplicitModelRuntime } from './runtime-validation.js';
 
 const row = (alias: string, model_id: string, agent: string, active = true) => ({
   alias,
@@ -130,5 +130,42 @@ describe('B-1346 assertRunConfigPolicy', () => {
       await expect(assertRunConfigRuntime(client, config)).resolves.toBeUndefined();
       await expect(assertRunConfigPolicy(client, 'p', config)).resolves.toBeUndefined();
     }
+  });
+});
+
+describe('B-1374 explicit runtime prefixes', () => {
+  it('infers only a registered run-wide prefix, preserving agent extras and caller input', () => {
+    const input = { agent: { extra: 'keep' }, model: { default: 'codex:gpt-6.1-sol' } };
+    expect(normalizeExplicitModelRuntime(input)).toEqual({ ...input, agent: { extra: 'keep', adapter: 'codex' } });
+    expect(input.agent).toEqual({ extra: 'keep' });
+  });
+
+  it.each([undefined, {}, { model: { default: 'gpt-6.1-sol' } },
+    { model: { default: 'unknown:gpt-6.1-sol' } }, { model: { per_gate: { build: 'codex:gpt-6.1-sol' } } }])(
+    'does not infer from bare ids, unknown prefixes or per-gate choices: %j', (input) => {
+      expect(normalizeExplicitModelRuntime(input)).toBe(input);
+    },
+  );
+
+  it('accepts matching explicit runtime and rejects malformed agent data', () => {
+    const input = { agent: { adapter: 'codex' }, model: { default: 'codex:gpt-6.1-sol' } };
+    expect(normalizeExplicitModelRuntime(input)).toBe(input);
+    expect(() => normalizeExplicitModelRuntime({ agent: 'codex', model: input.model })).toThrow(/must be an object/);
+  });
+
+  it('keeps inferred models subject to the catalog and workspace policy, including inactive offers', async () => {
+    const input = normalizeExplicitModelRuntime({ model: { default: 'codex:or-offer' } });
+    const client = fakeClient({ allowed_aliases: ['codex:or-offer'] });
+    await expect(assertRunConfigRuntime(client, input)).resolves.toBeUndefined();
+    await expect(assertRunConfigPolicy(client, 'p', input)).resolves.toBeUndefined();
+    await expect(assertRunConfigPolicy(fakeClient(TWO), 'p', input)).rejects.toThrow(/not allowed/);
+    await expect(assertRunConfigRuntime(client, normalizeExplicitModelRuntime({ model: { default: 'codex:fiction' } }))).rejects.toThrow(/not available/);
+  });
+
+  it('hints at the other runtime only when the catalog supplies a matching model', async () => {
+    await expect(assertRunConfigRuntime(fakeClient(null), { model: { default: 'gpt-6.1-sol' } }))
+      .rejects.toThrow(/did you mean --agent codex/);
+    const err = await assertRunConfigRuntime(fakeClient(null), { model: { default: 'fiction' } }).catch(e => e);
+    expect(err.message).not.toContain('did you mean');
   });
 });

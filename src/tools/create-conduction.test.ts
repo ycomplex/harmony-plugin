@@ -1,3 +1,4 @@
+import * as runConfigModule from '../config/run-config.js';
 // B-758: `create_conduction` — the MCP tool test suite.
 //
 // Mirrors conduct.test.ts's mocking convention one layer down (the tool handler, not the CLI
@@ -5,7 +6,7 @@
 // are mocked; the typed errors (ActiveConductionExistsError, ConductorExcludedError) are the real
 // classes so `instanceof` checks in the handler exercise real behavior.
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createConduction, createConductionTool } from './create-conduction.js';
 import {
   ActiveConductionExistsError,
@@ -22,6 +23,7 @@ const mocks = vi.hoisted(() => ({
   reviveParkedTicketIfNeeded: vi.fn(),
   getProjectConductionDefaults: vi.fn(),
   getWorkspaceModelPolicy: vi.fn(),
+  resolveUnparkRunConfig: vi.fn(),
 }));
 
 vi.mock('./resolve-task-id.js', () => ({ resolveTaskId: mocks.resolveTaskId }));
@@ -54,7 +56,7 @@ vi.mock('../config/model-policy.js', () => ({ getWorkspaceModelPolicy: mocks.get
 // passthrough so these suites' fake clients are never queried.
 vi.mock('./unpark-inheritance.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./unpark-inheritance.js')>();
-  return { ...actual, resolveUnparkRunConfig: async (_c: unknown, _t: unknown, a: { explicit?: unknown }) => a.explicit };
+  return { ...actual, resolveUnparkRunConfig: mocks.resolveUnparkRunConfig };
 });
 
 const client = { fake: 'client' } as never;
@@ -78,6 +80,7 @@ beforeEach(() => {
   mocks.reviveParkedTicketIfNeeded.mockResolvedValue(undefined);
   mocks.getProjectConductionDefaults.mockResolvedValue({});
   mocks.getWorkspaceModelPolicy.mockResolvedValue({ allowed: [] });
+  mocks.resolveUnparkRunConfig.mockImplementation(async (_c, _t, a) => a.explicit);
 });
 
 describe('createConduction (create_conduction MCP tool handler)', () => {
@@ -382,6 +385,50 @@ describe('createConduction — workspace model policy (B-1346)', () => {
       createConduction(client, 'proj-1', 'user-7', { task_id: 'B-758', run_config: { model: { default: 'claude-sonnet-5' } } }),
     ).rejects.toThrow("Model 'claude-sonnet-5' is not allowed by this workspace's model policy — allowed: claude-opus-5");
     expect(mocks.getWorkspaceModelPolicy).toHaveBeenCalledWith(client, 'proj-1');
+    expect(mocks.insertConduction).not.toHaveBeenCalled();
+  });
+});
+
+describe('B-1374 MCP runtime-prefix creation boundary', () => {
+  beforeEach(() => {
+    vi.spyOn(runConfigModule, 'resolveModelCatalog').mockResolvedValue({ source: 'live', entries: [
+      ...runConfigModule.MODEL_CATALOG_FALLBACK,
+      { ...runConfigModule.MODEL_CATALOG_FALLBACK[0], alias: 'codex:gpt-6.1-sol', model_id: 'gpt-6.1-sol', agent: 'codex' },
+    ] });
+  });
+  afterEach(() => vi.mocked(runConfigModule.resolveModelCatalog).mockRestore());
+
+  it.each([{}, { agent: { adapter: 'claude-code' } }])('infers Codex before project defaults %j', async defaults => {
+    mocks.getProjectConductionDefaults.mockResolvedValue(defaults);
+    await createConduction(client, 'proj-1', 'user-7', { task_id: 'B-1374', run_config: { model: { default: 'codex:gpt-6.1-sol' } } });
+    expect(mocks.insertConduction.mock.calls[0][1].run_config).toEqual({ agent: { adapter: 'codex' }, model: { default: 'codex:gpt-6.1-sol' } });
+  });
+  it('refuses a contradictory explicit runtime before revive or insert with the shared message', async () => {
+    await expect(createConduction(client, 'proj-1', 'user-7', { task_id: 'B-1374', unpark: true,
+      run_config: { agent: { adapter: 'claude-code' }, model: { default: 'codex:gpt-6.1-sol' } },
+    })).rejects.toThrow("Model 'codex:gpt-6.1-sol' selects runtime 'codex' but explicit runtime 'claude-code' conflicts — use --agent codex (run_config.agent.adapter='codex') or choose a model for 'claude-code'");
+    expect(mocks.reviveParkedTicketIfNeeded).not.toHaveBeenCalled();
+    expect(mocks.insertConduction).not.toHaveBeenCalled();
+  });
+  it.each([['gpt-6.1-sol', 'codex'], ['codex:gpt-6.1-sol', 'codex'], ['claude-opus-5', 'claude-code']])('preserves explicit matching/bare selection %s', async (model, agent) => {
+    await createConduction(client, 'proj-1', 'user-7', { task_id: 'B-1374', run_config: { agent: { adapter: agent }, model: { default: model } } });
+    expect(mocks.insertConduction.mock.calls[0][1].run_config.agent.adapter).toBe(agent);
+  });
+  it('retains policy refusal after inference', async () => {
+    mocks.getWorkspaceModelPolicy.mockResolvedValue({ allowed: ['claude-opus-5'] });
+    await expect(createConduction(client, 'proj-1', 'user-7', { task_id: 'B-1374', run_config: { model: { default: 'codex:gpt-6.1-sol' } } })).rejects.toThrow(/not allowed/);
+    expect(mocks.reviveParkedTicketIfNeeded).not.toHaveBeenCalled();
+    expect(mocks.insertConduction).not.toHaveBeenCalled();
+  });
+  it('supplies the inferred runtime to the inheritance merge', async () => {
+    mocks.resolveUnparkRunConfig.mockImplementation(async (_c, _t, a) => ({ note: 'inherited', ...a.explicit }));
+    await createConduction(client, 'proj-1', 'user-7', { task_id: 'B-1374', unpark: true, run_config: { model: { default: 'codex:gpt-6.1-sol' } } });
+    expect(mocks.resolveUnparkRunConfig.mock.calls[0][2].explicit.agent.adapter).toBe('codex');
+    expect(mocks.insertConduction.mock.calls[0][1].run_config).toMatchObject({ agent: { adapter: 'codex' }, note: 'inherited' });
+  });
+  it('does not reinterpret inherited prefixed models', async () => {
+    mocks.resolveUnparkRunConfig.mockResolvedValue({ agent: { adapter: 'claude-code' }, model: { default: 'codex:gpt-6.1-sol' } });
+    await expect(createConduction(client, 'proj-1', 'user-7', { task_id: 'B-1374', unpark: true })).rejects.toThrow(/not available on runtime 'claude-code'/);
     expect(mocks.insertConduction).not.toHaveBeenCalled();
   });
 });

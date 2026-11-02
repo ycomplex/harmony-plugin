@@ -68663,6 +68663,22 @@ async function getWorkspaceModelPolicy(client, projectId) {
 }
 
 // src/config/runtime-validation.ts
+function normalizeExplicitModelRuntime(runConfig) {
+  const model = runConfig?.model?.default;
+  if (!model) return runConfig;
+  const prefix = model.trim().split(":", 1)[0];
+  if (!model.trim().includes(":") || !hasAdapter(prefix)) return runConfig;
+  const selection = getAgentAdapter(runConfig);
+  if (!selection.ok) throw new Error(selection.error);
+  const explicitAdapter = selection.explicit;
+  if (explicitAdapter && selection.adapter !== prefix) {
+    throw new Error(
+      `Model '${model}' selects runtime '${prefix}' but explicit runtime '${selection.adapter}' conflicts \u2014 use --agent ${prefix} (run_config.agent.adapter='${prefix}') or choose a model for '${selection.adapter}'`
+    );
+  }
+  if (explicitAdapter) return runConfig;
+  return { ...runConfig, agent: { ...runConfig?.agent, adapter: prefix } };
+}
 function requestedModels(runConfig) {
   const requested = [];
   if (runConfig.model?.default) requested.push(runConfig.model.default);
@@ -68687,8 +68703,9 @@ async function assertRunConfigRuntime(client, runConfig) {
   const available = catalogEntriesForAgent(entries, adapter).filter((entry) => entry.active).map((entry) => entryModelId(entry));
   const bad = [...new Set(requested.filter((model) => !findModelEntry(model, entries, adapter, { includeInactive: true })))];
   if (bad.length > 0) {
+    const hints = bad.flatMap((model) => listAdapterIds().filter((other) => other !== adapter && findModelEntry(model, entries, other, { includeInactive: true })).map((other) => `For '${model}', did you mean --agent ${other} (run_config.agent.adapter='${other}')?`));
     throw new Error(
-      `Model${bad.length > 1 ? "s" : ""} ${bad.map((m) => `'${m}'`).join(", ")} not available on runtime '${adapter}' \u2014 available models for '${adapter}': ${available.length > 0 ? available.join(", ") : "(none in the catalog)"}`
+      `Model${bad.length > 1 ? "s" : ""} ${bad.map((m) => `'${m}'`).join(", ")} not available on runtime '${adapter}' \u2014 available models for '${adapter}': ${available.length > 0 ? available.join(", ") : "(none in the catalog)"}` + (hints.length ? ` \u2014 ${hints.join(" ")}` : "")
     );
   }
 }
@@ -68766,12 +68783,6 @@ function registerConductCommand(program3) {
         const taskId = await resolveTaskId(ctx.client, ctx.projectId, ticket);
         try {
           const inheritedBase = await resolveUnparkRunConfig(ctx.client, taskId, { unpark: opts.unpark });
-          await reviveParkedTicketIfNeeded(ctx.client, ctx.projectId, ctx.userId, taskId, {
-            unpark: opts.unpark,
-            resume_to: opts.resumeTo,
-            revived_by: `human via CLI (harmony conduct --unpark), acting user ${ctx.userId}`
-          });
-          await assertNotExcluded(ctx.client, taskId);
           const runConfigInput = {};
           if (opts.model !== void 0) {
             runConfigInput.model = { default: opts.model };
@@ -68788,12 +68799,18 @@ function registerConductCommand(program3) {
           if (opts.agent !== void 0) {
             runConfigInput.agent = { adapter: opts.agent };
           }
-          const flagRunConfig = Object.keys(runConfigInput).length > 0 ? RunConfigSchema.parse(runConfigInput) : void 0;
+          const flagRunConfig = normalizeExplicitModelRuntime(Object.keys(runConfigInput).length > 0 ? RunConfigSchema.parse(runConfigInput) : void 0);
           const callerRunConfig = inheritedBase !== void 0 ? mergeRunConfig(inheritedBase, flagRunConfig) : flagRunConfig;
           const defaults3 = await getProjectConductionDefaults(ctx.client, ctx.projectId);
           const filledRunConfig = fillRunConfigDefaults(callerRunConfig, defaults3);
           await assertRunConfigRuntime(ctx.client, filledRunConfig);
           await assertRunConfigPolicy(ctx.client, ctx.projectId, filledRunConfig);
+          await reviveParkedTicketIfNeeded(ctx.client, ctx.projectId, ctx.userId, taskId, {
+            unpark: opts.unpark,
+            resume_to: opts.resumeTo,
+            revived_by: `human via CLI (harmony conduct --unpark), acting user ${ctx.userId}`
+          });
+          await assertNotExcluded(ctx.client, taskId);
           return await createConduction(ctx.client, {
             task_id: taskId,
             mode: "controlled",

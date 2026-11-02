@@ -56266,6 +56266,22 @@ async function getWorkspaceModelPolicy(client, projectId) {
 }
 
 // src/config/runtime-validation.ts
+function normalizeExplicitModelRuntime(runConfig) {
+  const model = runConfig?.model?.default;
+  if (!model) return runConfig;
+  const prefix = model.trim().split(":", 1)[0];
+  if (!model.trim().includes(":") || !hasAdapter(prefix)) return runConfig;
+  const selection = getAgentAdapter(runConfig);
+  if (!selection.ok) throw new Error(selection.error);
+  const explicitAdapter = selection.explicit;
+  if (explicitAdapter && selection.adapter !== prefix) {
+    throw new Error(
+      `Model '${model}' selects runtime '${prefix}' but explicit runtime '${selection.adapter}' conflicts \u2014 use --agent ${prefix} (run_config.agent.adapter='${prefix}') or choose a model for '${selection.adapter}'`
+    );
+  }
+  if (explicitAdapter) return runConfig;
+  return { ...runConfig, agent: { ...runConfig?.agent, adapter: prefix } };
+}
 function requestedModels(runConfig) {
   const requested = [];
   if (runConfig.model?.default) requested.push(runConfig.model.default);
@@ -56290,8 +56306,9 @@ async function assertRunConfigRuntime(client, runConfig) {
   const available = catalogEntriesForAgent(entries, adapter).filter((entry) => entry.active).map((entry) => entryModelId(entry));
   const bad = [...new Set(requested.filter((model) => !findModelEntry(model, entries, adapter, { includeInactive: true })))];
   if (bad.length > 0) {
+    const hints = bad.flatMap((model) => listAdapterIds().filter((other) => other !== adapter && findModelEntry(model, entries, other, { includeInactive: true })).map((other) => `For '${model}', did you mean --agent ${other} (run_config.agent.adapter='${other}')?`));
     throw new Error(
-      `Model${bad.length > 1 ? "s" : ""} ${bad.map((m) => `'${m}'`).join(", ")} not available on runtime '${adapter}' \u2014 available models for '${adapter}': ${available.length > 0 ? available.join(", ") : "(none in the catalog)"}`
+      `Model${bad.length > 1 ? "s" : ""} ${bad.map((m) => `'${m}'`).join(", ")} not available on runtime '${adapter}' \u2014 available models for '${adapter}': ${available.length > 0 ? available.join(", ") : "(none in the catalog)"}` + (hints.length ? ` \u2014 ${hints.join(" ")}` : "")
     );
   }
 }
@@ -56357,7 +56374,7 @@ async function resolveUnparkRunConfig(client, taskId, args) {
 var HANDOFF_CONTRACT_NOTE = "the duplicate-guard can only detect an active conduction record \u2014 it can't see an in-progress terminal session, so make sure any in-session work on this ticket has stopped before handing it off.";
 async function createConduction2(client, projectId, userId, args) {
   if (!args.task_id) throw new Error("task_id is required");
-  const explicitRunConfig = args.run_config !== void 0 ? RunConfigSchema.parse(args.run_config) : void 0;
+  const explicitRunConfig = normalizeExplicitModelRuntime(args.run_config !== void 0 ? RunConfigSchema.parse(args.run_config) : void 0);
   const taskId = await resolveTaskId2(client, projectId, args.task_id);
   const runConfig = await resolveUnparkRunConfig(client, taskId, {
     unpark: args.unpark,

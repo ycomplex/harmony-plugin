@@ -46,7 +46,7 @@ import {
 } from '../../tools/conduction-record.js';
 import { RunConfigSchema, type RunConfig } from '../../config/run-config.js';
 import { getProjectConductionDefaults, fillRunConfigDefaults } from '../../config/conduction-defaults.js';
-import { assertRunConfigPolicy, assertRunConfigRuntime } from '../../config/runtime-validation.js';
+import { assertRunConfigPolicy, assertRunConfigRuntime, normalizeExplicitModelRuntime } from '../../config/runtime-validation.js';
 import { resolveUnparkRunConfig, mergeRunConfig } from '../../tools/unpark-inheritance.js';
 import { hasAdapter, listAdapterIds } from '../../agents/registry.js';
 import { runCommand } from '../run-command.js';
@@ -93,16 +93,6 @@ export function registerConductCommand(program: Command): void {
             // B-1274: read the previous conduction's run_config BEFORE the revive (the ticket must
             // still be Parked to count as an unpark); merged with this call's flags further down.
             const inheritedBase = await resolveUnparkRunConfig(ctx.client, taskId, { unpark: opts.unpark });
-            // B-964: a no-op when the ticket isn't Parked; refuses cleanly (TicketParkedError) when
-            // it IS Parked and --unpark was not passed, and revalidates (tasks.stale) + unparks
-            // BEFORE any conduction is created when it was.
-            await reviveParkedTicketIfNeeded(ctx.client, ctx.projectId, ctx.userId, taskId, {
-              unpark: opts.unpark,
-              resume_to: opts.resumeTo,
-              revived_by: `human via CLI (harmony conduct --unpark), acting user ${ctx.userId}`,
-            });
-            await assertNotExcluded(ctx.client, taskId);
-
             // B-925: build a run_config from whichever of --model / --session-resume /
             // --no-session-resume / --auto-approve-gates / --no-auto-approve-gates flags were
             // actually passed — a flag NOT passed is omitted entirely (never defaulted to
@@ -135,9 +125,9 @@ export function registerConductCommand(program: Command): void {
               runConfigInput.agent = { adapter: opts.agent };
             }
             const flagRunConfig: RunConfig | undefined =
-              Object.keys(runConfigInput).length > 0
+              normalizeExplicitModelRuntime(Object.keys(runConfigInput).length > 0
                 ? RunConfigSchema.parse(runConfigInput)
-                : undefined;
+                : undefined);
             // B-1274: the flags are an override merged over the inherited settings, as for the tool.
             const callerRunConfig =
               inheritedBase !== undefined ? mergeRunConfig(inheritedBase, flagRunConfig) : flagRunConfig;
@@ -147,6 +137,16 @@ export function registerConductCommand(program: Command): void {
             await assertRunConfigRuntime(ctx.client, filledRunConfig);
             // B-1346: refuse a model outside a non-empty workspace model policy, before any run exists.
             await assertRunConfigPolicy(ctx.client, ctx.projectId, filledRunConfig);
+
+            // B-964: a no-op when the ticket isn't Parked; refuses cleanly (TicketParkedError) when
+            // it IS Parked and --unpark was not passed, and revalidates (tasks.stale) + unparks
+            // BEFORE any conduction is created when it was.
+            await reviveParkedTicketIfNeeded(ctx.client, ctx.projectId, ctx.userId, taskId, {
+              unpark: opts.unpark,
+              resume_to: opts.resumeTo,
+              revived_by: `human via CLI (harmony conduct --unpark), acting user ${ctx.userId}`,
+            });
+            await assertNotExcluded(ctx.client, taskId);
 
             return await createConduction(ctx.client, {
               task_id: taskId,
