@@ -59,6 +59,7 @@ import { listTestCasesTool, listTestCases, manageTestCasesTool, manageTestCases 
 import { listDependenciesTool, listDependencies, manageDependenciesTool, manageDependencies } from './dependencies.js';
 import { listSubtasksTool, listSubtasks, listParentTool, listParent, manageSubtasksTool, manageSubtasks } from './decomposition.js';
 import {
+  WorkerBriefAuthorityError,
   composeBrief, composeBriefTool,
   getBrief, getBriefTool,
   listBriefs, listBriefsTool,
@@ -459,10 +460,10 @@ export async function handleToolCall(
         result = await listBriefs(client, projectId, args as any);
         break;
       case 'resolve_brief':
-        result = await resolveBrief(client, projectId, args as any);
+        result = await resolveBrief(client, projectId, args as any, userId);
         break;
       case 'reshape_brief':
-        result = await reshapeBrief(client, projectId, args as any);
+        result = await reshapeBrief(client, projectId, args as any, userId);
         break;
       case 'consume_accept_remark':
         result = await consumeAcceptRemark(client, projectId, args as any, userId);
@@ -537,6 +538,9 @@ export async function handleToolCall(
     return { content: [{ type: 'text' as const, text: JSON.stringify(projectAck(name, result, args)) }] };
   } catch (err: any) {
     const message = err.message ?? 'Unknown error';
+    if (err instanceof WorkerBriefAuthorityError) {
+      return { content: [{ type: 'text' as const, text: `Error: ${message}` }], isError: true };
+    }
     if (message.includes('permission denied') || message.includes('RLS')) {
       return { content: [{ type: 'text' as const, text: "You don't have access to this resource." }], isError: true };
     }
