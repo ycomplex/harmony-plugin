@@ -3378,37 +3378,32 @@ export async function composeBrief(
       throw new Error(revisionErr.message);
     }
 
-    // B-645 iterate-prune: the in-place iterate is the elicitation-claim disposal moment for a
-    // reshaped brief (mirrors this same path consuming pending_resolution above). When the caller
-    // passes `underwriting_claim_ids` — the KEPT set of claims that still underwrite the re-composed
-    // brief — archive every coupled dangling claim: Asserted rows whose underwriting_brief_id is
-    // THIS brief and whose id is not kept. An empty array archives ALL coupled Asserted claims.
-    // Omitted ⇒ no prune (back-compat: pre-B-645 callers never prune). Rows coupled to other briefs
-    // (or uncoupled) are untouched by construction of the underwriting_brief_id filter.
+    // B-1383: new databases move claims atomically; older RPCs leave them on the prior.
+    // Scope pruning to both actual revision ids, then repair remaining prior claims.
+    const successorId = (brief as { id: string }).id;
+    const couplingIds = [...new Set([briefId, successorId])];
+    const checkClaimError = (error: { message?: string } | null): void => {
+      if (!error) return;
+      const missingColumn = /underwriting_brief_id/.test(error.message ?? '') &&
+        /(does not exist|could not find|schema cache)/i.test(error.message ?? '');
+      if (!missingColumn) throw new Error(error.message);
+    };
     if (args.underwriting_claim_ids !== undefined) {
-      // B-843: `briefId` is deliberately the PRIOR revision's id, not the successor's — coupled claims
-      // carry `underwriting_brief_id` pointing at the row that was active when they were asserted, which
-      // is the row this compose just superseded. Keying the prune on the new revision would match nothing
-      // and silently stop pruning.
       const kept = args.underwriting_claim_ids;
-      let prune = client
-        .from('knowledge_decisions')
-        .update({ status: 'Archived' })
-        .eq('underwriting_brief_id', briefId)
-        .eq('status', 'Asserted');
-      if (kept.length > 0) {
-        prune = prune.not('id', 'in', `(${kept.join(',')})`);
-      }
-      const { error: pruneErr } = await prune;
-      if (pruneErr) {
-        // Guarded (B-383 class, like the pending_resolution fallback): on a DB that predates the
-        // Phase-1 claim columns the filter column is absent — no claim can exist there, so the
-        // prune is a faithful no-op. Any OTHER error rethrows: a real prune failure must be loud.
-        const missingClaimColumn =
-          /underwriting_brief_id/.test(pruneErr.message ?? '') &&
-          /(does not exist|could not find|schema cache|column)/i.test(pruneErr.message ?? '');
-        if (!missingClaimColumn) throw new Error(pruneErr.message);
-      }
+      let prune = client.from('knowledge_decisions').update({ status: 'Archived' })
+        .in('underwriting_brief_id', couplingIds).eq('status', 'Asserted');
+      if (kept.length > 0) prune = prune.not('id', 'in', `(${kept.join(',')})`);
+      const { error } = await prune;
+      checkClaimError(error);
+    }
+    if (successorId !== briefId) {
+      // Compatibility window only: accept can interleave before this client write on an old DB.
+      // The migrated RPC closes the retained-claim transfer window. Kept-set pruning
+      // remains a separate client write on both schemas.
+      const { error } = await client.from('knowledge_decisions')
+        .update({ underwriting_brief_id: successorId })
+        .eq('underwriting_brief_id', briefId).eq('status', 'Asserted');
+      checkClaimError(error);
     }
   } else {
     // B-736: a plain helper mirroring the bare-insert-plus-guarded-retry that this branch has always
