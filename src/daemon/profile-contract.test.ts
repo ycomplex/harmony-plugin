@@ -1944,7 +1944,7 @@ describe('cloud-worker-launch.sh + cloud-worker-reap.sh: label-based execute/rea
     expect(reapScript).toContain('executions cancel');
     expect(reapScript).toContain('--async');
     // Tolerance mirrors today's `docker rm -f` no-op-on-absent pattern: `|| true` at the call site.
-    const cancelAt = reapScript.indexOf('executions cancel');
+    const cancelAt = reapScript.lastIndexOf('executions cancel');
     const cancelStatement = reapScript.slice(cancelAt, reapScript.indexOf('\n\n', cancelAt) + 1);
     expect(cancelStatement).toContain('|| true');
   });

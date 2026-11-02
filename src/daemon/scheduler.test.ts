@@ -5385,3 +5385,72 @@ describe('B-1363 comment-only recovery at settlement', () => {
     expect(h.logs.some(l => l.includes('recovery failed'))).toBe(true);
   });
 });
+
+describe('B-1243 retirement maintenance before scheduling', () => {
+  function cleanupHarness(over: Partial<ConductionRecord> = {}, task: Partial<DaemonTask> = {}) {
+    const initial = conduction({status:'parked', ...over});
+    const h = makeHarness({conductions:[initial],tasks:{'task-1':{workflow_state:'Proposed',awaiting_human_input:true,archived:true,...task} as DaemonTask}});
+    const row=h.getConduction('cond-1');
+    const claim={...row,cleanup_token:'cleanup-token',cleanup_holder:ME,cleanup_until:iso(T0+120000),cleanup_error:null};
+    const api={list:vi.fn(async()=>row.status==='completed'?[]:[{...claim,...row}]),
+      claim:vi.fn(async()=>({...claim,...row})),
+      finish:vi.fn(async (_r: unknown,error?: string)=>{
+        if(error) return false;
+        row.status='completed';row.worker_ref=null;row.leg_started_at=null;return true;
+      })};
+    h.deps.cleanup=api;
+    return {h,row,api};
+  }
+  it.each(['active','parked'] as const)('settles retired %s without a leg, once',async status=>{
+    const {h,row,api}=cleanupHarness({status});
+    await h.pass();await h.pass();
+    expect(row.status).toBe('completed');expect(h.launches()).toHaveLength(0);
+    expect(api.finish).toHaveBeenCalledTimes(1);expect(h.reaps()).toHaveLength(0);
+  });
+  it('stops the persisted worker after restart before completion',async()=>{
+    const {h,api}=cleanupHarness({worker_ref:'job-exact',leg_started_at:iso(T0)});
+    h.deps.config={...h.deps.config,profile:{launch:'launch {conduction_id}',reap:'reap {conduction_id} {worker_ref}'}};
+    api.finish.mockImplementation(async()=>{expect(h.reaps()).toEqual(['reap cond-1 job-exact']);return true;});
+    await h.pass();expect(api.finish).toHaveBeenCalledTimes(1);expect(h.launches()).toHaveLength(0);
+  });
+  it('retains identity on unconfirmed stop and retries instead of launching',async()=>{
+    const {h,row,api}=cleanupHarness({status:'active',worker_ref:'job-exact',leg_started_at:iso(T0)});
+    vi.mocked(h.deps.runCommand).mockResolvedValueOnce({exitCode:1});
+    await h.pass();
+    expect(api.finish).toHaveBeenLastCalledWith(expect.objectContaining({worker_ref:'job-exact'}),expect.stringContaining('unconfirmed'));
+    expect(row.worker_ref).toBe('job-exact');expect(row.status).toBe('active');
+    await h.pass();expect(row.status).toBe('completed');expect(h.launches()).toHaveLength(0);
+  });
+  it('does not touch a fresh foreign lease or a lost cleanup claim',async()=>{
+    const {h,row,api}=cleanupHarness({lease_holder:'other:1:holder',worker_ref:'foreign-job'});
+    api.claim.mockResolvedValue(null as never);
+    await h.pass();expect(api.finish).not.toHaveBeenCalled();expect(h.reaps()).toHaveLength(0);
+    expect(row.status).toBe('parked');expect(h.launches()).toHaveLength(0);
+  });
+  it('does not run ordinary settlement for an archived in-flight launch',async()=>{
+    const row=conduction();
+    const h=makeHarness({conductions:[row],tasks:{'task-1':{workflow_state:'Proposed',awaiting_human_input:false} as DaemonTask},blockLaunch:true});
+    await wakeAndFire(h);expect(h.launches()).toHaveLength(1);
+    (h.tasks['task-1'] as DaemonTask).archived=true;
+    const liveRow=h.getConduction('cond-1');
+    const claim={...row,cleanup_token:'token',cleanup_holder:ME,cleanup_until:iso(T0+120000),cleanup_error:null};
+    h.deps.cleanup={list:async()=>[claim],claim:async()=>claim,finish:vi.fn(async()=>{
+      expect(h.reaps()).toHaveLength(1);liveRow.status='completed';return true;
+    })};
+    await h.pass();expect(liveRow.status).toBe('completed');expect(h.launches()).toHaveLength(1);
+  });
+  it('absent helpers preserve ordinary scheduling',async()=>{
+    const h=makeHarness({conductions:[conduction()],tasks:{'task-1':{workflow_state:'Proposed',awaiting_human_input:false} as DaemonTask}});
+    h.deps.cleanup={list:async()=>null,claim:vi.fn(),finish:vi.fn()};
+    await wakeAndFire(h);expect(h.launches()).toHaveLength(1);expect(h.logs.join('\n')).toContain('helpers absent');
+  });
+  it('drops retirement that races with the ready queue immediately before firing',async()=>{
+    const h=makeHarness({conductions:[conduction()],tasks:{'task-1':{workflow_state:'Proposed',awaiting_human_input:false} as DaemonTask}});
+    await h.pass();
+    (h.tasks['task-1'] as DaemonTask).awaiting_human_input=false;
+    const read=h.deps.getTaskMeta;
+    let reads=0;
+    h.deps.getTaskMeta=async id=>{const t=await read(id);return ++reads>=2?{...t,subsumed_by_task_id:'parent'}:t;};
+    await h.pass();expect(h.launches()).toHaveLength(0);
+  });
+});

@@ -53,6 +53,11 @@ case "$all" in
     esac ;;
   "get job "*"jsonpath"*) printf 'uid-123' ;;
   "get job "*"--ignore-not-found"*)
+    if [ "${HARMONY_CONFIRM_WORKER_STOP:-}" = 1 ]; then
+      [ -z "${STUB_STRICT_READ_FAILS:-}" ] || exit 1
+      [ -z "${STUB_STRICT_JOB_PRESENT:-}" ] || echo 'job.batch/x'
+      exit 0
+    fi
     if [ "$(cat "$STUB_LOGS/last-jobctr" 2>/dev/null)" = "GONE" ]; then :; else echo "job.batch/x"; fi ;;
   "get job "*"-o json")
     r="$(next STUB_JOB_SEQ jobctr)"
