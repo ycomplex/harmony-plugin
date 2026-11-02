@@ -36,6 +36,7 @@ import {
 } from '../../tools/leg-output-record.js';
 import { parseClaudeResultJson } from '../../tools/claude-result-parse.js';
 import { getAuthenticatedContext } from '../auth.js';
+import { parseCodexFinalStatement } from '../../agents/codex.js';
 import { redactSecrets } from '../../agents/redaction.js';
 
 /** Best-effort authenticated client, or null when this process has no login/config to authenticate
@@ -80,6 +81,36 @@ export function resolveWorkerStoredText(captured: string): string {
   return parsed?.result !== null && parsed?.result !== undefined ? parsed.result : captured;
 }
 
+export const CODEX_DIAGNOSTIC_BYTES = 8 * 1024;
+export const CODEX_UNAVAILABLE_NOTE =
+  "No closing statement could be recovered from the final Codex turn. The full event stream is in GCP session logs.";
+
+/** Select from stdout alone: stderr is diagnostic material, never agent event authority.
+ * Redact BEFORE bounding. Even worst-case JSON escaping of 8 KiB fits the 64 KiB row bound,
+ * so fallback JSON is serialized whole and is never tail-cut into invalid JSON. */
+export function prepareStoredOutput(stdout: string, stderr = '', agent?: string, source: LegOutputSource = 'worker') {
+  const captured = stdout + stderr;
+  let storedText: string;
+  if (source === 'worker' && agent === 'codex') {
+    const statement = parseCodexFinalStatement(stdout);
+    storedText = statement === null ? JSON.stringify({
+      type: 'result',
+      result: CODEX_UNAVAILABLE_NOTE,
+      harmony_codex_output: {
+        version: 1,
+        status: 'unavailable',
+        raw_excerpt: boundedTail(redactSecrets(captured), CODEX_DIAGNOSTIC_BYTES),
+      },
+    }) : redactSecrets(statement);
+  } else {
+    storedText = redactSecrets(source === 'worker' ? resolveWorkerStoredText(captured) : captured);
+  }
+  return {
+    tail: boundedTail(storedText, LEG_OUTPUT_TAIL_BYTES),
+    totalBytes: Buffer.byteLength(storedText, 'utf8'),
+  };
+}
+
 export function registerLegOutputCommands(program: Command): void {
   const legOutput = program
     .command('leg-output')
@@ -94,7 +125,7 @@ export function registerLegOutputCommands(program: Command): void {
     .command('record')
     .description(
       "Record ONE invocation's captured output as a conduction_leg_output row. Reads the given " +
-        'capture file(s), stores the LAST 64 KB as the tail and the TOTAL byte count alongside it ' +
+        'capture file(s), selects Codex final-turn prose when --agent codex is given, then stores up to 64 KB and its total byte count ' +
         '(so the board can say "showing the last N of M"), and stamps the producer as ' +
         '`--source` (default: worker). Always exits 0 and NEVER throws: a missing conduction id, ' +
         'an unreadable capture, an unreachable board or a not-yet-migrated table all degrade to ' +
@@ -106,11 +137,13 @@ export function registerLegOutputCommands(program: Command): void {
     .requiredOption('--leg-key <key>', "The worker-generated key grouping this leg's invocations (the SAME key `leg-cost record` is given, so a leg's output and cost join)")
     .option('--gate <gate>', 'The gate that was running when the invocation STARTED (see `leg-cost resolve-gate`)')
     .option('--source <source>', "Who wrote these bytes: 'worker' (default) or 'launcher'", 'worker')
+    .option('--agent <agent>', 'Worker runtime (codex selects final-turn prose; omitted preserves Claude capture)')
     .option('--conduction-id <id>', "The conduction to record against; defaults to this worker's HARMONY_CONDUCTION_ID")
     .action(
       async (opts: {
         file: string;
         stderrFile?: string;
+        agent?: string;
         legKey: string;
         gate?: string;
         source?: string;
@@ -140,25 +173,9 @@ export function registerLegOutputCommands(program: Command): void {
         // them, minus the live interleaving that a two-file capture cannot reconstruct. A file
         // that could not be read contributes nothing rather than aborting the row: half a capture
         // is worth strictly more than none.
-        const parts = [readCapture(opts.file)];
-        if (opts.stderrFile) parts.push(readCapture(opts.stderrFile));
-        const captured = parts.filter((p): p is string => p !== null).join('');
-
-        // WORKER rows only: extract the result envelope's PROSE before bounding. `result` sits near
-        // the START of a `claude --output-format json` envelope, so today's tail-bounding (which
-        // keeps the END of the string) would cut a long agent output off entirely once the envelope
-        // crosses the 64 KB bound. Bounding the extracted prose instead keeps it. The LAUNCHER path
-        // is untouched — its capture is never a claude result envelope (it is gcloud/launch-command
-        // chatter), and extracting from it would be a category error.
-        //
-        // `total_bytes` is deliberately computed over whatever text is actually STORED (the
-        // extracted prose when parsing succeeds, else the raw captured text) — never over the raw
-        // envelope — so it stays directly comparable to `tail`'s own length.
-        // B-1076: bearer / refresh-token shapes are redacted from EVERY recorded tail — a failing Codex
-        // run can echo its login cache's tokens, and a failure tail is the thing that gets read.
-        const storedText = redactSecrets(source === 'worker' ? resolveWorkerStoredText(captured) : captured);
-        const totalBytes = Buffer.byteLength(storedText, 'utf8');
-        const tail = boundedTail(storedText, LEG_OUTPUT_TAIL_BYTES);
+        const stdout = readCapture(opts.file) ?? '';
+        const stderr = opts.stderrFile ? readCapture(opts.stderrFile) ?? '' : '';
+        const { tail, totalBytes } = prepareStoredOutput(stdout, stderr, opts.agent, source);
 
         const client = await getClient();
         // Reuses B-916's context read verbatim (ONE query for the owning task) rather than
