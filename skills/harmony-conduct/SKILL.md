@@ -862,9 +862,11 @@ conduct run surfaces adjacent bugs, refactors, nice-to-haves and review nits tha
 accepted scope. Do **NOT** reflexively mint a standalone ticket for each — that is the largest source of board
 bloat. Force a disposition per `skills/harmony-shared/disposition-discipline.md`: fix-first if
 trivial/in-scope/same-PR, else accumulate the item in the per-parent "Follow-ups rollup" (a **within-run
-buffer**, tagged `do-now`/`defer-with-trigger`/`drop`). At the **release** gate (alongside the B-560 evidence
-comments above) the main session **DRAINS** the buffer: every item resolves to exactly one of four terminal
-outcomes — **fix-inline / fold-into-existing** (an AC / scope-item or `subsume_task`, **not a bare comment**)
+buffer**, tagged `do-now`/`defer-with-trigger`/`drop`), with first line exactly
+`Follow-ups rollup v1 id=<key>`. At the **release** gate (alongside the B-560 evidence
+comments above) the main session **DRAINS** the buffer by appending a separate comment whose first line
+is exactly `Follow-ups rollup drained v1 id=<key>` (the same key): every item resolves to exactly one of
+four terminal outcomes — **fix-inline / fold-into-existing** (an AC / scope-item or `subsume_task`, **not a bare comment**)
 **/ drop-with-reason / file-a-ticket** — nothing persists as a note; a `defer-with-trigger` becomes a fold or a
 **low-priority backlog ticket with the trigger in its body**. Run **triage-and-consolidate** for fold-vs-file
 (`find_related_tickets` → prefer **fold** (`subsume_task` into an existing/umbrella ticket) or **dedupe**,

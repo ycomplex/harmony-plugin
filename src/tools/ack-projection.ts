@@ -257,6 +257,8 @@ export const ackProjections: Record<string, AckProjection> = {
     return {
       milestone: pick(result.milestone, ['id', 'name', 'status', 'shipped_at']),
       shipped_task_count: result.shipped_task_count,
+      rollup_scan: result.rollup_scan,
+      retained_cancelled_count: result.retained_cancelled_count,
       removed_tasks: result.removed_tasks,
     };
   },
