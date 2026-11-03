@@ -1,3 +1,5 @@
+import { readProjectContext } from '../../tools/project-context.js';
+import { checkProjectContextFile, refreshProjectContextFile } from '../../tools/project-context-file.js';
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { getProject } from '../../tools/project.js';
@@ -7,6 +9,21 @@ import { formatDetail } from '../formatter.js';
 
 export function registerProjectCommands(program: Command): void {
   const project = program.command('project').description('Manage active project');
+
+  const context = project.command('context').description('Check or refresh source-linked project CLAUDE.md context');
+  for (const operation of ['check', 'refresh'] as const) {
+    context.command(operation).option('--root <directory>', 'Local repository root', process.cwd())
+      .option('--json', 'Print JSON')
+      .action(async (options) => {
+        await runCommand({ json: program.opts().json || options.json }, async (ctx) => {
+          const snapshot = await readProjectContext(ctx.client, ctx.projectId);
+          const file = operation === 'refresh'
+            ? await refreshProjectContextFile(options.root, snapshot)
+            : await checkProjectContextFile(options.root, snapshot);
+          return { ...file, snapshot };
+        }, data => JSON.stringify(data, null, 2));
+      });
+  }
 
   project.command('info')
     .description('Show details of the active project')

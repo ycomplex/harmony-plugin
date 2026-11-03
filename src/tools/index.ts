@@ -1,3 +1,4 @@
+import { readProjectContextTool, readProjectContext } from './project-context.js';
 import { proseTools, readProse, configureProse, setDefinedIn } from './knowledge-prose.js';
 import { knowledgeNameTools, readKnowledgeNames, renameKnowledgeConcept, previewKnowledgeMerge, mergeKnowledgeConcepts } from './knowledge-names.js';
 import { surfaceRecordTools, captureSurfaceRecord, readSurfaceRecords } from './surface-records.js';
@@ -179,7 +180,7 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
     // B-1047 — the rule registry reader (amend/reference targets and their fingerprints).
     readRuleRegistryTool,
     // Core tools (always visible)
-    getProjectTool, listTasksTool, getTaskTool, createTaskTool, updateTaskTool,
+    readProjectContextTool, getProjectTool, listTasksTool, getTaskTool, createTaskTool, updateTaskTool,
     bulkCreateTasksTool, bulkUpdateTasksTool, queryTasksTool, searchTasksTool,
     findRelatedTicketsTool, subsumeTaskTool,
     listCommentsTool, addCommentTool,
@@ -235,6 +236,9 @@ export async function handleToolCall(
   try {
     let result: unknown;
     switch (name) {
+      case 'read_project_context':
+        result = await readProjectContext(client, projectId);
+        break;
       case 'get_project':
         result = await getProject(client, projectId);
         break;
