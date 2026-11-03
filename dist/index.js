@@ -43608,6 +43608,225 @@ async function createAuthenticatedClient(auth2) {
   });
 }
 
+// src/tools/knowledge-claim.ts
+var ENVELOPE = /^\*\*Claim:\*\* ([^\n]+)\n\n\*\*Claim source:\*\* (authored|derived)\n\n/;
+function isSingleSentenceShaped(value) {
+  const text3 = value.trim();
+  if (!text3 || text3.split(/\s+/).length > 50) return false;
+  const neutral = text3.replace(/(`+)[\s\S]*?\1/g, "code").replace(/(\d)\.(?=\d)/g, "$1").replace(/\be\.g\.|\bi\.e\./gi, (m) => m.replace(/\./g, ""));
+  return !/[.!?]+(?=\s|$)/.test(neutral.replace(/[.!?]+\s*$/, ""));
+}
+function validateClaimEntry(title, claim) {
+  for (const [field, value] of [["title", title], ["claim", claim]]) {
+    if (!isSingleSentenceShaped(value)) throw new Error(`${field} must be one sentence of at most 50 words`);
+  }
+}
+function decodeClaim(content = "") {
+  const match = ENVELOPE.exec(content);
+  return { claim: match?.[1] ?? null, claim_source: match?.[2] ?? null };
+}
+function claimFields(row) {
+  const decoded = decodeClaim(row.content ?? "");
+  return row.claim && (row.claim_source === "authored" || row.claim_source === "derived") ? { claim: row.claim, claim_source: row.claim_source } : decoded;
+}
+function stripClaim(content = "") {
+  return content.replace(ENVELOPE, "");
+}
+function encodeClaim(content, claim, source = "authored") {
+  return `**Claim:** ${claim.trim().replace(/\s+/g, " ")}
+
+**Claim source:** ${source}
+
+${stripClaim(content)}`;
+}
+function claimContent(title, content, claim) {
+  if (claim !== void 0) {
+    validateClaimEntry(title, claim);
+    return encodeClaim(content, claim);
+  }
+  const proposed = proposeClaim(stripClaim(content)) ?? proposeClaim(title);
+  console.warn("Knowledge claim omitted; using a derived proposal when available. Supply claim to author it.");
+  return proposed ? encodeClaim(content, proposed, "derived") : stripClaim(content);
+}
+function editedClaimContent(current, updates) {
+  const prior = claimFields(current);
+  const title = updates.title ?? current.title;
+  const content = updates.content ?? current.content;
+  if (updates.claim !== void 0) return claimContent(title, content, updates.claim);
+  if (prior.claim_source === "authored" && prior.claim) {
+    return encodeClaim(content, prior.claim);
+  }
+  return claimContent(title, content);
+}
+function plainText(content, preserveCode = false) {
+  return stripClaim(content).replace(/<[^>]*>/g, " ").replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1").replace(preserveCode ? /[*_#>|~]/g : /[`*_#>|~]/g, "").replace(/\s+/g, " ").trim();
+}
+function matchedPassage(content, query) {
+  const text3 = [decodeClaim(content).claim, plainText(content)].filter(Boolean).join(" ");
+  const terms = query.toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+  const indexes = terms.map((term) => text3.toLocaleLowerCase().indexOf(term)).filter((i) => i >= 0);
+  if (!indexes.length) return null;
+  const at = Math.min(...indexes), start = Math.max(0, at - 60), end = Math.min(text3.length, start + 240);
+  return `${start ? "\u2026" : ""}${text3.slice(start, end)}${end < text3.length ? "\u2026" : ""}`;
+}
+function proposeClaim(content, completeOnly = false) {
+  if (decodeClaim(content).claim) return null;
+  const lines = content.split("\n").filter((line) => !/^\s*(?:_?Derived from|#{1,6}\s|\*\*(?:Question put to the human|Track|Reach|On accept|Context|Ratified asks):)/i.test(line));
+  const text3 = plainText(lines.join("\n"), true).replace(/^Decision:\s*/i, "");
+  const neutral = text3.replace(/(`+)[\s\S]*?\1/g, (value2) => " ".repeat(value2.length)).replace(/\be\.g\.|\bi\.e\./gi, (value2) => " ".repeat(value2.length));
+  const boundary = /[.!?]+(?=\s|$)/.exec(neutral);
+  if (!boundary && completeOnly) return null;
+  const value = (boundary ? text3.slice(0, boundary.index + boundary[0].length) : text3).trim();
+  return isSingleSentenceShaped(value) ? value : null;
+}
+
+// src/tools/project-context.ts
+var CONTEXT_CATEGORIES = [
+  ["architecture", "Architecture", "Decide the architecture"],
+  ["repo", "Repo & workspace topology", "Decide the repo & workspace topology"],
+  ["environments", "Environment topology & deploy triggers", "Decide the environment topology & deploy triggers"],
+  ["data", "Data & migration tooling", "Decide the data & migration tooling"],
+  ["ci", "CI/CD", "Decide the CI/CD approach"],
+  ["testing", "Testing", "Decide the testing approach"],
+  ["standards", "Coding standards", "Decide the coding standards"],
+  ["identity", "Authentication & identity", "Decide the authentication & identity approach"],
+  ["design", "Design system", "Decide the design system"]
+];
+var bounded = (value) => typeof value === "string" && !!value.trim() && value.length <= 1200 && value.trim().split(/\s+/).length <= 160 && !/[\r\n]|<!--/.test(value);
+function sourceSummary(source, proposition) {
+  const structured = source.madr?.project_context;
+  if (structured && typeof structured === "object") {
+    const fields = structured;
+    if (proposition) {
+      if (["purpose", "personas", "features"].every((key) => bounded(fields[key]))) {
+        return `Purpose: ${String(fields.purpose).trim()} Personas: ${String(fields.personas).trim()} Features: ${String(fields.features).trim()}`;
+      }
+      return null;
+    }
+    if (bounded(fields.summary)) return fields.summary.trim();
+  }
+  const named = (name) => {
+    const matches = source.content.split("\n").filter((line) => line.startsWith(`- Project context ${name}: `)).map((line) => line.slice(`- Project context ${name}: `.length));
+    return matches.length === 1 && bounded(matches[0]) ? matches[0].trim() : null;
+  };
+  if (proposition) {
+    const purpose = named("purpose"), personas = named("personas"), features = named("features");
+    if (purpose && personas && features) return `Purpose: ${purpose} Personas: ${personas} Features: ${features}`;
+  } else {
+    const summary2 = named("summary");
+    if (summary2) return summary2;
+  }
+  const claim = claimFields(source);
+  return !proposition && claim.claim_source === "authored" && bounded(claim.claim) ? claim.claim.trim() : null;
+}
+function resolveContextBlock(projectId, key, title, tasks, sources, references, projectKey) {
+  const block = { key, title, ticket: null, source_ids: [], state: "unresolved", summary: null, diagnostics: [] };
+  if (tasks.length !== 1) {
+    block.diagnostics.push(tasks.length ? "Multiple matching scaffold tickets." : "Scaffold ticket not found.");
+    return block;
+  }
+  const task = tasks[0];
+  block.ticket = `${projectKey}-${task.task_number}`;
+  if (task.workflow_state !== "Verified") {
+    block.state = "undecided";
+    return block;
+  }
+  const linked = new Set(references.get(task.id) ?? []);
+  const eligible = sources.filter((s) => s.project_id === projectId && (s.source_task_id === task.id || linked.has(s.id)) && (key === "proposition" ? s.type === "specification" : ["architecture", "business", "convention", "product-design", "technical-design", "ux-ui-design"].includes(s.type)));
+  const byId = new Map(sources.filter((s) => s.project_id === projectId).map((s) => [s.id, s]));
+  const current = /* @__PURE__ */ new Map();
+  for (const initial of eligible) {
+    let source2 = initial;
+    const seen = /* @__PURE__ */ new Set();
+    while (source2.superseded_by) {
+      if (seen.has(source2.id)) {
+        block.diagnostics.push(`Supersession cycle at ${source2.id}.`);
+        break;
+      }
+      seen.add(source2.id);
+      const successor = byId.get(source2.superseded_by);
+      if (!successor) {
+        block.diagnostics.push(`Unreadable successor ${source2.superseded_by} of ${source2.id}.`);
+        break;
+      }
+      source2 = successor;
+    }
+    if (!source2.superseded_by && source2.status === "Accepted") current.set(source2.id, source2);
+  }
+  block.source_ids = (current.size ? [...current.keys()] : eligible.map((source2) => source2.id)).sort();
+  if (block.diagnostics.length) return block;
+  if (!current.size) {
+    if (task.workflow_state === "Verified") block.diagnostics.push("Completed ticket has no readable Accepted substantive source.");
+    else block.state = "undecided";
+    return block;
+  }
+  if (current.size !== 1) {
+    block.diagnostics.push("Competing Accepted sources; confirm the authoritative context source.");
+    return block;
+  }
+  const source = [...current.values()][0];
+  const summary2 = sourceSummary(source, key === "proposition");
+  if (!summary2) {
+    block.diagnostics.push(`Source ${source.id} needs a bounded authored project_context summary${key === "proposition" ? " with purpose, personas and features" : " or authored claim"}.`);
+    return block;
+  }
+  block.state = "accepted";
+  block.summary = summary2;
+  return block;
+}
+var PAGE = 500;
+async function readProjectContext(client, projectId) {
+  const { data: project, error: error2 } = await client.from("projects").select("id,name,key").eq("id", projectId).single();
+  if (error2) throw error2;
+  const tasks = [];
+  for (let offset = 0; ; offset += PAGE) {
+    const result = await client.from("tasks").select("id,title,task_number,workflow_state,task_labels!inner(labels!inner(name))").eq("project_id", projectId).eq("archived", false).is("subsumed_by_task_id", null).eq("task_labels.labels.name", "inception-scaffold").order("id").range(offset, offset + PAGE - 1);
+    if (result.error) throw result.error;
+    tasks.push(...result.data ?? []);
+    if ((result.data ?? []).length < PAGE) break;
+  }
+  const sources = [];
+  for (let offset = 0; ; offset += PAGE) {
+    const result = await client.from("knowledge_decisions").select("id,project_id,source_task_id,type,status,superseded_by,content,madr").eq("project_id", projectId).order("id").range(offset, offset + PAGE - 1);
+    if (result.error) throw result.error;
+    sources.push(...result.data ?? []);
+    if ((result.data ?? []).length < PAGE) break;
+  }
+  const references = /* @__PURE__ */ new Map();
+  for (const task of tasks) {
+    const ids2 = [];
+    for (let offset = 0; ; offset += PAGE) {
+      const result = await client.from("ticket_references_knowledge").select("decision_id").eq("task_id", task.id).order("decision_id").range(offset, offset + PAGE - 1);
+      if (result.error) throw result.error;
+      ids2.push(...(result.data ?? []).map((row) => row.decision_id));
+      if ((result.data ?? []).length < PAGE) break;
+    }
+    references.set(task.id, ids2);
+  }
+  const definitions = [["proposition", "What this project is", `Founding proposition \u2014 ${project.name}`], ...CONTEXT_CATEGORIES];
+  const blocks = definitions.map(([key, title, ticketTitle]) => resolveContextBlock(
+    projectId,
+    key,
+    title,
+    tasks.filter((task) => task.title === ticketTitle),
+    sources,
+    references,
+    project.key
+  ));
+  return {
+    version: 1,
+    project_id: projectId,
+    project_name: project.name,
+    blocks,
+    diagnostics: blocks.flatMap((block) => block.diagnostics.map((message) => `${block.title}: ${message}`))
+  };
+}
+var readProjectContextTool = {
+  name: "read_project_context",
+  description: "Read source-linked project CLAUDE.md context from project-local inception scaffold tickets and Accepted knowledge. Read-only; reports unresolved and undecided categories without inventing summaries.",
+  inputSchema: { type: "object", properties: {} }
+};
+
 // src/tools/knowledge-prose.ts
 function proseLink(p) {
   if (!p.repository || !/^https:\/\//.test(p.repository)) return void 0;
@@ -44749,78 +44968,6 @@ async function selectEntity(client, workspaceId, projectId, selector) {
   return candidates[0] ?? null;
 }
 
-// src/tools/knowledge-claim.ts
-var ENVELOPE = /^\*\*Claim:\*\* ([^\n]+)\n\n\*\*Claim source:\*\* (authored|derived)\n\n/;
-function isSingleSentenceShaped(value) {
-  const text3 = value.trim();
-  if (!text3 || text3.split(/\s+/).length > 50) return false;
-  const neutral = text3.replace(/(`+)[\s\S]*?\1/g, "code").replace(/(\d)\.(?=\d)/g, "$1").replace(/\be\.g\.|\bi\.e\./gi, (m) => m.replace(/\./g, ""));
-  return !/[.!?]+(?=\s|$)/.test(neutral.replace(/[.!?]+\s*$/, ""));
-}
-function validateClaimEntry(title, claim) {
-  for (const [field, value] of [["title", title], ["claim", claim]]) {
-    if (!isSingleSentenceShaped(value)) throw new Error(`${field} must be one sentence of at most 50 words`);
-  }
-}
-function decodeClaim(content = "") {
-  const match = ENVELOPE.exec(content);
-  return { claim: match?.[1] ?? null, claim_source: match?.[2] ?? null };
-}
-function claimFields(row) {
-  const decoded = decodeClaim(row.content ?? "");
-  return row.claim && (row.claim_source === "authored" || row.claim_source === "derived") ? { claim: row.claim, claim_source: row.claim_source } : decoded;
-}
-function stripClaim(content = "") {
-  return content.replace(ENVELOPE, "");
-}
-function encodeClaim(content, claim, source = "authored") {
-  return `**Claim:** ${claim.trim().replace(/\s+/g, " ")}
-
-**Claim source:** ${source}
-
-${stripClaim(content)}`;
-}
-function claimContent(title, content, claim) {
-  if (claim !== void 0) {
-    validateClaimEntry(title, claim);
-    return encodeClaim(content, claim);
-  }
-  const proposed = proposeClaim(stripClaim(content)) ?? proposeClaim(title);
-  console.warn("Knowledge claim omitted; using a derived proposal when available. Supply claim to author it.");
-  return proposed ? encodeClaim(content, proposed, "derived") : stripClaim(content);
-}
-function editedClaimContent(current, updates) {
-  const prior = claimFields(current);
-  const title = updates.title ?? current.title;
-  const content = updates.content ?? current.content;
-  if (updates.claim !== void 0) return claimContent(title, content, updates.claim);
-  if (prior.claim_source === "authored" && prior.claim) {
-    return encodeClaim(content, prior.claim);
-  }
-  return claimContent(title, content);
-}
-function plainText(content, preserveCode = false) {
-  return stripClaim(content).replace(/<[^>]*>/g, " ").replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1").replace(preserveCode ? /[*_#>|~]/g : /[`*_#>|~]/g, "").replace(/\s+/g, " ").trim();
-}
-function matchedPassage(content, query) {
-  const text3 = [decodeClaim(content).claim, plainText(content)].filter(Boolean).join(" ");
-  const terms = query.toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
-  const indexes = terms.map((term) => text3.toLocaleLowerCase().indexOf(term)).filter((i) => i >= 0);
-  if (!indexes.length) return null;
-  const at = Math.min(...indexes), start = Math.max(0, at - 60), end = Math.min(text3.length, start + 240);
-  return `${start ? "\u2026" : ""}${text3.slice(start, end)}${end < text3.length ? "\u2026" : ""}`;
-}
-function proposeClaim(content, completeOnly = false) {
-  if (decodeClaim(content).claim) return null;
-  const lines = content.split("\n").filter((line) => !/^\s*(?:_?Derived from|#{1,6}\s|\*\*(?:Question put to the human|Track|Reach|On accept|Context|Ratified asks):)/i.test(line));
-  const text3 = plainText(lines.join("\n"), true).replace(/^Decision:\s*/i, "");
-  const neutral = text3.replace(/(`+)[\s\S]*?\1/g, (value2) => " ".repeat(value2.length)).replace(/\be\.g\.|\bi\.e\./gi, (value2) => " ".repeat(value2.length));
-  const boundary = /[.!?]+(?=\s|$)/.exec(neutral);
-  if (!boundary && completeOnly) return null;
-  const value = (boundary ? text3.slice(0, boundary.index + boundary[0].length) : text3).trim();
-  return isSingleSentenceShaped(value) ? value : null;
-}
-
 // src/tools/knowledge-metadata.ts
 import { existsSync as existsSync2, readFileSync as readFileSync2 } from "node:fs";
 import { basename as basename2, dirname, join as join3 } from "node:path";
@@ -45516,7 +45663,7 @@ async function searchKnowledge(client, projectId, args, started = performance.no
     result.elapsed_ms = Math.round(performance.now() - started);
     return result;
   };
-  const bounded = async (route, operation2, budget = end - performance.now()) => {
+  const bounded2 = async (route, operation2, budget = end - performance.now()) => {
     const routeStarted = performance.now();
     const record2 = (outcome, reason) => routes.push({ route, outcome, ...reason ? { reason } : {}, elapsed_ms: Math.round(performance.now() - routeStarted) });
     const routeController = new AbortController();
@@ -45561,8 +45708,8 @@ async function searchKnowledge(client, projectId, args, started = performance.no
       clearTimeout(timer);
     }
   };
-  const prose = bounded("prose-coverage", (signal2) => client.rpc("read_knowledge_prose", { p_project_id: projectId, p_entry_ids: [] }).abortSignal(signal2), 1e3);
-  const scope = await bounded("scope", (signal2) => client.from("projects").select("workspace_id").eq("id", projectId).abortSignal(signal2).single());
+  const prose = bounded2("prose-coverage", (signal2) => client.rpc("read_knowledge_prose", { p_project_id: projectId, p_entry_ids: [] }).abortSignal(signal2), 1e3);
+  const scope = await bounded2("scope", (signal2) => client.from("projects").select("workspace_id").eq("id", projectId).abortSignal(signal2).single());
   if (!scope) {
     incomplete = true;
     return finish();
@@ -45580,12 +45727,12 @@ async function searchKnowledge(client, projectId, args, started = performance.no
   }
   result.source_applicability = args.status || args.type ? "Explicit decision status/type filters exclude prose and generated sources." : "Accepted entries plus configured source-backed prose and current Asserted generated values.";
   const filters = result.normalized_filters;
-  const admission = !args.definitions_only ? bounded(
+  const admission = !args.definitions_only ? bounded2(
     "relevance-admission",
     (signal2) => client.rpc("knowledge_search_admission").abortSignal(signal2)
   ) : Promise.resolve(void 0);
   const definitions = includeDefinitions && limit > 0 ? (async () => {
-    const data = await bounded("definitions", (signal2) => client.rpc("read_knowledge_definitions", {
+    const data = await bounded2("definitions", (signal2) => client.rpc("read_knowledge_definitions", {
       p_workspace_id: scope.workspace_id,
       p_project_id: projectId,
       p_search: result.normalized_query,
@@ -45601,7 +45748,7 @@ async function searchKnowledge(client, projectId, args, started = performance.no
     }
     const ids3 = [...new Set(result.definitions.flatMap((d) => d.refinements.map((r) => r.id)))].slice(0, Math.max(0, limit - result.definitions.length));
     if (!args.definitions_only && ids3.length) {
-      const rows = await bounded("definition-refinements", (signal2) => {
+      const rows = await bounded2("definition-refinements", (signal2) => {
         let query = client.from("knowledge_decisions").select("*").eq("workspace_id", scope.workspace_id).eq("project_id", projectId).eq("status", "Accepted").in("id", ids3);
         if (args.domain?.length) query = query.overlaps("domain", args.domain);
         if (!filters.include_bookkeeping) query = query.or("tags.is.null,tags.not.cs.{harmony:bookkeeping}");
@@ -45611,7 +45758,7 @@ async function searchKnowledge(client, projectId, args, started = performance.no
     }
   })() : Promise.resolve();
   const names = includeDefinitions && !args.definitions_only && limit > 0 ? (async () => {
-    const read = await bounded("concept-names", (signal2) => client.rpc("read_knowledge_names", {
+    const read = await bounded2("concept-names", (signal2) => client.rpc("read_knowledge_names", {
       p_project_id: projectId,
       p_search: result.normalized_query,
       p_entry_ids: [],
@@ -45628,7 +45775,7 @@ async function searchKnowledge(client, projectId, args, started = performance.no
   const completedSignals = /* @__PURE__ */ new Set();
   const candidates = /* @__PURE__ */ new Map();
   const signal = async (name, embedding) => {
-    const rows = await bounded(name, async (signal2) => {
+    const rows = await bounded2(name, async (signal2) => {
       const response = await client.rpc("knowledge_search_scored", {
         _workspace_id: scope.workspace_id,
         _project_id: projectId,
@@ -45674,7 +45821,7 @@ async function searchKnowledge(client, projectId, args, started = performance.no
   };
   const lexical = signal("lexical", null);
   const semantic = (async () => {
-    const data = await bounded("embedding", (signal2) => client.functions.invoke("embed-knowledge", {
+    const data = await bounded2("embedding", (signal2) => client.functions.invoke("embed-knowledge", {
       body: { text: result.normalized_query },
       signal: signal2
     }), 1200);
@@ -45686,7 +45833,7 @@ async function searchKnowledge(client, projectId, args, started = performance.no
     if (absent) return;
     await signal("semantic", JSON.stringify(data.embedding));
   })();
-  const suggestions = args.context_tags?.length ? bounded("tag-suggestions", (signal2) => client.rpc("knowledge_search_context_tags", {
+  const suggestions = args.context_tags?.length ? bounded2("tag-suggestions", (signal2) => client.rpc("knowledge_search_context_tags", {
     _workspace_id: scope.workspace_id,
     _project_id: projectId,
     _context_tags: normalizeTags(args.context_tags)
@@ -45702,7 +45849,7 @@ async function searchKnowledge(client, projectId, args, started = performance.no
     } else if (filters.status !== "Accepted" || filters.tags.length || filters.question_state || filters.question_scope) {
       routes.push({ route: "legacy", outcome: "unsupported", reason: filters.question_state || filters.question_scope ? "legacy-scope-or-question-filters-unavailable" : filters.status !== "Accepted" ? "legacy-status-accepted-only" : "normalized-tags-unavailable" });
     } else {
-      const legacy = await bounded("legacy", (signal2) => {
+      const legacy = await bounded2("legacy", (signal2) => {
         let q = client.rpc(filters.scope ? "knowledge_search_rrf_metadata" : "knowledge_search_rrf", {
           ...filters.scope ? { _scope: filters.scope } : {},
           _workspace_id: scope.workspace_id,
@@ -45759,7 +45906,7 @@ async function searchKnowledge(client, projectId, args, started = performance.no
   if (ids2.length) {
     await Promise.all([
       (async () => {
-        const read = await bounded("claim-context", (signal2) => client.rpc("read_claim_context", { p_claim_ids: ids2 }).abortSignal(signal2));
+        const read = await bounded2("claim-context", (signal2) => client.rpc("read_claim_context", { p_claim_ids: ids2 }).abortSignal(signal2));
         if (read && (read.available !== true || !Array.isArray(read.contexts))) {
           incomplete = true;
           routes.push({ route: "claim-context", outcome: "unsupported", reason: "capability-unavailable" });
@@ -45767,7 +45914,7 @@ async function searchKnowledge(client, projectId, args, started = performance.no
         for (const d of displayed) if (ids2.includes(d.id)) d.claim_context = read?.available === true && Array.isArray(read.contexts) ? read.contexts.find((c) => c.claim_id === d.id) : { claim_id: d.id, question_state: "capability-unavailable", questions: [], concepts: [] };
       })(),
       (async () => {
-        const read = await bounded("historical-wording", (signal2) => client.rpc("read_knowledge_names", { p_project_id: projectId, p_search: null, p_entry_ids: ids2, p_entity_ids: [] }).abortSignal(signal2));
+        const read = await bounded2("historical-wording", (signal2) => client.rpc("read_knowledge_names", { p_project_id: projectId, p_search: null, p_entry_ids: ids2, p_entity_ids: [] }).abortSignal(signal2));
         if (read && (read.available !== true || !Array.isArray(read.entries))) {
           incomplete = true;
           routes.push({ route: "historical-wording", outcome: "unsupported", reason: "capability-unavailable" });
@@ -45778,14 +45925,14 @@ async function searchKnowledge(client, projectId, args, started = performance.no
         }
       })(),
       (async () => {
-        const read = await bounded("defined-in", (signal2) => client.rpc("read_knowledge_prose", { p_project_id: projectId, p_entry_ids: ids2 }).abortSignal(signal2));
+        const read = await bounded2("defined-in", (signal2) => client.rpc("read_knowledge_prose", { p_project_id: projectId, p_entry_ids: ids2 }).abortSignal(signal2));
         for (const d of displayed) if (ids2.includes(d.id)) {
           const pointer = read?.pointers?.find((p) => p.entry_id === d.id);
           Object.assign(d, { defined_in_available: read?.available === true }, pointer ? { defined_in: { ...pointer, source_link: proseLink(pointer) } } : {});
         }
       })(),
       (async () => {
-        const invalidations = await bounded("invalidations", (signal2) => client.rpc("read_knowledge_invalidations", { p_entry_ids: ids2 }).abortSignal(signal2));
+        const invalidations = await bounded2("invalidations", (signal2) => client.rpc("read_knowledge_invalidations", { p_entry_ids: ids2 }).abortSignal(signal2));
         for (const d of displayed) {
           if ("source_kind" in d && d.source_kind !== "knowledge") continue;
           d.invalidations_available = invalidations?.available === true;
@@ -45794,7 +45941,7 @@ async function searchKnowledge(client, projectId, args, started = performance.no
         }
       })(),
       (async () => {
-        const links = await bounded("supersession", async (signal2) => {
+        const links = await bounded2("supersession", async (signal2) => {
           const data = [];
           for (let start = 0; start < ids2.length; start += 500) {
             const parts = await Promise.all(["id", "superseded_by"].map((column) => client.from("knowledge_decisions").select("id,superseded_by").eq("workspace_id", scope.workspace_id).eq("project_id", projectId).neq("type", "intent").in(column, ids2.slice(start, start + 500)).limit(500).abortSignal(signal2)));
@@ -57636,6 +57783,7 @@ function registerTools(disabledFeatures) {
     // B-1047 — the rule registry reader (amend/reference targets and their fingerprints).
     readRuleRegistryTool,
     // Core tools (always visible)
+    readProjectContextTool,
     getProjectTool,
     listTasksTool,
     getTaskTool,
@@ -57717,6 +57865,9 @@ async function handleToolCall(name, args, client, projectId, userId) {
   try {
     let result;
     switch (name) {
+      case "read_project_context":
+        result = await readProjectContext(client, projectId);
+        break;
       case "get_project":
         result = await getProject(client, projectId);
         break;

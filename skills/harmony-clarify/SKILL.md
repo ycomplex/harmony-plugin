@@ -831,3 +831,7 @@ usable before schema promotion; never drop an explicitly requested scope or filt
 
 
 When choosing an epic, filter `list_epics` to `retired_at == null` (missing means active during schema compatibility). Retired epics are historical lookup only; never assign new work to them.
+
+## Inception context after completing acceptance (B-1388)
+
+For inception-scaffold proposition and S2 tickets, follow `harmony-shared/project-context.md`: author its bounded summary in the brief before ratification, then run `harmony project context after-accept --task <ticket> --root <checkout> --json` after the human completing accept, payload consumption and B-1384 fast-forward. This includes fresh-worker recovery of a browser accept. File pending source-linked context when the checkout is unavailable; acceptance remains complete. Do not add filesystem writes inside the acceptance RPC.
