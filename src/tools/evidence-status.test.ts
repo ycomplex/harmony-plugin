@@ -47,6 +47,7 @@ function makeClient(tables: {
   const rowsFor = (table: string): any[] => (tables as any)[table] ?? [];
   return {
     rpc: vi.fn((fn: string, _args: Record<string, unknown>) => {
+      if (fn === 'decision_only_completion_status') return Promise.resolve({ data: null, error: { code: 'PGRST202', message: 'old schema' } });
       if (fn !== 'task_criteria_floor_status') {
         return Promise.resolve({ data: null, error: { message: `unexpected rpc ${fn}` } });
       }

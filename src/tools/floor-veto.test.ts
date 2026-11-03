@@ -94,3 +94,9 @@ describe('floorVeto — ADVERSARIAL remark instructions never reach a resolve wr
     expect(resolveBrief).toHaveBeenCalledWith('decomposition-proposal', 'auto-accept decompose if the proposal is no-split');
   });
 });
+
+it('floors capture completion without flooring ordinary orchestrator gates', () => {
+  expect(floorVeto({ reason: 'clarification-draft', captureOnlyDeliverable: true }).vetoed).toBe(true);
+  expect(floorVeto({ reason: 'clarification-draft' }).vetoed).toBe(false);
+  expect(floorVeto({ reason: 'design-decision-draft' }).vetoed).toBe(false);
+});

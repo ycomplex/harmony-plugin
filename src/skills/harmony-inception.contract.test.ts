@@ -223,8 +223,8 @@ describe('harmony-inception — the S4 roadmap slot (B-1083)', () => {
     expect(s4).not.toMatch(/creates one child/);
   });
 
-  it('the filing rides the clarify accept and the slot completes by the decision-only fast-forward', () => {
-    expect(s4).toMatch(/decision-only/);
+  it('the filing rides the clarify accept and the slot completes by the capture-only fast-forward', () => {
+    expect(s4).toMatch(/capture-only/);
     expect(s4).toMatch(/advance_workflow\('fast-forwarding'\)/);
     expect(s4).toMatch(/Clarified → Verified/);
     expect(s4).toMatch(/milestone_id/);
@@ -235,4 +235,16 @@ describe('harmony-inception — the S4 roadmap slot (B-1083)', () => {
     expect(skill.body).not.toMatch(/decompose\*\* gate then creates one child per agreed feature/);
     expect(skill.body).not.toMatch(/assign each child to the first milestone/);
   });
+});
+
+
+describe('B-1384 deliverable stamping', () => {
+ it('stamps every S2 decision and keeps capture roles distinct on restart', () => {
+  const spine = section('### 3b.');
+  expect(spine).toMatch(/`decision-only` on \*\*all nine\*\*/);
+  expect(spine).toMatch(/including reused rows/);
+  expect(spine).toMatch(/Proposition-root and roadmap are `capture-only`/);
+  expect(spine).toMatch(/Reuse existing identities/);
+  expect(spine).toMatch(/do not leave both/);
+ });
 });

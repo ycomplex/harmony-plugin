@@ -648,8 +648,8 @@ it marks the gate **OVERRIDE-ELIGIBLE**, which changes how steps 3–5 apply to 
    was already reset to empty — so step 2a below is a no-op for the rest of this run.)
 2. **Hard floor (release/verify, contract 3).** If the gate's phase is **release** or **verify**, it is
    NEVER auto-advanced, in any mode — surface and pause (§4). **Decision-only extension (B-681):** the
-   **deliverable gate of a `decision-only`-labelled ticket** (clarify for a capture-only ticket; the LAST
-   design sub-track for a decision ticket) is that ticket's release+verify **collapsed into one** — its
+   **deliverable gate of a marked ticket** (clarify for `capture-only`; the LAST
+   design sub-track for `decision-only`, including legacy bare labels) is that ticket's release+verify **collapsed into one** — its
    accept completes the ticket to Verified via the fast-forward — so it inherits this same hard floor:
    NEVER auto-advanced, in any mode. (The label is read from the gate skill's own full `get_task`; see
    `skills/harmony-shared/gate-routing.md` §The decision-only fast-forward.)
@@ -973,8 +973,8 @@ otherwise performs on every ordinary Built/Deployed pass (the release gate's own
 `finish-work/SKILL.md` O2, already covers that path).
 
 **Decision-only tickets complete at their deliverable gate (B-681).** When the ticket carries the
-`decision-only` label, the walk above ENDS at the deliverable gate: the clarify accept (capture-only) or
-the last design sub-track's accept (decision ticket) carries an explicit completion line and — on the
+`capture-only` or `decision-only` label, resolve the gate from `get_task.deliverable`: the clarify accept for capture-only or
+the last design sub-track's accept for decision-only carries an explicit completion line and — on the
 human's accept — the owning gate skill runs the trailing `advance_workflow('fast-forwarding')`
 (Clarified→Verified / Designed→Verified). The conduct loop never routes such a ticket to plan/build/release;
 the loop's next re-read finds it Verified (TERMINAL). That deliverable gate inherits the hard floor
@@ -1082,12 +1082,12 @@ the B-471 auto-advance), and put the current marker on the **umbrella report-and
 "design in_progress". This stays a cheap derived read: it's keyed on the same `list_subtasks` children-check
 step 5 already made.
 
-**Decision-only rendering (B-681).** For a ticket carrying the `decision-only` label, the phases past its
+**Decision-only rendering (B-681).** For a ticket carrying either valid deliverable marker, the phases past its
 deliverable gate never run: render them as **"— skipped (decision-only fast-forward)"**. A capture-only
 ticket skips decompose/design/plan/build/release/verify (its clarify accept completes it); a decision
 ticket skips plan/build/release/verify (its last design sub-track's accept completes it). The deliverable
 gate's item is the one to mark `in_progress`, annotated **"completes to Verified on accept"**. This stays a
-cheap derived read: the label is already on the gate skill's full `get_task`.
+cheap derived read: the resolved gate is already in full/meta `get_task.deliverable`.
 
 **Annotate the delegation plan (informational).** When the effective mode is `partial`, `unattended`, or
 `escalate`, you may annotate each phase item's text with whether it will be **auto-advanced** or **paused**
@@ -1695,6 +1695,10 @@ The loop **ends** (does not pause for resume) when, after re-reading the ticket 
 Everything else is a **pause**, not an end: the loop is always resumable from the ticket row. (The umbrella
 report-and-stop above ends *the run* but is likewise resumable — it is a stop, not a dead end.)
 
+## Deliverable gate resolution (B-1384)
+
+Before every state→gate route and delegation test, read `get_task.deliverable` and follow `harmony-shared/gate-routing.md`'s marker table. It overrides older bare-label wording: decision-only at Clarified MUST decompose and design, never fast-forward. Capture-only completes at clarify only with the installed guarded capability. A conflict or unavailable capture capability files a worker-question and cannot advance. Both completing gates remain human-required despite flags or per-gate overrides. At Designed, recover an already announced human completing accept after pending payload consumption, or compose completion on the existing design decision; never route a legacy decision-only ticket to plan/build. Ordinary unlabelled tickets retain the canonical gate table and orchestrator accepts.
+
 ## The controlled contract is intact (phase-2a guarantee)
 
 Phases 2b + 2c are **strictly additive**. With **no flag**, this skill behaves *identically* to phase 2a:
@@ -1773,4 +1777,4 @@ Browser auto-pickup (B-485) is **orthogonal and equally non-decisional**:
 
 ## Follow-up comment protocol (B-1193)
 
-When buffering or draining findings, follow `skills/harmony-shared/disposition-discipline.md`'s exact append-only versioned protocol: first line `Follow-ups rollup v1 id=<key>`, full item snapshot `- [do-now|defer-with-trigger|drop] id=<item-key> <text>` (choose exactly one tag); drain first line `Follow-ups rollup drained v1 id=<key>` with each item's terminal disposition and evidence. Preserve rollup/item keys, replace snapshots by appending, and use a new rollup key after drain. Never rewrite another author's comment. A split umbrella, decision-only, Parked or Cancelled host has no release gate: route to a live release-bearing ticket whose gate is next or drain as the host leaves the flow. Resolve legacy/malformed records explicitly. Keep the four outcomes and drain → surface → verify unchanged; surface the drained buffer on the release brief.
+When buffering or draining findings, follow `skills/harmony-shared/disposition-discipline.md`'s exact append-only versioned protocol: first line `Follow-ups rollup v1 id=<key>`, full item snapshot `- [do-now|defer-with-trigger|drop] id=<item-key> <text>` (choose exactly one tag); drain first line `Follow-ups rollup drained v1 id=<key>` with each item's terminal disposition and evidence. Preserve rollup/item keys, replace snapshots by appending, and use a new rollup key after drain. Never rewrite another author's comment. A split umbrella, capture-only, decision-only, Parked or Cancelled host has no release gate: route to a live release-bearing ticket whose gate is next or drain as the host leaves the flow. Resolve legacy/malformed records explicitly. Keep the four outcomes and drain → surface → verify unchanged; surface the drained buffer on the release brief.

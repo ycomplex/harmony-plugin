@@ -1,3 +1,4 @@
+import { readDeliverableStatus } from './decision-only.js';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveTaskId } from './resolve-task-id.js';
 import {
@@ -219,7 +220,9 @@ export async function getBuildEvidenceStatus(
   const labelRows = (labelsRes.data ?? []) as unknown as Array<{ labels: { name: string | null } | null }>;
 
   const is_umbrella = children.some((c) => c.archived !== true);
-  const is_decision_only = labelRows.some((l) => l.labels?.name === 'decision-only');
+  const deliverable = await readDeliverableStatus(client, resolvedId, labelRows.flatMap(l => l.labels?.name ? [l.labels.name] : []));
+  const is_decision_only = deliverable.kind === 'decision';
+  const is_capture_only = deliverable.kind === 'capture' && deliverable.guard_available;
   const has_test_cases = testCases.length >= 1;
   const all_acs_checked = acs.length >= 1 && acs.every((a) => a.checked === true);
   const has_comment_trail = comments.some((c) => typeof c.content === 'string' && COMMENT_TRAIL_RE.test(c.content));
@@ -244,14 +247,14 @@ export async function getBuildEvidenceStatus(
   // readCriteriaPresence for why a broader catch would fail OPEN.
   const has_acceptance_criteria = await readCriteriaPresence(client, resolvedId, acs.length >= 1);
 
-  const exempt = is_umbrella || is_decision_only;
+  const exempt = is_umbrella || is_decision_only || is_capture_only;
   const complete = exempt ? true : has_test_cases && all_acs_checked && has_pushed_pr;
   // Umbrella keeps precedence when both apply — children carrying evidence is the more specific claim.
   const exempt_reason = is_umbrella
     ? 'umbrella — evidence carried by children'
     : is_decision_only
       ? 'decision-only — the Accepted decision knowledge is the evidence'
-      : null;
+      : is_capture_only ? 'capture-only — the Accepted clarification is the evidence' : null;
 
   const missing: string[] = [];
   if (!complete && !exempt) {

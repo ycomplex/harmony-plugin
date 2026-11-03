@@ -20,3 +20,15 @@ describe('deliverable markers', () => {
     await expect(readDeliverableStatus(client(null, { code: '42501' }), 'task', ['capture-only'])).rejects.toEqual({ code: '42501' });
   });
 });
+
+describe('guarded capability failures', () => {
+  it('keeps network and permission failures visible', async () => {
+    for (const error of [{ code: '42501', message: 'denied' }, { message: 'network failed' }]) {
+      await expect(readDeliverableStatus(client(null, error), 'task', ['capture-only'])).rejects.toEqual(error);
+    }
+  });
+  it('refuses conflicting or changed markers without authorizing an exemption', async () => {
+    expect(() => assertCaptureAvailable({ kind: 'conflict', intended_gate: null, guard_available: true })).toThrow('Conflicting');
+    await expect(readDeliverableStatus(client([{ contract_version: 1, intended_gate: 'design', conflicting_markers: false }]), 'task', ['capture-only'])).rejects.toThrow('changed');
+  });
+});

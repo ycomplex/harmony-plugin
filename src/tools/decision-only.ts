@@ -54,3 +54,15 @@ export function assertCaptureAvailable(status: DeliverableStatus): void {
   }
   if (status.kind === 'conflict') throw new Error('Conflicting capture-only and decision-only markers: correct the labels before completion');
 }
+
+/** A proposed capture marker is not on the task yet; inspect the installed contract without guessing its current gate. */
+export async function requireCaptureCompletionCapability(client: SupabaseClient, taskId: string): Promise<void> {
+  const { data, error } = await client.rpc('decision_only_completion_status', { _task_id: taskId });
+  if (error) {
+    if (isMissingCompletionCapability(error)) throw new Error('Capture-only guarded completion unavailable; file a worker-question');
+    throw error;
+  }
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row || row.contract_version !== 1 || typeof row.conflicting_markers !== 'boolean' || ![null, 'clarify', 'design'].includes(row.intended_gate)) throw new Error('Malformed guarded deliverable-completion capability response');
+  if (row.conflicting_markers) throw new Error('Conflicting deliverable markers');
+}

@@ -440,28 +440,11 @@ them via the B-797 safety net instead of stalling on the design-gate self-heal. 
 content)` (import from `payload-refs.ts` — never reinvent the scheme), deduped via `dedupeRefs` before the
 call.
 
-**Also propose `label_add` when clarify judges the ticket decision-only-shaped (B-688 — the
-clarify-proposed producer).** This rides in the SAME brief as a PROPOSAL, never an auto-apply — the
-human's brief accept is what confirms it, exactly like any other clarify recommendation (never gate it
-behind a new bespoke heuristic invented for this alone). **Detection signal — a conservative, documented
-judgment call, not a mechanically-derived predicate; flag for a human reviewer to sanity-check:** propose
-`label_add` when this ticket is **capture-only** — its entire deliverable IS this clarification, with
-nothing left to plan/build/deploy afterward. The concrete tell this step already computes: **step 3's
-derived happy-path AC set is EMPTY** (zero `acceptance_criterion` payload items). An empty set means no
-buildable, verifiable behavior is implied by this ticket's scope — the same condition the "Decision-only
-completion line" note below already keys its own prose on for an ALREADY-labeled ticket, just applied
-here to recognize the shape for the FIRST time. A ticket with even one derived AC is NOT decision-only-
-shaped (something concrete needs to be built and verified downstream) — never propose in that case. Skip
-the proposal entirely when the ticket ALREADY carries the `decision-only` label (the completion-line note
-below governs that case, unchanged). When the signal fires, add ONE more item to the SAME `dedupeRefs(...)`
-call as the AC items (so refs stay unique within the one payload array):
+**Capture-only proposal (B-1384).** Propose `label_add` only when the entire deliverable is this clarification and explicitly no design decision is owed. Empty happy-path ACs alone do not prove this. "Decide the default export format" owes design and cannot be captured here. Existing decision-only means design, so never propose capture-only for it. Check the installed guarded-completion capability first; if absent, file a worker-question without proposing or advancing. A conflict needs correction, not a chosen winner.
+
 ```
-{ write_kind: "label_add", ref: slugRef("label", "decision-only"), label_name: "decision-only" }
+{ write_kind: "label_add", ref: slugRef("label", "capture-only"), label_name: "capture-only" }
 ```
-The DB-side guard (`can_mark_decision_only`, consumed by `consume_label_add_write` at accept time) is the
-actual authority on whether the label may land — this proposal is never a guarantee, only a recommendation
-riding the same accept the human already reviews (see step 5's accept branch for what happens on a
-guard-blocked or not-yet-deployed apply).
 
 **Also author `doc.frame` (B-876) — the clarify gate's own must-haves.** The clarification IS the
 artefact being ratified, and the two things the human is actually being asked to lock have no other typed
@@ -572,12 +555,12 @@ adjustment the human states AT ACCEPT TIME (e.g. "actually call it X, not Y") ri
 `pending_remark.referent` for the next leg to apply as a light amendment, exactly like any other
 accept-with-remark.
 
-A **capture-only** ticket (step 3 derived zero happy-path ACs — e.g. "Decide the default export format")
+A **capture-only** ticket (its entire deliverable is the clarification, with an explicit no-design-owed rationale)
 proposes `label_add` INSTEAD of any `acceptance_criterion` items, in the same `dedupeRefs(...)` call —
 the `implements_entities` write (B-997) still rides alongside it, same as the ordinary case:
 ```
 payload: dedupeRefs([
-  { write_kind: "label_add", ref: slugRef("label", "decision-only"), label_name: "decision-only" },
+  { write_kind: "label_add", ref: slugRef("label", "capture-only"), label_name: "capture-only" },
   { write_kind: "implements_entities", ref: slugRef("entities", "implements-entities"), names: ["Saved Filters"] }
 ])
 ```
@@ -585,15 +568,14 @@ payload: dedupeRefs([
 If `compose_brief` throws a lint error (naked fork, mislabelled derived constraint, or a load-bearing
 gap without research), fix the `doc` and recompose — what's linted is exactly what's rendered.
 
-**Decision-only completion line (B-681).** If the ticket carries the **`decision-only` label** (a
+**Capture-only completion line (B-1384).** Author `doc.frame.completion: {gate: "clarify", to_state: "Verified", realization: "agreed"}`. Never complete a decision-only design deliverable here. The guarded capability is required.  If the ticket carries the **`capture-only` label** (a
 capture-only ticket — e.g. an inception proposition-root — whose deliverable IS this clarification), **or
 this brief's own `doc.payload` proposes adding it** (the `label_add` item just above, B-688's
 clarify-proposed producer), clarify is its **deliverable gate**: the brief MUST carry an explicit
-completion line in its context — *"Accepting this completes the ticket to Verified via the decision-only
+completion line in its context — *"Accepting this completes the ticket to Verified via the capture-only
 fast-forward; nothing is built, and the captured decision's realization stays `agreed`."* When the label
 is only PROPOSED (not yet carried), phrase the line as conditional on the proposal landing — e.g. *"...if
-this brief's decision-only proposal is accepted and the guard allows it; otherwise this clarification
-completes normally and the ticket continues through the remaining gates."* — since the DB-side guard (not
+this brief's capture-only proposal is accepted and the guard allows it; otherwise file a worker-question and keep completion pending; never silently continue into another gate."* — since the DB-side guard (not
 this skill) has final say (see step 5's accept branch for the guard-blocked / not-yet-deployed cases). The
 completion is never silent, and this brief is **hard-floor** — never auto-advanced under any delegation
 flag (see `skills/harmony-shared/gate-routing.md` §The decision-only fast-forward).
@@ -623,7 +605,7 @@ Show the rendered `content` verbatim. On the human's command:
   `resolve_brief`, then **A (continued)** — the ledgered apply there files the ACs, and the
   filing-pass marker is written from that same call's own count.
 
-  **B. This brief's `doc.payload` DOES carry a `label_add` item (B-688 — clarify proposed decision-only
+  **B. This brief's `doc.payload` DOES carry a `label_add` item (B-688 — clarify proposed capture-only
   at step 4).** The ONLY thing that can safely apply a `label_add` write is `consume_label_add_write`
   (guard-checked, ledgered, idempotent) — reached exclusively through the generic
   `consume_pending_acceptance_event` apply path (`acceptance-events.ts`). So branch A's shortcut is
@@ -698,13 +680,13 @@ Show the rendered `content` verbatim. On the human's command:
   fires the instant the human accepts, before filing runs, so a web-accepted-no-session clarification
   reads as "already filed" while filing is still outstanding — the same bug under a new name).
 
-  **Decision-only fast-forward (B-681):** if the ticket ALREADY carried the `decision-only` label before
+  **Decision-only fast-forward (B-681):** if the ticket ALREADY carried the `capture-only` label before
   this accept (the brief carried the completion line for that reason — branch A never proposes the label
   itself), run the trailing mechanical completion the accept just authorized:
   ```
   mcp__harmony__advance_workflow({ task_id, activity: "fast-forwarding" })   // Clarified -> Verified
   ```
-  — one human accept, two writes; report the ticket as **Verified (decision-only fast-forward,
+  — one human accept, two writes; report the ticket as **Verified (capture-only fast-forward,
   realization stays 'agreed')**. Idempotent guard: skip if the ticket is already Verified.
 
   **B (continued) — apply the FULL payload (ACs + the label proposal) through the ledgered path, then
@@ -720,9 +702,9 @@ Show the rendered `content` verbatim. On the human's command:
     ```
     mcp__harmony__add_comment({ task_id, content: `AC-FILING-PASS brief_id=${brief.id} filed=${by_write_kind.acceptance_criterion ?? 0}` })
     ```
-    The ticket now carries the `decision-only` label (this call just applied it) — run the SAME
-    decision-only fast-forward step as branch A: `mcp__harmony__advance_workflow({ task_id, activity:
-    "fast-forwarding" })`, report **Verified (decision-only fast-forward, realization stays 'agreed')**.
+    The ticket now carries the `capture-only` label (this call just applied it) — run the SAME
+    capture-only fast-forward step as branch A: `mcp__harmony__advance_workflow({ task_id, activity:
+    "fast-forwarding" })`, report **Verified (capture-only fast-forward, realization stays 'agreed')**.
   - **Throws an error whose message contains `"decision-only guard blocked"`** — the DB-side guard
     (`can_mark_decision_only`) blocked the label (message names the reason: `terminal` or `build-shape`).
     **The `acceptance_criterion`, `gate_slot`, and `knowledge_entry_content` items are NOT lost** — B-1029
@@ -749,7 +731,7 @@ Show the rendered `content` verbatim. On the human's command:
        thrown message then says "A worker-question round was filed"). File it here ONLY when the message
        says the round could not be filed, so the ticket never gets two rounds. When it is yours to file,
        file a `worker-question` round (`skills/harmony-shared/elicitation-engine.md` §The worker-question
-       trigger) naming what happened — the ticket was judged decision-only-shaped and proposed, but the
+       trigger) naming what happened — the ticket was judged capture-only-shaped and proposed, but the
        guard blocked it (name the `block_reason`) — and asking the human how to proceed (e.g. drop the
        proposal, or something else):
        ```
@@ -771,7 +753,7 @@ Show the rendered `content` verbatim. On the human's command:
        Report **Clarified**.
     3. File a `worker-question` round noting the decision-only proposal could not be applied yet because
        its DB function is not deployed to this environment, and that a human who still wants the ticket
-       marked decision-only can add the label manually via the ticket's label editor (guard-checked, same
+       marked capture-only can add the label manually via the ticket's label editor (guard-checked, same
        authority) once it's deployed.
   - **Any other thrown error** — propagates untouched, exactly like every other tool error in this skill;
     never swallowed.
@@ -779,14 +761,14 @@ Show the rendered `content` verbatim. On the human's command:
   Report the new state, including any re-ticketed later phase's visual id. A WEB accept with no
   session running defers the AC filing to the design gate's self-heal (branch A shape) and the de-scope
   execution to the DECOMPOSE gate's self-heal — the next gate to read the clarification (the documented
-  v1 asymmetry, same shape as decompose's children); a decision-only ticket's web accept likewise leaves
+  v1 asymmetry, same shape as decompose's children); a capture-only ticket's web accept likewise leaves
   the trailing fast-forward to the next running session (re-run the conduct loop to apply it) — and, for a
   branch-B payload, leaves the FULL ledgered apply (ACs + label) to `harmony-conduct` §1c's leg-start
   consume. That generic route already handles a `payload-unrecognized` result correctly (routes to the
   owning gate's self-heal, no double-file hazard since branch A's shortcut never ran for a web accept).
   **Known gap, out of this ticket's scope:** §1c's documented handling only branches on `status` — it does
   not currently catch a THROWN `"decision-only guard blocked"` error the way branch B above does, so a web
-  accept of a decision-only-proposing brief that the guard would block, picked up later by an unattended
+  accept of a capture-only-proposing brief that the guard would block, picked up later by an unattended
   conduct loop leg via §1c, would surface as an unhandled tool error there rather than the clean
   worker-question this skill's own same-session accept produces. Flagging for a human to route (fold into
   `harmony-conduct/SKILL.md` §1c, or a follow-up ticket) rather than silently leaving it undocumented.

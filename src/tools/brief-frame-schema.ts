@@ -19,6 +19,7 @@ const sketch = object({
   preview_attachment_ids: strings, mcp_call_count: z.number(),
 });
 const floor = { floor_reviewed: strings.optional() };
+const completion = (gate: 'clarify' | 'design') => object({ gate: z.literal(gate), to_state: z.literal('Verified'), realization: z.literal('agreed') }).optional();
 // B-1047 — a design's declared reach and the rules it creates, amends or references.
 export const REACH_LEVELS = ['this_ticket_only', 'this_surface', 'this_product'] as const;
 export const RULE_OPERATIONS = ['create', 'amend', 'reference'] as const;
@@ -34,13 +35,13 @@ const designRule = object({
   before: z.string().optional(), title: z.string().optional(),
 });
 export const briefFrameSchema = z.discriminatedUnion('kind', [
-  object({ kind: z.literal('clarify'), solving: z.string(), in_scope: strings,
+  object({ kind: z.literal('clarify'), completion: completion('clarify'), solving: z.string(), in_scope: strings,
     not_solving: z.array(object({ item: z.string(), lands: z.string() })),
     sketch: sketch.optional(), ...floor }),
   object({ kind: z.literal('decompose'),
     elements: z.array(object({ text: z.string(), surface: z.string().optional(), covers: z.string().optional() })),
     coverage: z.string(), existing_children_checked: z.boolean(), ...floor }),
-  object({ kind: z.literal('design'), track,
+  object({ kind: z.literal('design'), completion: completion('design'), track,
     tracks: z.array(object({ track, status: z.enum(['accepted', 'this-brief', 'pending', 'not-required']), note: z.string().optional() })),
     reach: strings, not_reopened: strings.optional(),
     reach_level: z.enum(REACH_LEVELS).optional(), rules: z.array(designRule).optional(),

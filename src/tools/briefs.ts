@@ -1,3 +1,4 @@
+import { resolveDeliverableMarker, readDeliverableStatus, assertCaptureAvailable, requireCaptureCompletionCapability } from './decision-only.js';
 import { addComment } from './comments.js';
 import { type DesignArtefact, type DesignerFrame, validateDesignAttachments, validateDesignerFrameAttachments, renderDesignArtefact, renderDesignerFrames } from './design-artefact.js';
 import { encodeClaim, isSingleSentenceShaped, proposeClaim } from './knowledge-claim.js';
@@ -261,6 +262,7 @@ export type GateFrame =
   // (§8 item 2). Altitude per §4.0 — judgeable without the repo open.
   | {
       kind: 'clarify';
+      completion?: { gate: 'clarify' | 'design'; to_state: 'Verified'; realization: 'agreed' };
       solving: string;
       in_scope: string[];
       not_solving: Excluded[];
@@ -282,6 +284,7 @@ export type GateFrame =
     }
   | {
       kind: 'design';
+      completion?: { gate: 'clarify' | 'design'; to_state: 'Verified'; realization: 'agreed' };
       design_artefact?: DesignArtefact;
       /** B-1338 — every designer-linked Figma frame the adopt check gave a verdict, with its live preview. */
       designer_frames?: DesignerFrame[];
@@ -773,6 +776,7 @@ function walkLines(frame: Extract<GateFrame, { kind: 'verify' }>): string[] {
 /** The frame block for one gate, as Markdown lines (no trailing blank — the caller adds it). */
 function renderFrame(frame: GateFrame): string[] {
   const out: string[] = [];
+  if ((frame.kind === 'clarify' || frame.kind === 'design') && frame.completion) out.push('**Completing accept:** Accepting this completes the ticket to Verified; no build follows and realization stays agreed. Explicit human acceptance is required.', '');
   switch (frame.kind) {
     case 'clarify': {
       out.push(`## SOLVING: ${frame.solving}`, '');
@@ -3052,8 +3056,12 @@ export async function composeBrief(
   }
   validateRemovals(mergedDoc, args.reason);
   await requireRemovalCapability(client, mergedDoc);
+  const proposedCapture = mergedDoc.payload?.some(item => item.write_kind === 'label_add' && item.label_name === 'capture-only');
+  const completingCapture = mergedDoc.frame && (mergedDoc.frame.kind === 'clarify' || mergedDoc.frame.kind === 'design') && mergedDoc.frame.completion?.gate === 'clarify';
+  if (proposedCapture || completingCapture) await requireCaptureCompletionCapability(client, taskId);
   // B-1158: refuse malformed supplied/inherited frames before any derivation can render or persist them.
   validateBriefFrame(mergedDoc.frame, FRAME_KIND_FOR_REASON[args.reason]);
+  if (mergedDoc.frame?.kind === 'design' && mergedDoc.frame.completion && mergedDoc.frame.tracks.some(track => track.status === 'pending')) throw new Error('Only the last required design sub-track may announce completion');
   // The prior round's diff-derived classes, and ONLY on the revision path — `undefined` on a first
   // compose, which is what keeps "no diff ⇒ []" true for round 1. See `withDiffDerivedRiskClasses`.
   const priorRiskClasses: string[] | undefined =
@@ -4368,8 +4376,22 @@ export async function resolveBrief(
   }
 
   if (args.command === 'accept') {
-    const doc = (active as { doc?: BriefDoc }).doc ?? {};
+    const doc: Partial<BriefDoc> = (active as { doc?: BriefDoc }).doc ?? {};
     await requireRemovalCapability(client, doc);
+    const completion = doc.frame && (doc.frame.kind === 'clarify' || doc.frame.kind === 'design') ? doc.frame.completion : undefined;
+    if (completion) {
+      const { data: labels, error } = await client.from('task_labels').select('labels(name)').eq('task_id', taskId);
+      if (error) throw error;
+      const names = ((labels ?? []) as unknown as Array<{ labels: { name: string } | null }>).flatMap((row) => row.labels ? [row.labels.name] : []);
+      const proposed = doc.payload?.filter(item => item.write_kind === 'label_add').map(item => item.label_name ?? 'decision-only') ?? [];
+      const marker = resolveDeliverableMarker([...names, ...proposed]);
+      if (marker.kind !== 'none') {
+        if (provenance.startsWith('agent-synthesized')) throw new Error('Deliverable completion requires explicit human acceptance');
+        if (marker.intended_gate !== completion.gate) throw new Error('Completing brief does not match the deliverable gate');
+        if (proposed.includes('capture-only')) await requireCaptureCompletionCapability(client, taskId);
+        if (names.includes('capture-only')) assertCaptureAvailable(await readDeliverableStatus(client, taskId, names));
+      }
+    }
     if ('removal_effective_on_accept' in doc && doc.removal_effective_on_accept && provenance.startsWith('agent-synthesized')) {
       throw new Error('policy removal effectivity requires an explicit human accept');
     }
