@@ -751,7 +751,7 @@ Show the rendered `content` verbatim. On the human's command:
        `label_add`-last reorder means only the RPC-absent label write is outstanding), so only the deferred
        advance itself remains: `mcp__harmony__consume_acceptance_event({ event_id })`.
        Report **Clarified**.
-    3. File a `worker-question` round noting the decision-only proposal could not be applied yet because
+    3. File a `worker-question` round noting the capture-only proposal could not be applied yet because
        its DB function is not deployed to this environment, and that a human who still wants the ticket
        marked capture-only can add the label manually via the ticket's label editor (guard-checked, same
        authority) once it's deployed.
@@ -766,12 +766,7 @@ Show the rendered `content` verbatim. On the human's command:
   branch-B payload, leaves the FULL ledgered apply (ACs + label) to `harmony-conduct` §1c's leg-start
   consume. That generic route already handles a `payload-unrecognized` result correctly (routes to the
   owning gate's self-heal, no double-file hazard since branch A's shortcut never ran for a web accept).
-  **Known gap, out of this ticket's scope:** §1c's documented handling only branches on `status` — it does
-  not currently catch a THROWN `"decision-only guard blocked"` error the way branch B above does, so a web
-  accept of a capture-only-proposing brief that the guard would block, picked up later by an unattended
-  conduct loop leg via §1c, would surface as an unhandled tool error there rather than the clean
-  worker-question this skill's own same-session accept produces. Flagging for a human to route (fold into
-  `harmony-conduct/SKILL.md` §1c, or a follow-up ticket) rather than silently leaving it undocumented.
+  Guard-blocked capture proposals are handled by the shared acceptance-event consumer's worker-question path (including a missing guarded-completion capability). Keep the acceptance pending until the answer; do not discard or re-file already applied writes.
   **When that design-gate self-heal
   (`harmony-design-decide/SKILL.md` §2b) can't locate this clarification's content through its normal
   lookup (no Accepted `specification` decision / `brief_resolved` event to key on), it does NOT ask the
