@@ -298,6 +298,12 @@ re-type the list here, which is exactly how the two authorings drifted before:
 > skills at decompose time — NOT from Harmony. If any upstream decision's structure is missing or
 > ambiguous, STALL at your clarify gate (elicitation-first) rather than guessing — loud, not silent."*
 
+**Bootstrap the stack additionally carries the project-context clause (B-1388):**
+> *"Before the first commit, regenerate project CLAUDE.md from current Accepted proposition and
+> foundational knowledge using `harmony project context refresh --root <repo> --json`. Preserve unrelated
+> stage semantics and instructions, and include the regenerated file in that first commit. Follow
+> `harmony-shared/project-context.md` for unresolved sources; never claim an invented summary as a decision."*
+
 **Bootstrap the stack additionally carries the repo-hygiene clause (§3f):**
 > *"Any repository this umbrella creates carries `.harmony-task.json` in its `.gitignore` from the first
 > commit. That file is per-ticket conduct loop working context, not product source: left untracked-but-
@@ -518,3 +524,7 @@ ships first — the gap this scaffold now closes.
 Seed the S2 decisions' knowledge (when they are conducted) at **`realization = 'agreed'`** — decided,
 not-yet-built (B-400). The flip to `'live'` is driven downstream when the S2's S3 bootstrap umbrella
 completes; it does not fire during inception. See B-397's build notes for the flip mechanism.
+
+## Project context (B-1388)
+
+Follow `harmony-shared/project-context.md` when authoring the proposition summary, consuming its completing accept, and stamping Bootstrap. The first commit carries regenerated source-linked CLAUDE.md context alongside the stage semantics. Foundational decisions add bounded source-linked outcomes; Harmony remains authoritative.

@@ -31,6 +31,7 @@ const READ_TOOLS = [
   'preview_feature_amendment',
   'preview_knowledge_questions',
   'get_project',
+  'read_project_context',
   'list_epics',
   'list_tasks',
   'get_task',
