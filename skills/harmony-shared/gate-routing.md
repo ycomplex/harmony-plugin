@@ -101,35 +101,22 @@ undeclared auto-advance would be recorded as a decision the founder personally m
 
 ## The decision-only fast-forward (B-681)
 
-A ticket carrying the **`decision-only` label** finishes its deliverable at an early gate and has nothing
-to plan/build/deploy — so it completes at that **deliverable gate** instead of walking the build gates
-empty or stalling:
+Two explicit guarded labels name the deliverable. Resolve via `get_task.deliverable` (full or meta), backed by `src/tools/decision-only.ts`; never infer it from empty or checked criteria.
 
-| ticket kind | deliverable gate | fast-forward edge |
+| marker | deliverable gate | fast-forward edge |
 |---|---|---|
-| capture-only (e.g. an inception proposition-root, or its S4 roadmap slot — whose deliverable is the standalone first-milestone backlog its clarify accept files, B-1083) | **clarify** | Clarified → Verified |
-| decision ticket (decision Accepted at design) | **design** (last required sub-track) | Designed → Verified |
+| `capture-only` | clarify; no design decision is owed | Clarified → Verified |
+| `decision-only`, including every legacy bare marker | last required design sub-track | Designed → Verified |
+| both markers | conflict; ask for correction | no completion |
 
-- **One accept, two writes.** The deliverable-gate brief of a marker-carrying ticket **must carry an
-  explicit completion line** — *"accepting this completes the ticket to Verified; nothing is built, the
-  decision's realization stays `agreed`"* — and the human's single accept authorizes both. On accept the
-  owning gate skill resolves the brief normally, then runs the trailing
-  `advance_workflow({ activity: 'fast-forwarding' })` as the mechanical completion. Never silent, never a
-  second ceremony.
-- **Hard floor.** The deliverable gate of a decision-only ticket is its release+verify **collapsed into
-  one**, so it inherits the hard floor: **never auto-advanced under any delegation flag** (`--pause-at` /
-  `--unattended` / `--escalate`). No ticket reaches Verified without a human decision in the loop.
-- **Until the deliverable gate the marker changes nothing** — a decision ticket still clarifies and
-  decomposes normally; only the gates PAST the deliverable are skipped.
-- **Realization stays `agreed`.** The fast-forward never touches realization; the produced decision reads
-  agreed-not-built until its build work flips it live (B-677).
-- **Marker consumed, not governed — but now RATIFIED (B-688).** Three producers may stamp `decision-only`:
-  **inception's own S1/S2 stamping** (direct, at mint time), **clarify-proposed** (a `label_add` payload
-  item clarify authors when it judges a ticket capture-only, applied on the human's brief accept — see
-  `skills/harmony-clarify/SKILL.md` step 4/5), and **manual** (the label editor). Every producer is gated
-  by the SAME DB authority, `can_mark_decision_only`: `terminal` (Verified/Cancelled/Parked) hard-blocks;
-  `build-shape` (Planned-or-later, or a linked build PR) redirects to revise-scope. This table still only
-  keys on the label's presence, regardless of which producer stamped it.
+- A completing brief authors `doc.frame.completion: {gate: "clarify" | "design", to_state: "Verified", realization: "agreed"}` and explicitly announces: "Accepting this completes the ticket to Verified; nothing is built and realization stays agreed."
+- Both completing gates are a human hard floor in **every** delegation mode and per-gate override. Refuse synthesized completing accepts, including orchestrator provenance. Ordinary ticket accepts remain unchanged.
+- One human accept, two writes: consume pending acceptance payload FIRST, then use its accepted completing brief for `advance_workflow({activity: 'fast-forwarding'})`. Earlier design sub-tracks never complete the ticket.
+- A legacy ticket at Designed may use its recorded human completing accept if it explicitly announced Verified and agreed realization. Otherwise surface an explicit completion brief on the existing Accepted design decision (no new design choice, no build detour), with no state-advancing pending activity.
+- Capture stamping, proposal, completion and evidence exemption require positive detection of `decision_only_completion_status` contract version 1. Undefined function/schema-cache means unavailable: file an answerable worker-question; never silently complete or advance into another gate. Permission, malformed response and network failures stay explicit errors.
+- Both labels use `can_mark_decision_only` stamping eligibility: terminal blocks; Planned-or-later or linked build PR redirects to revise-scope. Direct writes and ledgered accepts share the DB checks. Capture cannot be enabled separately from completion guards/floors/realization.
+- Decision-only continues normal clarify/decompose/all required design decisions. Its legacy marker never means capture. Both kinds preserve agreed realization and use their Accepted deliverable as evidence; conflicts authorize no exemption.
+- Inception marks nine S2 decisions decision-only and proposition/roadmap capture-only; clarify proposes capture-only only with an explicit no-design-owed rationale; manual additions use the same guard. Historical relabelling requires an explicit correction, never a bulk repair.
 
 Both consumers inherit this branch from here: `harmony-conduct` at the deliverable gate of its forward
 walk, `harmony-next` when resolving the deliverable gate's brief.

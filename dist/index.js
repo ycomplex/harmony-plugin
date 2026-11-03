@@ -44603,6 +44603,53 @@ import {
 // src/daemon/gate-phase.ts
 var GATES = ["clarify", "decompose", "design", "plan", "build", "release", "verify"];
 
+// src/tools/decision-only.ts
+function resolveDeliverableMarker(labels) {
+  const names = labels.map((label) => typeof label === "string" ? label : label.name);
+  const capture = names.includes("capture-only");
+  const decision = names.includes("decision-only");
+  if (capture && decision) return { kind: "conflict", intended_gate: null };
+  if (capture) return { kind: "capture", intended_gate: "clarify" };
+  if (decision) return { kind: "decision", intended_gate: "design" };
+  return { kind: "none", intended_gate: null };
+}
+function isMissingCompletionCapability(error2) {
+  return error2.code === "42883" || error2.code === "PGRST202";
+}
+async function readDeliverableStatus(client, taskId, labels) {
+  const marker = resolveDeliverableMarker(labels);
+  if (marker.kind === "none") return { ...marker, guard_available: false };
+  const { data, error: error2 } = await client.rpc("decision_only_completion_status", { _task_id: taskId });
+  if (error2) {
+    if (isMissingCompletionCapability(error2)) return { ...marker, guard_available: false };
+    throw error2;
+  }
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row || row.contract_version !== 1 || typeof row.conflicting_markers !== "boolean" || ![null, "clarify", "design"].includes(row.intended_gate)) {
+    throw new Error("Malformed guarded deliverable-completion capability response");
+  }
+  if (row.conflicting_markers !== (marker.kind === "conflict") || row.intended_gate !== marker.intended_gate) {
+    throw new Error("Deliverable markers changed during capability read; re-read the ticket");
+  }
+  return { ...marker, guard_available: true };
+}
+function assertCaptureAvailable(status) {
+  if (status.kind === "capture" && !status.guard_available) {
+    throw new Error("Capture-only completion guard unavailable: file a worker-question; do not stamp, exempt or advance this ticket");
+  }
+  if (status.kind === "conflict") throw new Error("Conflicting capture-only and decision-only markers: correct the labels before completion");
+}
+async function requireCaptureCompletionCapability(client, taskId) {
+  const { data, error: error2 } = await client.rpc("decision_only_completion_status", { _task_id: taskId });
+  if (error2) {
+    if (isMissingCompletionCapability(error2)) throw new Error("Capture-only guarded completion unavailable; file a worker-question");
+    throw error2;
+  }
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row || row.contract_version !== 1 || typeof row.conflicting_markers !== "boolean" || ![null, "clarify", "design"].includes(row.intended_gate)) throw new Error("Malformed guarded deliverable-completion capability response");
+  if (row.conflicting_markers) throw new Error("Conflicting deliverable markers");
+}
+
 // src/tools/text-normalize.ts
 var ENTITY_MAP = {
   "&amp;": "&",
@@ -46950,7 +46997,7 @@ var advanceWorkflowTool = {
 };
 async function advanceWorkflow(client, projectId, args) {
   const id = await resolveTaskId2(client, projectId, args.task_id);
-  const { data: task, error: e1 } = await client.from("tasks").select("workflow_state, stale, parked_from").eq("id", id).eq("project_id", projectId).single();
+  const { data: task, error: e1 } = await client.from("tasks").select("workflow_state, stale, parked_from, pending_acceptance_event_id").eq("id", id).eq("project_id", projectId).single();
   if (e1) throw e1;
   const taskRow = task;
   const isStaleExempt = args.activity.startsWith("revising-") || args.activity === "researching" || args.activity in UNIVERSAL;
@@ -46961,6 +47008,27 @@ async function advanceWorkflow(client, projectId, args) {
   }
   const { data: transitions, error: e2 } = await client.from("workflow_transitions").select("from_state, activity, to_state");
   if (e2) throw e2;
+  if (args.activity === "fast-forwarding") {
+    if (taskRow.pending_acceptance_event_id) throw new Error("Consume completing acceptance payload before fast-forwarding");
+    const { data: labels, error: error2 } = await client.from("task_labels").select("labels(name)").eq("task_id", id);
+    if (error2) throw error2;
+    const names = (labels ?? []).flatMap((row) => row.labels ? [row.labels.name] : []);
+    const status = await readDeliverableStatus(client, id, names);
+    assertCaptureAvailable(status);
+    const requiredState = status.intended_gate === "clarify" ? "Clarified" : status.intended_gate === "design" ? "Designed" : null;
+    if (!requiredState || taskRow.workflow_state !== requiredState) throw new Error("Deliverable gate mismatch: fast-forward only after its intended gate");
+    const { data: briefs, error: proofError } = await client.from("briefs").select("id, reason, doc, content, status, resolved_command, created_at").eq("task_id", id).in("reason", ["clarification-draft", "design-decision-draft"]).order("created_at", { ascending: false }).limit(1);
+    if (proofError) throw proofError;
+    const b = briefs?.[0];
+    const completion2 = b?.doc?.frame?.completion;
+    const typed = completion2?.gate === status.intended_gate && completion2?.to_state === "Verified" && completion2?.realization === "agreed";
+    const legacy = status.kind === "decision" && b?.content?.includes("Accepting this completes the ticket to Verified") && b?.content?.includes("agreed");
+    const expectedReason = status.kind === "capture" ? "clarification-draft" : "design-decision-draft";
+    if (!b || b.reason !== expectedReason || b.status !== "accepted" || b.resolved_command !== "accept" || !(typed || legacy)) throw new Error("Explicit accepted completing brief required; surface completion on the existing decision");
+    const { data: events2, error: eventError } = await client.from("activity_events").select("metadata").eq("task_id", id).eq("event_type", "brief_resolved");
+    if (eventError) throw eventError;
+    if (!(events2 ?? []).some((e) => e.metadata?.brief_id === b.id && e.metadata?.command === "accept" && ["human-in-session", "human-in-browser"].includes(String(e.metadata?.provenance)))) throw new Error("Completing accept must be human-authored");
+  }
   const fromState = taskRow.workflow_state;
   const toState = args.activity === "unparking" ? args.resume_to ?? taskRow.parked_from ?? "Proposed" : deriveToState(fromState, args.activity, transitions ?? []);
   const patch = args.activity === "researching" ? { workflow_activity: args.activity } : args.activity === "unparking" ? { workflow_state: toState, workflow_activity: null } : { workflow_state: toState, workflow_activity: args.activity };
@@ -48508,6 +48576,7 @@ var sketch = object3({
   mcp_call_count: external_exports.number()
 });
 var floor = { floor_reviewed: strings.optional() };
+var completion = (gate) => object3({ gate: external_exports.literal(gate), to_state: external_exports.literal("Verified"), realization: external_exports.literal("agreed") }).optional();
 var REACH_LEVELS = ["this_ticket_only", "this_surface", "this_product"];
 var RULE_OPERATIONS = ["create", "amend", "reference"];
 var designRule = object3({
@@ -48526,6 +48595,7 @@ var designRule = object3({
 var briefFrameSchema = external_exports.discriminatedUnion("kind", [
   object3({
     kind: external_exports.literal("clarify"),
+    completion: completion("clarify"),
     solving: external_exports.string(),
     in_scope: strings,
     not_solving: external_exports.array(object3({ item: external_exports.string(), lands: external_exports.string() })),
@@ -48541,6 +48611,7 @@ var briefFrameSchema = external_exports.discriminatedUnion("kind", [
   }),
   object3({
     kind: external_exports.literal("design"),
+    completion: completion("design"),
     track,
     tracks: external_exports.array(object3({ track, status: external_exports.enum(["accepted", "this-brief", "pending", "not-required"]), note: external_exports.string().optional() })),
     reach: strings,
@@ -49692,6 +49763,7 @@ function walkLines(frame) {
 }
 function renderFrame(frame) {
   const out = [];
+  if ((frame.kind === "clarify" || frame.kind === "design") && frame.completion) out.push("**Completing accept:** Accepting this completes the ticket to Verified; no build follows and realization stays agreed. Explicit human acceptance is required.", "");
   switch (frame.kind) {
     case "clarify": {
       out.push(`## SOLVING: ${frame.solving}`, "");
@@ -50850,7 +50922,11 @@ async function composeBrief(client, projectId, userId, args) {
   }
   validateRemovals(mergedDoc, args.reason);
   await requireRemovalCapability(client, mergedDoc);
+  const proposedCapture = mergedDoc.payload?.some((item) => item.write_kind === "label_add" && item.label_name === "capture-only");
+  const completingCapture = mergedDoc.frame && (mergedDoc.frame.kind === "clarify" || mergedDoc.frame.kind === "design") && mergedDoc.frame.completion?.gate === "clarify";
+  if (proposedCapture || completingCapture) await requireCaptureCompletionCapability(client, taskId);
   validateBriefFrame(mergedDoc.frame, FRAME_KIND_FOR_REASON[args.reason]);
+  if (mergedDoc.frame?.kind === "design" && mergedDoc.frame.completion && mergedDoc.frame.tracks.some((track2) => track2.status === "pending")) throw new Error("Only the last required design sub-track may announce completion");
   const priorRiskClasses = priorDoc?.frame?.kind === "release" ? priorDoc.frame.risk_classes : void 0;
   const pendingActivity = typeof args.pending_activity === "string" && args.pending_activity.trim().toLowerCase() === "null" ? null : args.pending_activity;
   const mergedPendingActivity = args.pending_activity !== void 0 ? pendingActivity ?? null : reasonChanged ? null : existingRow?.pending_activity ?? null;
@@ -51532,6 +51608,20 @@ async function resolveBrief(client, projectId, args, userId) {
   if (args.command === "accept") {
     const doc = active.doc ?? {};
     await requireRemovalCapability(client, doc);
+    const completion2 = doc.frame && (doc.frame.kind === "clarify" || doc.frame.kind === "design") ? doc.frame.completion : void 0;
+    if (completion2) {
+      const { data: labels, error: error3 } = await client.from("task_labels").select("labels(name)").eq("task_id", taskId);
+      if (error3) throw error3;
+      const names = (labels ?? []).flatMap((row) => row.labels ? [row.labels.name] : []);
+      const proposed = doc.payload?.filter((item) => item.write_kind === "label_add").map((item) => item.label_name ?? "decision-only") ?? [];
+      const marker = resolveDeliverableMarker([...names, ...proposed]);
+      if (marker.kind !== "none") {
+        if (provenance.startsWith("agent-synthesized")) throw new Error("Deliverable completion requires explicit human acceptance");
+        if (marker.intended_gate !== completion2.gate) throw new Error("Completing brief does not match the deliverable gate");
+        if (proposed.includes("capture-only")) await requireCaptureCompletionCapability(client, taskId);
+        if (names.includes("capture-only")) assertCaptureAvailable(await readDeliverableStatus(client, taskId, names));
+      }
+    }
     if ("removal_effective_on_accept" in doc && doc.removal_effective_on_accept && provenance.startsWith("agent-synthesized")) {
       throw new Error("policy removal effectivity requires an explicit human accept");
     }
@@ -52272,6 +52362,14 @@ async function applyAcceptanceEventPayload(client, event, opts = {}) {
       } else if (item.write_kind === "label_add") {
         if (item.label_name === "") throw new Error(`label_add item '${item.ref}' has an empty label_name`);
         const labelName = item.label_name ?? "decision-only";
+        if (labelName === "capture-only") {
+          try {
+            await requireCaptureCompletionCapability(client, event.task_id);
+          } catch (error3) {
+            if (error3 instanceof Error && error3.message.includes("guarded completion unavailable")) throw new GuardBlockedLabelAddError(item.ref, labelName, "capability-unavailable", error3.message);
+            throw error3;
+          }
+        }
         const { data, error: error2 } = await client.rpc("consume_label_add_write", {
           _event_id: event.id,
           _external_ref: item.ref,
@@ -53015,6 +53113,7 @@ async function getTask(client, projectId, args) {
   const { data, error: error2 } = await client.from("tasks").select("*, task_labels(labels(id, name, color)), checklist_items(id, title, completed, position)").eq("id", resolvedId).eq("project_id", projectId).single();
   if (error2) throw error2;
   const labels = (data.task_labels ?? []).map((tl) => tl.labels).filter(Boolean);
+  const deliverable = await readDeliverableStatus(client, data.id, labels);
   const checklistItems = (data.checklist_items ?? []).sort((a, b) => a.position - b.position);
   const [
     acceptanceCriteriaRes,
@@ -53099,6 +53198,7 @@ async function getTask(client, projectId, args) {
           work_branch: { branch: fv?.work_branch?.branch ?? null }
         };
       })(),
+      deliverable,
       pending_resolution,
       active_exchange,
       pending_remark,
@@ -53114,6 +53214,7 @@ async function getTask(client, projectId, args) {
   return {
     ...rest,
     labels,
+    deliverable,
     checklist_items: checklistItems,
     acceptance_criteria: acceptanceCriteria ?? [],
     test_cases: testCases ?? [],
@@ -55255,16 +55356,18 @@ async function getBuildEvidenceStatus(client, projectId, args) {
   const comments = commentsRes.data ?? [];
   const labelRows = labelsRes.data ?? [];
   const is_umbrella = children.some((c) => c.archived !== true);
-  const is_decision_only = labelRows.some((l) => l.labels?.name === "decision-only");
+  const deliverable = await readDeliverableStatus(client, resolvedId, labelRows.flatMap((l) => l.labels?.name ? [l.labels.name] : []));
+  const is_decision_only = deliverable.kind === "decision";
+  const is_capture_only = deliverable.kind === "capture" && deliverable.guard_available;
   const has_test_cases = testCases.length >= 1;
   const all_acs_checked = acs.length >= 1 && acs.every((a) => a.checked === true);
   const has_comment_trail = comments.some((c) => typeof c.content === "string" && COMMENT_TRAIL_RE.test(c.content));
   const buildPr = taskRows[0]?.field_values?.["build_pr"];
   const has_pushed_pr = typeof buildPr?.branch === "string" && buildPr.branch.length > 0 && typeof buildPr?.head_sha === "string" && buildPr.head_sha.length > 0 && typeof buildPr?.pr_url === "string" && buildPr.pr_url.length > 0;
   const has_acceptance_criteria = await readCriteriaPresence(client, resolvedId, acs.length >= 1);
-  const exempt = is_umbrella || is_decision_only;
+  const exempt = is_umbrella || is_decision_only || is_capture_only;
   const complete = exempt ? true : has_test_cases && all_acs_checked && has_pushed_pr;
-  const exempt_reason = is_umbrella ? "umbrella \u2014 evidence carried by children" : is_decision_only ? "decision-only \u2014 the Accepted decision knowledge is the evidence" : null;
+  const exempt_reason = is_umbrella ? "umbrella \u2014 evidence carried by children" : is_decision_only ? "decision-only \u2014 the Accepted decision knowledge is the evidence" : is_capture_only ? "capture-only \u2014 the Accepted clarification is the evidence" : null;
   const missing3 = [];
   if (!complete && !exempt) {
     if (!has_test_cases) missing3.push("test cases");

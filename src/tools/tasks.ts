@@ -1,3 +1,4 @@
+import { readDeliverableStatus } from './decision-only.js';
 import { assertActiveEpic } from './epics.js';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveTaskId, resolveTaskIds } from './resolve-task-id.js';
@@ -259,6 +260,7 @@ export async function getTask(
     .single();
   if (error) throw error;
   const labels = (data.task_labels ?? []).map((tl: any) => tl.labels).filter(Boolean);
+  const deliverable = await readDeliverableStatus(client, data.id, labels);
   const checklistItems = ((data as any).checklist_items ?? []).sort((a: any, b: any) => a.position - b.position);
 
   // The sibling enrichment reads are independent of one another, so fire them in parallel — get_task is
@@ -412,6 +414,7 @@ export async function getTask(
           work_branch: { branch: (fv?.work_branch as { branch?: unknown } | null | undefined)?.branch ?? null },
         };
       })(),
+      deliverable,
       pending_resolution,
       active_exchange,
       pending_remark,
@@ -428,6 +431,7 @@ export async function getTask(
   return {
     ...rest,
     labels,
+    deliverable,
     checklist_items: checklistItems,
     acceptance_criteria: acceptanceCriteria ?? [],
     test_cases: testCases ?? [],

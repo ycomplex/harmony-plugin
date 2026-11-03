@@ -25729,6 +25729,37 @@ async function createAuthenticatedClient(auth) {
   });
 }
 
+// src/tools/decision-only.ts
+function resolveDeliverableMarker(labels) {
+  const names = labels.map((label) => typeof label === "string" ? label : label.name);
+  const capture = names.includes("capture-only");
+  const decision = names.includes("decision-only");
+  if (capture && decision) return { kind: "conflict", intended_gate: null };
+  if (capture) return { kind: "capture", intended_gate: "clarify" };
+  if (decision) return { kind: "decision", intended_gate: "design" };
+  return { kind: "none", intended_gate: null };
+}
+function isMissingCompletionCapability(error) {
+  return error.code === "42883" || error.code === "PGRST202";
+}
+async function readDeliverableStatus(client, taskId, labels) {
+  const marker = resolveDeliverableMarker(labels);
+  if (marker.kind === "none") return { ...marker, guard_available: false };
+  const { data, error } = await client.rpc("decision_only_completion_status", { _task_id: taskId });
+  if (error) {
+    if (isMissingCompletionCapability(error)) return { ...marker, guard_available: false };
+    throw error;
+  }
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row || row.contract_version !== 1 || typeof row.conflicting_markers !== "boolean" || ![null, "clarify", "design"].includes(row.intended_gate)) {
+    throw new Error("Malformed guarded deliverable-completion capability response");
+  }
+  if (row.conflicting_markers !== (marker.kind === "conflict") || row.intended_gate !== marker.intended_gate) {
+    throw new Error("Deliverable markers changed during capability read; re-read the ticket");
+  }
+  return { ...marker, guard_available: true };
+}
+
 // src/tools/environment.ts
 import { readFileSync as readFileSync2 } from "node:fs";
 import { dirname, join as join3 } from "node:path";
@@ -31196,6 +31227,7 @@ var sketch = object({
   mcp_call_count: external_exports.number()
 });
 var floor = { floor_reviewed: strings.optional() };
+var completion = (gate) => object({ gate: external_exports.literal(gate), to_state: external_exports.literal("Verified"), realization: external_exports.literal("agreed") }).optional();
 var REACH_LEVELS = ["this_ticket_only", "this_surface", "this_product"];
 var RULE_OPERATIONS = ["create", "amend", "reference"];
 var designRule = object({
@@ -31214,6 +31246,7 @@ var designRule = object({
 var briefFrameSchema = external_exports.discriminatedUnion("kind", [
   object({
     kind: external_exports.literal("clarify"),
+    completion: completion("clarify"),
     solving: external_exports.string(),
     in_scope: strings,
     not_solving: external_exports.array(object({ item: external_exports.string(), lands: external_exports.string() })),
@@ -31229,6 +31262,7 @@ var briefFrameSchema = external_exports.discriminatedUnion("kind", [
   }),
   object({
     kind: external_exports.literal("design"),
+    completion: completion("design"),
     track,
     tracks: external_exports.array(object({ track, status: external_exports.enum(["accepted", "this-brief", "pending", "not-required"]), note: external_exports.string().optional() })),
     reach: strings,
@@ -31829,6 +31863,7 @@ function walkLines(frame) {
 }
 function renderFrame(frame) {
   const out = [];
+  if ((frame.kind === "clarify" || frame.kind === "design") && frame.completion) out.push("**Completing accept:** Accepting this completes the ticket to Verified; no build follows and realization stays agreed. Explicit human acceptance is required.", "");
   switch (frame.kind) {
     case "clarify": {
       out.push(`## SOLVING: ${frame.solving}`, "");
@@ -32453,6 +32488,7 @@ async function getTask(client, projectId, args) {
   const { data, error } = await client.from("tasks").select("*, task_labels(labels(id, name, color)), checklist_items(id, title, completed, position)").eq("id", resolvedId).eq("project_id", projectId).single();
   if (error) throw error;
   const labels = (data.task_labels ?? []).map((tl) => tl.labels).filter(Boolean);
+  const deliverable = await readDeliverableStatus(client, data.id, labels);
   const checklistItems = (data.checklist_items ?? []).sort((a, b) => a.position - b.position);
   const [
     acceptanceCriteriaRes,
@@ -32537,6 +32573,7 @@ async function getTask(client, projectId, args) {
           work_branch: { branch: fv?.work_branch?.branch ?? null }
         };
       })(),
+      deliverable,
       pending_resolution,
       active_exchange,
       pending_remark,
@@ -32552,6 +32589,7 @@ async function getTask(client, projectId, args) {
   return {
     ...rest,
     labels,
+    deliverable,
     checklist_items: checklistItems,
     acceptance_criteria: acceptanceCriteria ?? [],
     test_cases: testCases ?? [],

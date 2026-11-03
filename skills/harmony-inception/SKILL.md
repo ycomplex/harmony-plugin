@@ -77,7 +77,7 @@ up exactly where it stopped.
 
 | Artifact | Lookup-before-create key |
 |---|---|
-| Proposition-root, S2 tickets, S3 umbrellas, the S4 roadmap slot | deterministic title + the `inception-scaffold` label (tasks have no per-project title uniqueness); the proposition-root and the S4 slot also carry `decision-only` (§2c, §3e) |
+| Proposition-root, S2 tickets, S3 umbrellas, the S4 roadmap slot | deterministic title + the `inception-scaffold` label (tasks have no per-project title uniqueness); the proposition-root and S4 slot carry `capture-only`; all nine S2 rows carry `decision-only` (§2c, §3e) |
 | The `v1` / `deferred` milestones (§1a) | milestone title |
 | Persona / feature entity nodes | `create_entity` upserts on `(workspace, kind, name)` |
 | `convention` entries (S0 semantics) | knowledge title uniqueness — skip on the friendly "already exists" error |
@@ -174,10 +174,10 @@ build needs (personas, features, purpose, the explicit non-goals), never interro
 ### 2c. On the founder's clarify-ACCEPT → seed the persona + feature entity nodes
 The clarify accept promotes the proposition to **Accepted knowledge anchored to the proposition-root**,
 and the ticket completes **by the named mechanism (B-681): the accept advances Proposed→Clarified, then —
-when the proposition-root carries the `decision-only` label — the clarify skill's trailing
+when the proposition-root carries the `capture-only` label — the clarify skill's trailing
 `advance_workflow('fast-forwarding')` completes it Clarified→Verified** (the brief carries the completion
 line; the captured proposition stays `realization='agreed'`; never Parked, never left non-terminal).
-**Stamping is now enabled (B-688):** who stamps the `decision-only` label is no longer unowned — it is one
+**Stamping is now enabled (B-688):** who stamps the `capture-only` label is no longer unowned — it is one
 of three ratified producers (inception's, clarify-proposed, and manual — see
 `skills/harmony-shared/gate-routing.md` §The decision-only fast-forward). Inception's own mechanism here is
 **unchanged**: this proposition-root is capture-only by construction (S1's whole job is capturing the
@@ -185,7 +185,7 @@ founding proposition, nothing to plan/build/deploy from it), so **label it by ha
 `create_task`, before running clarify** — exactly as before this ticket. What changes is that the stamp is
 now GOVERNED: it runs through the label editor's `can_mark_decision_only` pre-check (step 1 of this
 ticket's web half) like any manual label-add, and since a just-minted proposition-root is always
-pre-Planned with no build PR, the guard always allows it at this point in the flow. **Only
+pre-Planned with no build PR, check the guard and installed completion capability; missing capability must pause on a worker-question. **Only
 then** — the node-lifecycle rule
 (below) — seed the founding entity
 nodes from the just-Accepted proposition claims:
@@ -231,6 +231,9 @@ label exists (`create_label` — idempotent; reuse if present) and stamp it on e
 (`manage_labels`).
 
 ### 3b. Stamp the S2 foundational-spine decision tickets (portable CATEGORIES)
+
+**Deliverable marking (B-1384):** ensure `decision-only` on **all nine** S2 rows immediately after lookup/create, including reused rows. These require all discovery decisions and complete only at the last required design accept. Never infer a capture marker from empty ACs. Reuse existing identities; marker repair does not create a ticket. Proposition-root and roadmap are `capture-only`; bootstrap umbrellas remain ordinary build work. For known proposition/roadmap roles replace an obsolete decision-only marker with capture-only explicitly, preserving other labels; do not leave both. Read `can_mark_decision_only` before either add, and require guarded-completion capability before capture adds. On a blocked repair or absent capability, file a worker-question, not a duplicate or silent skip.
+
 `create_task` one ticket per **portable decision-category** — these are the universal foundational spine
 every software project decides. **Categories, never choices:**
 
@@ -364,7 +367,7 @@ existing job. This slot invents no minting mechanism:
 > being built. Milestone writes are `update_milestone` to rename the defaults and `create_milestone` for
 > any additional."*
 
-**Stamp the `decision-only` label on this slot right after its `create_task`** — the same governed B-688
+**Stamp the `capture-only` label on this slot right after its `create_task`** — the same governed B-688
 stamp the proposition-root gets in §2c, for the same reason: the slot is capture-only by construction
 (nothing to plan/build/deploy from it; the backlog it files is the deliverable), so its clarify is its
 deliverable gate and the fast-forward completes it. Without the label the conduct would walk the build

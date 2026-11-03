@@ -23651,6 +23651,43 @@ import {
 // src/daemon/gate-phase.ts
 var GATES = ["clarify", "decompose", "design", "plan", "build", "release", "verify"];
 
+// src/tools/decision-only.ts
+function resolveDeliverableMarker(labels) {
+  const names = labels.map((label) => typeof label === "string" ? label : label.name);
+  const capture = names.includes("capture-only");
+  const decision = names.includes("decision-only");
+  if (capture && decision) return { kind: "conflict", intended_gate: null };
+  if (capture) return { kind: "capture", intended_gate: "clarify" };
+  if (decision) return { kind: "decision", intended_gate: "design" };
+  return { kind: "none", intended_gate: null };
+}
+function isMissingCompletionCapability(error) {
+  return error.code === "42883" || error.code === "PGRST202";
+}
+async function readDeliverableStatus(client, taskId, labels) {
+  const marker = resolveDeliverableMarker(labels);
+  if (marker.kind === "none") return { ...marker, guard_available: false };
+  const { data, error } = await client.rpc("decision_only_completion_status", { _task_id: taskId });
+  if (error) {
+    if (isMissingCompletionCapability(error)) return { ...marker, guard_available: false };
+    throw error;
+  }
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row || row.contract_version !== 1 || typeof row.conflicting_markers !== "boolean" || ![null, "clarify", "design"].includes(row.intended_gate)) {
+    throw new Error("Malformed guarded deliverable-completion capability response");
+  }
+  if (row.conflicting_markers !== (marker.kind === "conflict") || row.intended_gate !== marker.intended_gate) {
+    throw new Error("Deliverable markers changed during capability read; re-read the ticket");
+  }
+  return { ...marker, guard_available: true };
+}
+function assertCaptureAvailable(status) {
+  if (status.kind === "capture" && !status.guard_available) {
+    throw new Error("Capture-only completion guard unavailable: file a worker-question; do not stamp, exempt or advance this ticket");
+  }
+  if (status.kind === "conflict") throw new Error("Conflicting capture-only and decision-only markers: correct the labels before completion");
+}
+
 // src/tools/knowledge-names.ts
 var property = (description) => ({ type: "string", description });
 var mergeProperties = { source_id: property("Source identity UUID to retire in place"), target_id: property("Surviving current identity UUID"), source_task_id: property("Authorizing ticket UUID or visual ID in this project") };
@@ -23775,7 +23812,7 @@ function deriveToState(fromState, activity, transitions) {
 }
 async function advanceWorkflow(client, projectId, args) {
   const id = await resolveTaskId(client, projectId, args.task_id);
-  const { data: task, error: e1 } = await client.from("tasks").select("workflow_state, stale, parked_from").eq("id", id).eq("project_id", projectId).single();
+  const { data: task, error: e1 } = await client.from("tasks").select("workflow_state, stale, parked_from, pending_acceptance_event_id").eq("id", id).eq("project_id", projectId).single();
   if (e1) throw e1;
   const taskRow = task;
   const isStaleExempt = args.activity.startsWith("revising-") || args.activity === "researching" || args.activity in UNIVERSAL;
@@ -23786,6 +23823,27 @@ async function advanceWorkflow(client, projectId, args) {
   }
   const { data: transitions, error: e2 } = await client.from("workflow_transitions").select("from_state, activity, to_state");
   if (e2) throw e2;
+  if (args.activity === "fast-forwarding") {
+    if (taskRow.pending_acceptance_event_id) throw new Error("Consume completing acceptance payload before fast-forwarding");
+    const { data: labels, error } = await client.from("task_labels").select("labels(name)").eq("task_id", id);
+    if (error) throw error;
+    const names = (labels ?? []).flatMap((row) => row.labels ? [row.labels.name] : []);
+    const status = await readDeliverableStatus(client, id, names);
+    assertCaptureAvailable(status);
+    const requiredState = status.intended_gate === "clarify" ? "Clarified" : status.intended_gate === "design" ? "Designed" : null;
+    if (!requiredState || taskRow.workflow_state !== requiredState) throw new Error("Deliverable gate mismatch: fast-forward only after its intended gate");
+    const { data: briefs, error: proofError } = await client.from("briefs").select("id, reason, doc, content, status, resolved_command, created_at").eq("task_id", id).in("reason", ["clarification-draft", "design-decision-draft"]).order("created_at", { ascending: false }).limit(1);
+    if (proofError) throw proofError;
+    const b = briefs?.[0];
+    const completion = b?.doc?.frame?.completion;
+    const typed = completion?.gate === status.intended_gate && completion?.to_state === "Verified" && completion?.realization === "agreed";
+    const legacy = status.kind === "decision" && b?.content?.includes("Accepting this completes the ticket to Verified") && b?.content?.includes("agreed");
+    const expectedReason = status.kind === "capture" ? "clarification-draft" : "design-decision-draft";
+    if (!b || b.reason !== expectedReason || b.status !== "accepted" || b.resolved_command !== "accept" || !(typed || legacy)) throw new Error("Explicit accepted completing brief required; surface completion on the existing decision");
+    const { data: events, error: eventError } = await client.from("activity_events").select("metadata").eq("task_id", id).eq("event_type", "brief_resolved");
+    if (eventError) throw eventError;
+    if (!(events ?? []).some((e) => e.metadata?.brief_id === b.id && e.metadata?.command === "accept" && ["human-in-session", "human-in-browser"].includes(String(e.metadata?.provenance)))) throw new Error("Completing accept must be human-authored");
+  }
   const fromState = taskRow.workflow_state;
   const toState = args.activity === "unparking" ? args.resume_to ?? taskRow.parked_from ?? "Proposed" : deriveToState(fromState, args.activity, transitions ?? []);
   const patch = args.activity === "researching" ? { workflow_activity: args.activity } : args.activity === "unparking" ? { workflow_state: toState, workflow_activity: null } : { workflow_state: toState, workflow_activity: args.activity };
