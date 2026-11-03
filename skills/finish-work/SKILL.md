@@ -1083,9 +1083,11 @@ out-of-scope items surfaced during this run (adjacent bugs, refactors, review ni
 into the PR, the rollup is a **within-run buffer** that must now be **DRAINED** — every item resolves to
 exactly one of four terminal outcomes (**fix-inline / fold-into-existing / drop-with-reason / file-a-ticket**);
 **nothing persists as a note**. A fold must gate the host's completion (an **AC / scope item** or
-`subsume_task`) — a **bare comment is not a fold**. Post — alongside the release trail above — ONE
-consolidated **"Follow-ups rollup"** comment (accumulated in-session) recording each item's terminal
-resolution, running **triage-and-consolidate** for fold-vs-file: `find_related_tickets` → prefer **fold**
+`subsume_task`) — a **bare comment is not a fold**. Buffer snapshots start with exactly
+`Follow-ups rollup v1 id=<key>`. Post — alongside the release trail above — a **separate drain comment**
+whose first line is exactly `Follow-ups rollup drained v1 id=<key>` (the same key), recording each item's
+terminal resolution and evidence, running **triage-and-consolidate** for fold-vs-file:
+`find_related_tickets` → prefer **fold**
 (`subsume_task`) or **dedupe** over minting; mint a new ticket only when genuinely novel; a
 `defer-with-trigger` becomes a fold or a **low-priority backlog ticket with the trigger in its body**. Then
 **surface the drained buffer on the release brief** — each item as filed (with IDs) / folded (into which
@@ -1366,8 +1368,10 @@ without one returns `{ written: false, reason }` and changes nothing rather than
 **Drain any remaining rollup items (B-585, B-641) — if not already drained at the release gate (O2).**
 Any out-of-scope items surfaced this run (including during verify) that weren't fix-first'd must be **drained
 to a terminal outcome** — **fix-inline / fold-into-existing** (an AC / scope-item or `subsume_task`, **not a
-bare comment**) **/ drop-with-reason / file-a-ticket**; nothing persists as a note — in ONE consolidated
-**"Follow-ups rollup"** comment, followed by **triage-and-consolidate** (`find_related_tickets` → fold/dedupe
+bare comment**) **/ drop-with-reason / file-a-ticket**; nothing persists as a note. Buffer snapshots start
+with exactly `Follow-ups rollup v1 id=<key>`; append a **separate drain comment** whose first line is exactly
+`Follow-ups rollup drained v1 id=<key>` (the same key), recording each item's terminal resolution and
+evidence, followed by **triage-and-consolidate** (`find_related_tickets` → fold/dedupe
 over mint; a `defer-with-trigger` → a fold or a **low-priority backlog ticket with the trigger in its body**)
 per `skills/harmony-shared/disposition-discipline.md`. (Skip if nothing surfaced, or it was already drained +
 audited at O2.)
