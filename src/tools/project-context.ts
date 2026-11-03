@@ -41,6 +41,19 @@ export function sourceSummary(source: ContextSource, proposition: boolean): stri
     }
     if (bounded(fields.summary)) return fields.summary.trim();
   }
+  // These exact lines are authored in the brief's context and survive its ratified projection.
+  const named = (name: string): string | null => {
+    const matches = source.content.split('\n').filter(line => line.startsWith(`- Project context ${name}: `))
+      .map(line => line.slice(`- Project context ${name}: `.length));
+    return matches.length === 1 && bounded(matches[0]) ? matches[0].trim() : null;
+  };
+  if (proposition) {
+    const purpose = named('purpose'), personas = named('personas'), features = named('features');
+    if (purpose && personas && features) return `Purpose: ${purpose} Personas: ${personas} Features: ${features}`;
+  } else {
+    const summary = named('summary');
+    if (summary) return summary;
+  }
   const claim = claimFields(source);
   // A proposition claim alone does not establish all three founding dimensions.
   return !proposition && claim.claim_source === 'authored' && bounded(claim.claim) ? claim.claim.trim() : null;

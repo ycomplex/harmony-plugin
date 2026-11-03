@@ -1780,3 +1780,7 @@ Browser auto-pickup (B-485) is **orthogonal and equally non-decisional**:
 ## Follow-up comment protocol (B-1193)
 
 When buffering or draining findings, follow `skills/harmony-shared/disposition-discipline.md`'s exact append-only versioned protocol: first line `Follow-ups rollup v1 id=<key>`, full item snapshot `- [do-now|defer-with-trigger|drop] id=<item-key> <text>` (choose exactly one tag); drain first line `Follow-ups rollup drained v1 id=<key>` with each item's terminal disposition and evidence. Preserve rollup/item keys, replace snapshots by appending, and use a new rollup key after drain. Never rewrite another author's comment. A split umbrella, capture-only, decision-only, Parked or Cancelled host has no release gate: route to a live release-bearing ticket whose gate is next or drain as the host leaves the flow. Resolve legacy/malformed records explicitly. Keep the four outcomes and drain → surface → verify unchanged; surface the drained buffer on the release brief.
+
+## Completing-accept context consume (B-1388)
+
+On every pickup, after pending acceptance consumption and any B-1384-authorized completing fast-forward, run the shared `harmony-shared/project-context.md` consumer for an inception proposition/S2 ticket before terminal routing. The same consumer runs after an in-session completing accept. It refreshes accessible context or reports pending source ids without changing the completed acceptance. Never skip this because the re-read already says Verified.

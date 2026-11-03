@@ -650,3 +650,7 @@ Follow `skills/harmony-shared/knowledge-discipline.md` §Scope, vocabulary and s
 knowledge writes: new entries declare product/deployment scope, authored tags use the explicit project
 vocabulary, type is advisory, and composed entries carry `doc.knowledge_scope`. Keep legacy operations
 usable before schema promotion; never drop an explicitly requested scope or filter on error.
+
+## Inception context after completing acceptance (B-1388)
+
+For inception-scaffold proposition and S2 tickets, follow `harmony-shared/project-context.md`: author its bounded summary in the brief before ratification, then run `harmony project context after-accept --task <ticket> --root <checkout> --json` after the human completing accept, payload consumption and B-1384 fast-forward. This includes fresh-worker recovery of a browser accept. File pending source-linked context when the checkout is unavailable; acceptance remains complete. Do not add filesystem writes inside the acceptance RPC.

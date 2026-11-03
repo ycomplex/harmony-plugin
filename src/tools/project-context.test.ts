@@ -67,3 +67,8 @@ it('reads only this project, pages past the API limit, and propagates read failu
   const broken = { from: () => ({ select: () => ({ eq: () => ({ single: async () => ({ data: null, error: new Error('denied') }) }) }) }) };
   await expect(readProjectContext(broken as unknown as SupabaseClient, 'project')).rejects.toThrow('denied');
 });
+it('preserves ratified proposition context lines without deriving missing dimensions', () => {
+  const content = '- Project context purpose: Ship tokens.\n- Project context personas: Designers.\n- Project context features: Export.';
+  expect(sourceSummary(source({ content }), true)).toBe('Purpose: Ship tokens. Personas: Designers. Features: Export.');
+  expect(sourceSummary(source({ content: content + '\n- Project context purpose: Competing.' }), true)).toBeNull();
+});

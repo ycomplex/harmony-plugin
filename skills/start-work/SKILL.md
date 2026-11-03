@@ -1087,3 +1087,7 @@ When buffering or draining findings, follow `skills/harmony-shared/disposition-d
 
 
 **B-1384 deliverable markers:** follow the canonical shared gate-routing contract. `capture-only` completes at clarify only with installed guarded capability; legacy bare `decision-only` means last-design completion. Both completing gates require explicit human acceptance, preserve agreed realization and have no release-host gate. Conflicting labels cannot exempt or complete. Ordinary tickets retain their existing build/release/verify and orchestrator acceptance routes.
+
+## Project context check and repair (B-1388)
+
+Before planning and again in the build checkout, follow `harmony-shared/project-context.md`: run `harmony project context check --root <repo> --json`. On an inception-scaffolded project, include stale-context repair in the plan and ticket PR using the shared refresh command. Resolve Superseded and newer Accepted sources afresh; never overwrite unrelated instructions or invent an unresolved summary. Bootstrap regenerates and includes CLAUDE.md before its first commit. No separate manual context commit is required.
