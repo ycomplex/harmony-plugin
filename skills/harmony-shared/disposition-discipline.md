@@ -68,3 +68,6 @@ When choosing an epic, filter `list_epics` to `retired_at == null` (missing mean
 ## Milestone ship backstop
 
 Web, CLI and agent shipping use the same permission-checked database scan over all pre-ship milestone members, including archived, Verified, Cancelled and hosts removed by that ship. It reports each undrained host, item count and working tags, with scanned-host count and explicit empty success. Missing capability, failed/incomplete scans and unresolved legacy/malformed records prevent ship mutations. The web requires acknowledgement of undrained items; changed results clear that acknowledgement and require review again. This reports residual bookkeeping without adding an umbrella advance blocker.
+
+
+**B-1384 deliverable markers:** follow the canonical shared gate-routing contract. `capture-only` completes at clarify only with installed guarded capability; legacy bare `decision-only` means last-design completion. Both completing gates require explicit human acceptance, preserve agreed realization and have no release-host gate. Conflicting labels cannot exempt or complete. Ordinary tickets retain their existing build/release/verify and orchestrator acceptance routes.

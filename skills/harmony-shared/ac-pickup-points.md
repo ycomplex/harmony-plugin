@@ -93,3 +93,6 @@ degrades to a local computation on SQLSTATE **42883 only** (the function is abse
 predates the migration — which the conductor hits by default, running `HARMONY_PLUGIN_POSTURE`
 (defaulting to `main`) against `HARMONY_TARGET=prod`). Every other error propagates: a floor that opens when it malfunctions is not a
 floor.
+
+
+**B-1384 deliverable markers:** follow the canonical shared gate-routing contract. `capture-only` completes at clarify only with installed guarded capability; legacy bare `decision-only` means last-design completion. Both completing gates require explicit human acceptance, preserve agreed realization and have no release-host gate. Conflicting labels cannot exempt or complete. Ordinary tickets retain their existing build/release/verify and orchestrator acceptance routes.

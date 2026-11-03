@@ -1,3 +1,4 @@
+import { readDeliverableStatus, assertCaptureAvailable } from './decision-only.js';
 import { selectEntity, type EntitySelector } from './entity-selector.js';
 import { claimFields } from './knowledge-claim.js';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -71,13 +72,13 @@ export async function advanceWorkflow(
 
   const { data: task, error: e1 } = await client
     .from('tasks')
-    .select('workflow_state, stale, parked_from')
+    .select('workflow_state, stale, parked_from, pending_acceptance_event_id')
     .eq('id', id)
     .eq('project_id', projectId)
     .single();
   if (e1) throw e1;
 
-  const taskRow = task as { workflow_state: string | null; stale: boolean | null; parked_from: string | null };
+  const taskRow = task as { workflow_state: string | null; stale: boolean | null; parked_from: string | null; pending_acceptance_event_id?: string | null };
 
   // B-715: mirror compose_brief's stale guard here — advance_workflow is the OTHER substrate write
   // path that can move workflow_state, and it has no human brief in front of it (it's the
@@ -102,6 +103,29 @@ export async function advanceWorkflow(
     .select('from_state, activity, to_state');
   if (e2) throw e2;
 
+  if (args.activity === 'fast-forwarding') {
+    if (taskRow.pending_acceptance_event_id) throw new Error('Consume completing acceptance payload before fast-forwarding');
+    const { data: labels, error } = await client.from('task_labels').select('labels(name)').eq('task_id', id);
+    if (error) throw error;
+    const names = ((labels ?? []) as unknown as Array<{ labels: { name: string } | null }>).flatMap((row) => row.labels ? [row.labels.name] : []);
+    const status = await readDeliverableStatus(client, id, names);
+    assertCaptureAvailable(status);
+    const requiredState = status.intended_gate === 'clarify' ? 'Clarified' : status.intended_gate === 'design' ? 'Designed' : null;
+    if (!requiredState || taskRow.workflow_state !== requiredState) throw new Error('Deliverable gate mismatch: fast-forward only after its intended gate');
+    // Old schemas have no substrate proof guard: require the accepted explicit completing brief here too.
+    const { data: briefs, error: proofError } = await client.from('briefs').select('id, reason, doc, content, status, resolved_command, created_at')
+      .eq('task_id', id).in('reason', ['clarification-draft', 'design-decision-draft']).order('created_at', { ascending: false }).limit(1);
+    if (proofError) throw proofError;
+    const b = briefs?.[0];
+    const completion = b?.doc?.frame?.completion;
+    const typed = completion?.gate === status.intended_gate && completion?.to_state === 'Verified' && completion?.realization === 'agreed';
+    const legacy = status.kind === 'decision' && b?.content?.includes('Accepting this completes the ticket to Verified') && b?.content?.includes('agreed');
+    const expectedReason = status.kind === 'capture' ? 'clarification-draft' : 'design-decision-draft';
+    if (!b || b.reason !== expectedReason || b.status !== 'accepted' || b.resolved_command !== 'accept' || !(typed || legacy)) throw new Error('Explicit accepted completing brief required; surface completion on the existing decision');
+    const { data: events, error: eventError } = await client.from('activity_events').select('metadata').eq('task_id', id).eq('event_type', 'brief_resolved');
+    if (eventError) throw eventError;
+    if (!(events ?? []).some((e: { metadata: Record<string, unknown> }) => e.metadata?.brief_id === b.id && e.metadata?.command === 'accept' && ['human-in-session', 'human-in-browser'].includes(String(e.metadata?.provenance)))) throw new Error('Completing accept must be human-authored');
+  }
   const fromState: string | null = taskRow.workflow_state;
   // B-964: 'unparking' is a dynamic per-ticket target (a caller override, else the task's own
   // parked_from, else 'Proposed') — deliberately NOT added to the fixed UNIVERSAL map (that map

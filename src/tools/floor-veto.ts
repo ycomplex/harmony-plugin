@@ -27,6 +27,7 @@ export interface FloorVetoInput {
   /** true when the target brief is the deliverable gate of a `decision-only` ticket — that gate is
    *  its release+verify collapsed into one (B-681), so it inherits the hard floor. */
   decisionOnlyDeliverable?: boolean;
+  captureOnlyDeliverable?: boolean;
 }
 
 export interface FloorVetoResult {
@@ -50,11 +51,11 @@ export function floorVeto(input: FloorVetoInput): FloorVetoResult {
   if (reason !== null && (FLOORED_BRIEF_REASONS as readonly string[]).includes(reason)) {
     return { vetoed: true, why: FLOOR_RATIONALES[reason as FlooredBriefReason] };
   }
-  if (input.decisionOnlyDeliverable === true) {
+  if (input.decisionOnlyDeliverable === true || input.captureOnlyDeliverable === true) {
     return {
       vetoed: true,
       why:
-        "a decision-only ticket's deliverable gate is its release+verify collapsed into one (B-681) — it inherits the hard floor; a remark can never pre-accept it.",
+        "a decision-only or capture-only ticket's deliverable gate is its release+verify collapsed into one (B-681) — it inherits the hard floor; a remark can never pre-accept it.",
     };
   }
   return { vetoed: false, why: null };

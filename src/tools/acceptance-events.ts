@@ -1,3 +1,4 @@
+import { requireCaptureCompletionCapability } from './decision-only.js';
 import { selectEntity, AmbiguousEntitySelectionError, type SelectedEntity } from './entity-selector.js';
 import { startElicitation, fileElicitationRound } from './elicitation.js';
 import { metadataCapable, type KnowledgeScope } from './knowledge-metadata.js';
@@ -782,6 +783,13 @@ export async function applyAcceptanceEventPayload(
       } else if (item.write_kind === 'label_add') {
         if (item.label_name === '') throw new Error(`label_add item '${item.ref}' has an empty label_name`);
         const labelName = item.label_name ?? 'decision-only';
+        if (labelName === 'capture-only') {
+          try { await requireCaptureCompletionCapability(client, event.task_id); }
+          catch (error) {
+            if (error instanceof Error && error.message.includes('guarded completion unavailable')) throw new GuardBlockedLabelAddError(item.ref, labelName, 'capability-unavailable', error.message);
+            throw error;
+          }
+        }
         const { data, error } = await client.rpc('consume_label_add_write', {
           _event_id: event.id, _external_ref: item.ref, _label_name: labelName,
         });

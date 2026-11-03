@@ -742,6 +742,7 @@ describe('getTask', () => {
     const result = await getTask(client, 'proj-1', { task_id: 'B-1', view: 'meta' });
 
     const expectedKeys = [
+      'deliverable',
       'id', 'task_number', 'title', 'workflow_state', 'workflow_activity',
       'awaiting_human_input', 'awaiting_human_reason', 'awaiting_human_ref',
       'pending_acceptance_event_id',
