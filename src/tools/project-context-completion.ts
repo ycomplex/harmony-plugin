@@ -24,7 +24,7 @@ export interface ContextEvent {
   old_value?: string | null; new_value?: string | null; metadata?: Record<string, unknown> | null;
 }
 export interface ContextBrief {
-  id: string; reason: string; decision_ref?: string | null;
+  id: string; reason: string; decision_ref?: unknown;
   doc?: { frame?: { completion?: CompletionInput['completion'] }; payload?: Record<string, unknown>[] } | null;
 }
 export interface ContextCompletion { brief_id: string; source_ids: string[] }
@@ -56,8 +56,12 @@ export function completingContextReferences(task: Pick<CompletionInput, 'workflo
         item.write_kind === 'rule_bundle' ? item.decision_id : null;
       return typeof id === 'string' && id ? [id] : [];
     });
+    const ref = brief.decision_ref;
+    const decisionId = typeof ref === 'string' ? ref :
+      ref && typeof ref === 'object' && 'id' in ref ? ref.id : null;
     result.set(brief.id, { brief_id: brief.id,
-      source_ids: brief.decision_ref ? [brief.decision_ref] : [...new Set(payloadIds)].sort() });
+      source_ids: typeof decisionId === 'string' && decisionId.trim()
+        ? [decisionId] : [...new Set(payloadIds)].sort() });
   }
   return [...result.values()];
 }
@@ -77,7 +81,7 @@ export async function readContextCompletions(client: SupabaseClient, projectId: 
   for (const id of new Set(events.filter(e => e.event_type === 'brief_resolved' && e.metadata?.command === 'accept')
     .flatMap(e => typeof e.metadata?.brief_id === 'string' ? [e.metadata.brief_id] : []))) {
     const result = await client.from('briefs').select('id,reason,decision_ref,doc')
-      .eq('project_id', projectId).eq('task_id', task.id).eq('id', id).maybeSingle();
+      .eq('task_id', task.id).eq('id', id).maybeSingle();
     if (result.error) throw result.error;
     if (result.data) briefs.push(result.data);
   }
