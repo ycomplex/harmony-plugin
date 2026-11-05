@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { readContextCompletions, type ContextCompletion } from './project-context-completion.js';
+import { readContextAuthority, type ContextCompletion } from './project-context-completion.js';
 import { claimFields } from './knowledge-claim.js';
 
 export const CONTEXT_CATEGORIES = [
@@ -64,7 +64,7 @@ export function sourceSummary(source: ContextSource, proposition: boolean): stri
 
 /** Pure resolver: no timestamp tie-break and no unrelated semantic search. */
 export function resolveContextBlock(projectId: string, key: string, title: string, tasks: ContextTask[],
-  sources: ContextSource[], references: Map<string, string[]>, projectKey: string, completions: ContextCompletion[] = [], ruleIds: Set<string> = new Set()): ContextBlock {
+  sources: ContextSource[], references: Map<string, string[]>, projectKey: string, completions: ContextCompletion[] = [], ruleIds: Set<string> = new Set(), lastDesignIds: string[] = []): ContextBlock {
   const block: ContextBlock = { key, title, ticket: null, source_ids: [], state: 'unresolved', summary: null, diagnostics: [] };
   if (tasks.length !== 1) {
     block.diagnostics.push(tasks.length ? 'Multiple matching scaffold tickets.' : 'Scaffold ticket not found.');
@@ -84,7 +84,7 @@ export function resolveContextBlock(projectId: string, key: string, title: strin
     (authoritative ? completionIds.includes(s.id) :
       (s.source_task_id === task.id || linked.has(s.id)) &&
       (key === 'proposition' ? s.type === 'specification' :
-        s.source_activity === 'design-decide' && s.madr != null &&
+        s.source_activity === 'design-decide' &&
         !s.tags?.includes('rule') && !ruleIds.has(s.id))));
   if (authoritative && !eligible.length) {
     block.source_ids = completionIds;
@@ -104,6 +104,10 @@ export function resolveContextBlock(projectId: string, key: string, title: strin
       source = successor;
     }
     if (!source.superseded_by && source.status === 'Accepted') current.set(source.id, source);
+  }
+  if (!authoritative && key !== 'proposition' && current.size > 1) {
+    const named = [...current.keys()].filter(id => lastDesignIds.includes(id));
+    if (named.length) for (const id of current.keys()) if (!named.includes(id)) current.delete(id);
   }
   block.source_ids = (current.size ? [...current.keys()] : eligible.map(source => source.id)).sort();
   if (block.diagnostics.length) return block;
@@ -138,8 +142,8 @@ export async function readProjectContext(client: SupabaseClient, projectId: stri
   }
   if (!tasks.length) return { version: 1, project_id: projectId, project_name: project.name,
     applicability: 'not_applicable', blocks: [], diagnostics: [] };
-  const completions = new Map<string, ContextCompletion[]>();
-  for (const task of tasks) completions.set(task.id, await readContextCompletions(client, projectId, {
+  const authority = new Map<string, { completions: ContextCompletion[]; last_design_ids: string[] }>();
+  for (const task of tasks) authority.set(task.id, await readContextAuthority(client, projectId, {
     ...task, labels: task.all_labels?.flatMap(row => row.labels) ?? task.labels ?? [],
   }));
   const sources: ContextSource[] = [];
@@ -175,8 +179,12 @@ export async function readProjectContext(client: SupabaseClient, projectId: stri
     references.set(task.id, ids);
   }
   const definitions = [['proposition', 'What this project is', `Founding proposition — ${project.name}`], ...CONTEXT_CATEGORIES];
-  const blocks = definitions.map(([key, title, ticketTitle]) => resolveContextBlock(projectId, key, title,
-    tasks.filter(task => task.title === ticketTitle), sources, references, project.key, tasks.filter(task => task.title === ticketTitle).flatMap(task => completions.get(task.id) ?? []), ruleIds));
+  const blocks = definitions.map(([key, title, ticketTitle]) => {
+    const matching = tasks.filter(task => task.title === ticketTitle);
+    return resolveContextBlock(projectId, key, title, matching, sources, references, project.key,
+      matching.flatMap(task => authority.get(task.id)?.completions ?? []), ruleIds,
+      matching.flatMap(task => authority.get(task.id)?.last_design_ids ?? []));
+  });
   return { version: 1, applicability: 'applicable', project_id: projectId, project_name: project.name, blocks,
     diagnostics: blocks.flatMap(block => block.diagnostics.map(message => `${block.title}: ${message}`)) };
 }

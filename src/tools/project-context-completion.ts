@@ -65,10 +65,25 @@ export function completingContextReferences(task: Pick<CompletionInput, 'workflo
   }
   return [...result.values()];
 }
+/** Last accepted design payload is a fallback tie-break, irrespective of provenance. */
+export function lastAcceptedDesignReferences(events: ContextEvent[], briefs: ContextBrief[]): string[] {
+  const accepted = [...events].sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+  for (const event of accepted) {
+    if (event.event_type !== 'brief_resolved' || event.metadata?.command !== 'accept') continue;
+    const brief = briefs.find(b => b.id === event.metadata?.brief_id);
+    if (brief?.reason !== 'design-decision-draft') continue;
+    return [...new Set((brief.doc?.payload ?? []).flatMap(item => {
+      const id = item.write_kind === 'knowledge_entry_content' ? item.entry_id :
+        item.write_kind === 'rule_bundle' ? item.decision_id : null;
+      return typeof id === 'string' && id.trim() ? [id] : [];
+    }))];
+  }
+  return [];
+}
 /** Shared read-only evidence path for the projection and after-accept consumer. */
-export async function readContextCompletions(client: SupabaseClient, projectId: string,
-  task: { id: string; workflow_state: string; labels: CompletionInput['labels'] }): Promise<ContextCompletion[]> {
-  if (task.workflow_state !== 'Verified' || !resolveDeliverableMarker(task.labels).intended_gate) return [];
+export async function readContextAuthority(client: SupabaseClient, projectId: string,
+  task: { id: string; workflow_state: string; labels: CompletionInput['labels'] }): Promise<{ completions: ContextCompletion[]; last_design_ids: string[] }> {
+  if (task.workflow_state !== 'Verified') return { completions: [], last_design_ids: [] };
   const events: ContextEvent[] = [], briefs: ContextBrief[] = [];
   for (let offset = 0; ; offset += 500) {
     const result = await client.from('activity_events')
@@ -85,5 +100,13 @@ export async function readContextCompletions(client: SupabaseClient, projectId: 
     if (result.error) throw result.error;
     if (result.data) briefs.push(result.data);
   }
-  return completingContextReferences(task, events, briefs);
+  return { completions: completingContextReferences(task, events, briefs),
+    last_design_ids: lastAcceptedDesignReferences(events, briefs) };
+}
+
+/** Completing accepts remain human-only, including for the after-accept consumer. */
+export async function readContextCompletions(client: SupabaseClient, projectId: string,
+  task: { id: string; workflow_state: string; labels: CompletionInput['labels'] }): Promise<ContextCompletion[]> {
+  if (task.workflow_state !== 'Verified' || !resolveDeliverableMarker(task.labels).intended_gate) return [];
+  return (await readContextAuthority(client, projectId, task)).completions;
 }
