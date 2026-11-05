@@ -43683,9 +43683,11 @@ function completingContextReferences(task, events2, briefs) {
       const id = item.write_kind === "knowledge_entry_content" ? item.entry_id : item.write_kind === "rule_bundle" ? item.decision_id : null;
       return typeof id === "string" && id ? [id] : [];
     });
+    const ref = brief.decision_ref;
+    const decisionId = typeof ref === "string" ? ref : ref && typeof ref === "object" && "id" in ref ? ref.id : null;
     result.set(brief.id, {
       brief_id: brief.id,
-      source_ids: brief.decision_ref ? [brief.decision_ref] : [...new Set(payloadIds)].sort()
+      source_ids: typeof decisionId === "string" && decisionId.trim() ? [decisionId] : [...new Set(payloadIds)].sort()
     });
   }
   return [...result.values()];
@@ -43700,7 +43702,7 @@ async function readContextCompletions(client, projectId, task) {
     if ((result.data ?? []).length < 500) break;
   }
   for (const id of new Set(events2.filter((e) => e.event_type === "brief_resolved" && e.metadata?.command === "accept").flatMap((e) => typeof e.metadata?.brief_id === "string" ? [e.metadata.brief_id] : []))) {
-    const result = await client.from("briefs").select("id,reason,decision_ref,doc").eq("project_id", projectId).eq("task_id", task.id).eq("id", id).maybeSingle();
+    const result = await client.from("briefs").select("id,reason,decision_ref,doc").eq("task_id", task.id).eq("id", id).maybeSingle();
     if (result.error) throw result.error;
     if (result.data) briefs.push(result.data);
   }
