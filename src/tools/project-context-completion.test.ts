@@ -22,16 +22,22 @@ describe('recorded completing authority', () => {
       { write_kind: 'knowledge_entry_content', entry_id: sourceId }, { write_kind: 'rule_bundle', decision_id: sourceId },
     ] } };
     const a = { ...accept, created_at: acceptedAt, metadata: { ...accept.metadata, brief_id: briefId } };
-    const completions = completingContextReferences(task, [a, a, { ...edge, created_at: verifiedAt }], [b]);
-    expect(completions).toEqual([{ brief_id: briefId, source_ids: [sourceId] }]);
-    const companions = [
-      ...Array.from({ length: 6 }, (_, i) => ({ ...decision, id: `clarify-${i}`, type: 'product-design', source_activity: 'clarify', madr: null, underwriting_brief_id: 'clarify-brief' })),
-      { ...decision, id: 'no-split', type: 'convention', source_activity: 'decompose', madr: null },
-      { ...decision, id: '71a32e0a', type: 'business', source_activity: 'clarify', madr: null },
-      { ...decision, id: 'rule', type: 'convention', source_activity: null, madr: null, tags: ['rule'], underwriting_brief_id: briefId },
-    ];
-    expect(resolve([{ ...decision, id: sourceId }, ...companions], completions)).toMatchObject({ state: 'accepted', source_ids: [sourceId], summary: 'Use tokens.' });
-    expect(resolve([{ ...decision, id: sourceId }, ...companions], [])).toMatchObject({ state: 'accepted', source_ids: [sourceId] });
+    // Exercise both a deferred commit and the commit sharing the accept's timestamp.
+    for (const committedAt of [acceptedAt.replace('Z', '.500Z'), acceptedAt]) {
+      const commit = { ...edge, created_at: committedAt, old_value: 'Decomposed', new_value: 'Designed' };
+      const completions = completingContextReferences(task, [a, a, commit,
+        { ...commit, event_type: 'acceptance_event_consumed' }, { ...edge, created_at: verifiedAt },
+        { ...edge, event_type: 'acceptance_event_consumed', created_at: verifiedAt }], [b]);
+      expect(completions).toEqual([{ brief_id: briefId, source_ids: [sourceId] }]);
+      const companions = [
+        ...Array.from({ length: 6 }, (_, i) => ({ ...decision, id: `clarify-${i}`, type: 'product-design', source_activity: 'clarify', madr: null, underwriting_brief_id: 'clarify-brief' })),
+        { ...decision, id: 'no-split', type: 'convention', source_activity: 'decompose', madr: null },
+        { ...decision, id: '71a32e0a', type: 'business', source_activity: 'clarify', madr: null },
+        { ...decision, id: 'rule', type: 'convention', source_activity: null, madr: null, tags: ['rule'], underwriting_brief_id: briefId },
+      ];
+      expect(resolve([{ ...decision, id: sourceId }, ...companions], completions)).toMatchObject({ state: 'accepted', source_ids: [sourceId], summary: 'Use tokens.' });
+      expect(resolve([{ ...decision, id: sourceId }, ...companions], [])).toMatchObject({ state: 'accepted', source_ids: [sourceId] });
+    }
   });
   it('prefers explicit decision_ref and follows project-local supersession', () => {
     const completions = completingContextReferences(task, [accept], [{ ...brief, decision_ref: 'd1dc1b99', doc: { frame: { completion: { gate: 'design', to_state: 'Verified' } }, payload: [{ write_kind: 'rule_bundle', decision_id: 'wrong' }] } }]);
@@ -50,6 +56,10 @@ describe('recorded completing authority', () => {
     expect(completingContextReferences(task, [accept, { ...edge, old_value: 'Planned' }], [brief])).toEqual([]);
     const intervening = { ...edge, created_at: '2026-11-02T17:38:22Z', new_value: 'Parked' };
     expect(completingContextReferences(task, [accept, intervening, edge], [brief])).toEqual([]);
+    const otherAccept = { ...accept, created_at: '2026-11-02T17:38:22Z', metadata: { ...accept.metadata, brief_id: 'another-brief' } };
+    expect(completingContextReferences(task, [accept, otherAccept, edge], [brief])).toEqual([]);
+    expect(completingContextReferences(task, [accept, { ...edge, event_type: 'acceptance_event_consumed' }], [brief])).toEqual([]);
+    expect(completingContextReferences(task, [accept, { ...intervening, created_at: accept.created_at }, edge], [brief])).toEqual([]);
   });
   it('refuses qualifying unreadable/conflicting links instead of falling back', () => {
     expect(resolve([{ ...decision, id: 'fallback' }]).diagnostics.join()).toContain('Unreadable completing');

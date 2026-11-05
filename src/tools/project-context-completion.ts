@@ -37,12 +37,18 @@ export function completingContextReferences(task: Pick<CompletionInput, 'workflo
     if (event.event_type !== 'brief_resolved' || meta?.command !== 'accept') continue;
     const brief = briefs.find(b => b.id === meta.brief_id);
     if (!brief) continue;
-    // A legacy design accept must be the last accept before the Designed -> Verified edge,
-    // with no intervening state edge. Duplicate audit rows for the same accept are harmless.
-    const nextEdge = sorted.find(e => Date.parse(e.created_at) > Date.parse(event.created_at) && e.field_name === 'workflow_state');
-    const legacy = nextEdge?.old_value === 'Designed' && nextEdge.new_value === 'Verified' &&
-      !sorted.some(e => Date.parse(e.created_at) > Date.parse(event.created_at) && Date.parse(e.created_at) < Date.parse(nextEdge.created_at) &&
-        e.event_type === 'brief_resolved' && e.metadata?.command === 'accept' && e.metadata.brief_id !== brief.id);
+    // Deferred acceptance can commit X -> Designed before the final fast-forward.
+    // Only the real field-change row establishes completion; its ledger audit twin does not.
+    const acceptedAt = Date.parse(event.created_at);
+    const completionEdge = sorted.find(e => Date.parse(e.created_at) > acceptedAt &&
+      e.event_type === 'field_change' && e.field_name === 'workflow_state' &&
+      e.old_value === 'Designed' && e.new_value === 'Verified');
+    const intervening = completionEdge ? sorted.filter(e =>
+      Date.parse(e.created_at) >= acceptedAt && Date.parse(e.created_at) < Date.parse(completionEdge.created_at)) : [];
+    const legacy = completionEdge !== undefined && !intervening.some(e =>
+      (e.event_type === 'brief_resolved' && e.metadata?.command === 'accept' && e.metadata.brief_id !== brief.id) ||
+      (e.field_name === 'workflow_state' &&
+        (!['field_change', 'acceptance_event_consumed'].includes(e.event_type) || e.new_value !== 'Designed')));
     if (!isContextCompletingAccept({ ...task, reason: brief.reason, provenance: String(meta.provenance ?? ''),
       completion: brief.doc?.frame?.completion, legacy_design_completion: legacy })) continue;
     const payloadIds = (brief.doc?.payload ?? []).flatMap(item => {
