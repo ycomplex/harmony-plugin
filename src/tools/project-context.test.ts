@@ -89,15 +89,15 @@ it('excludes cited bundle members independent of entry type or missing legacy ta
     [source(), source({ id: 'architecture-rule', type: 'architecture' })], new Map(), 'LDS', [], new Set(['architecture-rule'])))
     .toMatchObject({ state: 'accepted', source_ids: ['decision'] });
 });
-it('retains all deliverable labels while the scaffold join filters inception membership', async () => {
+it.each(['human-in-browser', 'agent-synthesized:override'])('retains deliverable labels and reads design authority for %s', async provenance => {
   const selects: string[] = [];
   const client = { from: (table: string) => {
     const q = { select: (value: string) => { if (table === 'tasks') selects.push(value); return q; }, eq: () => q, is: () => q, order: () => q, range: () => q,
       single: async () => ({ data: { id: 'project', name: 'Example', key: 'EX' }, error: null }),
-      maybeSingle: async () => ({ data: { id: 'brief', reason: 'design-decision-draft', decision_ref: 'decision', doc: { frame: { completion: { gate: 'design', to_state: 'Verified' } } } }, error: null }),
+      maybeSingle: async () => ({ data: { id: 'brief', reason: 'design-decision-draft', decision_ref: 'decision', doc: { frame: { completion: { gate: 'design', to_state: 'Verified' } }, payload: [{ write_kind: 'knowledge_entry_content', entry_id: 'decision' }] } }, error: null }),
       then: (done: (value: unknown) => unknown) => Promise.resolve(done({ error: null, data:
         table === 'tasks' ? [{ ...task, task_labels: [{ labels: { name: 'inception-scaffold' } }], all_labels: [{ labels: { name: 'inception-scaffold' } }, { labels: { name: 'decision-only' } }] }] :
-        table === 'activity_events' ? [{ event_type: 'brief_resolved', created_at: '2026-11-02T17:38:20Z', metadata: { command: 'accept', brief_id: 'brief', provenance: 'human-in-browser' } }] :
+        table === 'activity_events' ? [{ event_type: 'brief_resolved', created_at: '2026-11-02T17:38:20Z', metadata: { command: 'accept', brief_id: 'brief', provenance } }] :
         table === 'knowledge_decisions' ? [source(), source({ id: 'other' })] : [] })),
     }; return q;
   } } as unknown as SupabaseClient;

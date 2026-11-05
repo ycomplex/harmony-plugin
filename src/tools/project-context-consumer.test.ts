@@ -13,6 +13,7 @@ describe('completing-accept consumer', () => {
     const input = { workflow_state: 'Verified', labels: ['decision-only'], reason: 'design-decision-draft', provenance: 'human-in-browser', completion: { gate: 'design', to_state: 'Verified' } };
     expect(isContextCompletingAccept(input)).toBe(true);
     expect(isContextCompletingAccept({ ...input, provenance: 'agent-synthesized:orchestrator' })).toBe(false);
+    expect(isContextCompletingAccept({ ...input, provenance: 'agent-synthesized:override' })).toBe(false);
     expect(isContextCompletingAccept({ ...input, workflow_state: 'Designed' })).toBe(false);
     expect(isContextCompletingAccept({ ...input, completion: undefined })).toBe(false);
     expect(isContextCompletingAccept({ ...input, labels: ['capture-only'] })).toBe(false);
