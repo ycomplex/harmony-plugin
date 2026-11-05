@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { CONTEXT_CATEGORIES, resolveContextBlock, sourceSummary, type ContextSource, type ContextTask } from './project-context.js';
 const task: ContextTask = { id: 'ticket', title: 'Decide the architecture', task_number: 3, workflow_state: 'Verified' };
-const source = (patch: Partial<ContextSource> = {}): ContextSource => ({ id: 'decision', project_id: 'project', source_task_id: 'ticket', type: 'technical-design', status: 'Accepted', superseded_by: null, content: '**Claim:** Use a modular monolith.\n\n**Claim source:** authored\n\nRationale', ...patch });
+const source = (patch: Partial<ContextSource> = {}): ContextSource => ({ id: 'decision', project_id: 'project', source_task_id: 'ticket', type: 'technical-design', source_activity: 'design-decide', madr: {}, status: 'Accepted', superseded_by: null, content: '**Claim:** Use a modular monolith.\n\n**Claim source:** authored\n\nRationale', ...patch });
 const resolve = (sources: ContextSource[], tasks = [task]) => resolveContextBlock('project', 'architecture', 'Architecture', tasks, sources, new Map(), 'LDS');
 describe('project context authority', () => {
   it('covers every canonical S2 category', () => expect(CONTEXT_CATEGORIES).toHaveLength(9));
@@ -71,4 +71,39 @@ it('preserves ratified proposition context lines without deriving missing dimens
   const content = '- Project context purpose: Ship tokens.\n- Project context personas: Designers.\n- Project context features: Export.';
   expect(sourceSummary(source({ content }), true)).toBe('Purpose: Ship tokens. Personas: Designers. Features: Export.');
   expect(sourceSummary(source({ content: content + '\n- Project context purpose: Competing.' }), true)).toBeNull();
+});
+it('does not read sources or manufacture missing diagnostics when no live scaffold exists', async () => {
+  const tables: string[] = [];
+  const client = { from: (table: string) => {
+    tables.push(table);
+    const q = { select: () => q, eq: () => q, is: () => q, order: () => q, range: () => q,
+      single: async () => ({ data: { id: 'project', name: 'Harmony', key: 'B' }, error: null }),
+      then: (done: (value: unknown) => unknown) => Promise.resolve(done({ data: [], error: null })),
+    }; return q;
+  } } as unknown as SupabaseClient;
+  expect(await readProjectContext(client, 'project')).toMatchObject({ applicability: 'not_applicable', blocks: [], diagnostics: [] });
+  expect(tables).toEqual(['projects', 'tasks']);
+});
+it('excludes cited bundle members independent of entry type or missing legacy tags', () => {
+  expect(resolveContextBlock('project', 'architecture', 'Architecture', [task],
+    [source(), source({ id: 'architecture-rule', type: 'architecture' })], new Map(), 'LDS', [], new Set(['architecture-rule'])))
+    .toMatchObject({ state: 'accepted', source_ids: ['decision'] });
+});
+it('retains all deliverable labels while the scaffold join filters inception membership', async () => {
+  const selects: string[] = [];
+  const client = { from: (table: string) => {
+    const q = { select: (value: string) => { if (table === 'tasks') selects.push(value); return q; }, eq: () => q, is: () => q, order: () => q, range: () => q,
+      single: async () => ({ data: { id: 'project', name: 'Example', key: 'EX' }, error: null }),
+      maybeSingle: async () => ({ data: { id: 'brief', reason: 'design-decision-draft', decision_ref: 'decision', doc: { frame: { completion: { gate: 'design', to_state: 'Verified' } } } }, error: null }),
+      then: (done: (value: unknown) => unknown) => Promise.resolve(done({ error: null, data:
+        table === 'tasks' ? [{ ...task, task_labels: [{ labels: { name: 'inception-scaffold' } }], all_labels: [{ labels: { name: 'inception-scaffold' } }, { labels: { name: 'decision-only' } }] }] :
+        table === 'activity_events' ? [{ event_type: 'brief_resolved', created_at: '2026-11-02T17:38:20Z', metadata: { command: 'accept', brief_id: 'brief', provenance: 'human-in-browser' } }] :
+        table === 'knowledge_decisions' ? [source(), source({ id: 'other' })] : [] })),
+    }; return q;
+  } } as unknown as SupabaseClient;
+  const result = await readProjectContext(client, 'project');
+  expect(selects[0]).toContain('all_labels:task_labels');
+  expect(result.blocks.find(b => b.key === 'architecture')).toMatchObject({ state: 'accepted', source_ids: ['decision'] });
+  expect(result.applicability).toBe('applicable');
+  expect(result.diagnostics).toContain('What this project is: Scaffold ticket not found.');
 });
