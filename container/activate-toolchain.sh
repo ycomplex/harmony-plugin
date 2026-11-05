@@ -147,6 +147,20 @@ if [ -n "$NODE_DECL" ]; then
 fi
 
 ACTIVATED=0
+ACTIVE_NODE=""
+# fnm's first install may create its default alias itself. Roll it back on ANY
+# failed setup, including a package-manager failure after Node validation.
+restore_default_on_failure() {
+  local status=$?
+  if [ "$status" -ne 0 ] && [ -n "${DEFAULT_ALIAS:-}" ]; then
+    if [ -n "$PREVIOUS_DEFAULT" ]; then
+      ln -sfn "$PREVIOUS_DEFAULT" "$DEFAULT_ALIAS"
+    else
+      rm -f "$DEFAULT_ALIAS"
+    fi
+  fi
+}
+trap restore_default_on_failure EXIT
 
 # --- Node, via fnm -----------------------------------------------------------
 if [ -n "$NODE_VERSION" ]; then
@@ -156,6 +170,8 @@ if [ -n "$NODE_VERSION" ]; then
   fi
   export FNM_DIR="${FNM_DIR:-$HOME/.fnm}"
   mkdir -p "$FNM_DIR"
+  DEFAULT_ALIAS="$FNM_DIR/aliases/default"
+  PREVIOUS_DEFAULT="$(readlink "$DEFAULT_ALIAS" 2>/dev/null || true)"
   # `fnm use` refuses to run in a shell fnm has not been wired into, so wire
   # this one first. --shell bash is explicit because this script is run
   # non-interactively (fnm's shell auto-detect keys on the parent process).
@@ -165,16 +181,18 @@ if [ -n "$NODE_VERSION" ]; then
     log "fnm's own resolution did not settle — falling back to the explicitly resolved $NODE_VERSION"
     ( cd "$REPO_DIR" && fnm use --install-if-missing "$NODE_VERSION" )
   fi
-  # Make it the version every LATER shell in this container starts on. `fnm
-  # current` is the CONCRETE version that just got activated (never the partial
-  # token a range resolved from), so the default alias can never point at
-  # something narrower or wider than what this repo actually got.
-  ACTIVE_NODE="$(fnm current 2>/dev/null || true)"
-  if [ -n "$ACTIVE_NODE" ] && [ "$ACTIVE_NODE" != "none" ]; then
-    fnm alias "$ACTIVE_NODE" default >/dev/null 2>&1 \
-      || log "WARNING: could not set $ACTIVE_NODE as the fnm default — later shells may fall back to the image Node"
+  # Selection is only a candidate until the real executable starts and agrees
+  # with fnm's concrete resolution. Keep stderr (including loader failures).
+  ACTIVE_NODE="$(fnm current)"
+  if ! NODE_OUTPUT="$(node --version 2>&1)"; then
+    echo "activate-toolchain[$REPO_DIR]: ERROR: Node execution failed: $NODE_OUTPUT" >&2
+    exit 1
   fi
-  log "node is now $(node --version 2>/dev/null || echo '<unresolved>')"
+  if [[ ! "$ACTIVE_NODE" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || [ "$NODE_OUTPUT" != "$ACTIVE_NODE" ]; then
+    echo "activate-toolchain[$REPO_DIR]: ERROR: Node version mismatch: resolved '$ACTIVE_NODE', executable reported '$NODE_OUTPUT'" >&2
+    exit 1
+  fi
+  log "node is now $NODE_OUTPUT"
   ACTIVATED=1
 fi
 
@@ -198,6 +216,10 @@ fi
 
 # --- Persist for every later shell in this container -------------------------
 if [ "$ACTIVATED" = "1" ]; then
+  # Commit durable selection only after every declared setup step succeeded.
+  if [ -n "$ACTIVE_NODE" ]; then
+    fnm alias "$ACTIVE_NODE" default
+  fi
   HOOK="$HOME/.harmony-toolchain.sh"
   cat >"$HOOK" <<'HOOK_BODY'
 # B-929: written by container/activate-toolchain.sh when a cloned repo declared a
