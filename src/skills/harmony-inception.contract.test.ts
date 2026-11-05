@@ -239,6 +239,25 @@ describe('harmony-inception — the S4 roadmap slot (B-1083)', () => {
 
 
 describe('B-1384 deliverable stamping', () => {
+ it('repairs completed-project markers before stopping without re-entering the stamp (B-1396)', () => {
+  const preflight = section('## 0.');
+  expect(preflight).toMatch(/marker-only repair below BEFORE/);
+  expect(preflight).toMatch(/Do not enter S0, S1 or the scaffold-stamping phases/);
+  expect(preflight).toMatch(/eleven known roles[\s\S]*deterministic title \+ the `inception-scaffold` label/);
+  expect(preflight).toMatch(/nine S2 titles in §3b[\s\S]*proposition-root title in §2a[\s\S]*S4 roadmap title in §3e/);
+  expect(preflight).toMatch(/missing or ambiguous role files a worker-question/);
+  expect(preflight).toMatch(/Apply only §3b's \*\*Deliverable marking/);
+  expect(preflight).toMatch(/all nine S2[\s\S]*`decision-only`[\s\S]*proposition-root and roadmap get `capture-only`/);
+  expect(preflight).toMatch(/replacing[\s\S]*obsolete `decision-only`[\s\S]*preserving other labels/);
+  expect(preflight).toMatch(/Skip rows whose markers are[\s\S]*already correct, without a write/);
+  expect(preflight).toMatch(/Before either add, read `can_mark_decision_only`/);
+  expect(preflight).toMatch(/before any[\s\S]*capture add, positively detect the guarded-completion capability/);
+  expect(preflight).toMatch(/blocked repair or absent capability, file a worker-question and pause/);
+  expect(preflight).toMatch(/never silently skip[\s\S]*replacement's preconditions pass/);
+  expect(preflight).toMatch(/Do not re-stamp tickets, edges, milestones, entities or the completion marker itself/);
+  expect(preflight).toMatch(/ticket ids and markers repaired/);
+  expect(preflight).toMatch(/markers already correct[\s\S]*then STOP/);
+ });
  it('stamps every S2 decision and keeps capture roles distinct on restart', () => {
   const spine = section('### 3b.');
   expect(spine).toMatch(/`decision-only` on \*\*all nine\*\*/);

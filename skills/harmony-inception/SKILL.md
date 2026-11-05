@@ -58,17 +58,36 @@ layer already have (skills are stateless executors — the board + KB are the me
 ## 0. Preflight — resume-or-start (idempotency is a first-class requirement, AC A10)
 
 Every write below is **create-or-skip on identity that already exists**, plus a **project-level
-completion marker**. So a full re-run is a no-op AND a partial/interrupted stamp resumes without
+completion marker**. So a full re-run only ensures deliverable markers AND a partial/interrupted stamp resumes without
 duplicating. **Always start here:**
 
 1. `mcp__harmony__get_project` — confirm you have a project. If `mode !== 'opinionated'` the discovery
    gates don't apply; inception is an Guided-mode flow — set the mode in S0 before proceeding.
 2. **Completion-marker fast path.** `mcp__harmony__query_knowledge({ type: 'convention', search:
    'inception:scaffold-complete' })` (also match by exact title in step 4's convention). **If the marker
-   entry exists → inception already ran: report "already seeded" and STOP** (no-op). **If it is absent
+   entry exists → inception already ran: run the marker-only repair below BEFORE reporting "already seeded"
+   and STOP.** Do not enter S0, S1 or the scaffold-stamping phases on this branch. **If it is absent
    but scaffold artifacts already exist → RESUME:** run the phases below, and because every write is
    lookup-before-create, each already-present artifact is skipped and only the missing ones are created.
    Set the marker (step 4) once every artifact is present.
+
+**Completed-project marker-only repair (B-1396).** Look up the eleven known roles in this project by
+their deterministic title + the `inception-scaffold` label: the nine S2 titles in §3b, the
+proposition-root title in §2a, and the S4 roadmap title in §3e. Reuse those ticket identities;
+create nothing. A missing or ambiguous role files a worker-question naming that role instead of
+guessing an identity or re-stamping it.
+
+Apply only §3b's **Deliverable marking (B-1384)** ensure pass to these existing rows: all nine S2
+rows get `decision-only`; proposition-root and roadmap get `capture-only`, explicitly replacing
+obsolete `decision-only` on those two and preserving other labels. Skip rows whose markers are
+already correct, without a write. Before either add, read `can_mark_decision_only`; before any
+capture add, positively detect the guarded-completion capability per `harmony-shared/gate-routing.md`.
+On a blocked repair or absent capability, file a worker-question and pause; never silently skip
+or remove an old marker before the replacement's preconditions pass.
+
+Do not re-stamp tickets, edges, milestones, entities or the completion marker itself. After the
+ensure pass, report "already seeded" with the ticket ids and markers repaired, or "already seeded —
+markers already correct" when no repair was needed, then STOP. No other writes run on this branch.
 
 Treat S0 → S1 → scaffold as steps that each **check-then-create**. Interrupted anywhere, a re-run picks
 up exactly where it stopped.
