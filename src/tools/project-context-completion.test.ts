@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { completingContextReferences, type ContextBrief, type ContextEvent } from './project-context-completion.js';
+import type { SupabaseClient } from '@supabase/supabase-js';
+import { readContextCompletions, completingContextReferences, type ContextBrief, type ContextEvent } from './project-context-completion.js';
 import { resolveContextBlock, type ContextSource } from './project-context.js';
 const task = { id: 'scaffold', title: 'Decide the architecture', task_number: 2, workflow_state: 'Verified', labels: ['decision-only'] };
 const brief: ContextBrief = { id: '01657515', reason: 'design-decision-draft', doc: {
@@ -74,5 +75,38 @@ describe('recorded completing authority', () => {
     expect(resolve([decision, architectureRule], []).state).toBe('accepted');
     expect(resolve([decision, { ...decision, id: 'genuine', type: 'business' }], []).diagnostics.join()).toContain('Competing');
     expect(resolve([{ ...decision, madr: null }], []).diagnostics.join()).toContain('no readable Accepted');
+  });
+});
+
+describe('brief reference and query contracts', () => {
+  it.each(['explicit', { type: 'decision', id: 'explicit' }])('uses a valid decision reference %j ahead of payload links', decision_ref => {
+    const completions = completingContextReferences(task, [accept, edge], [{ ...brief, decision_ref }]);
+    expect(completions).toEqual([{ brief_id: brief.id, source_ids: ['explicit'] }]);
+    expect(resolve([{ ...decision, id: 'explicit' }], completions)).toMatchObject({ state: 'accepted', source_ids: ['explicit'] });
+  });
+  it.each([undefined, null, '', '   ', {}, { type: 'decision' }, { id: '' }, { id: '  ' }, { id: 42 }, 42, []])(
+    'falls back to payload links for missing or malformed reference %j', decision_ref => {
+      expect(completingContextReferences(task, [accept, edge], [{ ...brief, decision_ref }]))
+        .toEqual([{ brief_id: brief.id, source_ids: ['d1dc1b99'] }]);
+    });
+  it('reads completing briefs using only real table columns and scopes by task and brief', async () => {
+    const briefColumns = new Set(['id', 'task_id', 'reason', 'doc', 'content', 'decision_ref', 'status', 'iteration']);
+    const filters: [string, unknown][] = [];
+    const client = { from(table: string) {
+      const validate = (column: string) => {
+        if (table === 'briefs' && !briefColumns.has(column)) throw new Error(`column briefs.${column} does not exist`);
+      };
+      const query = {
+        select(columns: string) { columns.split(',').forEach(validate); return query; },
+        eq(column: string, value: unknown) { validate(column); if (table === 'briefs') filters.push([column, value]); return query; },
+        order() { return query; },
+        range: async () => ({ data: [accept, edge], error: null }),
+        maybeSingle: async () => ({ data: { ...brief, decision_ref: { type: 'decision', id: 'explicit' } }, error: null }),
+      };
+      return query;
+    } } as unknown as SupabaseClient;
+    expect(await readContextCompletions(client, 'luma', task))
+      .toEqual([{ brief_id: brief.id, source_ids: ['explicit'] }]);
+    expect(filters).toEqual([['task_id', task.id], ['id', brief.id]]);
   });
 });
