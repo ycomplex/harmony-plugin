@@ -17,7 +17,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, symlinkSync, readlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -35,7 +35,8 @@ interface Run {
 
 /** Write the fnm/corepack stubs. `failResolveEngines` makes `fnm use … --resolve-engines` exit
  *  non-zero, which is how a fnm too old to carry that flag behaves. */
-function makeStubs(dir: string, opts: { failResolveEngines?: boolean } = {}): void {
+interface StubOptions { failResolveEngines?: boolean; nodeFailure?: boolean; nodeVersion?: string; resolvedVersion?: string; pmFailure?: boolean; home?: string; }
+function makeStubs(dir: string, opts: StubOptions = {}): void {
   mkdirSync(dir, { recursive: true });
   writeFileSync(
     join(dir, 'fnm'),
@@ -44,11 +45,12 @@ function makeStubs(dir: string, opts: { failResolveEngines?: boolean } = {}): vo
       'echo "fnm $*" >> "$STUB_LOG"',
       'case "$1" in',
       '  env) echo "export FNM_STUB=1" ;;',
-      '  current) echo "v24.14.1" ;;',
+      `  current) echo "${opts.resolvedVersion ?? 'v24.14.1'}" ;;`,
       '  use)',
       opts.failResolveEngines
         ? '    if printf "%s\\n" "$@" | grep -q -- --resolve-engines; then exit 1; fi'
         : '    :',
+      '    mkdir -p "$FNM_DIR/aliases"; if [ ! -L "$FNM_DIR/aliases/default" ]; then ln -s candidate "$FNM_DIR/aliases/default"; fi',
       '    ;;',
       'esac',
       'exit 0',
@@ -56,16 +58,21 @@ function makeStubs(dir: string, opts: { failResolveEngines?: boolean } = {}): vo
     ].join('\n'),
     { mode: 0o755 },
   );
+  writeFileSync(join(dir, 'node'), [
+    '#!/usr/bin/env bash',
+    `if [ "$1" = --version ]; then ${opts.nodeFailure ? 'echo "node: error while loading shared libraries: libatomic.so.1" >&2; exit 127' : 'echo ' + (opts.nodeVersion ?? 'v24.14.1')}; else exec "${process.execPath}" "$@"; fi`,
+    '',
+  ].join('\n'), { mode: 0o755 });
   writeFileSync(
     join(dir, 'corepack'),
-    ['#!/usr/bin/env bash', 'echo "corepack $*" >> "$STUB_LOG"', 'exit 0', ''].join('\n'),
+    ['#!/usr/bin/env bash', 'echo "corepack $*" >> "$STUB_LOG"', `exit ${opts.pmFailure ? 1 : 0}`, ''].join('\n'),
     { mode: 0o755 },
   );
 }
 
 function activate(
   files: Record<string, string>,
-  opts: { failResolveEngines?: boolean; home?: string } = {},
+  opts: StubOptions = {},
 ): Run {
   const root = mkdtempSync(join(tmpdir(), 'b929-activate-'));
   const repo = join(root, 'repo');
@@ -262,5 +269,43 @@ describe('activate-toolchain.sh: argument handling', () => {
       encoding: 'utf8',
     });
     expect(out).toBe(''); // the skip notice goes to stderr; the point is it exits 0
+  });
+});
+
+
+describe('activate-toolchain.sh: candidate validation and rollback', () => {
+  it('keeps the real loader error and removes an implicitly created default on failure', () => {
+    const run = activate({ '.nvmrc': '24.14.1' }, { nodeFailure: true });
+    expect(run.status).not.toBe(0);
+    expect(run.output).toContain('libatomic.so.1');
+    expect(run.output).toContain('Node execution failed');
+    expect(run.calls.some(c => c.startsWith('fnm alias'))).toBe(false);
+    expect(existsSync(join(run.home, '.harmony-toolchain.sh'))).toBe(false);
+    expect(() => readlinkSync(join(run.home, '.fnm/aliases/default'))).toThrow();
+  });
+
+  it.each(['v22.1.0', 'none', ''])('rejects resolved/executable mismatch (%s)', resolvedVersion => {
+    const run = activate({ '.nvmrc': '24.14.1' }, { resolvedVersion });
+    expect(run.status).not.toBe(0);
+    expect(run.output).toContain('Node version mismatch');
+    expect(existsSync(join(run.home, '.harmony-toolchain.sh'))).toBe(false);
+  });
+
+  it('preserves prior valid alias, hook and rc bytes on a failed candidate', () => {
+    const home = mkdtempSync(join(tmpdir(), 'b1399-prior-'));
+    mkdirSync(join(home, '.fnm/aliases'), { recursive: true });
+    symlinkSync('../node-versions/v22.1.0', join(home, '.fnm/aliases/default'));
+    for (const name of ['.harmony-toolchain.sh', '.bashrc', '.profile']) writeFileSync(join(home, name), '# prior valid state\n');
+    const run = activate({ '.nvmrc': '24.14.1' }, { home, nodeFailure: true });
+    expect(run.status).not.toBe(0);
+    expect(readlinkSync(join(home, '.fnm/aliases/default'))).toBe('../node-versions/v22.1.0');
+    for (const name of ['.harmony-toolchain.sh', '.bashrc', '.profile']) expect(readFileSync(join(home, name), 'utf8')).toBe('# prior valid state\n');
+  });
+
+  it('does not commit the alias or hook when subsequent package-manager setup fails', () => {
+    const run = activate({ '.nvmrc': '24.14.1', 'package.json': '{"packageManager":"pnpm@11.21.0"}' }, { pmFailure: true });
+    expect(run.status).not.toBe(0);
+    expect(run.calls.some(c => c.startsWith('fnm alias'))).toBe(false);
+    expect(existsSync(join(run.home, '.harmony-toolchain.sh'))).toBe(false);
   });
 });

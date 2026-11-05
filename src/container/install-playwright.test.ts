@@ -57,6 +57,9 @@ describe('container/install-playwright.sh (B-1184)', () => {
     const r = t.exec();
     expect(r.status).toBe(0);
     expect(r.stderr).toContain('WARNING');
+    expect(r.stderr).toContain("continuing with the image's available browser setup");
+    expect(r.stderr).toContain('a compatible browser may still be missing');
+    expect(r.stderr).not.toContain('the leg is not affected');
     t.exec();
     expect(t.calls()).toHaveLength(2);
   });
