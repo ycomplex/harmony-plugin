@@ -47,3 +47,21 @@ describe('guarded project context writes', () => {
     expect(await readFile(join(path, 'outside'), 'utf8')).toBe('keep');
   });
 });
+it('distinguishes actionable stale from unresolved without changing legacy stale', async () => {
+  const path = await root();
+  expect(await checkProjectContextFile(path, context)).toMatchObject({ stale: true, outcome: 'stale' });
+  expect(await checkProjectContextFile(path, { ...context, diagnostics: ['missing source'] })).toMatchObject({ stale: true, outcome: 'unresolved' });
+  await refreshProjectContextFile(path, context);
+  expect(await checkProjectContextFile(path, context)).toMatchObject({ stale: false, outcome: 'current' });
+});
+it('no inception is a no-op for absent, existing and malformed managed files', async () => {
+  const path = await root();
+  const absent: ProjectContext = { ...context, applicability: 'not_applicable', blocks: [], diagnostics: [] };
+  for (const contents of [null, '# Keep\n', CONTEXT_BEGIN + '\nold\n' + CONTEXT_END, CONTEXT_BEGIN]) {
+    if (contents !== null) await writeFile(join(path, 'CLAUDE.md'), contents);
+    expect(await checkProjectContextFile(path, absent)).toMatchObject({ stale: false, outcome: 'not_applicable', diagnostics: [], source_ids: [] });
+    expect(await refreshProjectContextFile(path, absent)).toMatchObject({ changed: false, outcome: 'not_applicable' });
+    if (contents === null) expect(await readdir(path)).toEqual([]);
+    else expect(await readFile(join(path, 'CLAUDE.md'), 'utf8')).toBe(contents);
+  }
+});

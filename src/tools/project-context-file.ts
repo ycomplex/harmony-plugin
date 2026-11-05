@@ -31,15 +31,19 @@ async function readContextFile(path: string): Promise<string | null> {
 }
 export async function checkProjectContextFile(root: string, context: ProjectContext) {
   const path = join(root, 'CLAUDE.md');
+  if (context.applicability === 'not_applicable') return { path, stale: false, outcome: 'not_applicable' as const,
+    source_ids: [], diagnostics: [], fingerprint: createHash('sha256').update(renderProjectContext(context)).digest('hex') };
   const original = await readContextFile(path);
   const rendered = renderProjectContext(context);
   const next = replaceProjectContext(original ?? '', rendered);
-  return { path, stale: original !== next, source_ids: context.blocks.flatMap(b => b.source_ids),
+  return { path, stale: original !== next, outcome: context.diagnostics.length ? 'unresolved' as const :
+    original !== next ? 'stale' as const : 'current' as const, source_ids: context.blocks.flatMap(b => b.source_ids),
     diagnostics: context.diagnostics, fingerprint: createHash('sha256').update(rendered).digest('hex') };
 }
 /** Local explicit operation only. Refuse unresolved snapshots and concurrent edits. */
 export async function refreshProjectContextFile(root: string, context: ProjectContext,
   beforeReplace?: () => Promise<void>) {
+  if (context.applicability === 'not_applicable') return { path: join(root, 'CLAUDE.md'), changed: false, outcome: 'not_applicable' as const };
   if (context.diagnostics.length) throw new Error(`Project context unresolved; no file was changed: ${context.diagnostics.join(' ')}`);
   const path = join(root, 'CLAUDE.md'), original = await readContextFile(path);
   const next = replaceProjectContext(original ?? '', renderProjectContext(context));

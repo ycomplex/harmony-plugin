@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { readContextCompletions, type ContextCompletion } from './project-context-completion.js';
 import { claimFields } from './knowledge-claim.js';
 
 export const CONTEXT_CATEGORIES = [
@@ -12,10 +13,11 @@ export const CONTEXT_CATEGORIES = [
   ['identity', 'Authentication & identity', 'Decide the authentication & identity approach'],
   ['design', 'Design system', 'Decide the design system'],
 ] as const;
-export interface ContextTask { id: string; title: string; task_number: number; workflow_state: string }
+export interface ContextTask { id: string; title: string; task_number: number; workflow_state: string; labels?: { name?: string }[]; all_labels?: { labels: { name?: string } | { name?: string }[] }[]; task_labels?: { labels: { name?: string } | { name?: string }[] }[] }
 export interface ContextSource {
   id: string; project_id: string | null; source_task_id: string | null; type: string;
   status: string; superseded_by: string | null; content: string; madr?: Record<string, unknown> | null;
+  source_activity?: string | null; tags?: string[] | null; underwriting_brief_id?: string | null;
   claim?: string | null; claim_source?: string | null;
 }
 export interface ContextBlock {
@@ -23,6 +25,7 @@ export interface ContextBlock {
   state: 'accepted' | 'undecided' | 'unresolved'; summary: string | null; diagnostics: string[];
 }
 export interface ProjectContext {
+  applicability?: 'applicable' | 'not_applicable';
   version: 1; project_id: string; project_name: string; blocks: ContextBlock[]; diagnostics: string[];
 }
 const bounded = (value: unknown): value is string => typeof value === 'string' && !!value.trim() &&
@@ -61,7 +64,7 @@ export function sourceSummary(source: ContextSource, proposition: boolean): stri
 
 /** Pure resolver: no timestamp tie-break and no unrelated semantic search. */
 export function resolveContextBlock(projectId: string, key: string, title: string, tasks: ContextTask[],
-  sources: ContextSource[], references: Map<string, string[]>, projectKey: string): ContextBlock {
+  sources: ContextSource[], references: Map<string, string[]>, projectKey: string, completions: ContextCompletion[] = [], ruleIds: Set<string> = new Set()): ContextBlock {
   const block: ContextBlock = { key, title, ticket: null, source_ids: [], state: 'unresolved', summary: null, diagnostics: [] };
   if (tasks.length !== 1) {
     block.diagnostics.push(tasks.length ? 'Multiple matching scaffold tickets.' : 'Scaffold ticket not found.');
@@ -70,8 +73,24 @@ export function resolveContextBlock(projectId: string, key: string, title: strin
   const task = tasks[0]; block.ticket = `${projectKey}-${task.task_number}`;
   if (task.workflow_state !== 'Verified') { block.state = 'undecided'; return block; }
   const linked = new Set(references.get(task.id) ?? []);
-  const eligible = sources.filter(s => s.project_id === projectId && (s.source_task_id === task.id || linked.has(s.id)) &&
-    (key === 'proposition' ? s.type === 'specification' : ['architecture', 'business', 'convention', 'product-design', 'technical-design', 'ux-ui-design'].includes(s.type)));
+  const authoritative = completions.length > 0;
+  const completionIds = [...new Set(completions.flatMap(c => c.source_ids))];
+  if (authoritative && (completionIds.length !== 1 || completions.some(c => c.source_ids.length !== 1))) {
+    block.source_ids = completionIds.sort();
+    block.diagnostics.push('Completing brief has missing or conflicting decision references.');
+    return block;
+  }
+  const eligible = sources.filter(s => s.project_id === projectId &&
+    (authoritative ? completionIds.includes(s.id) :
+      (s.source_task_id === task.id || linked.has(s.id)) &&
+      (key === 'proposition' ? s.type === 'specification' :
+        s.source_activity === 'design-decide' && s.madr != null &&
+        !s.tags?.includes('rule') && !ruleIds.has(s.id))));
+  if (authoritative && !eligible.length) {
+    block.source_ids = completionIds;
+    block.diagnostics.push(`Unreadable completing source ${completionIds[0]}.`);
+    return block;
+  }
   const byId = new Map(sources.filter(s => s.project_id === projectId).map(s => [s.id, s]));
   const current = new Map<string, ContextSource>();
   for (const initial of eligible) {
@@ -110,19 +129,37 @@ export async function readProjectContext(client: SupabaseClient, projectId: stri
   if (error) throw error;
   const tasks: ContextTask[] = [];
   for (let offset = 0; ; offset += PAGE) {
-    const result = await client.from('tasks').select('id,title,task_number,workflow_state,task_labels!inner(labels!inner(name))')
+    const result = await client.from('tasks').select('id,title,task_number,workflow_state,task_labels!inner(labels!inner(name)),all_labels:task_labels(labels(name))')
       .eq('project_id', projectId).eq('archived', false).is('subsumed_by_task_id', null)
       .eq('task_labels.labels.name', 'inception-scaffold').order('id').range(offset, offset + PAGE - 1);
     if (result.error) throw result.error;
     tasks.push(...(result.data ?? []));
     if ((result.data ?? []).length < PAGE) break;
   }
+  if (!tasks.length) return { version: 1, project_id: projectId, project_name: project.name,
+    applicability: 'not_applicable', blocks: [], diagnostics: [] };
+  const completions = new Map<string, ContextCompletion[]>();
+  for (const task of tasks) completions.set(task.id, await readContextCompletions(client, projectId, {
+    ...task, labels: task.all_labels?.flatMap(row => row.labels) ?? task.labels ?? [],
+  }));
   const sources: ContextSource[] = [];
   for (let offset = 0; ; offset += PAGE) {
-    const result = await client.from('knowledge_decisions').select('id,project_id,source_task_id,type,status,superseded_by,content,madr')
+    const result = await client.from('knowledge_decisions').select('id,project_id,source_task_id,type,status,superseded_by,content,madr,source_activity,tags,underwriting_brief_id')
       .eq('project_id', projectId).order('id').range(offset, offset + PAGE - 1);
     if (result.error) throw result.error;
     sources.push(...(result.data ?? []));
+    if ((result.data ?? []).length < PAGE) break;
+  }
+  const ruleIds = new Set<string>();
+  for (let offset = 0; ; offset += PAGE) {
+    const result = await client.from('decision_rule_citations').select('rule_entry_id')
+      .eq('project_id', projectId).order('id').range(offset, offset + PAGE - 1);
+    // Legacy projects can predate the citation relation. Other read failures stay visible.
+    if (result.error) {
+      if (['42P01', 'PGRST205'].includes(result.error.code)) break;
+      throw result.error;
+    }
+    for (const row of result.data ?? []) ruleIds.add(row.rule_entry_id);
     if ((result.data ?? []).length < PAGE) break;
   }
   const references = new Map<string, string[]>();
@@ -139,8 +176,8 @@ export async function readProjectContext(client: SupabaseClient, projectId: stri
   }
   const definitions = [['proposition', 'What this project is', `Founding proposition — ${project.name}`], ...CONTEXT_CATEGORIES];
   const blocks = definitions.map(([key, title, ticketTitle]) => resolveContextBlock(projectId, key, title,
-    tasks.filter(task => task.title === ticketTitle), sources, references, project.key));
-  return { version: 1, project_id: projectId, project_name: project.name, blocks,
+    tasks.filter(task => task.title === ticketTitle), sources, references, project.key, tasks.filter(task => task.title === ticketTitle).flatMap(task => completions.get(task.id) ?? []), ruleIds));
+  return { version: 1, applicability: 'applicable', project_id: projectId, project_name: project.name, blocks,
     diagnostics: blocks.flatMap(block => block.diagnostics.map(message => `${block.title}: ${message}`)) };
 }
 export const readProjectContextTool = {
