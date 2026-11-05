@@ -61625,8 +61625,21 @@ function completingContextReferences(task, events2, briefs) {
   }
   return [...result.values()];
 }
-async function readContextCompletions(client, projectId, task) {
-  if (task.workflow_state !== "Verified" || !resolveDeliverableMarker(task.labels).intended_gate) return [];
+function lastAcceptedDesignReferences(events2, briefs) {
+  const accepted = [...events2].sort((a3, b) => Date.parse(b.created_at) - Date.parse(a3.created_at));
+  for (const event of accepted) {
+    if (event.event_type !== "brief_resolved" || event.metadata?.command !== "accept") continue;
+    const brief = briefs.find((b) => b.id === event.metadata?.brief_id);
+    if (brief?.reason !== "design-decision-draft") continue;
+    return [...new Set((brief.doc?.payload ?? []).flatMap((item) => {
+      const id = item.write_kind === "knowledge_entry_content" ? item.entry_id : item.write_kind === "rule_bundle" ? item.decision_id : null;
+      return typeof id === "string" && id.trim() ? [id] : [];
+    }))];
+  }
+  return [];
+}
+async function readContextAuthority(client, projectId, task) {
+  if (task.workflow_state !== "Verified") return { completions: [], last_design_ids: [] };
   const events2 = [], briefs = [];
   for (let offset = 0; ; offset += 500) {
     const result = await client.from("activity_events").select("created_at,event_type,field_name,old_value,new_value,metadata").eq("project_id", projectId).eq("task_id", task.id).order("created_at").order("id").range(offset, offset + 499);
@@ -61639,7 +61652,14 @@ async function readContextCompletions(client, projectId, task) {
     if (result.error) throw result.error;
     if (result.data) briefs.push(result.data);
   }
-  return completingContextReferences(task, events2, briefs);
+  return {
+    completions: completingContextReferences(task, events2, briefs),
+    last_design_ids: lastAcceptedDesignReferences(events2, briefs)
+  };
+}
+async function readContextCompletions(client, projectId, task) {
+  if (task.workflow_state !== "Verified" || !resolveDeliverableMarker(task.labels).intended_gate) return [];
+  return (await readContextAuthority(client, projectId, task)).completions;
 }
 
 // src/tools/project-context.ts
@@ -61681,7 +61701,7 @@ function sourceSummary(source, proposition) {
   const claim = claimFields(source);
   return !proposition && claim.claim_source === "authored" && bounded(claim.claim) ? claim.claim.trim() : null;
 }
-function resolveContextBlock(projectId, key, title, tasks, sources, references, projectKey, completions = [], ruleIds = /* @__PURE__ */ new Set()) {
+function resolveContextBlock(projectId, key, title, tasks, sources, references, projectKey, completions = [], ruleIds = /* @__PURE__ */ new Set(), lastDesignIds = []) {
   const block = { key, title, ticket: null, source_ids: [], state: "unresolved", summary: null, diagnostics: [] };
   if (tasks.length !== 1) {
     block.diagnostics.push(tasks.length ? "Multiple matching scaffold tickets." : "Scaffold ticket not found.");
@@ -61701,7 +61721,7 @@ function resolveContextBlock(projectId, key, title, tasks, sources, references, 
     block.diagnostics.push("Completing brief has missing or conflicting decision references.");
     return block;
   }
-  const eligible = sources.filter((s) => s.project_id === projectId && (authoritative ? completionIds.includes(s.id) : (s.source_task_id === task.id || linked.has(s.id)) && (key === "proposition" ? s.type === "specification" : s.source_activity === "design-decide" && s.madr != null && !s.tags?.includes("rule") && !ruleIds.has(s.id))));
+  const eligible = sources.filter((s) => s.project_id === projectId && (authoritative ? completionIds.includes(s.id) : (s.source_task_id === task.id || linked.has(s.id)) && (key === "proposition" ? s.type === "specification" : s.source_activity === "design-decide" && !s.tags?.includes("rule") && !ruleIds.has(s.id))));
   if (authoritative && !eligible.length) {
     block.source_ids = completionIds;
     block.diagnostics.push(`Unreadable completing source ${completionIds[0]}.`);
@@ -61726,6 +61746,12 @@ function resolveContextBlock(projectId, key, title, tasks, sources, references, 
       source2 = successor;
     }
     if (!source2.superseded_by && source2.status === "Accepted") current.set(source2.id, source2);
+  }
+  if (!authoritative && key !== "proposition" && current.size > 1) {
+    const named = [...current.keys()].filter((id) => lastDesignIds.includes(id));
+    if (named.length) {
+      for (const id of current.keys()) if (!named.includes(id)) current.delete(id);
+    }
   }
   block.source_ids = (current.size ? [...current.keys()] : eligible.map((source2) => source2.id)).sort();
   if (block.diagnostics.length) return block;
@@ -61767,8 +61793,8 @@ async function readProjectContext(client, projectId) {
     blocks: [],
     diagnostics: []
   };
-  const completions = /* @__PURE__ */ new Map();
-  for (const task of tasks) completions.set(task.id, await readContextCompletions(client, projectId, {
+  const authority = /* @__PURE__ */ new Map();
+  for (const task of tasks) authority.set(task.id, await readContextAuthority(client, projectId, {
     ...task,
     labels: task.all_labels?.flatMap((row) => row.labels) ?? task.labels ?? []
   }));
@@ -61801,17 +61827,21 @@ async function readProjectContext(client, projectId) {
     references.set(task.id, ids);
   }
   const definitions = [["proposition", "What this project is", `Founding proposition \u2014 ${project.name}`], ...CONTEXT_CATEGORIES];
-  const blocks = definitions.map(([key, title, ticketTitle]) => resolveContextBlock(
-    projectId,
-    key,
-    title,
-    tasks.filter((task) => task.title === ticketTitle),
-    sources,
-    references,
-    project.key,
-    tasks.filter((task) => task.title === ticketTitle).flatMap((task) => completions.get(task.id) ?? []),
-    ruleIds
-  ));
+  const blocks = definitions.map(([key, title, ticketTitle]) => {
+    const matching = tasks.filter((task) => task.title === ticketTitle);
+    return resolveContextBlock(
+      projectId,
+      key,
+      title,
+      matching,
+      sources,
+      references,
+      project.key,
+      matching.flatMap((task) => authority.get(task.id)?.completions ?? []),
+      ruleIds,
+      matching.flatMap((task) => authority.get(task.id)?.last_design_ids ?? [])
+    );
+  });
   return {
     version: 1,
     applicability: "applicable",

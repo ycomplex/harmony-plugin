@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { readContextCompletions, completingContextReferences, type ContextBrief, type ContextEvent } from './project-context-completion.js';
+import { readContextCompletions, completingContextReferences, lastAcceptedDesignReferences, isContextCompletingAccept, type ContextBrief, type ContextEvent } from './project-context-completion.js';
 import { resolveContextBlock, type ContextSource } from './project-context.js';
 const task = { id: 'scaffold', title: 'Decide the architecture', task_number: 2, workflow_state: 'Verified', labels: ['decision-only'] };
 const brief: ContextBrief = { id: '01657515', reason: 'design-decision-draft', doc: {
@@ -70,11 +70,11 @@ describe('recorded completing authority', () => {
     expect(resolve([{ ...decision, superseded_by: decision.id }]).diagnostics.join()).toContain('cycle');
     expect(resolve([{ ...decision, project_id: 'other' }]).state).toBe('unresolved');
   });
-  it('only counts genuine design+madr candidates, irrespective of type', () => {
+  it('only counts genuine design candidates, irrespective of type', () => {
     const architectureRule = { ...decision, id: 'rule', type: 'architecture', tags: ['rule'], underwriting_brief_id: brief.id };
     expect(resolve([decision, architectureRule], []).state).toBe('accepted');
     expect(resolve([decision, { ...decision, id: 'genuine', type: 'business' }], []).diagnostics.join()).toContain('Competing');
-    expect(resolve([{ ...decision, madr: null }], []).diagnostics.join()).toContain('no readable Accepted');
+    expect(resolve([{ ...decision, madr: null }], []).diagnostics.join()).toContain('needs a bounded authored');
   });
 });
 
@@ -109,4 +109,37 @@ describe('brief reference and query contracts', () => {
       .toEqual([{ brief_id: brief.id, source_ids: ['explicit'] }]);
     expect(filters).toEqual([['task_id', task.id], ['id', brief.id]]);
   });
+});
+
+it('resolves LDS-9 override design with a null madr while keeping the consumer human-only', () => {
+  const identity = { ...task, title: 'Decide the authentication & identity approach', task_number: 9 };
+  const design = { ...brief, id: 'identity-brief', doc: { payload: [{ write_kind: 'knowledge_entry_content', entry_id: 'dedb0bfa' }] } };
+  const events: ContextEvent[] = [
+    { ...accept, created_at: '2026-11-05T14:45:52Z', metadata: { command: 'accept', brief_id: 'clarify', provenance: 'human-in-browser' } },
+    { ...accept, created_at: '2026-11-05T14:46:44.996Z', metadata: { command: 'accept', brief_id: design.id, provenance: 'agent-synthesized:override' } },
+    { ...edge, created_at: '2026-11-05T14:46:50.682Z', old_value: 'Decomposed', new_value: 'Designed' },
+    { ...edge, event_type: 'acceptance_event_consumed', created_at: '2026-11-05T14:46:50.682Z', old_value: 'Decomposed', new_value: 'Designed' },
+    { ...edge, created_at: '2026-11-05T14:46:55.980Z' },
+  ];
+  const briefs = [design, { id: 'clarify', reason: 'clarification-draft', decision_ref: 'd8f13a99' }];
+  const completions = completingContextReferences(identity, events, briefs);
+  expect(completions).toEqual([]);
+  expect(isContextCompletingAccept({ ...identity, reason: design.reason, provenance: 'agent-synthesized:override',
+    completion: { gate: 'design', to_state: 'Verified' } })).toBe(false);
+  const ids = lastAcceptedDesignReferences(events, briefs);
+  const sources = [{ ...decision, id: 'dedb0bfa', madr: null, content: '**Claim:** Use hosted identity.\n\n**Claim source:** authored\n\nRationale' },
+    { ...decision, id: 'd8f13a99', type: 'specification', source_activity: 'clarify' }];
+  const resolveIdentity = (entries: ContextSource[]) => resolveContextBlock('luma', 'identity', 'Identity', [identity], entries, new Map(), 'LDS', completions, new Set(), ids);
+  expect(resolveIdentity(sources)).toMatchObject({ state: 'accepted', source_ids: ['dedb0bfa'], summary: 'Use hosted identity.' });
+  expect(resolveIdentity([...sources, { ...decision, id: 'companion' }])).toMatchObject({ state: 'accepted', source_ids: ['dedb0bfa'] });
+  expect(lastAcceptedDesignReferences(events, [...briefs, { ...design, id: 'unaccepted' }])).toEqual(['dedb0bfa']);
+});
+it('uses only the last accepted design payload and leaves multiple named candidates competing', () => {
+  const newer = { ...brief, id: 'newer', decision_ref: 'ignored', doc: { payload: [
+    { write_kind: 'knowledge_entry_content', entry_id: 'one' }, { write_kind: 'rule_bundle', decision_id: 'two' } ] } };
+  const ids = lastAcceptedDesignReferences([accept, { ...accept, created_at: '2026-11-03T00:00:00Z',
+    metadata: { command: 'accept', brief_id: newer.id, provenance: 'agent-synthesized:override' } }], [brief, newer]);
+  expect(ids).toEqual(['one', 'two']);
+  expect(resolveContextBlock('luma', 'architecture', 'Architecture', [task],
+    [{ ...decision, id: 'one' }, { ...decision, id: 'two' }], new Map(), 'LDS', [], new Set(), ids).diagnostics.join()).toContain('Competing');
 });

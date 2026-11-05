@@ -22,7 +22,7 @@ it.each(['2026-11-02T17:38:20Z', '2026-11-02T17:38:22Z'])('after-accept with com
   } } as unknown as SupabaseClient;
   expect(await refreshAfterCompletingAccept(client, 'project', 'user', 'ticket', '/repo')).toMatchObject({ status: 'refreshed' });
   expect(ports.refresh).toHaveBeenCalledWith('/repo', snapshot);
-  ports.refresh.mockClear(); provenance = 'agent-synthesized:orchestrator';
+  ports.refresh.mockClear(); provenance = 'agent-synthesized:override';
   expect(await refreshAfterCompletingAccept(client, 'project', 'user', 'ticket', '/repo')).toMatchObject({ status: 'not-applicable' });
   expect(ports.refresh).not.toHaveBeenCalled();
 });
