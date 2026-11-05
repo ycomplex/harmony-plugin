@@ -43608,6 +43608,105 @@ async function createAuthenticatedClient(auth2) {
   });
 }
 
+// src/tools/decision-only.ts
+function resolveDeliverableMarker(labels) {
+  const names = labels.map((label) => typeof label === "string" ? label : label.name);
+  const capture = names.includes("capture-only");
+  const decision = names.includes("decision-only");
+  if (capture && decision) return { kind: "conflict", intended_gate: null };
+  if (capture) return { kind: "capture", intended_gate: "clarify" };
+  if (decision) return { kind: "decision", intended_gate: "design" };
+  return { kind: "none", intended_gate: null };
+}
+function isMissingCompletionCapability(error2) {
+  return error2.code === "42883" || error2.code === "PGRST202";
+}
+async function readDeliverableStatus(client, taskId, labels) {
+  const marker = resolveDeliverableMarker(labels);
+  if (marker.kind === "none") return { ...marker, guard_available: false };
+  const { data, error: error2 } = await client.rpc("decision_only_completion_status", { _task_id: taskId });
+  if (error2) {
+    if (isMissingCompletionCapability(error2)) return { ...marker, guard_available: false };
+    throw error2;
+  }
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row || row.contract_version !== 1 || typeof row.conflicting_markers !== "boolean" || ![null, "clarify", "design"].includes(row.intended_gate)) {
+    throw new Error("Malformed guarded deliverable-completion capability response");
+  }
+  if (row.conflicting_markers !== (marker.kind === "conflict") || row.intended_gate !== marker.intended_gate) {
+    throw new Error("Deliverable markers changed during capability read; re-read the ticket");
+  }
+  return { ...marker, guard_available: true };
+}
+function assertCaptureAvailable(status) {
+  if (status.kind === "capture" && !status.guard_available) {
+    throw new Error("Capture-only completion guard unavailable: file a worker-question; do not stamp, exempt or advance this ticket");
+  }
+  if (status.kind === "conflict") throw new Error("Conflicting capture-only and decision-only markers: correct the labels before completion");
+}
+async function requireCaptureCompletionCapability(client, taskId) {
+  const { data, error: error2 } = await client.rpc("decision_only_completion_status", { _task_id: taskId });
+  if (error2) {
+    if (isMissingCompletionCapability(error2)) throw new Error("Capture-only guarded completion unavailable; file a worker-question");
+    throw error2;
+  }
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row || row.contract_version !== 1 || typeof row.conflicting_markers !== "boolean" || ![null, "clarify", "design"].includes(row.intended_gate)) throw new Error("Malformed guarded deliverable-completion capability response");
+  if (row.conflicting_markers) throw new Error("Conflicting deliverable markers");
+}
+
+// src/tools/project-context-completion.ts
+function isContextCompletingAccept(input) {
+  const marker = resolveDeliverableMarker(input.labels);
+  return input.workflow_state === "Verified" && marker.intended_gate !== null && ["human-in-session", "human-in-browser"].includes(input.provenance) && input.reason === (marker.intended_gate === "clarify" ? "clarification-draft" : "design-decision-draft") && (input.completion ? input.completion.gate === marker.intended_gate && input.completion.to_state === "Verified" : marker.intended_gate === "design" && input.legacy_design_completion === true);
+}
+function completingContextReferences(task, events2, briefs) {
+  const sorted = [...events2].sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
+  const result = /* @__PURE__ */ new Map();
+  for (const event of sorted) {
+    const meta = event.metadata;
+    if (event.event_type !== "brief_resolved" || meta?.command !== "accept") continue;
+    const brief = briefs.find((b) => b.id === meta.brief_id);
+    if (!brief) continue;
+    const acceptedAt = Date.parse(event.created_at);
+    const completionEdge = sorted.find((e) => Date.parse(e.created_at) > acceptedAt && e.event_type === "field_change" && e.field_name === "workflow_state" && e.old_value === "Designed" && e.new_value === "Verified");
+    const intervening = completionEdge ? sorted.filter((e) => Date.parse(e.created_at) >= acceptedAt && Date.parse(e.created_at) < Date.parse(completionEdge.created_at)) : [];
+    const legacy = completionEdge !== void 0 && !intervening.some((e) => e.event_type === "brief_resolved" && e.metadata?.command === "accept" && e.metadata.brief_id !== brief.id || e.field_name === "workflow_state" && (!["field_change", "acceptance_event_consumed"].includes(e.event_type) || e.new_value !== "Designed"));
+    if (!isContextCompletingAccept({
+      ...task,
+      reason: brief.reason,
+      provenance: String(meta.provenance ?? ""),
+      completion: brief.doc?.frame?.completion,
+      legacy_design_completion: legacy
+    })) continue;
+    const payloadIds = (brief.doc?.payload ?? []).flatMap((item) => {
+      const id = item.write_kind === "knowledge_entry_content" ? item.entry_id : item.write_kind === "rule_bundle" ? item.decision_id : null;
+      return typeof id === "string" && id ? [id] : [];
+    });
+    result.set(brief.id, {
+      brief_id: brief.id,
+      source_ids: brief.decision_ref ? [brief.decision_ref] : [...new Set(payloadIds)].sort()
+    });
+  }
+  return [...result.values()];
+}
+async function readContextCompletions(client, projectId, task) {
+  if (task.workflow_state !== "Verified" || !resolveDeliverableMarker(task.labels).intended_gate) return [];
+  const events2 = [], briefs = [];
+  for (let offset = 0; ; offset += 500) {
+    const result = await client.from("activity_events").select("created_at,event_type,field_name,old_value,new_value,metadata").eq("project_id", projectId).eq("task_id", task.id).order("created_at").order("id").range(offset, offset + 499);
+    if (result.error) throw result.error;
+    events2.push(...result.data ?? []);
+    if ((result.data ?? []).length < 500) break;
+  }
+  for (const id of new Set(events2.filter((e) => e.event_type === "brief_resolved" && e.metadata?.command === "accept").flatMap((e) => typeof e.metadata?.brief_id === "string" ? [e.metadata.brief_id] : []))) {
+    const result = await client.from("briefs").select("id,reason,decision_ref,doc").eq("project_id", projectId).eq("task_id", task.id).eq("id", id).maybeSingle();
+    if (result.error) throw result.error;
+    if (result.data) briefs.push(result.data);
+  }
+  return completingContextReferences(task, events2, briefs);
+}
+
 // src/tools/knowledge-claim.ts
 var ENVELOPE = /^\*\*Claim:\*\* ([^\n]+)\n\n\*\*Claim source:\*\* (authored|derived)\n\n/;
 function isSingleSentenceShaped(value) {
@@ -43719,7 +43818,7 @@ function sourceSummary(source, proposition) {
   const claim = claimFields(source);
   return !proposition && claim.claim_source === "authored" && bounded(claim.claim) ? claim.claim.trim() : null;
 }
-function resolveContextBlock(projectId, key, title, tasks, sources, references, projectKey) {
+function resolveContextBlock(projectId, key, title, tasks, sources, references, projectKey, completions = [], ruleIds = /* @__PURE__ */ new Set()) {
   const block = { key, title, ticket: null, source_ids: [], state: "unresolved", summary: null, diagnostics: [] };
   if (tasks.length !== 1) {
     block.diagnostics.push(tasks.length ? "Multiple matching scaffold tickets." : "Scaffold ticket not found.");
@@ -43732,7 +43831,19 @@ function resolveContextBlock(projectId, key, title, tasks, sources, references, 
     return block;
   }
   const linked = new Set(references.get(task.id) ?? []);
-  const eligible = sources.filter((s) => s.project_id === projectId && (s.source_task_id === task.id || linked.has(s.id)) && (key === "proposition" ? s.type === "specification" : ["architecture", "business", "convention", "product-design", "technical-design", "ux-ui-design"].includes(s.type)));
+  const authoritative = completions.length > 0;
+  const completionIds = [...new Set(completions.flatMap((c) => c.source_ids))];
+  if (authoritative && (completionIds.length !== 1 || completions.some((c) => c.source_ids.length !== 1))) {
+    block.source_ids = completionIds.sort();
+    block.diagnostics.push("Completing brief has missing or conflicting decision references.");
+    return block;
+  }
+  const eligible = sources.filter((s) => s.project_id === projectId && (authoritative ? completionIds.includes(s.id) : (s.source_task_id === task.id || linked.has(s.id)) && (key === "proposition" ? s.type === "specification" : s.source_activity === "design-decide" && s.madr != null && !s.tags?.includes("rule") && !ruleIds.has(s.id))));
+  if (authoritative && !eligible.length) {
+    block.source_ids = completionIds;
+    block.diagnostics.push(`Unreadable completing source ${completionIds[0]}.`);
+    return block;
+  }
   const byId = new Map(sources.filter((s) => s.project_id === projectId).map((s) => [s.id, s]));
   const current = /* @__PURE__ */ new Map();
   for (const initial of eligible) {
@@ -43780,16 +43891,39 @@ async function readProjectContext(client, projectId) {
   if (error2) throw error2;
   const tasks = [];
   for (let offset = 0; ; offset += PAGE) {
-    const result = await client.from("tasks").select("id,title,task_number,workflow_state,task_labels!inner(labels!inner(name))").eq("project_id", projectId).eq("archived", false).is("subsumed_by_task_id", null).eq("task_labels.labels.name", "inception-scaffold").order("id").range(offset, offset + PAGE - 1);
+    const result = await client.from("tasks").select("id,title,task_number,workflow_state,task_labels!inner(labels!inner(name)),all_labels:task_labels(labels(name))").eq("project_id", projectId).eq("archived", false).is("subsumed_by_task_id", null).eq("task_labels.labels.name", "inception-scaffold").order("id").range(offset, offset + PAGE - 1);
     if (result.error) throw result.error;
     tasks.push(...result.data ?? []);
     if ((result.data ?? []).length < PAGE) break;
   }
+  if (!tasks.length) return {
+    version: 1,
+    project_id: projectId,
+    project_name: project.name,
+    applicability: "not_applicable",
+    blocks: [],
+    diagnostics: []
+  };
+  const completions = /* @__PURE__ */ new Map();
+  for (const task of tasks) completions.set(task.id, await readContextCompletions(client, projectId, {
+    ...task,
+    labels: task.all_labels?.flatMap((row) => row.labels) ?? task.labels ?? []
+  }));
   const sources = [];
   for (let offset = 0; ; offset += PAGE) {
-    const result = await client.from("knowledge_decisions").select("id,project_id,source_task_id,type,status,superseded_by,content,madr").eq("project_id", projectId).order("id").range(offset, offset + PAGE - 1);
+    const result = await client.from("knowledge_decisions").select("id,project_id,source_task_id,type,status,superseded_by,content,madr,source_activity,tags,underwriting_brief_id").eq("project_id", projectId).order("id").range(offset, offset + PAGE - 1);
     if (result.error) throw result.error;
     sources.push(...result.data ?? []);
+    if ((result.data ?? []).length < PAGE) break;
+  }
+  const ruleIds = /* @__PURE__ */ new Set();
+  for (let offset = 0; ; offset += PAGE) {
+    const result = await client.from("decision_rule_citations").select("rule_entry_id").eq("project_id", projectId).order("id").range(offset, offset + PAGE - 1);
+    if (result.error) {
+      if (["42P01", "PGRST205"].includes(result.error.code)) break;
+      throw result.error;
+    }
+    for (const row of result.data ?? []) ruleIds.add(row.rule_entry_id);
     if ((result.data ?? []).length < PAGE) break;
   }
   const references = /* @__PURE__ */ new Map();
@@ -43811,10 +43945,13 @@ async function readProjectContext(client, projectId) {
     tasks.filter((task) => task.title === ticketTitle),
     sources,
     references,
-    project.key
+    project.key,
+    tasks.filter((task) => task.title === ticketTitle).flatMap((task) => completions.get(task.id) ?? []),
+    ruleIds
   ));
   return {
     version: 1,
+    applicability: "applicable",
     project_id: projectId,
     project_name: project.name,
     blocks,
@@ -44821,53 +44958,6 @@ import {
 
 // src/daemon/gate-phase.ts
 var GATES = ["clarify", "decompose", "design", "plan", "build", "release", "verify"];
-
-// src/tools/decision-only.ts
-function resolveDeliverableMarker(labels) {
-  const names = labels.map((label) => typeof label === "string" ? label : label.name);
-  const capture = names.includes("capture-only");
-  const decision = names.includes("decision-only");
-  if (capture && decision) return { kind: "conflict", intended_gate: null };
-  if (capture) return { kind: "capture", intended_gate: "clarify" };
-  if (decision) return { kind: "decision", intended_gate: "design" };
-  return { kind: "none", intended_gate: null };
-}
-function isMissingCompletionCapability(error2) {
-  return error2.code === "42883" || error2.code === "PGRST202";
-}
-async function readDeliverableStatus(client, taskId, labels) {
-  const marker = resolveDeliverableMarker(labels);
-  if (marker.kind === "none") return { ...marker, guard_available: false };
-  const { data, error: error2 } = await client.rpc("decision_only_completion_status", { _task_id: taskId });
-  if (error2) {
-    if (isMissingCompletionCapability(error2)) return { ...marker, guard_available: false };
-    throw error2;
-  }
-  const row = Array.isArray(data) ? data[0] : data;
-  if (!row || row.contract_version !== 1 || typeof row.conflicting_markers !== "boolean" || ![null, "clarify", "design"].includes(row.intended_gate)) {
-    throw new Error("Malformed guarded deliverable-completion capability response");
-  }
-  if (row.conflicting_markers !== (marker.kind === "conflict") || row.intended_gate !== marker.intended_gate) {
-    throw new Error("Deliverable markers changed during capability read; re-read the ticket");
-  }
-  return { ...marker, guard_available: true };
-}
-function assertCaptureAvailable(status) {
-  if (status.kind === "capture" && !status.guard_available) {
-    throw new Error("Capture-only completion guard unavailable: file a worker-question; do not stamp, exempt or advance this ticket");
-  }
-  if (status.kind === "conflict") throw new Error("Conflicting capture-only and decision-only markers: correct the labels before completion");
-}
-async function requireCaptureCompletionCapability(client, taskId) {
-  const { data, error: error2 } = await client.rpc("decision_only_completion_status", { _task_id: taskId });
-  if (error2) {
-    if (isMissingCompletionCapability(error2)) throw new Error("Capture-only guarded completion unavailable; file a worker-question");
-    throw error2;
-  }
-  const row = Array.isArray(data) ? data[0] : data;
-  if (!row || row.contract_version !== 1 || typeof row.conflicting_markers !== "boolean" || ![null, "clarify", "design"].includes(row.intended_gate)) throw new Error("Malformed guarded deliverable-completion capability response");
-  if (row.conflicting_markers) throw new Error("Conflicting deliverable markers");
-}
 
 // src/tools/text-normalize.ts
 var ENTITY_MAP = {

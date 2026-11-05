@@ -44,7 +44,19 @@ confirmed before claiming a regenerated first-commit file. The founder does not 
 context commit.
 
 Start-work calls `check` before planning and again in its build checkout. For an inception-scaffolded
-project, stale context means a plan step and a repair in the ticket's PR using `refresh`. Every check
+project, read `outcome` before scheduling any work:
+- `stale`: sources resolve and the section differs; plan repair in the ticket's PR using `refresh`.
+- `current`: no repair.
+- `unresolved`: refresh refuses; use the owning gate's elicitation for the named source/ticket.
+- `not_applicable`: no live inception scaffold exists; check returns `stale:false`, no diagnostics,
+  and refresh is a no-op, including when an old managed section exists. Partial scaffolds remain unresolved.
+
+For applicable projects, the existing `stale` field still means the file differs from the rendered
+projection, even when diagnostics make that projection unwritable. It is not a repair instruction.
+Older JSON without `outcome` requires checking diagnostics before `stale`.
+Key source clarification to the sorted source-id/diagnostic set: inspect the ticket's existing exchange
+and recorded answers, consume an answered round and re-read authority before asking again. Reuse an
+open round for the same set; a repeated check alone never justifies another question. Every check
 resolves the current category sources and supersession chains anew, so both a Superseded source and a
 newer Accepted source change the managed section. If the project has no inception scaffold, context
 refresh is not applicable. Missing or duplicate scaffold identities within an inception project,
@@ -55,3 +67,18 @@ Only the span between `<!-- harmony:project-context:begin -->` and
 `<!-- harmony:project-context:end -->` is replaced. With neither marker, append once. Malformed or
 multiple markers and concurrent edits are refused. Repeating refresh is byte-idempotent and preserves
 unrelated instructions. There is no background sync or supersede-event writer.
+
+## Decision authority
+
+Use the recorded human completing brief's `decision_ref`, or its payload's
+`knowledge_entry_content.entry_id` / `rule_bundle.decision_id` when no reference exists.
+Follow project-local Accepted supersession; a qualifying but unreadable/conflicting reference is
+unresolved, never a reason to choose another entry. Modern completion uses its explicit frame.
+A legacy design brief qualifies only with the decision-only marker, human acceptance and the
+recorded following Designed→Verified edge without an intervening accept/state change. Duplicate
+accept audit rows do not multiply authority. The after-accept consumer uses this same evidence.
+An agent accept or missing marker does not authorize consumption and leaves the reader on fallback.
+Fallback for S2 is the scaffold's single Accepted `source_activity:design-decide` entry with populated
+`madr`, independent of decision type. Rule-tagged entries and clarify/decompose companions are not
+competitors. Two genuine candidates remain unresolved. Proposition specification selection stays separate.
+Read failures remain errors; they never imply absence of inception. No fingerprint cache is stored.
