@@ -23,9 +23,10 @@ FROM node:22-bookworm-slim AS base
 # Toolchain: git (clone/branch/push), gh (open PRs), curl + ca-certificates
 # (installers, Supabase HTTPS), python3 (the settings-triple merge writer in
 # scripts/setup-channel-env.sh), jq (provision.sh parses get_project output),
-# unzip (B-929: fnm ships its release as a .zip, see the fnm layer below).
+# unzip (B-929: fnm ships its release as a .zip, see the fnm layer below),
+# libatomic1 (B-1399: runtime dependency of the Node 26 x64 binary).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      git curl ca-certificates bash python3 jq unzip \
+      git curl ca-certificates bash python3 jq unzip libatomic1 \
     && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
          -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \

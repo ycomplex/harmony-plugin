@@ -26,7 +26,7 @@ REPO_DIR="${1:?usage: install-playwright.sh <repo-path>}"
 PKG="$REPO_DIR/package.json"
 export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"
 
-warn() { echo "install-playwright: WARNING — $* (continuing; the leg is not affected)" >&2; }
+warn() { echo "install-playwright: WARNING — $* (continuing with the image's available browser setup; a compatible browser may still be missing)" >&2; }
 
 [ -f "$PKG" ] || exit 0
 jq -e '[.dependencies, .devDependencies] | map(. // {}) | add | (has("@playwright/test") or has("playwright"))' "$PKG" >/dev/null 2>&1 || exit 0

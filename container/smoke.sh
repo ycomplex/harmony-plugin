@@ -47,6 +47,9 @@ for bin in git gh jq python3 node corepack fnm; do
 done
 ok "toolchain present: git gh jq python3 node corepack fnm"
 
+# B-1399: command presence and the image-default Node do not prove repo pins.
+bash "$(dirname "${BASH_SOURCE[0]}")/pinned-node-smoke.sh" "$IMAGE"
+
 echo "smoke: versions —"
 docker run --rm --entrypoint /bin/sh "$IMAGE" -c \
   'echo "  node      $(node --version)"; echo "  corepack  $(corepack --version)"; echo "  fnm       $(fnm --version)"'

@@ -34,6 +34,10 @@ trap cleanup EXIT
 
 echo "engine smoke: probing $IMAGE"
 
+# B-1399: Cloud Build calls this script (not container/smoke.sh) for the
+# Docker-capable candidate. Reject a broken repo pin before ANY image push.
+bash "$(dirname "${BASH_SOURCE[0]}")/../pinned-node-smoke.sh" "$IMAGE"
+
 # --- (a) default user ---------------------------------------------------------
 uid="$(docker run --rm --entrypoint /bin/sh "$IMAGE" -c 'id -u')" || fail "could not run id -u"
 name="$(docker run --rm --entrypoint /bin/sh "$IMAGE" -c 'id -un')" || fail "could not run id -un"
