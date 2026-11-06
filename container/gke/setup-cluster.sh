@@ -1,22 +1,23 @@
 #!/usr/bin/env bash
 # B-1163: one-time (and safely re-runnable) setup of everything a `gke` launch profile needs — the
 # GKE cluster, the autoscaling leg node pool, the namespace, the conductor service account's IAM, and the
-# two Kubernetes Secrets the legs read. Run it ONCE, by an operator who is already logged in to gcloud
-# with enough rights on the project:
+# Kubernetes Secrets the legs read (Codex only by explicit legacy opt-in). Run it ONCE, by an operator
+# who is already logged in to gcloud with enough rights on the project:
 #
 #   bash container/gke/setup-cluster.sh --project <project-id> --daemon-sa <sa-email> [options]
 #
 # What it does, in order (see --help for the flags):
 #   1. checks gcloud / kubectl / gke-gcloud-auth-plugin are installed (not in --dry-run);
-#   2. checks the source Secret Manager secrets exist — BEFORE anything is created;
+#   2. guards explicit legacy Codex copying with a names-only token-only check, then checks the
+#      selected source Secret Manager secrets exist — BEFORE anything is created;
 #   3. prints the SSD_TOTAL_GB quota headroom (a warning, never a failure);
 #   4. creates the cluster and the leg node pool ONLY IF MISSING — an existing cluster or pool is
 #      never modified (REVISED by B-1169: steps 10-12 below make exactly three enable-only updates,
 #      and nothing else); a pool that differs from the expected settings is reported as `DRIFT:`;
 #   5. creates the namespace and the conductor service account's roles/container.developer binding if
 #      missing;
-#   6. syncs two Kubernetes Secrets from Secret Manager: an ENV Secret (HARMONY_API_TOKEN and
-#      CLAUDE_CODE_OAUTH_TOKEN) and a FILE Secret (auth.json, the Codex credential);
+#   6. syncs an ENV Secret (HARMONY_API_TOKEN and CLAUDE_CODE_OAUTH_TOKEN) from Secret Manager;
+#      only --legacy-codex-login also syncs a FILE Secret (auth.json, the retired Codex login);
 #   and, for the transcript bucket (B-1169 — legs keep session transcripts in
 #   gs://<--transcript-bucket> through the Cloud Storage FUSE CSI driver, not on the per-ticket PVC):
 #   2b. (inside step 2) checks the bucket exists — it is NEVER created here; a missing bucket stops the
@@ -97,7 +98,9 @@ Options (defaults in brackets):
   --leg-gsa-name <name>   Google service account the legs act as (Workload Identity) [harmony-gke-leg]
   --leg-ksa <name>        Kubernetes service account the leg pods run as [harmony-leg]
   --transcript-bucket <b> existing GCS bucket holding session transcripts; never created [<project>-transcripts]
-  --no-codex              skip the Codex file Secret entirely
+  --legacy-codex-login    opt in to copying the full Codex login (default: skip)
+  --allow-legacy-codex-with-token-only  also required if harmony-codex-access exists; legacy opt-in required
+  --no-codex              explicit skip (compatible default); conflicts with --legacy-codex-login
   --no-conductor          skip steps 18-26 (the remote conductor pod's namespace, account, grants and RBAC)
   --conductor-gsa-name <n> Google service account the conductor pod acts as [harmony-conductor]
   --sm-conductor-api-token <name>  Secret Manager secret the pod reads HARMONY_API_TOKEN from [HARMONY_API_TOKEN]
@@ -138,6 +141,8 @@ LEG_KSA="harmony-leg"
 TRANSCRIPT_BUCKET=""   # B-1217: defaults to <project>-transcripts below (Harmony: harmony-conductor-transcripts)
 TICKET_SC="harmony-ticket-disk"
 NO_CODEX=0
+LEGACY_CODEX=0
+ALLOW_LEGACY_WITH_TOKEN_ONLY=0
 NO_CONDUCTOR=0
 CONDUCTOR_NS="harmony-conductor"
 CONDUCTOR_KSA="harmony-conductor"
@@ -173,6 +178,8 @@ while [ $# -gt 0 ]; do
     --leg-ksa) need_value "$@"; LEG_KSA="$2"; shift 2 ;;
     --transcript-bucket) need_value "$@"; TRANSCRIPT_BUCKET="$2"; shift 2 ;;
     --no-codex) NO_CODEX=1; shift ;;
+    --legacy-codex-login) LEGACY_CODEX=1; shift ;;
+    --allow-legacy-codex-with-token-only) ALLOW_LEGACY_WITH_TOKEN_ONLY=1; shift ;;
     --no-conductor) NO_CONDUCTOR=1; shift ;;
     --conductor-gsa-name) need_value "$@"; CONDUCTOR_GSA_NAME="$2"; shift 2 ;;
     --sm-conductor-api-token) need_value "$@"; SM_CONDUCTOR_API_TOKEN="$2"; shift 2 ;;
@@ -190,7 +197,10 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-if [ -z "$PROJECT" ] && command -v gcloud >/dev/null 2>&1; then
+[ "$LEGACY_CODEX" -eq 0 ] || [ "$NO_CODEX" -eq 0 ] || die_usage "--no-codex conflicts with --legacy-codex-login"
+[ "$ALLOW_LEGACY_WITH_TOKEN_ONLY" -eq 0 ] || [ "$LEGACY_CODEX" -eq 1 ] || die_usage "--allow-legacy-codex-with-token-only requires --legacy-codex-login"
+
+if [ "$DRY_RUN" -eq 0 ] && [ -z "$PROJECT" ] && command -v gcloud >/dev/null 2>&1; then
   PROJECT="$(gcloud config get-value project 2>/dev/null || true)"
 fi
 [ -n "$PROJECT" ] || die_usage "--project is required (or set CLOUDSDK_CORE_PROJECT, or run 'gcloud config set project')"
@@ -264,9 +274,50 @@ else
   echo "gcloud, kubectl and gke-gcloud-auth-plugin found"
 fi
 
+# B-1409: this guard runs before any setup mutation or credential fetch. A failed names-only
+# listing is NOT evidence of absence. Never use versions access to detect token-only delivery.
+step "2a. Preflight: legacy Codex login"
+if [ "$LEGACY_CODEX" -eq 0 ]; then
+  echo "codex: skipped by default; use --legacy-codex-login only for the older copied-login arrangement"
+else
+  TOKEN_ONLY_SECRET="harmony-codex-access"
+  TOKEN_ONLY_QUERY=(gcloud secrets list --project "$PROJECT" "--filter=name~'/secrets/${TOKEN_ONLY_SECRET}$'" '--format=json(name)')
+  if [ "$DRY_RUN" -eq 1 ]; then
+    run "${TOKEN_ONLY_QUERY[@]}"
+    echo "dry run: token-only presence is unknown; the real run refuses legacy copying if $TOKEN_ONLY_SECRET exists without --allow-legacy-codex-with-token-only, or if its names-only check fails"
+    echo "dry run: the legacy source check and transfer below are conditional on that preflight allowing them"
+  else
+    if ! token_only_json="$(capture "${TOKEN_ONLY_QUERY[@]}")"; then
+      echo "setup-cluster: could not list names for $TOKEN_ONLY_SECRET in project $PROJECT (permission denied or service unavailable); refusing legacy Codex copying before any changes." >&2
+      exit 1
+    fi
+    if ! token_only_present="$(printf '%s' "$token_only_json" | node -e '
+      let s=""; process.stdin.on("data", c => s+=c); process.stdin.on("end", () => {
+        try {
+          const rows=JSON.parse(s);
+          if (!Array.isArray(rows) || rows.length > 1 || rows.some(r => !r ||
+            Object.keys(r).length !== 1 || typeof r.name !== "string" ||
+            !/^projects\/[^/\s]+\/secrets\/harmony-codex-access$/.test(r.name))) throw new Error();
+          process.stdout.write(rows.length ? "yes" : "no");
+        } catch { process.exitCode=1; }
+      });
+    ' 2>/dev/null)"; then
+      echo "setup-cluster: could not parse the names-only check for $TOKEN_ONLY_SECRET; refusing legacy Codex copying before any changes." >&2
+      exit 1
+    fi
+    if [ "$token_only_present" = yes ]; then
+      if [ "$ALLOW_LEGACY_WITH_TOKEN_ONLY" -eq 0 ]; then
+        echo "setup-cluster: $TOKEN_ONLY_SECRET exists in project $PROJECT; refusing to copy full login $SM_CODEX into $NAMESPACE/$CODEX_SECRET. Use --allow-legacy-codex-with-token-only alongside --legacy-codex-login to override deliberately." >&2
+        exit 1
+      fi
+      echo "WARNING: $TOKEN_ONLY_SECRET exists; explicit override will copy full login $SM_CODEX into $NAMESPACE/$CODEX_SECRET despite token-only delivery." >&2
+    fi
+  fi
+fi
+
 step "2. Preflight: Secret Manager sources exist"
 SOURCES=("$SM_API_TOKEN" "$SM_CLAUDE_TOKEN")
-[ "$NO_CODEX" -eq 1 ] || SOURCES+=("$SM_CODEX")
+[ "$LEGACY_CODEX" -eq 0 ] || SOURCES+=("$SM_CODEX")
 [ "$NO_CONDUCTOR" -eq 1 ] || SOURCES+=("$SM_CONDUCTOR_API_TOKEN" "$SM_CONDUCTOR_APP_KEY")
 missing=()
 for s in "${SOURCES[@]}"; do
@@ -429,8 +480,8 @@ sync_secret() {
 fetch "$SM_API_TOKEN" HARMONY_API_TOKEN
 fetch "$SM_CLAUDE_TOKEN" CLAUDE_CODE_OAUTH_TOKEN
 sync_secret "$ENV_SECRET" HARMONY_API_TOKEN CLAUDE_CODE_OAUTH_TOKEN
-if [ "$NO_CODEX" -eq 1 ]; then
-  echo "codex: skipped (--no-codex)"
+if [ "$LEGACY_CODEX" -eq 0 ]; then
+  echo "codex: skipped (use --legacy-codex-login to opt in)"
 else
   fetch "$SM_CODEX" auth.json
   sync_secret "$CODEX_SECRET" auth.json
@@ -805,8 +856,8 @@ echo "transcripts:    gs://$TRANSCRIPT_BUCKET (Cloud Storage FUSE CSI)"
 echo "leg GSA:        $LEG_GSA_EMAIL"
 echo "leg KSA:        $NAMESPACE/$LEG_KSA"
 echo "env Secret:     $ENV_SECRET (keys: HARMONY_API_TOKEN, CLAUDE_CODE_OAUTH_TOKEN)"
-if [ "$NO_CODEX" -eq 1 ]; then
-  echo "file Secret:    none (--no-codex)"
+if [ "$LEGACY_CODEX" -eq 0 ]; then
+  echo "file Secret:    none (default skip; --legacy-codex-login opts in)"
 else
   echo "file Secret:    $CODEX_SECRET (key: auth.json)"
 fi

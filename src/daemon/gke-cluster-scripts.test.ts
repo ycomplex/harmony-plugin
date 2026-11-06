@@ -7,7 +7,7 @@
 // file when a `create` call happens), so a second run against the same state sees things as existing.
 //
 // What this deliberately does NOT prove: anything about real GCP or a real cluster. No gcloud or
-// kubectl is ever run here; the verify walk runs the setup script live.
+// kubectl is ever run here; B-1409 verification must also avoid live credential copying.
 //
 // (This file lives under src/ only because vitest.config.ts includes src/**/*.test.ts.)
 
@@ -50,6 +50,8 @@ const GCLOUD_GLOBAL = ['--format', '--project', '--quiet', '--verbosity', '--acc
 const GCLOUD_ALLOWED: Record<string, string[]> = {
   'config get-value': [],
   'secrets describe': [],
+  // https://docs.cloud.google.com/sdk/gcloud/reference/secrets/list (names only).
+  'secrets list': ['--filter'],
   'secrets versions access': ['--secret'],
   'secrets get-iam-policy': [],
   'secrets add-iam-policy-binding': ['--member', '--role'],
@@ -229,6 +231,9 @@ function makeWorld(): World {
     '      *" --filter"* | *" --flatten"*) echo "ERROR: (gcloud.compute.regions.describe) unrecognized arguments: $*" >&2; exit 2 ;;',
     '      *" --format=json "*) printf \'{"name":"us-central1","quotas":[{"metric":"CPUS","limit":24.0,"usage":3.0},{"metric":"SSD_TOTAL_GB","limit":%s,"usage":%s}]}\' "${STUB_QUOTA_LIMIT:-500.0}" "${STUB_QUOTA_USAGE:-100.0}"; exit 0 ;;',
     '    esac; echo "ERROR: unsupported format in stub" >&2; exit 2 ;;',
+    '  *" secrets list "*)',
+    '    [ -z "${STUB_TOKEN_ONLY_FAIL:-}" ] || { echo "ERROR: permission denied or service unavailable" >&2; exit 1; }',
+    '    printf \'%s\\n\' "${STUB_TOKEN_ONLY_JSON-[]}"; exit 0 ;;',
     '  *" secrets describe "*) case " ${STUB_MISSING_SECRETS:-} " in *" $3 "*) echo "NOT_FOUND" >&2; exit 1 ;; esac; echo "$3"; exit 0 ;;',
     `  *" secrets versions access "*) printf '%s' '${SENTINEL}'; exit 0 ;;`,
     '  *" projects get-iam-policy "*) [ -f "$STUB_STATE/iam" ] && echo roles/container.developer; exit 0 ;;',
@@ -356,7 +361,7 @@ describe.skipIf(!CAPABLE)('both scripts parse and are executable', () => {
 });
 
 describe.skipIf(!CAPABLE)('container/gke/setup-cluster.sh (EXECUTED against stub gcloud / kubectl)', () => {
-  it('a fresh run creates the cluster, the pool, the namespace, the IAM binding and both Secrets', () => {
+  it('a fresh run creates the cluster, the pool, the namespace, the IAM binding and only the env Secret by default', () => {
     const world = makeWorld();
     const r = setup(world);
     expect(r.status).toBe(0);
@@ -387,8 +392,8 @@ describe.skipIf(!CAPABLE)('container/gke/setup-cluster.sh (EXECUTED against stub
     const k = calls(world, 'kubectl');
     expect(findCall(k, 'create', 'namespace', 'harmony-legs')).toBeDefined();
     expect(findCall(k, 'create', 'secret', 'generic', 'harmony-worker-secrets')).toBeDefined();
-    expect(findCall(k, 'create', 'secret', 'generic', 'harmony-codex-auth')).toBeDefined();
-    expect(k.filter((c) => has(c, 'apply'))).toHaveLength(3); // the two Secrets + the step-17 StorageClass
+    expect(findCall(k, 'create', 'secret', 'generic', 'harmony-codex-auth')).toBeUndefined();
+    expect(k.filter((c) => has(c, 'apply'))).toHaveLength(2); // env Secret + step-17 StorageClass
     expect(r.stdout).toContain('cluster:        harmony-legs');
   });
 
@@ -412,7 +417,7 @@ describe.skipIf(!CAPABLE)('container/gke/setup-cluster.sh (EXECUTED against stub
       expect(c).toContain('--dry-run=client');
       expect(has(c, 'secret', 'generic')).toBe(true);
     }
-    expect(k.filter((c) => has(c, 'apply'))).toHaveLength(2);
+    expect(k.filter((c) => has(c, 'apply'))).toHaveLength(1);
   });
 
   it('--dry-run never invokes a stub, prints the whole create path, and works with no gcloud / kubectl on PATH', () => {
@@ -431,7 +436,6 @@ describe.skipIf(!CAPABLE)('container/gke/setup-cluster.sh (EXECUTED against stub
       'kubectl create namespace harmony-legs',
       'gcloud projects add-iam-policy-binding proj-x',
       'kubectl -n harmony-legs create secret generic harmony-worker-secrets',
-      'kubectl -n harmony-legs create secret generic harmony-codex-auth',
       'gcloud storage buckets describe gs://proj-x-transcripts',
       'gcloud container clusters update harmony-legs',
       '--workload-pool=proj-x.svc.id.goog',
@@ -460,9 +464,9 @@ describe.skipIf(!CAPABLE)('container/gke/setup-cluster.sh (EXECUTED against stub
     expect(real.stderr).toContain("'gcloud' is not on PATH");
   });
 
-  it('a secret value NEVER reaches stdout, stderr or any recorded argv — only Secret and key NAMES are printed', () => {
+  it('explicit legacy copy: a secret value NEVER reaches stdout, stderr or any recorded argv — only Secret and key NAMES are printed', () => {
     const world = makeWorld();
-    const r = setup(world);
+    const r = setup(world, ['--legacy-codex-login']);
     expect(r.status).toBe(0);
     // the stub really did hand the sentinel out (positive control)…
     expect(findCall(calls(world, 'gcloud'), 'secrets', 'versions', 'access')).toBeDefined();
@@ -477,7 +481,7 @@ describe.skipIf(!CAPABLE)('container/gke/setup-cluster.sh (EXECUTED against stub
 
   it('splits the Secrets: the env Secret carries exactly the two tokens, the file Secret only auth.json', () => {
     const world = makeWorld();
-    expect(setup(world).status).toBe(0);
+    expect(setup(world, ['--legacy-codex-login']).status).toBe(0);
     const creates = calls(world, 'kubectl').filter((c) => has(c, 'create', 'secret', 'generic'));
     expect(creates).toHaveLength(2);
     const env = creates.find((c) => c.includes('harmony-worker-secrets'))!;
@@ -487,6 +491,118 @@ describe.skipIf(!CAPABLE)('container/gke/setup-cluster.sh (EXECUTED against stub
     expect(fromFileKeys(file)).toEqual(['auth.json']);
     expect(file.join('\n')).not.toContain('HARMONY_API_TOKEN');
     expect(file).toContain('--dry-run=client');
+  });
+
+  describe('B-1409 legacy opt-in and token-only preflight', () => {
+    const present = '[{"name":"projects/123456/secrets/harmony-codex-access"}]';
+    const accesses = (w: World) => calls(w, 'gcloud').filter(c => has(c, 'secrets', 'versions', 'access'));
+    const assertNoChanges = (w: World) => {
+      expect(mutating(w)).toEqual([]);
+      expect(accesses(w)).toEqual([]);
+      expect(calls(w, 'kubectl')).toEqual([]);
+      expect(calls(w, 'gcloud').some(c => has(c, 'get-credentials'))).toBe(false);
+    };
+
+    it.each([[], ['--no-codex']].map(flags => [flags]))('default/explicit skip %j never checks or copies Codex, even on rerun', flags => {
+      const w = makeWorld();
+      for (let i = 0; i < 2; i++) {
+        const r = setup(w, flags, { STUB_MISSING_SECRETS: 'harmony-codex-auth', STUB_TOKEN_ONLY_FAIL: '1' });
+        expect(r.status).toBe(0);
+        expect(r.stdout).toContain('--legacy-codex-login');
+        expect(accesses(w).map(c => c.find(a => a.startsWith('--secret=')))).toEqual([
+          '--secret=HARMONY_API_TOKEN', '--secret=CLAUDE_CODE_OAUTH_TOKEN',
+        ]);
+        expect(calls(w, 'gcloud').some(c => has(c, 'secrets', 'list') || c.includes('harmony-codex-auth'))).toBe(false);
+        expect(calls(w, 'kubectl').some(c => c.includes('harmony-codex-auth'))).toBe(false);
+        resetLogs(w);
+      }
+    });
+
+    it('a successful empty list permits legacy copying with configured source and destination', () => {
+      const w = makeWorld();
+      const r = setup(w, ['--legacy-codex-login', '--sm-codex', 'old-login', '--codex-secret', 'custom-login']);
+      expect(r.status).toBe(0);
+      const g = calls(w, 'gcloud');
+      expect(g[0]).toEqual(['secrets', 'list', '--project', 'proj-x',
+        "--filter=name~'/secrets/harmony-codex-access$'", '--format=json(name)']);
+      expect(accesses(w).map(c => c.find(a => a.startsWith('--secret=')))).toEqual([
+        '--secret=HARMONY_API_TOKEN', '--secret=CLAUDE_CODE_OAUTH_TOKEN', '--secret=old-login',
+      ]);
+      expect(findCall(calls(w, 'kubectl'), 'create', 'secret', 'generic', 'custom-login')).toBeDefined();
+    });
+
+    it('token-only present refuses by name before any mutation or credential fetch', () => {
+      const w = makeWorld();
+      const r = setup(w, ['--legacy-codex-login'], { STUB_TOKEN_ONLY_JSON: present });
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('harmony-codex-access');
+      expect(r.stderr).toContain('--allow-legacy-codex-with-token-only');
+      assertNoChanges(w);
+    });
+
+    it('both flags permit the existing transfer, with a conspicuous names-only warning', () => {
+      const w = makeWorld();
+      const r = setup(w, ['--legacy-codex-login', '--allow-legacy-codex-with-token-only'], { STUB_TOKEN_ONLY_JSON: present });
+      expect(r.status).toBe(0);
+      expect(r.stderr).toContain('WARNING: harmony-codex-access exists');
+      expect(r.stderr).toContain('full login harmony-codex-auth');
+      expect(accesses(w)).toHaveLength(3);
+      for (const text of [r.stdout, r.stderr, log(w, 'gcloud'), log(w, 'kubectl')]) expect(text).not.toContain(SENTINEL);
+    });
+
+    it.each([
+      ['--allow-legacy-codex-with-token-only'],
+      ['--no-codex', '--legacy-codex-login'],
+      ['--legacy-codex-login', '--no-codex'],
+    ])('invalid combination %j fails before any cloud call', (...flags) => {
+      const w = makeWorld();
+      expect(setup(w, flags).status).toBe(2);
+      expect(calls(w, 'gcloud')).toEqual([]);
+      assertNoChanges(w);
+    });
+
+    it.each(['', 'not json', '{}', '[{}]', '[{"name":"other"}]',
+      '[{"name":"projects/p/secrets/harmony-codex-access-extra"}]',
+      '[{"name":"projects/p/secrets/harmony-codex-access"},{"name":"projects/p/secrets/harmony-codex-access"}]',
+    ])('malformed or unexpected names response %j fails closed even with override', json => {
+      const w = makeWorld();
+      const r = setup(w, ['--legacy-codex-login', '--allow-legacy-codex-with-token-only'], { STUB_TOKEN_ONLY_JSON: json });
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('could not parse the names-only check');
+      assertNoChanges(w);
+    });
+
+    it.each([[], ['--allow-legacy-codex-with-token-only']].map(flags => [flags]))('metadata failure refuses even with flags %j', flags => {
+      const w = makeWorld();
+      const r = setup(w, ['--legacy-codex-login', ...flags], { STUB_TOKEN_ONLY_FAIL: '1' });
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('could not list names for harmony-codex-access');
+      assertNoChanges(w);
+    });
+
+    it.each([[], ['--legacy-codex-login'], ['--legacy-codex-login', '--allow-legacy-codex-with-token-only']].map(flags => [flags]))(
+      'dry-run %j invokes no cloud executable and states the conditional guard', flags => {
+        const w = makeWorld();
+        const r = setup(w, ['--dry-run', ...flags]);
+        expect(r.status).toBe(0);
+        expect(log(w, 'gcloud') + log(w, 'kubectl')).toBe('');
+        if (flags.length) {
+          expect(r.stdout).toContain('gcloud secrets list');
+          expect(r.stdout).toContain('token-only presence is unknown');
+          expect(r.stdout).toContain('--secret=harmony-codex-auth');
+        } else {
+          expect(r.stdout).not.toContain('--secret=harmony-codex-auth');
+          expect(r.stdout).not.toContain('create secret generic harmony-codex-auth');
+        }
+      },
+    );
+
+    it('dry-run without a project never queries gcloud configuration', () => {
+      const w = makeWorld();
+      const r = exec(w, setupPath, ['--daemon-sa', SA, '--dry-run']);
+      expect(r.status).toBe(2);
+      expect(calls(w, 'gcloud')).toEqual([]);
+    });
   });
 
   it('--no-codex: one Secret only, and Secret Manager is never asked about the Codex secret', () => {
