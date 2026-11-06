@@ -12,9 +12,14 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.useRealTimers(); });
 const url = 'https://synthetic.supabase.co';
 const key = 'sb_publishable_synthetic';
-const jwt = (sequence: number, project = 'project-a') => `header.${Buffer.from(JSON.stringify({
-  sub: 'user-a', project_id: project, role: 'authenticated', sequence,
-})).toString('base64url')}.signature`;
+// B-1415 Accepted technical contract 0132abdd: the client decodes unchanged
+// metadata; these synthetic responses do not assert signature validity or hosted trust.
+const jwt = (sequence: number, project = 'project-a', algorithm = 'HS256') =>
+  `${Buffer.from(JSON.stringify({ alg: algorithm, typ: 'JWT', ...(algorithm === 'ES256' ? { kid: 'synthetic-approved-kid' } : {}) })).toString('base64url')}.${Buffer.from(JSON.stringify({
+    sub: 'user-a', project_id: project, workspace_id: 'workspace-a', role: 'authenticated',
+    iss: 'supabase', iat: 1793966400, exp: 1793970000, token_hash: 'synthetic-hash', actor: 'ai', sequence,
+  })).toString('base64url')}.synthetic-signature`;
+
 
 describe('source-local public key aliases', () => {
   it.each([
@@ -51,6 +56,7 @@ describe('source-local public key aliases', () => {
   });
 });
 
+describe.each(['HS256', 'ES256'])('B-1415 unchanged signing-response metadata: %s', (algorithm) => {
 describe.each(['legacy.synthetic.jwt', key])('public transport and renewed user identity: %s', (publicKey) => {
   it('uses public apikey for bootstrap and renewed user JWT for every data request', async () => {
     let exchanges = 0;
@@ -61,9 +67,9 @@ describe.each(['legacy.synthetic.jwt', key])('public transport and renewed user 
       if (requestUrl.endsWith('/auth-token')) {
         expect(headers.get('Authorization')).toBe(publicKey === key ? null : `Bearer ${publicKey}`);
         expect(JSON.parse(init!.body as string)).toEqual({ token: 'synthetic-harmony-token' });
-        return Response.json({ access_token: jwt(++exchanges), expires_in: 100, project_id: 'project-a' });
+        return Response.json({ access_token: jwt(++exchanges, 'project-a', algorithm), expires_in: 100, project_id: 'project-a' });
       }
-      expect(headers.get('Authorization')).toBe(`Bearer ${jwt(exchanges)}`);
+      expect(headers.get('Authorization')).toBe(`Bearer ${jwt(exchanges, 'project-a', algorithm)}`);
       return Response.json([{ id: 'synthetic-row' }]);
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -75,12 +81,19 @@ describe.each(['legacy.synthetic.jwt', key])('public transport and renewed user 
     expect(exchanges).toBe(2);
     expect(auth.getUserId()).toBe('user-a');
     expect(auth.getProjectId()).toBe('project-a');
+    const payload = JSON.parse(Buffer.from((await auth.getAccessToken()).split('.')[1], 'base64url').toString());
+    expect(payload).toMatchObject({ sub: 'user-a', project_id: 'project-a', workspace_id: 'workspace-a',
+      role: 'authenticated', iss: 'supabase', token_hash: 'synthetic-hash', actor: 'ai',
+      iat: 1793966400, exp: 1793970000 });
+    expect(payload).not.toHaveProperty('aud');
   });
   it('rejects a mismatched project claim before using the returned token', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ access_token: jwt(1, 'other-project'),
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ access_token: jwt(1, 'other-project', algorithm),
       expires_in: 100, project_id: 'project-a' })));
     await expect(new HarmonyAuth('synthetic-token', url, publicKey).getAccessToken()).rejects.toThrow();
   });
+});
+
 });
 
 it('rejects direct MCP environment alias conflicts before network access', async () => {
