@@ -42,7 +42,7 @@ REGION=us-central1
 OWNER_GSA="harmony-codex-refresh@$PROJECT.iam.gserviceaccount.com"
 LEG_GSA="harmony-gke-leg@$PROJECT.iam.gserviceaccount.com"
 # Set these to the actual Cloud Run job and Docker VM service-account names.
-CLOUD_JOB=harmony-build-worker
+CLOUD_JOB=harmony-worker
 CLOUD_GSA=REPLACE_CLOUD_RUN_SERVICE_ACCOUNT
 DOCKER_GSA=REPLACE_DOCKER_VM_SERVICE_ACCOUNT
 OWNER_IMAGE="$REGION-docker.pkg.dev/$PROJECT/harmony-workers/codex-auth:B1306"
@@ -83,6 +83,8 @@ service account; GKE uses the existing `harmony-leg` workload identity.
    Pin the built digest, not a moving tag. Keep `suspend: true`. Use a volume
    storage class with durable POSIX exclusive creation, atomic rename and fsync;
    do not substitute an object-store/FUSE filesystem.
+   With the default standard-rwo class (WaitForFirstConsumer), the PVC stays
+   Pending until step 4's bootstrap pod mounts it.
 
 3. Create the separate access-only resource and narrow workload identities.
    No worker principal gets owner-volume access or full-login Secret access.
@@ -97,6 +99,9 @@ service account; GKE uses the existing `harmony-leg` workload identity.
      gcloud secrets add-iam-policy-binding harmony-codex-access --project "$PROJECT" --member "serviceAccount:$READER_GSA" --role roles/secretmanager.secretAccessor
    done
    ```
+
+   A deployment using only the GKE profile needs only "$LEG_GSA" as a reader;
+   omit the Cloud Run and Docker reader bindings for profiles it does not use.
 
    Audit effective IAM by **policy names only**. Remove any broader inherited
    Secret Manager accessor grant that would let workers read the old full-login
@@ -135,7 +140,7 @@ service account; GKE uses the existing `harmony-leg` workload identity.
    ```bash
    kubectl apply -f /tmp/codex-bootstrap.yaml
    # FRESH_CODEX_HOME is the founder's NEW dedicated login directory, never a copied cache.
-   CODEX_HOME="$FRESH_CODEX_HOME" codex login --device-auth
+   CODEX_HOME="$FRESH_CODEX_HOME" npx -y @openai/codex@0.166.0 login --device-auth
    kubectl -n harmony-conductor cp "$FRESH_CODEX_HOME/auth.json" harmony-codex-bootstrap:/private/codex-owner/fresh-login.json
    kubectl -n harmony-conductor exec harmony-codex-bootstrap -- node /app/codex-auth.mjs owner --initialize
    kubectl -n harmony-conductor delete pod harmony-codex-bootstrap
