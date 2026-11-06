@@ -1,3 +1,4 @@
+import { resolvePublicKey } from './supabase-key.js';
 import { harmonyEnv } from './env.js';
 
 /** B-1025: the built-in Supabase pair, used when no source names one.
@@ -72,7 +73,10 @@ export class HarmonyAuth {
 
   /** B-1025: the Supabase anon key for THIS call — the counterpart of getSupabaseUrl(). */
   getSupabaseAnonKey(): string {
-    return this.supabaseAnonKey ?? harmonyEnv('HARMONY_SUPABASE_ANON_KEY') ?? DEFAULT_SUPABASE_ANON_KEY;
+    return this.supabaseAnonKey ?? resolvePublicKey(
+      harmonyEnv('HARMONY_SUPABASE_ANON_KEY'), harmonyEnv('HARMONY_SUPABASE_PUBLISHABLE_KEY'),
+      ['HARMONY_SUPABASE_ANON_KEY', 'HARMONY_SUPABASE_PUBLISHABLE_KEY'],
+    ) ?? DEFAULT_SUPABASE_ANON_KEY;
   }
 
   async getAccessToken(): Promise<string> {
@@ -110,14 +114,16 @@ export class HarmonyAuth {
 
   private async exchange(): Promise<void> {
     const endpoint = '/functions/v1/auth-token';
+    const publicKey = this.getSupabaseAnonKey();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json', apikey: publicKey };
+    if (!publicKey.startsWith('sb_publishable_') && !publicKey.startsWith('sb_secret_')) {
+      headers.Authorization = `Bearer ${publicKey}`;
+    }
     let res: Response;
     try {
       res = await fetch(`${this.getSupabaseUrl()}${endpoint}`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.getSupabaseAnonKey()}`,
-        },
+        headers,
         body: JSON.stringify({ token: this.apiToken }),
       });
     } catch (err) {

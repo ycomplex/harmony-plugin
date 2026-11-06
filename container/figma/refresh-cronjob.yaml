@@ -44,7 +44,10 @@ spec:
                     secretKeyRef: {name: harmony-figma-refresh-board, key: url}
                 - name: HARMONY_SUPABASE_ANON_KEY
                   valueFrom:
-                    secretKeyRef: {name: harmony-figma-refresh-board, key: anon-key}
+                    secretKeyRef: {name: harmony-figma-refresh-board, key: anon-key, optional: true}
+                - name: HARMONY_SUPABASE_PUBLISHABLE_KEY
+                  valueFrom:
+                    secretKeyRef: {name: harmony-figma-refresh-board, key: publishable-key, optional: true}
                 - name: HARMONY_API_TOKEN
                   valueFrom:
                     secretKeyRef:
@@ -82,7 +85,10 @@ spec:
                     secretKeyRef: {name: harmony-figma-refresh-board-prod, key: url}
                 - name: HARMONY_SUPABASE_ANON_KEY
                   valueFrom:
-                    secretKeyRef: {name: harmony-figma-refresh-board-prod, key: anon-key}
+                    secretKeyRef: {name: harmony-figma-refresh-board-prod, key: anon-key, optional: true}
+                - name: HARMONY_SUPABASE_PUBLISHABLE_KEY
+                  valueFrom:
+                    secretKeyRef: {name: harmony-figma-refresh-board-prod, key: publishable-key, optional: true}
                 - name: HARMONY_API_TOKEN
                   valueFrom:
                     secretKeyRef:

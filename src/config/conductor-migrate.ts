@@ -52,7 +52,7 @@ export function nonSecretDrops(dropped: MigrationDrop[]): MigrationDrop[] {
 export const SECRET_REASON = 'secret value: stays in Secret Manager / the service environment';
 const KEEPS_REASON = 'no conductor.json key; deployment.json keeps supplying it';
 
-const SECRET_ENV_KEYS = ['HARMONY_API_TOKEN', 'GIT_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'HARMONY_SUPABASE_ANON_KEY'];
+const SECRET_ENV_KEYS = ['HARMONY_API_TOKEN', 'GIT_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'HARMONY_SUPABASE_ANON_KEY', 'HARMONY_SUPABASE_PUBLISHABLE_KEY'];
 const PLAIN_ENV_KEYS = ['GIT_USER_NAME', 'GIT_USER_EMAIL', 'WEB_REF', 'WORKSPACE_REF'];
 
 export function buildMigration(input: {

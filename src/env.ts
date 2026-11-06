@@ -11,7 +11,8 @@
 export type HarmonyConnectionVar =
   | 'HARMONY_API_TOKEN'
   | 'HARMONY_SUPABASE_URL'
-  | 'HARMONY_SUPABASE_ANON_KEY';
+  | 'HARMONY_SUPABASE_ANON_KEY'
+  | 'HARMONY_SUPABASE_PUBLISHABLE_KEY';
 
 export function harmonyEnv(
   name: HarmonyConnectionVar,

@@ -35,6 +35,7 @@
  *  source and the missing key is its OWN partner from elsewhere — the staging-channel URL
  *  without its key, for example.
  */
+import { resolvePublicKey } from '../supabase-key.js';
 import { harmonyEnv } from '../env.js';
 import { DEFAULT_SUPABASE_ANON_KEY, DEFAULT_SUPABASE_URL } from '../auth.js';
 
@@ -45,12 +46,14 @@ export type SupabaseTargetSource = 'flags' | 'project' | 'env' | 'default';
 export interface SupabaseTargetFlags {
   url?: string;
   anonKey?: string;
+  publishableKey?: string;
 }
 
 /** The stored project's `supabaseUrl` / `supabaseAnonKey` (ProjectConfig in ~/.harmony/config.json). */
 export interface SupabaseTargetProject {
   supabaseUrl?: string;
   supabaseAnonKey?: string;
+  supabasePublishableKey?: string;
 }
 
 export interface ResolvedSupabaseTarget {
@@ -70,12 +73,12 @@ const SOURCE_LABEL: Record<SupabaseTargetSource, string> = {
 /** The remedy, per source. Each names the SAME source the URL came from — a pair is one source. */
 const SOURCE_REMEDY: Record<SupabaseTargetSource, string> = {
   flags:
-    'Pass --supabase-anon-key <key> alongside --supabase-url — the URL and its key travel together.',
+    'Pass --supabase-anon-key <key> or --supabase-publishable-key <key> alongside --supabase-url — the URL and its key travel together.',
   project:
-    'This project was registered without an anon key (projects saved by an older CLI carry a URL but no key). ' +
-    'Re-run `harmony login --supabase-url <url> --supabase-anon-key <key> --token <token> --name <name>` to register the key.',
+    'This project has a URL without a public key. ' +
+    'Re-run `harmony login --supabase-url <url> --supabase-publishable-key <key> --token <token> --name <name>` (or --supabase-anon-key) to register the key.',
   env:
-    'Set HARMONY_SUPABASE_ANON_KEY in the environment — it must sit beside HARMONY_SUPABASE_URL.',
+    'Set HARMONY_SUPABASE_ANON_KEY or HARMONY_SUPABASE_PUBLISHABLE_KEY in the environment — it must sit beside HARMONY_SUPABASE_URL.',
   default: 'Supply the anon key with the URL.',
 };
 
@@ -107,17 +110,19 @@ export function resolveSupabaseTarget(input: {
 }): ResolvedSupabaseTarget {
   const env = input.env ?? process.env;
 
-  const sources: Array<{ source: SupabaseTargetSource; url?: string; anonKey?: string }> = [
-    { source: 'flags', url: input.flags?.url, anonKey: input.flags?.anonKey },
+  const sources: Array<{ source: SupabaseTargetSource; url?: string; anonKey?: string; publishableKey?: string }> = [
+    { source: 'flags', url: input.flags?.url, anonKey: input.flags?.anonKey, publishableKey: input.flags?.publishableKey },
     {
       source: 'project',
       url: input.project?.supabaseUrl,
       anonKey: input.project?.supabaseAnonKey,
+      publishableKey: input.project?.supabasePublishableKey,
     },
     {
       source: 'env',
       url: harmonyEnv('HARMONY_SUPABASE_URL', env),
       anonKey: harmonyEnv('HARMONY_SUPABASE_ANON_KEY', env),
+      publishableKey: harmonyEnv('HARMONY_SUPABASE_PUBLISHABLE_KEY', env),
     },
   ];
 
@@ -127,8 +132,9 @@ export function resolveSupabaseTarget(input: {
   const owner = sources.find((candidate) => candidate.url);
   if (owner) {
     const url = owner.url as string;
-    if (owner.anonKey) {
-      return { url, anonKey: owner.anonKey, source: owner.source };
+    const key = normalize(owner);
+    if (key) {
+      return { url, anonKey: key, source: owner.source };
     }
     if (url === DEFAULT_SUPABASE_URL) {
       return {
@@ -142,10 +148,20 @@ export function resolveSupabaseTarget(input: {
 
   // No source named a URL: the built-in default stands, and an explicitly supplied key is
   // honoured rather than silently ignored (acceptance criterion c2da57c6).
-  const keyOwner = sources.find((candidate) => candidate.anonKey);
+  const keyOwner = sources.find((candidate) => candidate.anonKey || candidate.publishableKey);
   return {
     url: DEFAULT_SUPABASE_URL,
-    anonKey: keyOwner?.anonKey ?? DEFAULT_SUPABASE_ANON_KEY,
+    anonKey: (keyOwner ? normalize(keyOwner) : undefined) ?? DEFAULT_SUPABASE_ANON_KEY,
     source: 'default',
   };
+}
+
+function normalize(source: { source: SupabaseTargetSource; anonKey?: string; publishableKey?: string }): string | undefined {
+  const names: Record<SupabaseTargetSource, readonly [string, string]> = {
+    flags: ['--supabase-anon-key', '--supabase-publishable-key'],
+    project: ['supabaseAnonKey', 'supabasePublishableKey'],
+    env: ['HARMONY_SUPABASE_ANON_KEY', 'HARMONY_SUPABASE_PUBLISHABLE_KEY'],
+    default: ['DEFAULT_SUPABASE_ANON_KEY', 'DEFAULT_SUPABASE_PUBLISHABLE_KEY'],
+  };
+  return resolvePublicKey(source.anonKey, source.publishableKey, names[source.source]);
 }

@@ -17,6 +17,9 @@
 #      so channel residue can never trip promote-prod.sh's untracked preflight.
 #
 # The API token is never echoed.
+# The positional key accepts legacy JWT and sb_publishable_ formats. The generic
+# channel keeps its legacy ANON_KEY binding for existing installations; transport
+# selection is handled by HarmonyAuth, never by renaming deployed secrets.
 set -euo pipefail
 
 usage() {

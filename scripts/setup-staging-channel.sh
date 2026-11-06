@@ -11,6 +11,9 @@
 # The anon key comes from arg 3, else VITE_SUPABASE_ANON_KEY in ../../web/.env
 # (workspace layout), else we abort with a pointer at the Supabase dashboard.
 # The API token is never echoed.
+# The positional key accepts legacy JWT and sb_publishable_ formats. The generic
+# channel keeps its legacy ANON_KEY binding for existing installations; transport
+# selection is handled by HarmonyAuth, never by renaming deployed secrets.
 set -euo pipefail
 
 # staging.harmony.ad's deployed Supabase project (NOT web/supabase/config.toml's
