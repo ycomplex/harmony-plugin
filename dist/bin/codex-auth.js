@@ -24323,10 +24323,22 @@ async function runWorker(home, ref, once, services2) {
       access = validateAccess(previous, null, services2.now());
     }
     await atomicPrivateJson(join4(home, "access-generation.json"), access);
-    await atomicPrivateJson(join4(home, "auth.json"), access.auth);
+    const last_refresh = await lastRefresh(home, access, previous, services2);
+    await atomicPrivateJson(join4(home, "last-refresh.json"), { generation: access.generation, last_refresh });
+    await atomicPrivateJson(join4(home, "auth.json"), { ...access.auth, last_refresh });
     previous = access;
     if (!once) await services2.sleep();
   } while (!once);
+}
+async function lastRefresh(home, access, previous, services2) {
+  if (previous && previous.generation === access.generation) {
+    try {
+      const stamp = JSON.parse(await readFile(join4(home, "last-refresh.json"), "utf8"));
+      if (stamp.generation === access.generation && typeof stamp.last_refresh === "string" && Number.isFinite(Date.parse(stamp.last_refresh))) return stamp.last_refresh;
+    } catch {
+    }
+  }
+  return new Date(services2.now()).toISOString();
 }
 
 // src/bin/codex-auth.ts
