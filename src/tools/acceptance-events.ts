@@ -539,28 +539,35 @@ export async function applyAcceptanceEventPayload(
   // B-1317: resolve every entity_link BEFORE the first write (an ambiguous name must not leave a partial apply).
   const resolvedLinks = await preflightEntityLinks(client, event, items, opts);
   const order: AcceptanceEventPayloadItem['write_kind'][] = [
+    // B-1418: rule_bundle runs FIRST, before every other write kind. Accepted rule: "When an accepted
+    // brief's payload is applied, the rule bundle is applied before any other write kind, so a refused
+    // bundle leaves nothing from that acceptance on the ticket or in the knowledge base. A new write kind
+    // is ordered after the rule bundle." The bundle (B-1047) is one server-side transaction: a refusal
+    // (`B-1047: …`, e.g. a stale amend target) rolls it back and throws here, so no other write of this
+    // acceptance has landed and the event stays pending with the blocker named; a retry finds a committed
+    // bundle's ledger row and skips it. consume_rule_bundle_write reads only its own ledger row and the
+    // rule registry, so it depends on no earlier write. (It used to sit just before
+    // knowledge_entry_content, which let a refusal strand an acceptance whose child tickets, ACs and gate
+    // slot had already landed.)
+    'rule_bundle',
     'child_ticket', 'checklist_item', 'acceptance_criterion', 'ac_transfer',
     // B-867 sits HERE — after every concrete materialization, before the entry promotion. Same reasoning
-    // as the line below, one notch weaker: the slot is the ticket's DISPLAYED record of what this accept
-    // did, so a payload that fails partway must not leave a section on the ticket announcing writes that
-    // never landed. It stays AHEAD of the entry promotion because a slot is a projection of the brief,
-    // repaired by the next accept (latest-accepted-per-gate), whereas a wrongly-promoted entry has
-    // already superseded a real one.
+    // as the entry promotion's, one notch weaker: the slot is the ticket's DISPLAYED record of what this
+    // accept did, so a payload that fails partway must not leave a section on the ticket announcing
+    // writes that never landed. It stays AHEAD of knowledge_entry_content because a slot is a projection
+    // of the brief, repaired by the next accept (latest-accepted-per-gate), whereas a wrongly-promoted
+    // entry has already superseded a real one.
     'gate_slot',
     // B-997 sits right after gate_slot, before knowledge_entry_content: it lands the human-confirmed
     // feature-entity name(s) onto the ticket's field_values — a durable, displayed-adjacent record,
     // same reasoning as gate_slot just above (materialize before the entry promotion / decision
     // retirement below, which are the more consequential, harder-to-undo writes).
     'implements_entities',
-    // B-843 sits after gate_slot, before label_add: it promotes the gate's knowledge entry and supersedes
-    // the previous round's. Running it after every AC/child/checklist write means a payload that fails
-    // partway leaves the knowledge base untouched rather than promoting a decision whose materialization
-    // never landed.
-    // B-1047 sits immediately BEFORE knowledge_entry_content: "preflight, apply the bundle, project the
-    // design, then consume". The bundle is one server-side transaction (a refusal rolls it back and
-    // throws here, so the design entry is never projected and the event stays pending with the blocker
-    // named); a retry finds the bundle's ledger row and skips it.
-    'rule_bundle',
+    // B-843: knowledge_entry_content promotes the gate's knowledge entry and supersedes the previous
+    // round's. Running it after every AC/child/checklist/gate_slot write means a payload that fails
+    // partway leaves the gate's entry unpromoted rather than promoting a decision whose materialization
+    // never landed. (The rule bundle, the other knowledge-base write, runs first instead — B-1418 above —
+    // because its refusal is the likeliest failure and must land nothing.)
     'knowledge_entry_content',
     // B-997 sits right after knowledge_entry_content, before supersede_decision: it lands the
     // already-resolved entity edge(s) a design/visual-handoff accept confirmed. Entity-NAME resolution
@@ -569,8 +576,7 @@ export async function applyAcceptanceEventPayload(
     // state' reasoning) and before supersede_decision below (a wholly separate decision retirement
     // that must never be blocked by this write, or vice versa).
     'entity_link',
-    // B-941 sits right after entity_link (B-997 inserted between it and knowledge_entry_content),
-    // before label_add: it retires an UPSTREAM decision
+    // B-941 sits right after entity_link, before label_add: it retires an UPSTREAM decision
     // (harmony-revise-scope's supersede-list) — a wholly different decision from the one
     // knowledge_entry_content above may have just promoted, but the same "materialize before touching the
     // knowledge base's terminal state" reasoning applies, and it has nothing to do with label_add's
@@ -585,6 +591,7 @@ export async function applyAcceptanceEventPayload(
     // from ever landing on that payload, even though those two writes have nothing to do with the label
     // guard rule. Running label_add last means every other write in the payload lands first, and only the
     // genuinely-blocked label write is left pending — it never blocks the more consequential writes.
+    // (The one deliberate exception is the rule bundle, B-1418: a refused bundle blocks the whole payload.)
     'label_add',
   ];
   const ordered = order.flatMap((kind) => items.filter((i) => i.write_kind === kind));
