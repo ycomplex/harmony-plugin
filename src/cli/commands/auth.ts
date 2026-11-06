@@ -15,6 +15,7 @@ export function registerAuthCommands(program: Command): void {
     .option('--name <name>', 'Project name (auto-detected if not provided)')
     .option('--supabase-url <url>', 'Custom Supabase URL (advanced)')
     .option('--supabase-anon-key <key>', 'Custom Supabase anon key (advanced)')
+    .option('--supabase-publishable-key <key>', 'Custom Supabase publishable key (advanced)')
     .action(async (opts) => {
       const json = program.opts().json;
       try {
@@ -25,7 +26,7 @@ export function registerAuthCommands(program: Command): void {
         // `--supabase-url` never reached the token exchange. The pair is resolved here, by name,
         // and handed to the auth instance explicitly.
         const target = resolveSupabaseTarget({
-          flags: { url: opts.supabaseUrl, anonKey: opts.supabaseAnonKey },
+          flags: { url: opts.supabaseUrl, anonKey: opts.supabaseAnonKey, publishableKey: opts.supabasePublishableKey },
           project: undefined,
         });
 
@@ -48,6 +49,10 @@ export function registerAuthCommands(program: Command): void {
           );
         }
 
+        if (!json && opts.supabasePublishableKey !== undefined && target.anonKey !== opts.supabasePublishableKey) {
+          console.error(`harmony login: --supabase-publishable-key was overridden by ${target.source}. Pass --supabase-url and --supabase-publishable-key together.`);
+        }
+
         const auth = new HarmonyAuth(opts.token, target.url, target.anonKey);
         const client = await createAuthenticatedClient(auth);
         const projectId = auth.getProjectId();
@@ -65,6 +70,7 @@ export function registerAuthCommands(program: Command): void {
         addProject(name, opts.token, {
           supabaseUrl: opts.supabaseUrl,
           supabaseAnonKey: opts.supabaseAnonKey,
+          supabasePublishableKey: opts.supabasePublishableKey,
         });
 
         if (json) {

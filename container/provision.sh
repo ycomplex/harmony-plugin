@@ -66,11 +66,16 @@ fi
 : "${HARMONY_API_TOKEN:?HARMONY_API_TOKEN is required (the board API token for the chosen target) — see plugin/container/env.example (copy it and fill it in — container/README.md Quick start)}"
 # The plugin's shared core carries a baked prod anon-key default; staging and
 # custom must supply theirs (Supabase dashboard > Project Settings > API keys).
-if [ "$HARMONY_TARGET" != "prod" ] && [ -z "${HARMONY_SUPABASE_ANON_KEY:-}" ]; then
-  echo "HARMONY_SUPABASE_ANON_KEY is required for HARMONY_TARGET=$HARMONY_TARGET — see plugin/container/env.example (copy it and fill it in — container/README.md Quick start)" >&2
+# Refuse conflicting aliases before setup or any board exchange; never print values.
+if [ -n "${HARMONY_SUPABASE_ANON_KEY:-}" ] && [ -n "${HARMONY_SUPABASE_PUBLISHABLE_KEY:-}" ] && [ "$HARMONY_SUPABASE_ANON_KEY" != "$HARMONY_SUPABASE_PUBLISHABLE_KEY" ]; then
+  echo "Conflicting Supabase public key aliases: HARMONY_SUPABASE_ANON_KEY and HARMONY_SUPABASE_PUBLISHABLE_KEY" >&2
   exit 1
 fi
-ANON_KEY="${HARMONY_SUPABASE_ANON_KEY:-}"
+if [ "$HARMONY_TARGET" != "prod" ] && [ -z "${HARMONY_SUPABASE_ANON_KEY:-${HARMONY_SUPABASE_PUBLISHABLE_KEY:-}}" ]; then
+  echo "HARMONY_SUPABASE_ANON_KEY or HARMONY_SUPABASE_PUBLISHABLE_KEY is required for HARMONY_TARGET=$HARMONY_TARGET — see plugin/container/env.example (copy it and fill it in — container/README.md Quick start)" >&2
+  exit 1
+fi
+ANON_KEY="${HARMONY_SUPABASE_ANON_KEY:-${HARMONY_SUPABASE_PUBLISHABLE_KEY:-}}"
 
 # --- Wire the run directory via the shared channel mechanism (B-488). -------
 if [ -n "$ANON_KEY" ]; then

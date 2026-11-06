@@ -39,6 +39,7 @@ const DeploymentEnvSchema = z
     HARMONY_TARGET: z.enum(['prod', 'staging', 'custom']).optional(),
     HARMONY_API_TOKEN: z.string().optional(),
     HARMONY_SUPABASE_ANON_KEY: z.string().optional(),
+    HARMONY_SUPABASE_PUBLISHABLE_KEY: z.string().optional(),
     HARMONY_SUPABASE_URL: z.string().optional(),
     // Git identity.
     GIT_TOKEN: z.string().optional(),
