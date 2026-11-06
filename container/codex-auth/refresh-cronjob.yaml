@@ -1,4 +1,4 @@
-# Founder applies only AFTER promotion. Replace image with the reviewed worker digest first.
+# Founder applies only AFTER promotion. Replace image with the reviewed owner digest built from container/codex-auth/ first.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -40,7 +40,7 @@ spec:
           containers:
             - name: refresh
               # Deliberately unusable until the founder pins a reviewed image containing this bundle.
-              image: REPLACE_WITH_REVIEWED_WORKER_IMAGE_DIGEST
+              image: REPLACE_WITH_REVIEWED_OWNER_IMAGE_DIGEST
               command: [node, /app/codex-auth.mjs, owner]
               env:
                 - name: HARMONY_CODEX_TOKEN_ONLY
