@@ -2073,6 +2073,70 @@ describe('rule_bundle (B-1047)', () => {
     expect(client.rpc).not.toHaveBeenCalledWith('consume_acceptance_event', expect.anything());
   });
 
+  // B-1418: every write kind the dispatcher knows, authored with the bundle LAST.
+  const everyKindItems = (): AcceptanceEventPayloadItem[] => [
+    childItem('child-1'), checklistItem('step-1'), acItem('ac-1'), gateSlotItem('slot-1'),
+    implementsEntitiesItem('entities-1', ['Saved Filters']), entryItem(), entityLinkItem('entity-1', 'Saved Filters'),
+    supersedeDecisionItem('decision-1'), labelAddItem('label-1'), bundleItem(),
+  ];
+  const OTHER_WRITE_RPCS = [
+    'consume_child_mint_write', 'consume_checklist_item_write', 'consume_ac_add_write', 'consume_ac_transfer_write',
+    'consume_gate_slot_write', 'consume_implements_entities_write', 'consume_knowledge_entry_content_write',
+    'consume_knowledge_entry_content_write_metadata', 'consume_entity_link_write', 'consume_supersede_decision_write',
+    'consume_label_add_write',
+  ];
+
+  it('B-1418 — applies the bundle before EVERY other write kind, whatever order the payload authored', async () => {
+    const client = makeClient({
+      fromResponses: {
+        tasks: [{ data: { project_id: 'proj-1' } }],
+        projects: [{ data: { workspace_id: 'ws-1' } }],
+        knowledge_entities: [{ data: { id: 'entity-abc' } }],
+      },
+      rpcResponses: {
+        consume_rule_bundle_write: [{ data: { status: 'applied', rules: [] } }],
+        consume_child_mint_write: [{ data: { applied: true, result_id: 'child-a' } }],
+        consume_checklist_item_write: [{ data: { applied: true } }],
+        consume_ac_add_write: [{ data: { applied: true } }],
+        consume_gate_slot_write: [{ data: { applied: true, result_id: 'slot-1' } }],
+        consume_implements_entities_write: [{ data: { applied: true } }],
+        consume_knowledge_entry_content_write: [{ data: { applied: true } }],
+        consume_entity_link_write: [{ data: { applied: true } }],
+        consume_supersede_decision_write: [{ data: { applied: true } }],
+        consume_label_add_write: [{ data: { applied: true } }],
+      },
+    });
+    await applyAcceptanceEventPayload(client, designEvent(everyKindItems()));
+    const writes = client.rpcCalls.map((c: { name: string }) => c.name).filter((n: string) => n.startsWith('consume_'));
+    expect(writes[0]).toBe('consume_rule_bundle_write');
+    // Every other kind present in the payload did land, all after the bundle.
+    for (const rpc of ['consume_child_mint_write', 'consume_checklist_item_write', 'consume_ac_add_write', 'consume_gate_slot_write',
+      'consume_implements_entities_write', 'consume_knowledge_entry_content_write', 'consume_entity_link_write',
+      'consume_supersede_decision_write', 'consume_label_add_write']) {
+      expect(writes.indexOf(rpc)).toBeGreaterThan(0);
+    }
+  });
+
+  it('B-1418 — a refused bundle lands NO other write of the acceptance, throws the blocker, and does not consume', async () => {
+    const client = makeClient({
+      fromResponses: {
+        ...pendingFrom(designEvent(everyKindItems())),
+        // The pending-event lookup reads tasks first; the entity_link preflight (B-1317) reads it next.
+        tasks: [{ data: { pending_acceptance_event_id: 'event-1' } }, { data: { project_id: 'proj-1' } }],
+        projects: [{ data: { workspace_id: 'ws-1' } }],
+        knowledge_entities: [{ data: { id: 'entity-abc' } }],
+      },
+      rpcResponses: {
+        consume_rule_bundle_write: [{ data: null, error: { code: 'P0001', message: 'B-1047: stale rule target entry-7' } }],
+      },
+    });
+    await expect(consumePendingAcceptanceEvent(client, PROJECT_ID, 'task-1')).rejects.toThrow('B-1047: stale rule target entry-7');
+    const names = client.rpcCalls.map((c: { name: string }) => c.name);
+    expect(names).toContain('consume_rule_bundle_write');
+    for (const rpc of OTHER_WRITE_RPCS) expect(names).not.toContain(rpc);
+    expect(names).not.toContain('consume_acceptance_event');
+  });
+
   it('a missing consume_rule_bundle_write degrades to payload-unrecognized and leaves the event pending', async () => {
     const items = [bundleItem(), entryItem()];
     const client = makeClient({
@@ -2083,7 +2147,9 @@ describe('rule_bundle (B-1047)', () => {
     });
     const result = await consumePendingAcceptanceEvent(client, PROJECT_ID, 'task-1');
     expect(result).toEqual({ status: 'payload-unrecognized', event_id: 'event-1', reason: 'design-decision-draft', items });
-    expect(client.rpc).not.toHaveBeenCalledWith('consume_knowledge_entry_content_write', expect.anything());
+    // B-1418: the bundle is the first write, so nothing else was written before the degrade.
+    const names = client.rpcCalls.map((c: { name: string }) => c.name);
+    for (const rpc of OTHER_WRITE_RPCS) expect(names).not.toContain(rpc);
     expect(client.rpc).not.toHaveBeenCalledWith('consume_acceptance_event', expect.anything());
   });
 

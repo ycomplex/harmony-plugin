@@ -549,9 +549,18 @@ Show the rendered `content`. On the human's command:
   behavior is unchanged by B-1034.
 
   **Rule bundle (B-1047).** When the brief declared `frame.rules`, that same call applies the
-  `rule_bundle` FIRST (preflight, apply the bundle, then project the design), as one ledgered write.
-  A refusal (`B-1047: …`, e.g. a stale amend target) rolls the bundle back and leaves the event pending:
-  report the blocker verbatim and do not advance. A retry skips a bundle that already committed.
+  `rule_bundle` as one ledgered write, FIRST, before any other write of that acceptance (B-1418). So a
+  refused bundle lands nothing from that acceptance. A refusal (`B-1047: …`, e.g. a stale amend target)
+  leaves the event pending. Report the blocker verbatim and do not advance. A retry of the same event
+  replays the same stale fingerprint and is refused again.
+  Next, recompose the design brief against the current rule text: read the target's current
+  fingerprint and content with `read_rule_registry`, update the amend or reference, then have the brief
+  accepted. Accepting the recomposed brief for the same gate retires the stranded acceptance as
+  superseded (B-1418). Its write history is kept and none of its state change is applied.
+  On a database that does not yet have that retirement, the accept of the recomposed brief still fails
+  on the one-pending-acceptance unique index. Report that verbatim and stop; do not hand-edit the
+  database. If the stranded acceptance already landed writes the new brief does not replace, the accept
+  is refused naming them. Report it and stop.
 
   **Fingerprint the accepted Figma design (B-1203).** Right after that `consume_pending_acceptance_event`
   call, when the accepted brief's frame carries a **figma** `design_artefact`, run
