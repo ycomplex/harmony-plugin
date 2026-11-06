@@ -18,6 +18,10 @@ to **harmony-codex-access**, a separate Secret Manager resource. That resource
 contains a token-only envelope, stable user/account identity, expiry and generation.
 Workers have accessor permission on that resource only, not the full grant/PVC.
 The updater validates it and atomically installs a private file every 30 seconds.
+That auth.json also carries a `last_refresh` timestamp (B-1407), because Codex 0.166.0
+sends no bearer token without one. The timestamp is kept while the generation is
+unchanged, recorded beside it in `last-refresh.json` (which holds no credential, so
+the updater never reads auth.json back), and is never part of the published envelope.
 Codex reloads it after a 401. The supported CLI is exactly **0.166.0**; a different
 version refuses the enabled path until its compatibility is proved.
 
@@ -25,8 +29,8 @@ The single supported-version source is `container/codex-version` (B-1382).
 Cloud Build, direct Docker builds, image smoke and token-only provisioning use it.
 To upgrade deliberately: edit that one file, install that candidate CLI in an
 isolated test environment, run `node scripts/test-codex-token-reload.mjs` against
-it, then rebuild. The proof reads the same pin; its successful reload and missing-user
-negative control are mandatory. Never use a real login for this proof. Publish the
+it, then rebuild. The proof reads the same pin, and all four of its scenarios must
+pass (see "Fixture-only checks" below). Never use a real login for this proof. Publish the
 compatible worker image before enabled legs use a checkout with the newer pin.
 This fix keeps the pin at 0.166.0 and does not enable token-only delivery.
 
@@ -208,7 +212,35 @@ node scripts/test-codex-token-reload.mjs
 npx vitest run src/tools/codex-auth.test.ts src/tools/codex-auth-files.test.ts src/tools/codex-auth-runtime.test.ts src/tools/codex-auth-launch.test.ts
 ```
 
-The first check requires installed Codex 0.166.0, supplies only synthetic auth in
-an isolated HOME/CODEX_HOME, redirects service URLs to localhost and rejects
-unexpected server routes. It proves token replacement and the missing-user
-negative control. It does not call a real OAuth or inference endpoint.
+The first check is the token-reload proof (B-1407). It needs `unshare` with user and
+network namespaces, `python3`, `openssl` and the pinned Codex CLI on PATH. It
+re-runs itself in a new network namespace where only loopback is up. Before it starts
+`codex` it checks that no other interface is visible and that outside addresses are
+unreachable. If it cannot set up or verify that isolation, it exits non-zero and never
+starts `codex`. It also checks `codex --version` against `container/codex-version`.
+
+The proof installs auth.json through the real `runWorker`, bundled from source with
+esbuild, using synthetic unsigned tokens served by a fake Secret Manager. Codex runs
+on its default provider with a fresh HOME and CODEX_HOME. Every route goes to an
+HTTPS fake backend on 127.0.0.1: `chatgpt_base_url`, `openai_base_url` and the
+refresh URL override all point there, and a throwaway test CA is trusted through
+`CODEX_CA_CERTIFICATE`. The fake answers 401 to any request that lacks either the
+current generation's bearer token or the fixture `ChatGPT-Account-Id`.
+
+The scenarios are:
+
+- **Negative control.** The installed file with `last_refresh` removed, which is the
+  shape workers wrote before B-1407. Codex sends the account id with no bearer, gets
+  the 401 and fails the turn, as on the canary.
+- **Reload.** Generation 1 carries both headers on every route, including
+  `/wham/accounts/check` and `/codex/models`. The first `/responses` call gets a 401,
+  and before that reply the fake owner publishes generation 2 and `runWorker`
+  installs it. Codex reloads the file, retries with the generation 2 bearer and
+  completes the turn, with no OAuth request.
+- **Stale `last_refresh`.** A `last_refresh` 30 days old still sends the bearer and
+  completes the turn, with no OAuth request.
+- **Missing user.** `runWorker` refuses a grant whose tokens have no user id and
+  installs nothing.
+
+The proof prints a PASS line for each scenario and deletes its temporary homes and
+keys. It never calls a real OAuth or inference endpoint.
