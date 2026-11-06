@@ -63,8 +63,23 @@ export async function runWorker(home: string, ref: string, once: boolean, servic
     }
     // Local persistence errors are not network outages and must not be silently swallowed.
     await atomicPrivateJson(join(home, 'access-generation.json'), access);
-    await atomicPrivateJson(join(home, 'auth.json'), access.auth);
+    // B-1407: Codex 0.166.0 sends no bearer unless auth.json carries last_refresh. An unchanged generation
+    // keeps its stamp so the periodic rewrite does not churn the file; the stamp lives in a sidecar that
+    // holds no credential, because nothing here may read auth.json back (B-1076).
+    const last_refresh = await lastRefresh(home, access, previous, services);
+    await atomicPrivateJson(join(home, 'last-refresh.json'), { generation: access.generation, last_refresh });
+    await atomicPrivateJson(join(home, 'auth.json'), { ...access.auth, last_refresh });
     previous = access;
     if (!once) await services.sleep();
   } while (!once);
+}
+async function lastRefresh(home: string, access: CodexAccess, previous: CodexAccess | null, services: CredentialServices): Promise<string> {
+  if (previous && previous.generation === access.generation) {
+    try {
+      const stamp = JSON.parse(await readFile(join(home, 'last-refresh.json'), 'utf8')) as { generation?: unknown; last_refresh?: unknown };
+      if (stamp.generation === access.generation && typeof stamp.last_refresh === 'string' &&
+        Number.isFinite(Date.parse(stamp.last_refresh))) return stamp.last_refresh;
+    } catch { /* A missing or unreadable stamp gets a fresh timestamp. */ }
+  }
+  return new Date(services.now()).toISOString();
 }

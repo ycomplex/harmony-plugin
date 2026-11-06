@@ -27,6 +27,9 @@ describe('credential runtime with synthetic files and injected services', () => 
       expect(JSON.parse(await readFile(join(dir, 'grant.json'), 'utf8')).grant).toEqual(g);
       const access = JSON.parse(Buffer.from(JSON.parse(init!.body as string).payload.data, 'base64').toString());
       expect(access.auth.tokens.refresh_token).toBe('');
+      // B-1407: last_refresh is a worker install detail; the published envelope stays unchanged.
+      expect(access).not.toHaveProperty('last_refresh');
+      expect(access.auth).not.toHaveProperty('last_refresh');
       return {};
     };
     await runOwner(dir, ref, true, ports);
@@ -62,7 +65,7 @@ describe('credential runtime with synthetic files and injected services', () => 
       access = accessFromGrant(grant(generation), generation, now);
       await Promise.all(['first', 'second'].map(home => runWorker(join(dir, home), ref, true, ports)));
     }
-    expect(JSON.parse(await readFile(join(dir, 'first/auth.json'), 'utf8'))).toEqual(access.auth);
+    expect(JSON.parse(await readFile(join(dir, 'first/auth.json'), 'utf8'))).toEqual({ ...access.auth, last_refresh: expect.any(String) });
     await runWorker(join(dir, 'subsequent'), ref, true, ports);
     access = accessFromGrant(grant(), 1, now);
     await expect(runWorker(join(dir, 'first'), ref, true, ports)).rejects.toThrow('identity-mismatch');
@@ -75,8 +78,75 @@ describe('credential runtime with synthetic files and injected services', () => 
     await atomicPrivateJson(join(dir, 'access-generation.json'), access);
     const ports = services(); ports.google = async () => { throw new Error('fixture network unavailable'); };
     await runWorker(dir, ref, true, ports);
-    expect(JSON.parse(await readFile(join(dir, 'auth.json'), 'utf8'))).toEqual(access.auth);
+    expect(JSON.parse(await readFile(join(dir, 'auth.json'), 'utf8'))).toEqual({ ...access.auth, last_refresh: expect.any(String) });
     ports.now = () => now + 3600000;
     await expect(runWorker(dir, ref, true, ports)).rejects.toThrow('expired');
   }));
+  // B-1407: Codex 0.166.0 withholds the bearer when auth.json lacks last_refresh.
+  describe('installed auth.json carries last_refresh', () => {
+    const publishing = (state: { access: ReturnType<typeof accessFromGrant> }, clock: { now: number }) => {
+      const ports = services();
+      ports.now = () => clock.now;
+      ports.google = async () => ({ payload: { data: Buffer.from(JSON.stringify(state.access)).toString('base64') } });
+      return ports;
+    };
+    const installed = async (dir: string) => JSON.parse(await readFile(join(dir, 'auth.json'), 'utf8'));
+    it('writes an ISO-8601 UTC last_refresh and keeps the refresh token empty', async () => fixture(async dir => {
+      const state = { access: accessFromGrant(grant(), 1, now) };
+      await runWorker(dir, ref, true, publishing(state, { now }));
+      const auth = await installed(dir);
+      expect(auth.last_refresh).toBe(new Date(now).toISOString());
+      expect(Number.isFinite(Date.parse(auth.last_refresh))).toBe(true);
+      expect(auth.last_refresh).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+      expect(auth.tokens.refresh_token).toBe('');
+      expect(auth).toEqual({ ...state.access.auth, last_refresh: auth.last_refresh });
+      expect(JSON.parse(await readFile(join(dir, 'access-generation.json'), 'utf8'))).toEqual(state.access);
+    }));
+    it('keeps last_refresh across a same-generation rewrite even when the clock advances', async () => fixture(async dir => {
+      const state = { access: accessFromGrant(grant(), 1, now) };
+      const clock = { now };
+      const ports = publishing(state, clock);
+      await runWorker(dir, ref, true, ports);
+      const first = (await installed(dir)).last_refresh;
+      clock.now = now + 30_000;
+      await runWorker(dir, ref, true, ports);
+      expect((await installed(dir)).last_refresh).toBe(first);
+    }));
+    it('stamps a new last_refresh when a new generation is installed', async () => fixture(async dir => {
+      const state = { access: accessFromGrant(grant(), 1, now) };
+      const clock = { now };
+      const ports = publishing(state, clock);
+      await runWorker(dir, ref, true, ports);
+      const first = (await installed(dir)).last_refresh;
+      clock.now = now + 30_000;
+      state.access = accessFromGrant(grant(2), 2, now);
+      await runWorker(dir, ref, true, ports);
+      const auth = await installed(dir);
+      expect(auth.last_refresh).not.toBe(first);
+      expect(auth.last_refresh).toBe(new Date(now + 30_000).toISOString());
+      expect(auth.tokens.access_token).toBe(state.access.auth.tokens.access_token);
+    }));
+    it('keeps the stamp in a credential-free sidecar, never reading auth.json back', async () => fixture(async dir => {
+      const state = { access: accessFromGrant(grant(), 1, now) };
+      await runWorker(dir, ref, true, publishing(state, { now }));
+      expect(JSON.parse(await readFile(join(dir, 'last-refresh.json'), 'utf8')))
+        .toEqual({ generation: 1, last_refresh: new Date(now).toISOString() });
+      // A same-generation rewrite takes its stamp from the sidecar, whatever auth.json now holds.
+      await atomicPrivateJson(join(dir, 'auth.json'), { unrelated: true });
+      await runWorker(dir, ref, true, publishing(state, { now: now + 30_000 }));
+      expect((await installed(dir)).last_refresh).toBe(new Date(now).toISOString());
+    }));
+    it.each([
+      ['missing', null],
+      ['unparseable', { generation: 1, last_refresh: 'not-a-time' }],
+      ['for another generation', { generation: 7, last_refresh: new Date(now - 86400000).toISOString() }],
+    ])('stamps a fresh last_refresh when the sidecar is %s', async (_name, stamp) => fixture(async dir => {
+      const state = { access: accessFromGrant(grant(), 1, now) };
+      await runWorker(dir, ref, true, publishing(state, { now }));
+      if (stamp) await atomicPrivateJson(join(dir, 'last-refresh.json'), stamp);
+      else await rm(join(dir, 'last-refresh.json'));
+      await runWorker(dir, ref, true, publishing(state, { now: now + 30_000 }));
+      expect((await installed(dir)).last_refresh).toBe(new Date(now + 30_000).toISOString());
+    }));
+  });
 });
