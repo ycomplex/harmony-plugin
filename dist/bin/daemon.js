@@ -22417,6 +22417,7 @@ var DeploymentEnvSchema = external_exports.object({
   HARMONY_TARGET: external_exports.enum(["prod", "staging", "custom"]).optional(),
   HARMONY_API_TOKEN: external_exports.string().optional(),
   HARMONY_SUPABASE_ANON_KEY: external_exports.string().optional(),
+  HARMONY_SUPABASE_PUBLISHABLE_KEY: external_exports.string().optional(),
   HARMONY_SUPABASE_URL: external_exports.string().optional(),
   // Git identity.
   GIT_TOKEN: external_exports.string().optional(),
@@ -29122,6 +29123,14 @@ import { dirname as dirname5, join as join6 } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 import { randomUUID } from "node:crypto";
 
+// src/supabase-key.ts
+function resolvePublicKey(anonKey, publishableKey, names) {
+  if (anonKey && publishableKey && anonKey !== publishableKey) {
+    throw new Error(`Conflicting Supabase public key aliases: ${names[0]} and ${names[1]}. Supply one or identical values.`);
+  }
+  return anonKey || publishableKey || void 0;
+}
+
 // src/auth.ts
 var DEFAULT_SUPABASE_URL3 = "https://eioxsunvhakmelhanmnn.supabase.co";
 var DEFAULT_SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpb3hzdW52aGFrbWVsaGFubW5uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2NDY3NjksImV4cCI6MjA5MDIyMjc2OX0.SdbpfqRhcB21qWs6XnD6Lsj6AGX2b6tOGV3pg2iJjsw";
@@ -29165,7 +29174,11 @@ var HarmonyAuth = class {
   }
   /** B-1025: the Supabase anon key for THIS call — the counterpart of getSupabaseUrl(). */
   getSupabaseAnonKey() {
-    return this.supabaseAnonKey ?? harmonyEnv("HARMONY_SUPABASE_ANON_KEY") ?? DEFAULT_SUPABASE_ANON_KEY;
+    return this.supabaseAnonKey ?? resolvePublicKey(
+      harmonyEnv("HARMONY_SUPABASE_ANON_KEY"),
+      harmonyEnv("HARMONY_SUPABASE_PUBLISHABLE_KEY"),
+      ["HARMONY_SUPABASE_ANON_KEY", "HARMONY_SUPABASE_PUBLISHABLE_KEY"]
+    ) ?? DEFAULT_SUPABASE_ANON_KEY;
   }
   async getAccessToken() {
     if (this.accessToken && Date.now() < this.expiresAt - 6e4) {
@@ -29198,14 +29211,16 @@ var HarmonyAuth = class {
   }
   async exchange() {
     const endpoint = "/functions/v1/auth-token";
+    const publicKey = this.getSupabaseAnonKey();
+    const headers = { "Content-Type": "application/json", apikey: publicKey };
+    if (!publicKey.startsWith("sb_publishable_") && !publicKey.startsWith("sb_secret_")) {
+      headers.Authorization = `Bearer ${publicKey}`;
+    }
     let res;
     try {
       res = await fetch(`${this.getSupabaseUrl()}${endpoint}`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${this.getSupabaseAnonKey()}`
-        },
+        headers,
         body: JSON.stringify({ token: this.apiToken })
       });
     } catch (err) {
@@ -39155,6 +39170,7 @@ var CODEX_MCP_ENV_VARS = [
   "HARMONY_API_TOKEN",
   "HARMONY_SUPABASE_URL",
   "HARMONY_SUPABASE_ANON_KEY",
+  "HARMONY_SUPABASE_PUBLISHABLE_KEY",
   "HARMONY_LEG",
   "HARMONY_CONDUCTION_ID",
   "HARMONY_MODEL",
@@ -40036,7 +40052,8 @@ var SECRET_NAMES = [
   "CLAUDE_CODE_OAUTH_TOKEN",
   "CLAUDE_API_TOKEN",
   "CODEX_ACCESS_TOKEN",
-  "HARMONY_SUPABASE_ANON_KEY"
+  "HARMONY_SUPABASE_ANON_KEY",
+  "HARMONY_SUPABASE_PUBLISHABLE_KEY"
 ];
 var SECRET_NAME_PATTERN = /(TOKEN|SECRET|PASSWORD)$/;
 var MIN_SECRET_LENGTH = 8;

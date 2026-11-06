@@ -17390,6 +17390,14 @@ var require_dist = __commonJS({
   }
 });
 
+// src/supabase-key.ts
+function resolvePublicKey(anonKey, publishableKey, names) {
+  if (anonKey && publishableKey && anonKey !== publishableKey) {
+    throw new Error(`Conflicting Supabase public key aliases: ${names[0]} and ${names[1]}. Supply one or identical values.`);
+  }
+  return anonKey || publishableKey || void 0;
+}
+
 // src/env.ts
 function harmonyEnv(name, env = process.env) {
   return env[name] ?? env[`EVAL_${name}`];
@@ -17438,7 +17446,11 @@ var HarmonyAuth = class {
   }
   /** B-1025: the Supabase anon key for THIS call — the counterpart of getSupabaseUrl(). */
   getSupabaseAnonKey() {
-    return this.supabaseAnonKey ?? harmonyEnv("HARMONY_SUPABASE_ANON_KEY") ?? DEFAULT_SUPABASE_ANON_KEY;
+    return this.supabaseAnonKey ?? resolvePublicKey(
+      harmonyEnv("HARMONY_SUPABASE_ANON_KEY"),
+      harmonyEnv("HARMONY_SUPABASE_PUBLISHABLE_KEY"),
+      ["HARMONY_SUPABASE_ANON_KEY", "HARMONY_SUPABASE_PUBLISHABLE_KEY"]
+    ) ?? DEFAULT_SUPABASE_ANON_KEY;
   }
   async getAccessToken() {
     if (this.accessToken && Date.now() < this.expiresAt - 6e4) {
@@ -17471,14 +17483,16 @@ var HarmonyAuth = class {
   }
   async exchange() {
     const endpoint = "/functions/v1/auth-token";
+    const publicKey = this.getSupabaseAnonKey();
+    const headers = { "Content-Type": "application/json", apikey: publicKey };
+    if (!publicKey.startsWith("sb_publishable_") && !publicKey.startsWith("sb_secret_")) {
+      headers.Authorization = `Bearer ${publicKey}`;
+    }
     let res;
     try {
       res = await fetch(`${this.getSupabaseUrl()}${endpoint}`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${this.getSupabaseAnonKey()}`
-        },
+        headers,
         body: JSON.stringify({ token: this.apiToken })
       });
     } catch (err) {
@@ -30605,6 +30619,7 @@ var DeploymentEnvSchema = external_exports.object({
   HARMONY_TARGET: external_exports.enum(["prod", "staging", "custom"]).optional(),
   HARMONY_API_TOKEN: external_exports.string().optional(),
   HARMONY_SUPABASE_ANON_KEY: external_exports.string().optional(),
+  HARMONY_SUPABASE_PUBLISHABLE_KEY: external_exports.string().optional(),
   HARMONY_SUPABASE_URL: external_exports.string().optional(),
   // Git identity.
   GIT_TOKEN: external_exports.string().optional(),

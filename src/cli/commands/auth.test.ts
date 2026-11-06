@@ -160,3 +160,22 @@ describe('harmony login — B-1025 flag-override warning', () => {
     expect(warningCalls).toHaveLength(0);
   });
 });
+
+it('registers the new flag in its own saved field without rewriting old projects', async () => {
+  await run(['login', '--token', 'synthetic-token', '--name', 'new-alias',
+    '--supabase-url', 'https://synthetic.supabase.co', '--supabase-publishable-key', 'sb_publishable_synthetic']);
+  const stored = JSON.parse(fs.readFileSync(path.join(tmpDir, 'config.json'), 'utf8'));
+  expect(stored.projects['new-alias']).toMatchObject({ supabasePublishableKey: 'sb_publishable_synthetic' });
+  expect(stored.projects['new-alias'].supabaseAnonKey).toBeUndefined();
+});
+
+it('rejects conflicting flags before client creation without reporting either value', async () => {
+  const callsBefore = supabaseMock.createAuthenticatedClient.mock.calls.length;
+  await expect(run(['login', '--token', 'synthetic-token', '--name', 'conflict',
+    '--supabase-url', 'https://synthetic.supabase.co', '--supabase-anon-key', 'synthetic-old',
+    '--supabase-publishable-key', 'sb_publishable_synthetic'])).rejects.toThrow(ExitSentinel);
+  expect(supabaseMock.createAuthenticatedClient.mock.calls.length).toBe(callsBefore);
+  expect(errSpy.mock.calls.flat().join(' ')).toContain('--supabase-publishable-key');
+  expect(errSpy.mock.calls.flat().join(' ')).not.toContain('synthetic-old');
+  expect(errSpy.mock.calls.flat().join(' ')).not.toContain('sb_publishable_synthetic');
+});

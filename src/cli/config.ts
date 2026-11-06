@@ -7,6 +7,7 @@ export interface ProjectConfig {
   token: string;
   supabaseUrl?: string;
   supabaseAnonKey?: string;
+  supabasePublishableKey?: string;
 }
 
 export interface HarmonyConfig {
@@ -44,7 +45,7 @@ export function saveConfig(config: HarmonyConfig): void {
 export function addProject(
   name: string,
   token: string,
-  opts?: { supabaseUrl?: string; supabaseAnonKey?: string },
+  opts?: { supabaseUrl?: string; supabaseAnonKey?: string; supabasePublishableKey?: string },
 ): void {
   const config = loadConfig();
   config.projects[name] = { name, token, ...opts };

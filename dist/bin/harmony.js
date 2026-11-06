@@ -24690,8 +24690,8 @@ var require_resolve = __commonJS({
       }
       return count;
     }
-    function getFullPath(resolver, id = "", normalize) {
-      if (normalize !== false)
+    function getFullPath(resolver, id = "", normalize2) {
+      if (normalize2 !== false)
         id = normalizeId(id);
       const p = resolver.parse(id);
       return _getFullPath(resolver, p);
@@ -26031,7 +26031,7 @@ var require_fast_uri = __commonJS({
     "use strict";
     var { normalizeIPv6, removeDotSegments, recomposeAuthority, normalizeComponentEncoding, isIPv4, nonSimpleDomain } = require_utils2();
     var { SCHEMES, getSchemeHandler } = require_schemes();
-    function normalize(uri, options) {
+    function normalize2(uri, options) {
       if (typeof uri === "string") {
         uri = /** @type {T} */
         serialize(parse3(uri, options), options);
@@ -26267,7 +26267,7 @@ var require_fast_uri = __commonJS({
     }
     var fastUri = {
       SCHEMES,
-      normalize,
+      normalize: normalize2,
       resolve: resolve8,
       resolveComponent,
       equal,
@@ -34251,6 +34251,7 @@ var DeploymentEnvSchema = external_exports.object({
   HARMONY_TARGET: external_exports.enum(["prod", "staging", "custom"]).optional(),
   HARMONY_API_TOKEN: external_exports.string().optional(),
   HARMONY_SUPABASE_ANON_KEY: external_exports.string().optional(),
+  HARMONY_SUPABASE_PUBLISHABLE_KEY: external_exports.string().optional(),
   HARMONY_SUPABASE_URL: external_exports.string().optional(),
   // Git identity.
   GIT_TOKEN: external_exports.string().optional(),
@@ -42178,6 +42179,14 @@ function redactFigmaMessage(message, secrets = []) {
   return safe.replace(/Bearer\s+[^\s,;]+/gi, "Bearer [redacted]").replace(/(access_token|refresh_token|client_secret|token|password)([\s"']*[:=][\s"']*)[^\s,;"'}]+/gi, "$1$2[redacted]").replace(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "[redacted]");
 }
 
+// src/supabase-key.ts
+function resolvePublicKey(anonKey, publishableKey, names) {
+  if (anonKey && publishableKey && anonKey !== publishableKey) {
+    throw new Error(`Conflicting Supabase public key aliases: ${names[0]} and ${names[1]}. Supply one or identical values.`);
+  }
+  return anonKey || publishableKey || void 0;
+}
+
 // src/auth.ts
 var DEFAULT_SUPABASE_URL3 = "https://eioxsunvhakmelhanmnn.supabase.co";
 var DEFAULT_SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpb3hzdW52aGFrbWVsaGFubW5uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2NDY3NjksImV4cCI6MjA5MDIyMjc2OX0.SdbpfqRhcB21qWs6XnD6Lsj6AGX2b6tOGV3pg2iJjsw";
@@ -42221,7 +42230,11 @@ var HarmonyAuth = class {
   }
   /** B-1025: the Supabase anon key for THIS call — the counterpart of getSupabaseUrl(). */
   getSupabaseAnonKey() {
-    return this.supabaseAnonKey ?? harmonyEnv("HARMONY_SUPABASE_ANON_KEY") ?? DEFAULT_SUPABASE_ANON_KEY;
+    return this.supabaseAnonKey ?? resolvePublicKey(
+      harmonyEnv("HARMONY_SUPABASE_ANON_KEY"),
+      harmonyEnv("HARMONY_SUPABASE_PUBLISHABLE_KEY"),
+      ["HARMONY_SUPABASE_ANON_KEY", "HARMONY_SUPABASE_PUBLISHABLE_KEY"]
+    ) ?? DEFAULT_SUPABASE_ANON_KEY;
   }
   async getAccessToken() {
     if (this.accessToken && Date.now() < this.expiresAt - 6e4) {
@@ -42254,14 +42267,16 @@ var HarmonyAuth = class {
   }
   async exchange() {
     const endpoint = "/functions/v1/auth-token";
+    const publicKey = this.getSupabaseAnonKey();
+    const headers = { "Content-Type": "application/json", apikey: publicKey };
+    if (!publicKey.startsWith("sb_publishable_") && !publicKey.startsWith("sb_secret_")) {
+      headers.Authorization = `Bearer ${publicKey}`;
+    }
     let res;
     try {
       res = await fetch(`${this.getSupabaseUrl()}${endpoint}`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${this.getSupabaseAnonKey()}`
-        },
+        headers,
         body: JSON.stringify({ token: this.apiToken })
       });
     } catch (err) {
@@ -50588,9 +50603,9 @@ var SOURCE_LABEL = {
   default: "the built-in default"
 };
 var SOURCE_REMEDY = {
-  flags: "Pass --supabase-anon-key <key> alongside --supabase-url \u2014 the URL and its key travel together.",
-  project: "This project was registered without an anon key (projects saved by an older CLI carry a URL but no key). Re-run `harmony login --supabase-url <url> --supabase-anon-key <key> --token <token> --name <name>` to register the key.",
-  env: "Set HARMONY_SUPABASE_ANON_KEY in the environment \u2014 it must sit beside HARMONY_SUPABASE_URL.",
+  flags: "Pass --supabase-anon-key <key> or --supabase-publishable-key <key> alongside --supabase-url \u2014 the URL and its key travel together.",
+  project: "This project has a URL without a public key. Re-run `harmony login --supabase-url <url> --supabase-publishable-key <key> --token <token> --name <name>` (or --supabase-anon-key) to register the key.",
+  env: "Set HARMONY_SUPABASE_ANON_KEY or HARMONY_SUPABASE_PUBLISHABLE_KEY in the environment \u2014 it must sit beside HARMONY_SUPABASE_URL.",
   default: "Supply the anon key with the URL."
 };
 var MissingAnonKeyError = class extends Error {
@@ -50608,23 +50623,26 @@ var MissingAnonKeyError = class extends Error {
 function resolveSupabaseTarget(input) {
   const env2 = input.env ?? process.env;
   const sources = [
-    { source: "flags", url: input.flags?.url, anonKey: input.flags?.anonKey },
+    { source: "flags", url: input.flags?.url, anonKey: input.flags?.anonKey, publishableKey: input.flags?.publishableKey },
     {
       source: "project",
       url: input.project?.supabaseUrl,
-      anonKey: input.project?.supabaseAnonKey
+      anonKey: input.project?.supabaseAnonKey,
+      publishableKey: input.project?.supabasePublishableKey
     },
     {
       source: "env",
       url: harmonyEnv("HARMONY_SUPABASE_URL", env2),
-      anonKey: harmonyEnv("HARMONY_SUPABASE_ANON_KEY", env2)
+      anonKey: harmonyEnv("HARMONY_SUPABASE_ANON_KEY", env2),
+      publishableKey: harmonyEnv("HARMONY_SUPABASE_PUBLISHABLE_KEY", env2)
     }
   ];
   const owner = sources.find((candidate) => candidate.url);
   if (owner) {
     const url2 = owner.url;
-    if (owner.anonKey) {
-      return { url: url2, anonKey: owner.anonKey, source: owner.source };
+    const key = normalize(owner);
+    if (key) {
+      return { url: url2, anonKey: key, source: owner.source };
     }
     if (url2 === DEFAULT_SUPABASE_URL3) {
       return {
@@ -50635,12 +50653,21 @@ function resolveSupabaseTarget(input) {
     }
     throw new MissingAnonKeyError(owner.source, url2);
   }
-  const keyOwner = sources.find((candidate) => candidate.anonKey);
+  const keyOwner = sources.find((candidate) => candidate.anonKey || candidate.publishableKey);
   return {
     url: DEFAULT_SUPABASE_URL3,
-    anonKey: keyOwner?.anonKey ?? DEFAULT_SUPABASE_ANON_KEY,
+    anonKey: (keyOwner ? normalize(keyOwner) : void 0) ?? DEFAULT_SUPABASE_ANON_KEY,
     source: "default"
   };
+}
+function normalize(source) {
+  const names = {
+    flags: ["--supabase-anon-key", "--supabase-publishable-key"],
+    project: ["supabaseAnonKey", "supabasePublishableKey"],
+    env: ["HARMONY_SUPABASE_ANON_KEY", "HARMONY_SUPABASE_PUBLISHABLE_KEY"],
+    default: ["DEFAULT_SUPABASE_ANON_KEY", "DEFAULT_SUPABASE_PUBLISHABLE_KEY"]
+  };
+  return resolvePublicKey(source.anonKey, source.publishableKey, names[source.source]);
 }
 
 // src/cli/auth.ts
@@ -50824,17 +50851,20 @@ function formatDate(dateStr) {
 
 // src/cli/commands/auth.ts
 function registerAuthCommands(program3) {
-  program3.command("login").description("Add a project by providing an API token").requiredOption("--token <token>", "Harmony API token").option("--name <name>", "Project name (auto-detected if not provided)").option("--supabase-url <url>", "Custom Supabase URL (advanced)").option("--supabase-anon-key <key>", "Custom Supabase anon key (advanced)").action(async (opts) => {
+  program3.command("login").description("Add a project by providing an API token").requiredOption("--token <token>", "Harmony API token").option("--name <name>", "Project name (auto-detected if not provided)").option("--supabase-url <url>", "Custom Supabase URL (advanced)").option("--supabase-anon-key <key>", "Custom Supabase anon key (advanced)").option("--supabase-publishable-key <key>", "Custom Supabase publishable key (advanced)").action(async (opts) => {
     const json = program3.opts().json;
     try {
       const target = resolveSupabaseTarget({
-        flags: { url: opts.supabaseUrl, anonKey: opts.supabaseAnonKey },
+        flags: { url: opts.supabaseUrl, anonKey: opts.supabaseAnonKey, publishableKey: opts.supabasePublishableKey },
         project: void 0
       });
       if (!json && opts.supabaseAnonKey !== void 0 && target.anonKey !== opts.supabaseAnonKey) {
         console.error(
           `harmony login: --supabase-anon-key was overridden by ${target.source} \u2014 the resolver used ${target.source}'s anon key instead of the one you passed. Pass --supabase-url <url> --supabase-anon-key <key> together to use the key you typed.`
         );
+      }
+      if (!json && opts.supabasePublishableKey !== void 0 && target.anonKey !== opts.supabasePublishableKey) {
+        console.error(`harmony login: --supabase-publishable-key was overridden by ${target.source}. Pass --supabase-url and --supabase-publishable-key together.`);
       }
       const auth2 = new HarmonyAuth(opts.token, target.url, target.anonKey);
       const client = await createAuthenticatedClient(auth2);
@@ -50846,7 +50876,8 @@ function registerAuthCommands(program3) {
       }
       addProject(name, opts.token, {
         supabaseUrl: opts.supabaseUrl,
-        supabaseAnonKey: opts.supabaseAnonKey
+        supabaseAnonKey: opts.supabaseAnonKey,
+        supabasePublishableKey: opts.supabasePublishableKey
       });
       if (json) {
         console.log(JSON.stringify({ name, status: "logged_in" }));
@@ -68872,6 +68903,7 @@ var CODEX_MCP_ENV_VARS = [
   "HARMONY_API_TOKEN",
   "HARMONY_SUPABASE_URL",
   "HARMONY_SUPABASE_ANON_KEY",
+  "HARMONY_SUPABASE_PUBLISHABLE_KEY",
   "HARMONY_LEG",
   "HARMONY_CONDUCTION_ID",
   "HARMONY_MODEL",
@@ -69616,7 +69648,7 @@ function nonSecretDrops(dropped) {
 }
 var SECRET_REASON = "secret value: stays in Secret Manager / the service environment";
 var KEEPS_REASON = "no conductor.json key; deployment.json keeps supplying it";
-var SECRET_ENV_KEYS = ["HARMONY_API_TOKEN", "GIT_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "HARMONY_SUPABASE_ANON_KEY"];
+var SECRET_ENV_KEYS = ["HARMONY_API_TOKEN", "GIT_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "HARMONY_SUPABASE_ANON_KEY", "HARMONY_SUPABASE_PUBLISHABLE_KEY"];
 var PLAIN_ENV_KEYS = ["GIT_USER_NAME", "GIT_USER_EMAIL", "WEB_REF", "WORKSPACE_REF"];
 function buildMigration(input) {
   const { legacyDeployment: dep, env: env2 } = input;

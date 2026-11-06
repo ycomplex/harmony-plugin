@@ -4244,6 +4244,7 @@ var DeploymentEnvSchema = external_exports.object({
   HARMONY_TARGET: external_exports.enum(["prod", "staging", "custom"]).optional(),
   HARMONY_API_TOKEN: external_exports.string().optional(),
   HARMONY_SUPABASE_ANON_KEY: external_exports.string().optional(),
+  HARMONY_SUPABASE_PUBLISHABLE_KEY: external_exports.string().optional(),
   HARMONY_SUPABASE_URL: external_exports.string().optional(),
   // Git identity.
   GIT_TOKEN: external_exports.string().optional(),
