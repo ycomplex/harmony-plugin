@@ -1,6 +1,6 @@
 # Remote conductor runbook (B-1173, B-1186)
 
-> **Living · product · Tier 2** · verified against plugin 0.16.51 / web ec86088 on 2026-10-24 · **revise when:** the conductor image, its manifests, `setup-cluster.sh`, the leg size or the quotas the ceiling needs change. Convention: harmony-workspace `docs/README.md` (B-1044).
+> **Living · product · Tier 2** · verified against plugin 0.17.22 / web 108faf7 on 2026-11-06 · **revise when:** the conductor image, its manifests, `setup-cluster.sh`, the leg size or the quotas the ceiling needs change. Convention: harmony-workspace `docs/README.md` (B-1044).
 
 How to run a project's conductor as **one pod on the project's own GKE cluster**, from a machine that has only this
 plugin installed. Follow it top to bottom. Every command is written so it works from any directory: the plugin is
@@ -33,6 +33,7 @@ secret names) belong in that deployment's own notes, not here.
 | Image | `<region>-docker.pkg.dev/<project>/<registry>/harmony-conductor`, tags `:<plugin version>-<channel>` (for example `0.16.41-staging`) and `:<channel>`; the Deployment is pinned to a version tag |
 | Scheduling | the cluster's `default-pool` (the system pool), PriorityClass `harmony-conductor` |
 | Sweep | CronJob `harmony-sweep` in `harmony-conductor`, every 6 hours |
+| Codex owner (only with Codex legs) | CronJob `harmony-codex-refresh` in `harmony-conductor`, every minute, with its own PVC and service account, from the owner image built from `container/codex-auth/` (not the conductor image). It is set up by `docs/codex-auth-cutover.md`, not by this runbook |
 | Source files | `container/conductor/` (image and `k8s/` manifests) and `container/gke/setup-cluster.sh`, steps 18 to 27 |
 
 ## Ordering rules (do not reorder)
@@ -235,7 +236,7 @@ The shipped manifests carry **placeholders and the reference deployment's names*
 | File | What to set |
 |---|---|
 | `container/conductor/k8s/configmap.yaml` | `config_repo` (`<config-repo>`), the GitHub App `app_id` and `installation_id` (ids, not secrets), `gcloud.account`, `gcp.project` and `gcp.region`, and the `secrets` block (Secret Manager secret **names**). In the seed project file: `gke.cluster`, `gke.location`, `gke.registry` |
-| `container/conductor/k8s/deployment.yaml` | the image path and `HARMONY_CONDUCTOR_IMAGE` (`<region>-docker.pkg.dev/<project>/<registry>/harmony-conductor`), and `HARMONY_PLUGIN_POSTURE`: the channel the registry reports and Update follows. It ships as `prod` (B-1222); set `ack:staging` to run staging builds, and set the seed project file's `channel` to match |
+| `container/conductor/k8s/deployment.yaml` | the image path and `HARMONY_CONDUCTOR_IMAGE` (`<region>-docker.pkg.dev/<project>/<registry>/harmony-conductor`), and `HARMONY_PLUGIN_POSTURE`: the channel the registry reports and Update follows. It ships as `prod` (B-1222); set `ack:staging` to run staging builds, and set the seed project file's `channel` to match. With Codex legs on token-only delivery, it also carries `HARMONY_CODEX_TOKEN_ONLY=1` and `HARMONY_CODEX_ACCESS_RESOURCE` (`docs/codex-auth-cutover.md`, step 5); keep them when you re-apply the manifest: without them Codex legs fall back to the copied-login path, which fails once that login has been removed |
 | `container/conductor/k8s/cronjob-sweep.yaml` | the same image path |
 | `container/conductor/k8s/serviceaccount.yaml` | the `iam.gke.io/gcp-service-account` annotation (`<conductor-account>`) |
 
