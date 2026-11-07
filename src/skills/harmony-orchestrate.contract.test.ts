@@ -214,10 +214,26 @@ describe('harmony-orchestrate skill contract', () => {
       expect(flat).toMatch(/`--follow`.*takes the same lock, so it needs a different `--seat` name/);
     });
 
-    it('describes B-1423 seat hooks only as future', () => {
-      expect(flat).toMatch(/b-1423 adds seat hooks/);
-      expect(flat).toMatch(/there are none yet/);
-      expect(flat).not.toMatch(/harmony await/);
+    it('standing down deletes the seat profile, which turns off the B-1423 seat hooks', () => {
+      expect(flat).toMatch(/seat-standdown v1.*then delete your seat profile, which turns off the seat hooks/);
+      expect(flat).not.toMatch(/there are none yet/);
+    });
+  });
+
+  describe('waits and seat hooks (B-1423)', () => {
+    it('CI/PR/branch/promote waits use harmony await, with its exit codes and printed probe failures', () => {
+      for (const sub of ['ci', 'pr', 'branch', 'promote']) expect(skill.body).toContain(`harmony await ${sub}`);
+      expect(flat).toMatch(/\*\*0\*\* met, \*\*1\*\* can no longer be met, \*\*2\*\* fatal, \*\*3\*\* max wait passed/);
+      expect(flat).toMatch(/every failed probe is printed/);
+      expect(flat).not.toMatch(/until status == completed/);
+    });
+
+    it('describes the two seat hooks: session_id scope, write-first, stand-down, re-arm, unwatched rule', () => {
+      expect(flat).toMatch(/only for a session named in a seat profile's `session_id:`/);
+      expect(flat).toMatch(/write `session_id` first/);
+      expect(flat).toMatch(/stand down = delete the profile/);
+      expect(skill.body).toContain('harmony watch --seat <name> --milestone <m> --until-event');
+      expect(flat).toMatch(/your last line must say this seat is unwatched/);
     });
   });
 

@@ -178,8 +178,11 @@ first; an in-progress promise ("CI still running, will confirm") is an unfinishe
 
 Independently verify — never from the brief's own claims:
 - **CI by conclusion**: `gh run view --json conclusion` (never watch exit codes, never
-  `--exit-status`). If a run is in progress, poll it in a background until-loop and finish the
-  review when it settles.
+  `--exit-status`: those are `gh run watch`'s, which can report success on a failed run). If
+  checks are still running, wait with `harmony await ci --pr <n> --repo <owner/name>` (or
+  `--sha <sha>`) under `run_in_background` and finish the review when it exits: 0 = every check
+  complete and none failed, 1 = can no longer be met (a check failed), 2 = fatal, 3 = max wait
+  passed while still pending. Read the conclusion once more before stating it.
 - **Branch state**: `gh` / `git compare <base>...<head>` — ahead/behind (behind ⇒ the strict
   up-to-date floor applies; ahead-only with an emptied diff ⇒ a gutted rebase — check the diff
   stat).
@@ -252,14 +255,25 @@ plugin release carrying it is installed and the session restarts. Until then, ru
 checkout, as the project's own guidance describes.
 
 **Standing down.** Stop the watch and post
-`SEAT-STANDDOWN v1 seat=<name> milestone=<id> session=<id>` on the anchor. B-1423 adds seat hooks
-for session-start catch-up and a stop guard; there are none yet.
+`SEAT-STANDDOWN v1 seat=<name> milestone=<id> session=<id>` on the anchor. Then delete your seat profile, which turns
+off the seat hooks ("Seat hooks", below).
 
-**CI runs get their own until-loop polls** (`until status == completed; sleep 30`), one per run,
-background; they are not this watch's job. **A poll must not swallow its probe's errors.** Run the
-probe once in the foreground first; never send its stderr to `/dev/null`; on a non-zero exit, print
-the error and exit; print a line per stage; give the loop a timeout. A poll with a malformed `--jq`
-filter printed nothing for twenty minutes after the deploy finished (2026-10-30).
+**CI, PR, branch and promote waits each get their own `harmony await`**, one per wait, under
+`run_in_background` (it exits, so the harness re-invokes you). They are not this watch's job:
+- `harmony await ci --pr <n>` (or `--sha <sha>`): every check complete and none failed;
+- `harmony await pr <n> [--until merged|mergeable]`;
+- `harmony await branch <branch> --names <sha>`: the branch contains the commit (a deploy branch
+  has picked up a merge);
+- `harmony await promote`: each repository's release branch names its target.
+
+Exit codes: **0** met, **1** can no longer be met, **2** fatal, **3** max wait passed while still
+pending (`--max-wait`, default 1800 s; `--interval`, default 30 s). Act on the code, and on 1, 2 or
+3 read the output before deciding. **Every failed probe is printed**, so a probe that fails on every
+pass shows at once instead of looking like "still waiting": a hand-written poll with a malformed
+`--jq` filter printed nothing for twenty minutes after the deploy finished (2026-10-30). A wait no
+`harmony await` subcommand covers may still be a hand-written poll with the same properties: run the
+probe once in the foreground first, never send its stderr to `/dev/null`, exit on a probe error,
+print a line per stage, and give it a timeout.
 
 ## 7. Talking to the human
 
@@ -276,3 +290,32 @@ When buffering or draining findings, follow `skills/harmony-shared/disposition-d
 
 
 **B-1384 deliverable markers:** follow the canonical shared gate-routing contract. `capture-only` completes at clarify only with installed guarded capability; legacy bare `decision-only` means last-design completion. Both completing gates require explicit human acceptance, preserve agreed realization and have no release-host gate. Conflicting labels cannot exempt or complete. Ordinary tickets retain their existing build/release/verify and orchestrator acceptance routes.
+
+## Seat hooks — the start check and the stop guard (B-1423)
+
+Two plugin hooks act for a seat, and **only for a session named in a seat profile's `session_id:`
+line** (`${HARMONY_HOME:-~/.harmony}/seats/<name>.yml`). Every other session, every worker leg
+included, skips both with one directory test and one grep; no interpreter starts.
+
+- **Write `session_id` first.** The first thing at seat start, before arming the watch: (re)write
+  your profile's `session_id:` line with this session's id. Take it from the "Harmony
+  conduct-session id" line in your session context; it is also in
+  `${HARMONY_HOME:-~/.harmony}/conduct-sessions/current-session`, but every session on the machine
+  overwrites that file, so prefer the context. A resumed or continued session keeps its id, so the
+  hooks find it again. A fresh session gets a new id, and the hooks cannot know it is a seat until
+  you write it.
+- **Session start** runs a one-shot board check (`harmony watch --once --seat <name>`, plus the
+  profile's milestone) and puts its summary in your context. It does **not** arm your watch: the
+  context names the re-arm command, and you run it. A failed or timed-out check says so and names
+  the command to run by hand.
+- **Stop guard.** Ending a turn while your standing watch is not running (no heartbeat, a stale
+  one, only a `--once` one, or no live lock holder) is blocked once, with what was found and the
+  re-arm command: `harmony watch --seat <name> --milestone <m> --until-event` (or `--follow`;
+  `--conductions` when the profile has no milestone). Run it under `run_in_background`, then end
+  the turn. The stop after a block goes through.
+- **Say you're unwatched.** If you end a turn without a running watch anyway, your last line must
+  say this seat is unwatched.
+- **Stand down = delete the profile.** Deleting `<name>.yml` puts the session back on the skip
+  path, and both hooks go quiet. Do it when you stand the seat down (§7).
+- Both hooks fail open: a missing build, an unreadable file or any error lets the stop through and
+  leaves the session start as it was.
