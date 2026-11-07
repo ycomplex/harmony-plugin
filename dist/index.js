@@ -48357,6 +48357,9 @@ var surfaceRecordTools = [
   }
 ];
 
+// src/tools/rule-registry.ts
+import { createHash as createHash3 } from "node:crypto";
+
 // src/elicitation/engine.ts
 var MAX_QUESTIONS_PER_ROUND = 5;
 function validateRound(questions) {
@@ -52882,6 +52885,9 @@ var readRuleRegistrySchema = external_exports.object({
   search: external_exports.string().trim().min(1).optional(),
   limit: external_exports.number().int().min(1).max(MAX_LIMIT).optional()
 }).strict();
+function ruleFingerprint(content) {
+  return createHash3("sha256").update(content, "utf8").digest("hex");
+}
 function escapeLike(text3) {
   return text3.replace(/[\\%_]/g, (c) => `\\${c}`);
 }
@@ -52909,9 +52915,13 @@ async function readRuleRegistry(client, projectId, args = {}) {
     availability: "available",
     rules: rows.map((r) => {
       const entry = byId.get(r.entry_id);
+      const content = entry?.content;
+      const live = typeof content === "string" ? ruleFingerprint(content) : null;
       return {
         entry_id: r.entry_id,
-        fingerprint: r.fingerprint,
+        fingerprint: live ?? r.fingerprint,
+        stored_fingerprint: r.fingerprint,
+        drift: live === null ? null : live !== r.fingerprint,
         normalized_claim: r.normalized_claim,
         scope: r.scope,
         reach: r.reach,
@@ -52926,7 +52936,7 @@ async function readRuleRegistry(client, projectId, args = {}) {
 }
 var readRuleRegistryTool = {
   name: "read_rule_registry",
-  description: "B-1047 \u2014 read the active project's rule registry. Each rule returns { entry_id, fingerprint, normalized_claim, scope, reach, domains, surfaces, title, status, content }. A design brief's amend/reference rule names target_entry_id = entry_id and expected_fingerprint = fingerprint (sha256 of the entry's current content); an amend quotes content as `before`. Filters: entry_id (exact), domains / surfaces (overlap \u2014 any listed value matches), search (case-insensitive substring of normalized_claim), limit (default 50, max 200). Returns { availability: 'available', rules } or, when this environment has no registry yet, { availability: 'unavailable', reason, rules: [] } \u2014 then amend/reference cannot be declared; never guess a fingerprint. Permission and network errors stay errors.",
+  description: "B-1047 \u2014 read the active project's rule registry. Each rule returns { entry_id, fingerprint, stored_fingerprint, drift, normalized_claim, scope, reach, domains, surfaces, title, status, content }. fingerprint is computed from the entry's current content (sha256 hex of its UTF-8 bytes); stored_fingerprint is the registry row's stored column; drift is true when they differ, false when equal, null when the content could not be read (then fingerprint falls back to stored_fingerprint). drift: true means the registry row is stale (the entry was edited outside a rule_bundle) \u2014 the live fingerprint is still the right expected_fingerprint. A design brief's amend/reference rule names target_entry_id = entry_id and expected_fingerprint = fingerprint; an amend quotes content as `before`. Filters: entry_id (exact), domains / surfaces (overlap \u2014 any listed value matches), search (case-insensitive substring of normalized_claim), limit (default 50, max 200). Returns { availability: 'available', rules } or, when this environment has no registry yet, { availability: 'unavailable', reason, rules: [] } \u2014 then amend/reference cannot be declared; never guess a fingerprint. Permission and network errors stay errors.",
   inputSchema: {
     type: "object",
     properties: {

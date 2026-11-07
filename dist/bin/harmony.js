@@ -67271,6 +67271,7 @@ var surfaceRecordTools = [
 ];
 
 // src/tools/rule-registry.ts
+import { createHash as createHash6 } from "node:crypto";
 var RULE_REGISTRY_UNAVAILABLE = "B-1047 rule registry not on this environment yet";
 var DEFAULT_LIMIT2 = 50;
 var MAX_LIMIT2 = 200;
@@ -67281,6 +67282,9 @@ var readRuleRegistrySchema = external_exports.object({
   search: external_exports.string().trim().min(1).optional(),
   limit: external_exports.number().int().min(1).max(MAX_LIMIT2).optional()
 }).strict();
+function ruleFingerprint(content) {
+  return createHash6("sha256").update(content, "utf8").digest("hex");
+}
 function escapeLike(text4) {
   return text4.replace(/[\\%_]/g, (c) => `\\${c}`);
 }
@@ -67308,9 +67312,13 @@ async function readRuleRegistry(client, projectId, args = {}) {
     availability: "available",
     rules: rows.map((r) => {
       const entry = byId.get(r.entry_id);
+      const content = entry?.content;
+      const live = typeof content === "string" ? ruleFingerprint(content) : null;
       return {
         entry_id: r.entry_id,
-        fingerprint: r.fingerprint,
+        fingerprint: live ?? r.fingerprint,
+        stored_fingerprint: r.fingerprint,
+        drift: live === null ? null : live !== r.fingerprint,
         normalized_claim: r.normalized_claim,
         scope: r.scope,
         reach: r.reach,
@@ -67894,6 +67902,19 @@ async function previewMetadataRepairToFile(client, projectId, file, selectors = 
 }
 
 // src/cli/commands/knowledge.ts
+function formatRuleRegistry(data) {
+  if (data.availability === "unavailable") return `Rule registry unavailable: ${data.reason}`;
+  if (data.rules.length === 0) return "No rules.";
+  return data.rules.map((r) => {
+    const drift = r.drift === true ? `  DRIFT (stored ${r.stored_fingerprint.slice(0, 12)}\u2026)` : r.drift === null ? "  drift unknown" : "";
+    return [
+      `${r.entry_id}  ${r.title ?? "(untitled)"}${r.status ? ` [${r.status}]` : ""}`,
+      `  fingerprint: ${r.fingerprint}${drift}`,
+      `  claim: ${r.normalized_claim}`,
+      `  scope: ${r.scope} \xB7 reach: ${r.reach} \xB7 domains: ${r.domains.join(", ") || "-"} \xB7 surfaces: ${r.surfaces.join(", ") || "-"}`
+    ].join("\n");
+  }).join("\n\n");
+}
 function registerKnowledgeCommands(program3) {
   const knowledge = program3.command("knowledge").description("Manage workspace knowledge base");
   knowledge.command("entities").description("Discover entities or select an exact identity/name/kind").option("--entity-id <uuid>").option("--name <name>").option("--kind <kind>").action(async (opts) => {
@@ -67927,7 +67948,7 @@ function registerKnowledgeCommands(program3) {
     );
   });
   knowledge.command("rules").description("Read the rule registry: entry ids and fingerprints for amend/reference rules (B-1047)").option("--entry <id>").option("--domain <domain...>").option("--surface <surface...>").option("--search <text>").option("--limit <n>").action(async (opts) => {
-    await runCommand(program3.opts(), (ctx) => readRuleRegistry(ctx.client, ctx.projectId, { entry_id: opts.entry, domains: opts.domain, surfaces: opts.surface, search: opts.search, limit: opts.limit ? Number(opts.limit) : void 0 }), (data) => JSON.stringify(data, null, 2));
+    await runCommand(program3.opts(), (ctx) => readRuleRegistry(ctx.client, ctx.projectId, { entry_id: opts.entry, domains: opts.domain, surfaces: opts.surface, search: opts.search, limit: opts.limit ? Number(opts.limit) : void 0 }), formatRuleRegistry);
   });
   const accounts = knowledge.command("accounts").description("Live feature accounts and pending clause amendments");
   accounts.command("list").option("--surface <surface>").option("--account <id>").option("--history-limit <n>").option("--history-before <n>").action(async (opts) => {
@@ -69761,7 +69782,7 @@ function buildMigration(input) {
 }
 
 // src/config/conductor-project-source.ts
-import { createHash as createHash6 } from "node:crypto";
+import { createHash as createHash7 } from "node:crypto";
 import { chmodSync as chmodSync3, mkdirSync as mkdirSync3, readFileSync as readFileSync11, renameSync as renameSync3, rmSync as rmSync4, writeFileSync as writeFileSync6 } from "node:fs";
 import { dirname as dirname4 } from "node:path";
 
@@ -69823,7 +69844,7 @@ function createGithubTokenProvider(deps) {
 var REQUEST_TIMEOUT_MS2 = 1e4;
 function gitBlobSha(text4) {
   const body = Buffer.from(text4, "utf8");
-  return createHash6("sha1").update(`blob ${body.length}\0`).update(body).digest("hex");
+  return createHash7("sha1").update(`blob ${body.length}\0`).update(body).digest("hex");
 }
 var encodePath = (p) => p.split("/").map(encodeURIComponent).join("/");
 async function fetchProjectFile(input) {
@@ -73249,7 +73270,7 @@ function registerAgentCommands(program3) {
 
 // src/cli/commands/leg-cost.ts
 import { readFileSync as readFileSync16, writeFileSync as writeFileSync11 } from "node:fs";
-import { createHash as createHash7 } from "node:crypto";
+import { createHash as createHash8 } from "node:crypto";
 
 // src/tools/leg-cost-record.ts
 var LEG_COST_COLS = "id, conduction_id, task_id, leg_key, gate, model, invocation_index, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_creation_1h_input_tokens, cache_creation_5m_input_tokens, thinking_tokens, total_cost_usd, cost_source, num_turns, duration_ms, duration_api_ms, session_id, is_error, service_tier, created_at";
@@ -73561,7 +73582,7 @@ function registerLegCostCommands(program3) {
   );
 }
 function stableInvocationUuid(key) {
-  const hex = createHash7("sha256").update(key).digest("hex").slice(0, 32).split("");
+  const hex = createHash8("sha256").update(key).digest("hex").slice(0, 32).split("");
   hex[12] = "8";
   hex[16] = (parseInt(hex[16], 16) & 3 | 8).toString(16);
   const value = hex.join("");
@@ -73736,7 +73757,7 @@ import { mkdirSync as mkdirSync8, readFileSync as readFileSync18, renameSync as 
 import { dirname as dirname9 } from "node:path";
 
 // src/config/notify-sync.ts
-import { createHash as createHash8 } from "node:crypto";
+import { createHash as createHash9 } from "node:crypto";
 var NOTIFY_SYNC_CACHE_RELATIVE_PATH = ".harmony/.notify-sync.json";
 function notifySyncCachePath(projectRoot) {
   return `${projectRoot}/${NOTIFY_SYNC_CACHE_RELATIVE_PATH}`;
@@ -73760,7 +73781,7 @@ function normalizeNotifyDeclaration(entries) {
   return [...byEndpoint.entries()].map(([endpoint_url, transitions]) => ({ endpoint_url, transitions: [...transitions].sort() })).sort((a3, b) => a3.endpoint_url < b.endpoint_url ? -1 : a3.endpoint_url > b.endpoint_url ? 1 : 0);
 }
 function hashNotifyDeclaration(subscriptions) {
-  return createHash8("sha256").update(`v${NORMALIZATION_VERSION}
+  return createHash9("sha256").update(`v${NORMALIZATION_VERSION}
 ${JSON.stringify(subscriptions)}`).digest("hex");
 }
 function readCachedHash(io, path4) {

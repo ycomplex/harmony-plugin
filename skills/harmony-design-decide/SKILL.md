@@ -307,6 +307,13 @@ skipped — not a substitute for choosing amend here. Only fall through to a fre
 prior Accepted decision exists for this sub-track on this ticket, or the human explicitly chooses "retire
 and replace" over "amend" for this revision.
 
+**Carve-out: a registered rule is never amended in place (B-1421).** A rule-tagged entry (a convention
+tagged `rule` with a registry row) is never edited through `update_knowledge_entry` or any other generic
+edit. Change its wording only through a design brief's `frame.rules` `amend` item (the `rule_bundle`):
+a generic edit bypasses the rule's history and ledger, and before B-1421 it also left the registry
+fingerprint stale. LDS-30 (2026-11-07): rule `5da5c7d1` was edited by `update_knowledge_entry`, the next
+brief pinned the stale fingerprint, and its acceptance was refused on consume and stranded.
+
 ### 4. Compose the brief — advance only on the LAST required sub-track
 
 Author the brief per `skills/harmony-shared/brief-authoring.md` §Design — the question, must-haves,
@@ -372,9 +379,10 @@ says all of it:
   reference, read its registry row: `read_rule_registry({ entry_id: "<candidate id>" })` (or
   `read_rule_registry({ search: "<claim words>", domains: [...], surfaces: [...] })` to scan; CLI
   `harmony knowledge rules --entry <id>`). It returns `{ availability, rules: [{ entry_id, fingerprint,
-  normalized_claim, scope, reach, domains, surfaces, title, status, content }] }`. Set
+  stored_fingerprint, drift, normalized_claim, scope, reach, domains, surfaces, title, status, content }] }`. Set
   `target_entry_id` = `entry_id` and `expected_fingerprint` = `fingerprint` (the sha256 of the entry's
-  current content). For an `amend`, quote that row's `content` verbatim as `before`; for a `reference`,
+  current content, computed live). `drift: true` means the stored registry row (`stored_fingerprint`)
+  is stale; still use `fingerprint`. For an `amend`, quote that row's `content` verbatim as `before`; for a `reference`,
   you may pass its `title`. A candidate with no registry row is not a registered rule: it cannot be an
   amend/reference target. If `availability` is `'unavailable'`, the rule registry is not on this
   environment yet: amend and reference cannot be declared here. Say so in the brief and never guess a

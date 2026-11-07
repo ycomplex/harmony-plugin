@@ -13,7 +13,7 @@ import { publishDefinition } from '../../tools/knowledge-definitions.js';
 vi.mock('../../tools/knowledge-definitions.js', () => ({ publishDefinition: vi.fn().mockResolvedValue({ id: 'definition', current_revision: 'revision' }) }));
 import { Command } from 'commander';
 import { describe, it, expect, vi } from 'vitest';
-import { registerKnowledgeCommands } from './knowledge.js';
+import { registerKnowledgeCommands, formatRuleRegistry } from './knowledge.js';
 import { updateKnowledgeEntry, queryKnowledge, proposeLegacyClaims } from '../../tools/knowledge.js';
 import { saveKnowledgeQuestion, previewKnowledgeQuestions } from '../../tools/knowledge-questions.js';
 
@@ -243,5 +243,25 @@ describe('knowledge prose-sources init command', () => {
       await program.parseAsync(['knowledge', 'prose-sources'], { from: 'user' });
       expect(spy).toHaveBeenCalledWith('client', 'project');
     } finally { spy.mockRestore(); }
+  });
+});
+
+describe('knowledge rules output (B-1421)', () => {
+  const base = { normalized_claim: 'claim', scope: 'product', reach: 'this_product' as const, domains: ['ui'], surfaces: [], title: 'Rule', status: 'Accepted', content: 'x' };
+  it('shows the live fingerprint and a drift marker only when drifted or unknown', () => {
+    const text = formatRuleRegistry({ availability: 'available', rules: [
+      { ...base, entry_id: 'in-step', fingerprint: 'f'.repeat(64), stored_fingerprint: 'f'.repeat(64), drift: false },
+      { ...base, entry_id: 'drifted', fingerprint: 'b'.repeat(64), stored_fingerprint: '0123456789abcdef'.repeat(4), drift: true },
+      { ...base, entry_id: 'unknown', fingerprint: 'c'.repeat(64), stored_fingerprint: 'c'.repeat(64), drift: null, content: null },
+    ] });
+    const blocks = text.split('\n\n');
+    expect(blocks[0]).toContain(`fingerprint: ${'f'.repeat(64)}`);
+    expect(blocks[0]).not.toMatch(/drift/i);
+    expect(blocks[1]).toContain(`fingerprint: ${'b'.repeat(64)}  DRIFT (stored 0123456789ab…)`);
+    expect(blocks[2]).toContain('drift unknown');
+  });
+  it('reports an unavailable registry and an empty one', () => {
+    expect(formatRuleRegistry({ availability: 'unavailable', reason: 'nope', rules: [] })).toBe('Rule registry unavailable: nope');
+    expect(formatRuleRegistry({ availability: 'available', rules: [] })).toBe('No rules.');
   });
 });

@@ -2,6 +2,7 @@
 // (`target_entry_id`) and the fingerprint it expects (`expected_fingerprint`) instead of guessing one.
 // Shared MCP + CLI core: the MCP tool `read_rule_registry` and `harmony knowledge rules` both call
 // `readRuleRegistry`.
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { isMissingRelationOrFunction } from './acceptance-events.js';
@@ -21,10 +22,30 @@ const readRuleRegistrySchema = z.object({
 
 export type ReadRuleRegistryArgs = z.infer<typeof readRuleRegistrySchema>;
 
+/**
+ * B-1421 — the rule fingerprint: sha256 hex of the UTF-8 bytes of `content`. Byte-for-byte the same as
+ * the database's `b1047_rule_fingerprint(p) = encode(sha256(convert_to(p, 'UTF8')), 'hex')`, which the
+ * B-1047 stale check hashes live against `knowledge_decisions.content`.
+ */
+export function ruleFingerprint(content: string): string {
+  return createHash('sha256').update(content, 'utf8').digest('hex');
+}
+
 export interface RegistryRule {
   entry_id: string;
-  /** sha256 hex of the rule entry's `content` — pass it as a design rule's `expected_fingerprint`. */
+  /**
+   * sha256 hex of the rule entry's CURRENT `content`, computed here (B-1421) — pass it as a design
+   * rule's `expected_fingerprint`. Falls back to `stored_fingerprint` only when the content could not
+   * be read (`drift: null`).
+   */
   fingerprint: string;
+  /** The registry row's stored `fingerprint` column, written only by a rule_bundle create/amend. */
+  stored_fingerprint: string;
+  /**
+   * true: the stored registry row is stale (the entry's content was edited outside a rule_bundle);
+   * `fingerprint` is still the right `expected_fingerprint`. false: in step. null: content unreadable.
+   */
+  drift: boolean | null;
   normalized_claim: string;
   scope: string;
   reach: 'this_surface' | 'this_product';
@@ -89,9 +110,13 @@ export async function readRuleRegistry(
     availability: 'available',
     rules: rows.map((r) => {
       const entry = byId.get(r.entry_id);
+      const content = entry?.content;
+      const live = typeof content === 'string' ? ruleFingerprint(content) : null;
       return {
         entry_id: r.entry_id,
-        fingerprint: r.fingerprint,
+        fingerprint: live ?? r.fingerprint,
+        stored_fingerprint: r.fingerprint,
+        drift: live === null ? null : live !== r.fingerprint,
         normalized_claim: r.normalized_claim,
         scope: r.scope,
         reach: r.reach,
@@ -108,7 +133,7 @@ export async function readRuleRegistry(
 export const readRuleRegistryTool = {
   name: 'read_rule_registry',
   description:
-    "B-1047 — read the active project's rule registry. Each rule returns { entry_id, fingerprint, normalized_claim, scope, reach, domains, surfaces, title, status, content }. A design brief's amend/reference rule names target_entry_id = entry_id and expected_fingerprint = fingerprint (sha256 of the entry's current content); an amend quotes content as `before`. Filters: entry_id (exact), domains / surfaces (overlap — any listed value matches), search (case-insensitive substring of normalized_claim), limit (default 50, max 200). Returns { availability: 'available', rules } or, when this environment has no registry yet, { availability: 'unavailable', reason, rules: [] } — then amend/reference cannot be declared; never guess a fingerprint. Permission and network errors stay errors.",
+    "B-1047 — read the active project's rule registry. Each rule returns { entry_id, fingerprint, stored_fingerprint, drift, normalized_claim, scope, reach, domains, surfaces, title, status, content }. fingerprint is computed from the entry's current content (sha256 hex of its UTF-8 bytes); stored_fingerprint is the registry row's stored column; drift is true when they differ, false when equal, null when the content could not be read (then fingerprint falls back to stored_fingerprint). drift: true means the registry row is stale (the entry was edited outside a rule_bundle) — the live fingerprint is still the right expected_fingerprint. A design brief's amend/reference rule names target_entry_id = entry_id and expected_fingerprint = fingerprint; an amend quotes content as `before`. Filters: entry_id (exact), domains / surfaces (overlap — any listed value matches), search (case-insensitive substring of normalized_claim), limit (default 50, max 200). Returns { availability: 'available', rules } or, when this environment has no registry yet, { availability: 'unavailable', reason, rules: [] } — then amend/reference cannot be declared; never guess a fingerprint. Permission and network errors stay errors.",
   inputSchema: {
     type: 'object',
     properties: {
