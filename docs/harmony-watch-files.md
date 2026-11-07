@@ -302,3 +302,5 @@ harmony watch status --seat <name>
   stopped by SIGINT / SIGTERM. `status`: `0` alive, `1` none or stale.
 - `health` lines are printed as events but never end an `--until-event` wait.
 - `status` finds the heartbeat through the profile's `project`, else by scanning `<home>/watch/*/`.
+- `status` also lists every ticket the cursor records as waiting on a human, with its reason, who it is
+  waiting on (`seat` or `founder`, from the profile) and its age. It reads only local files, so it works offline.

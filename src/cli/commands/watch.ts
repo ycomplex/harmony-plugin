@@ -28,7 +28,7 @@ import { startHintSubscription, type HintChannelLike } from '../../daemon/hint-s
 import { getActiveProject, type ProjectConfig } from '../config.js';
 import { resolveSupabaseTarget } from '../resolve-supabase-target.js';
 import { createBoardReader, type BoardReader } from '../../watch/board-read.js';
-import { healthEvent, type WatchEvent } from '../../watch/classify.js';
+import { healthEvent, ownerFor, type WatchEvent } from '../../watch/classify.js';
 import type { CurrentRow } from '../../watch/cursor.js';
 import {
   createGuardedClient,
@@ -496,6 +496,26 @@ export function runWatchStatus(seat: string | null, json: boolean, deps: Pick<Wa
     .filter((l) => l.status === 'ok')
     .map((l) => (l as { value: { pid: number; hostname: string; scope: string; mode: string } }).value);
   const status = stale ? 'stale' : 'alive';
+  // AC5: list what is waiting on a human (seat-owned and founder-held alike) with its age, from the
+  // on-disk cursor — offline, no board read. Founder-held items appear here but never wake the seat.
+  const cur = readCursor(best.project, seat, homeOpts);
+  const profileValue = profile.status === 'ok' ? profile.value : null;
+  const waiting =
+    cur.status === 'ok'
+      ? Object.values(cur.value.tickets)
+          .filter((t) => t.awaiting)
+          .map((t) => {
+            const since = Date.parse(t.first_seen);
+            return {
+              key: t.key,
+              reason: t.reason,
+              on: ownerFor(t.reason === 'elicitation-round' ? 'question' : 'ready', t.reason, profileValue),
+              since: t.first_seen,
+              age_s: Number.isNaN(since) ? null : Math.max(0, Math.round((now - since) / 1000)),
+            };
+          })
+          .sort((a, b) => a.key.localeCompare(b.key))
+      : [];
   if (json) {
     deps.out(
       JSON.stringify({
@@ -510,6 +530,7 @@ export function runWatchStatus(seat: string | null, json: boolean, deps: Pick<Wa
         last_ok_at: hb.last_ok_at,
         last_fetch_age_s: ageS,
         locks,
+        waiting,
       }),
     );
   } else {
@@ -517,6 +538,9 @@ export function runWatchStatus(seat: string | null, json: boolean, deps: Pick<Wa
     deps.out(
       `watch ${seat} (${best.project}): ${status}, health ${hb.health}, last fetch ${ageS === null ? '?' : formatAge(ageS)} ago, pid ${hb.pid}, ${hb.mode} ${hb.scope}${lockText}`,
     );
+    for (const w of waiting) {
+      deps.out(`  waiting on ${w.on}: ${w.key} ${w.reason ?? ''} for ${w.age_s === null ? '?' : formatAge(w.age_s)}`);
+    }
   }
   return stale ? 1 : 0;
 }

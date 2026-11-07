@@ -11,6 +11,7 @@ import {
   readCursor,
   readHeartbeat,
   readLock,
+  writeCursor,
   writeHeartbeat,
   writeSeatProfile,
   type Heartbeat,
@@ -231,6 +232,28 @@ describe('runWatchStatus', () => {
     writeHeartbeat('B', 'orch', hb({ last_fetch_at: new Date(T0 - 10 * 60_000).toISOString() }), { home });
     expect(runWatchStatus('orch', true, f.deps)).toBe(1);
     expect(JSON.parse(f.out[1])).toMatchObject({ status: 'stale', last_fetch_age_s: 600 });
+  });
+
+  it('lists waiting items with owner and age from the cursor, founder-held included (AC5)', () => {
+    const f = fake();
+    writeHeartbeat('B', 'orch', hb(), { home });
+    writeSeatProfile('orch', { session_id: 's1', project: 'B', milestone: 'm1', anchor: 'B-1', owns: [], held_for_founder: ['verify'], remind: '20m' }, { home });
+    const base = { state: 'Built', ref_id: 'r', iteration: 1, conduction_status: 'active', leg_ended_at: null, waiting_on: null, last_reported: null, reminders: 0 };
+    writeCursor('B', 'orch', {
+      schema: 1, project: 'B', seat: 'orch', seq: 3, updated_at: new Date(T0).toISOString(),
+      tickets: {
+        t1: { ...base, key: 'B-1', awaiting: true, reason: 'verification-ack-pending', first_seen: new Date(T0 - 7200_000).toISOString() },
+        t2: { ...base, key: 'B-2', awaiting: true, reason: 'plan-draft', first_seen: new Date(T0 - 600_000).toISOString() },
+        t3: { ...base, key: 'B-3', awaiting: false, reason: null, first_seen: new Date(T0).toISOString() },
+      },
+    }, { home });
+    expect(runWatchStatus('orch', true, f.deps)).toBe(0);
+    expect(JSON.parse(f.out[0]).waiting).toEqual([
+      { key: 'B-1', reason: 'verification-ack-pending', on: 'founder', since: new Date(T0 - 7200_000).toISOString(), age_s: 7200 },
+      { key: 'B-2', reason: 'plan-draft', on: 'seat', since: new Date(T0 - 600_000).toISOString(), age_s: 600 },
+    ]);
+    expect(runWatchStatus('orch', false, f.deps)).toBe(0);
+    expect(f.out.slice(2)).toEqual([expect.stringMatching(/^ {2}waiting on founder: B-1 verification-ack-pending for /), expect.stringMatching(/^ {2}waiting on seat: B-2 plan-draft for /)]);
   });
 
   it('missing --seat → exit 2', () => {
