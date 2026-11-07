@@ -298,9 +298,55 @@ harmony watch status --seat <name>
   and `--once` writes neither the cursor nor the heartbeat, so it never takes a seat's events.
 - Exit codes: `0` a seat-owned event (`--until-event`) or done; `3` `--max-wait` passed with nothing
   seat-owned, or `--once` could not reach the board; `2` bad arguments, a held lock (the message
-  names the holder's pid), a token rejected at startup, or a scope that cannot resolve; `130` / `143`
+  names the holder's pid), a token rejected at startup, a scope that cannot resolve, or a seat
+  profile whose `project:` is not the CLI's active project (see "Which board" below); `130` / `143`
   stopped by SIGINT / SIGTERM. `status`: `0` alive, `1` none or stale.
-- `health` lines are printed as events but never end an `--until-event` wait.
+- `health` and `start` lines are printed as events but never end an `--until-event` wait.
 - `status` finds the heartbeat through the profile's `project`, else by scanning `<home>/watch/*/`.
 - `status` also lists every ticket the cursor records as waiting on a human, with its reason, who it is
   waiting on (`seat` or `founder`, from the profile) and its age. It reads only local files, so it works offline.
+
+### Which board: the `start` line and the exit-2 checks
+
+**The CLI's active project must be the board the seat drives.** `harmony watch` reads whatever
+board the CLI is logged in to; it has no other way to know which one you meant. Check it with
+`harmony project info` and change it with `harmony project switch <name>` before you start a watch.
+
+Every run states what it watches, before anything else (after the startup `health` lines). It is a
+`start` event, owner `info`, so it never wakes a seat and never ends an `--until-event` wait:
+
+```
+2026-11-07T10:00:00.000Z start watching milestone v1.14 (c5a35a47…) in project Backlogs (B) on prod — 7 tickets
+```
+
+With `--json` it is one JSON line like every other event, with these extra fields:
+
+| Field | Meaning |
+|---|---|
+| `project` | `{ "name", "key" }` of the board the watch reads. |
+| `target` | `prod`, `staging` or `custom`: the same resolver as `get_project`'s `environment.target` (`src/tools/environment.ts`), applied to the Supabase URL the CLI actually uses. |
+| `scope` | `{ "kind": "milestone", "id", "name" }`, `{ "kind": "keys", "keys" }` or `{ "kind": "conductions" }`. |
+| `tickets` | How many tickets the scope resolved to at start. |
+| `detail` | The readable line above. |
+
+If the `start` line does not name the board you drive, stop the watch and switch the CLI.
+
+A human `--once` (no `--json`) whose tickets have nothing waiting ends with one line:
+
+```
+nothing waiting (7 tickets watched in B on prod)
+```
+
+The watch exits `2`, naming the active project (name and key) and its target, when:
+
+- **A milestone is not in the active project.** `--milestone <uuid>` must be a milestone row of the
+  active project: a uuid with no row, or with another project's row, is refused, and so is a name
+  with no match. A real milestone with no tickets is not an error; it starts with `0 tickets`.
+- **A ticket key is not in the active project** (`ticket B-1409 is not in project BVS; …`).
+- **The seat profile names another project.** With `--seat`, in every mode, a profile whose
+  `project:` key is not the active project's key is refused before the lock is taken.
+
+`harmony watch status` cannot make the profile check: the CLI's local config stores a project's
+name, token and Supabase settings but not its key, and `status` never goes to the network. When the
+profile names a project, `status` says so in one stderr line and keeps its exit code; the next
+`harmony watch` makes the check.

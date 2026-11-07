@@ -16,8 +16,10 @@ import {
   writeSeatProfile,
   type Heartbeat,
 } from '../../watch/seat-files.js';
-import { conduction, FakeBoard, FakeClock, paused, T0, ticket } from '../../watch/test-fakes.js';
-import { parseWatchArgs, registerWatchCommands, runWatchCommand, runWatchStatus, UsageError, type WatchCliDeps } from './watch.js';
+import { conduction, FakeBoard, FakeClock, fakeSupabase, paused, T0, ticket } from '../../watch/test-fakes.js';
+import { createBoardReader } from '../../watch/board-read.js';
+import { isWake } from '../../watch/loop.js';
+import { parseWatchArgs, registerWatchCommands, resolveBoardTarget, runWatchCommand, runWatchStatus, UsageError, type WatchCliDeps } from './watch.js';
 
 let home: string;
 beforeEach(() => {
@@ -55,6 +57,8 @@ function fake(over: Partial<WatchCliDeps> = {}): Fake {
     makeReader: () => board,
     startHints: () => null,
     installGuards: () => () => {},
+    resolveTarget: async () => 'prod',
+    activeProjectName: () => 'backlogs',
     now: clock.now,
     sleep: clock.sleep,
     out: (l) => out.push(l),
@@ -155,10 +159,11 @@ describe('runWatchCommand', () => {
     const code = await runWatchCommand(parseWatchArgs(['B-1'], { seat: 'orch' }, true), f.deps);
     expect(code).toBe(0);
     const lines = jsonLines(f.out);
-    expect(lines.slice(0, 4).map((l) => (l.event === 'health' ? `health:${l.status}` : l.event))).toEqual([
+    expect(lines.slice(0, 5).map((l) => (l.event === 'health' ? `health:${l.status}` : l.event))).toEqual([
       'health:warning', // no seat profile
       'health:offline',
       'health:recovered',
+      'start',
       'ready',
     ]);
     expect(f.clock.sleeps).toEqual([5000, 15000]);
@@ -199,6 +204,134 @@ describe('runWatchCommand', () => {
     const lines = jsonLines(f.out);
     expect(lines.filter((l) => l.event === 'health')).toHaveLength(1);
     expect(lines.find((l) => l.event === 'ready').owner).toBe('seat');
+  });
+});
+
+describe('scope and board checks (release-gate finding on 7cd36ba)', () => {
+  const MS = 'c5a35a47-0000-4000-8000-000000000001';
+  const FOREIGN = 'f0000000-0000-4000-8000-000000000002';
+  const profileFor = (project: string) =>
+    writeSeatProfile('orch', { session_id: 's1', project, milestone: null, anchor: null, owns: [], held_for_founder: [], remind: null }, { home });
+
+  it('an unknown milestone uuid exits 2 naming the milestone, the active project and its target', async () => {
+    const f = fake({ resolveTarget: async () => 'staging' });
+    f.board.key = 'BVS';
+    f.board.name = 'Backlogs Staging';
+    f.board.milestones = new Map([[MS, { id: MS, name: 'v1.14' }]]);
+    const zero = '00000000-0000-0000-0000-000000000000';
+    for (const json of [true, false]) {
+      f.err.length = 0;
+      f.out.length = 0;
+      const code = await runWatchCommand(parseWatchArgs([], { milestone: zero, once: true }, json), f.deps);
+      expect(code).toBe(2);
+      const msg = f.err.join('\n');
+      expect(msg).toContain(zero);
+      expect(msg).toContain('Backlogs Staging (BVS) on staging');
+      expect(f.out.some((l) => /start/.test(l))).toBe(false);
+    }
+  });
+
+  it('a milestone of another project exits 2 (the real reader refuses the foreign row)', async () => {
+    const { client } = fakeSupabase((q) => {
+      if (q.table === 'projects') return { data: { key: 'BVS', name: 'Backlogs Staging' }, error: null };
+      if (q.table === 'milestones') return { data: [{ id: FOREIGN, name: 'v1.14', project_id: 'p-other' }], error: null };
+      return { data: [], error: null };
+    });
+    const f = fake({ makeReader: (_c, projectId) => createBoardReader(client as never, projectId), resolveTarget: async () => 'staging' });
+    const code = await runWatchCommand(parseWatchArgs([], { milestone: FOREIGN, once: true }, true), f.deps);
+    expect(code).toBe(2);
+    expect(f.err.join('\n')).toMatch(new RegExp(`milestone ${FOREIGN} is not in project BVS; the CLI's active project is Backlogs Staging \\(BVS\\) on staging`));
+  });
+
+  it('a real milestone with no tickets is not fatal: it starts, counts 0 and says nothing is waiting', async () => {
+    const f = fake();
+    f.board.milestones = new Map([[MS, { id: MS, name: 'v1.14' }]]);
+    const code = await runWatchCommand(parseWatchArgs([], { milestone: 'v1.14', once: true }, false), f.deps);
+    expect(code).toBe(0);
+    expect(f.out).toEqual([
+      `${new Date(T0).toISOString()} start watching milestone v1.14 (c5a35a47…) in project Backlogs (B) on prod — 0 tickets`,
+      'nothing waiting (0 tickets watched in B on prod)',
+    ]);
+  });
+
+  it('--json: the start event names project, key, target, scope and count, owner info', async () => {
+    const f = fake();
+    f.board.milestones = new Map([[MS, { id: MS, name: 'v1.14' }]]);
+    f.board.put(ticket(1, { milestone_id: MS }));
+    f.board.put(paused(2, 'plan-draft', { milestone_id: MS }));
+    const code = await runWatchCommand(parseWatchArgs([], { milestone: MS, once: true }, true), f.deps);
+    expect(code).toBe(0);
+    const lines = jsonLines(f.out);
+    expect(lines[0]).toMatchObject({
+      event: 'start',
+      owner: 'info',
+      project: { name: 'Backlogs', key: 'B' },
+      target: 'prod',
+      scope: { kind: 'milestone', id: MS, name: 'v1.14' },
+      tickets: 2,
+      detail: 'watching milestone v1.14 (c5a35a47…) in project Backlogs (B) on prod — 2 tickets',
+    });
+    // --json never prints the human "nothing waiting" line
+    expect(f.out.some((l) => l.startsWith('nothing waiting'))).toBe(false);
+  });
+
+  it('human --once with tickets but nothing waiting prints the summary line after the rows', async () => {
+    const f = fake({ resolveTarget: async () => 'custom' });
+    f.board.put(ticket(1));
+    f.board.put(ticket(2));
+    const code = await runWatchCommand(parseWatchArgs(['B-1', 'B-2'], { once: true }, false), f.deps);
+    expect(code).toBe(0);
+    expect(f.out[0]).toMatch(/ start watching tickets B-1, B-2 in project Backlogs \(B\) on custom — 2 tickets$/);
+    expect(f.out.at(-1)).toBe('nothing waiting (2 tickets watched in B on custom)');
+  });
+
+  it('start never ends --until-event: a quiet board with only the start line runs to --max-wait (exit 3)', async () => {
+    const f = fake();
+    f.board.put(ticket(1));
+    const code = await runWatchCommand(parseWatchArgs(['B-1'], { seat: 'orch', untilEvent: true, maxWait: '2m' }, true), f.deps);
+    expect(code).toBe(3);
+    const lines = jsonLines(f.out);
+    expect(lines.filter((l) => l.event === 'start')).toHaveLength(1);
+    expect(lines.find((l) => l.event === 'start').owner).toBe('info');
+    expect(isWake(lines.find((l) => l.event === 'start'))).toBe(false);
+  });
+
+  it('a profile naming project B while the CLI points at BVS exits 2 naming both and the target, in every mode', async () => {
+    profileFor('B');
+    for (const opts of [{ once: true }, { untilEvent: true }, { follow: true }]) {
+      const f = fake({ resolveTarget: async () => 'staging' });
+      f.board.key = 'BVS';
+      f.board.name = 'Backlogs Staging';
+      f.board.put(ticket(1));
+      const code = await runWatchCommand(parseWatchArgs(['1'], { seat: 'orch', ...opts }, true), f.deps);
+      expect(code).toBe(2);
+      const msg = f.err.join('\n');
+      expect(msg).toContain('names project B');
+      expect(msg).toContain('Backlogs Staging (BVS) on staging');
+      expect(f.out.some((l) => l.includes('"event":"start"'))).toBe(false);
+      expect(readLock('BVS', 'orch', { kind: 'keys', keys: ['1'] }, { home }).status).toBe('absent');
+    }
+  });
+
+  it('a profile naming the active project passes', async () => {
+    profileFor('B');
+    const f = fake();
+    f.board.put(ticket(1));
+    expect(await runWatchCommand(parseWatchArgs(['B-1'], { seat: 'orch', once: true }, true), f.deps)).toBe(0);
+  });
+
+  it('the default target is get_project\'s resolver over the Supabase URL', async () => {
+    expect(await resolveBoardTarget('https://eioxsunvhakmelhanmnn.supabase.co')).toBe('prod');
+    expect(await resolveBoardTarget('https://meqkdgncdzromunylyxf.supabase.co')).toBe('staging');
+    expect(await resolveBoardTarget('http://127.0.0.1:54321')).toBe('custom');
+  });
+
+  it('status with a profile project cannot check it offline: it says so on stderr and keeps its exit code', () => {
+    profileFor('B');
+    const f = fake({ activeProjectName: () => 'staging' });
+    expect(runWatchStatus('orch', false, f.deps)).toBe(1);
+    expect(f.out).toEqual(['watch orch: none (no heartbeat)']);
+    expect(f.err.join('\n')).toMatch(/not checking the profile's project B against the CLI's active project "staging"/);
   });
 });
 

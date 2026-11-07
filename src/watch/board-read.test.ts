@@ -3,6 +3,8 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { createBoardReader, parseTicketKey, ScopeError } from './board-read.js';
 import { fakeSupabase, type FakeQuery } from './test-fakes.js';
 
+const MS_OWN = '00000000-0000-4000-8000-0000000000bb';
+const MS_FOREIGN = '00000000-0000-4000-8000-0000000000cc';
 const filter = (q: FakeQuery, op: string, col: string) => q.filters.find(([o, c]) => o === op && c === col)?.[2];
 
 function board(opts: { missingLegEnd?: boolean; tasks?: Array<Record<string, unknown>>; conductions?: Array<Record<string, unknown>> } = {}) {
@@ -16,7 +18,13 @@ function board(opts: { missingLegEnd?: boolean; tasks?: Array<Record<string, unk
   ];
   return fakeSupabase((q) => {
     if (q.table === 'projects') return { data: { key: 'B' }, error: null };
-    if (q.table === 'milestones') return { data: filter(q, 'eq', 'name') === 'v1.13' ? [{ id: '00000000-0000-4000-8000-0000000000aa' }] : [], error: null };
+    if (q.table === 'milestones') {
+      const byId = filter(q, 'eq', 'id');
+      if (byId === MS_OWN) return { data: [{ id: MS_OWN, name: 'v1.14', project_id: 'p1' }], error: null };
+      if (byId === MS_FOREIGN) return { data: [{ id: MS_FOREIGN, name: 'v9', project_id: 'p-other' }], error: null };
+      if (byId !== undefined) return { data: [], error: null };
+      return { data: filter(q, 'eq', 'name') === 'v1.13' ? [{ id: '00000000-0000-4000-8000-0000000000aa', name: 'v1.13' }] : [], error: null };
+    }
     if (q.table === 'tasks' && q.select === 'id, task_number') {
       const nums = filter(q, 'in', 'task_number') as number[];
       return { data: tasks.filter((t) => nums.includes(t.task_number as number)), error: null };
@@ -68,6 +76,25 @@ describe('createBoardReader', () => {
     expect(filter(q, 'eq', 'milestone_id')).toBe('00000000-0000-4000-8000-0000000000aa');
     expect(filter(q, 'eq', 'archived')).toBe(false);
     await expect(r.resolveScope({ kind: 'milestone', id: 'nope' })).rejects.toBeInstanceOf(ScopeError);
+  });
+
+  it('a milestone uuid must be a row of THIS project: unknown and foreign uuids are ScopeErrors; an empty one resolves', async () => {
+    const { client } = board({ tasks: [] });
+    const r = createBoardReader(client as unknown as SupabaseClient, 'p1');
+    await expect(r.resolveScope({ kind: 'milestone', id: '00000000-0000-0000-0000-000000000000' })).rejects.toThrow(
+      /milestone 00000000-0000-0000-0000-000000000000 is not in project B/,
+    );
+    await expect(r.resolveScope({ kind: 'milestone', id: MS_FOREIGN })).rejects.toBeInstanceOf(ScopeError);
+    expect(await r.resolveMilestone(MS_OWN)).toEqual({ id: MS_OWN, name: 'v1.14' });
+    expect(await r.resolveScope({ kind: 'milestone', id: MS_OWN })).toEqual([]);
+  });
+
+  it('projectInfo reads key and name once', async () => {
+    const { client, calls } = fakeSupabase((q) => (q.table === 'projects' ? { data: { key: 'BVS', name: 'Backlogs Staging' }, error: null } : { data: [], error: null }));
+    const r = createBoardReader(client as unknown as SupabaseClient, 'p1');
+    expect(await r.projectInfo()).toEqual({ key: 'BVS', name: 'Backlogs Staging' });
+    expect(await r.projectKey()).toBe('BVS');
+    expect(calls.filter((c) => c.table === 'projects')).toHaveLength(1);
   });
 
   it('conductions scope is the tasks of live conductions', async () => {

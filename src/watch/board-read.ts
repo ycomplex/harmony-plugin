@@ -12,7 +12,11 @@
  * back to "a pause held unchanged for 90 s is ready".
  *
  * The visual id (`B-1422`) is not a column: it is `${projects.key}-${task_number}`. The project key
- * is read once.
+ * and name are read once.
+ *
+ * A milestone scope must name a milestone OF THIS PROJECT: a uuid with no row, or with another
+ * project's row, is a ScopeError, as is a name with no match. A real milestone with no tickets
+ * resolves to an empty list; it is not an error.
  */
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { CONDUCTION_LIVE_STATUSES, isMissingLastLegEndedAtColumn } from '../tools/conduction-record.js';
@@ -74,8 +78,24 @@ export class ScopeError extends Error {
   }
 }
 
+/** The active project as the board names it. */
+export interface ProjectInfo {
+  key: string;
+  name: string;
+}
+
+/** A resolved milestone of the active project. `name` is null when the board gave none. */
+export interface MilestoneInfo {
+  id: string;
+  name: string | null;
+}
+
 export interface BoardReader {
   projectKey(): Promise<string>;
+  /** The project's key and name (one select, cached with the key). */
+  projectInfo(): Promise<ProjectInfo>;
+  /** The milestone a `--milestone <id|name>` names, in this project; a ScopeError otherwise. */
+  resolveMilestone(idOrName: string): Promise<MilestoneInfo>;
   /** Task uuids in the scope, re-resolved on every call. */
   resolveScope(scope: WatchScope): Promise<string[]>;
   readSnapshot(taskIds: string[]): Promise<BoardSnapshot>;
@@ -110,34 +130,54 @@ export interface BoardReaderDeps {
 
 export function createBoardReader(client: SupabaseClient, projectId: string, deps: BoardReaderDeps = {}): BoardReader {
   const getTaskMeta = deps.getTaskMeta ?? ((taskId: string) => getTask(client, projectId, { task_id: taskId, view: 'meta' }));
-  let key: string | null = null;
-  const milestoneIds = new Map<string, string>();
+  let info: ProjectInfo | null = null;
+  const milestones = new Map<string, MilestoneInfo>();
   const seenUpdatedAt = new Map<string, string>();
   const metaCache = new Map<string, TicketMeta>();
   // Once the column is known to be missing, stop asking for it.
   let legEndColumn = true;
 
-  async function projectKey(): Promise<string> {
-    if (key !== null) return key;
-    const { data, error } = await client.from('projects').select('key').eq('id', projectId).single();
+  async function projectInfo(): Promise<ProjectInfo> {
+    if (info !== null) return info;
+    const { data, error } = await client.from('projects').select('key, name').eq('id', projectId).single();
     throwIf(error);
-    const k = (data as { key?: unknown } | null)?.key;
+    const row = (data as { key?: unknown; name?: unknown } | null) ?? null;
+    const k = row?.key;
     if (typeof k !== 'string' || !k) throw new Error('project has no key');
-    key = k;
-    return k;
+    info = { key: k, name: typeof row?.name === 'string' && row.name ? row.name : k };
+    return info;
   }
 
-  async function milestoneId(id: string): Promise<string> {
-    if (UUID.test(id)) return id;
-    const cached = milestoneIds.get(id);
+  async function projectKey(): Promise<string> {
+    return (await projectInfo()).key;
+  }
+
+  async function resolveMilestone(idOrName: string): Promise<MilestoneInfo> {
+    const cached = milestones.get(idOrName);
     if (cached) return cached;
-    const { data, error } = await client.from('milestones').select('id, name').eq('project_id', projectId).eq('name', id);
-    throwIf(error);
-    const rows = (data as Array<{ id: string }> | null) ?? [];
-    if (rows.length === 0) throw new ScopeError(`no milestone named ${JSON.stringify(id)} in this project`);
-    if (rows.length > 1) throw new ScopeError(`milestone name ${JSON.stringify(id)} is ambiguous; pass its id`);
-    milestoneIds.set(id, rows[0].id);
-    return rows[0].id;
+    const pk = await projectKey();
+    let resolved: MilestoneInfo;
+    if (UUID.test(idOrName)) {
+      // By id: the row must exist AND belong to this project. RLS may hide another project's row
+      // entirely; either way the answer is the same refusal.
+      const { data, error } = await client.from('milestones').select('id, name, project_id').eq('id', idOrName);
+      throwIf(error);
+      const rows = (data as Array<{ id: string; name?: unknown; project_id?: unknown }> | null) ?? [];
+      const row = rows[0];
+      if (!row || row.project_id !== projectId) {
+        throw new ScopeError(`milestone ${idOrName} is not in project ${pk}`);
+      }
+      resolved = { id: row.id, name: typeof row.name === 'string' ? row.name : null };
+    } else {
+      const { data, error } = await client.from('milestones').select('id, name').eq('project_id', projectId).eq('name', idOrName);
+      throwIf(error);
+      const rows = (data as Array<{ id: string; name?: unknown }> | null) ?? [];
+      if (rows.length === 0) throw new ScopeError(`no milestone named ${JSON.stringify(idOrName)} in project ${pk}`);
+      if (rows.length > 1) throw new ScopeError(`milestone name ${JSON.stringify(idOrName)} is ambiguous in project ${pk}; pass its id`);
+      resolved = { id: rows[0].id, name: typeof rows[0].name === 'string' ? rows[0].name : idOrName };
+    }
+    milestones.set(idOrName, resolved);
+    return resolved;
   }
 
   async function resolveScope(scope: WatchScope): Promise<string[]> {
@@ -162,7 +202,7 @@ export function createBoardReader(client: SupabaseClient, projectId: string, dep
         return ((data as Array<{ id: string }> | null) ?? []).map((r) => r.id);
       }
       case 'milestone': {
-        const mid = await milestoneId(scope.id);
+        const mid = (await resolveMilestone(scope.id)).id;
         const { data, error } = await client
           .from('tasks')
           .select('id')
@@ -285,5 +325,5 @@ export function createBoardReader(client: SupabaseClient, projectId: string, dep
     }));
   }
 
-  return { projectKey, resolveScope, readSnapshot, listMarkerComments };
+  return { projectKey, projectInfo, resolveMilestone, resolveScope, readSnapshot, listMarkerComments };
 }

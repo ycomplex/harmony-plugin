@@ -87,6 +87,8 @@ describe('AC6 profile routing (ownerFor)', () => {
     expect(ownerFor('waiting', null, p)).toBe('info');
     expect(ownerFor('acted', null, p)).toBe('info');
     expect(ownerFor('state', null, p)).toBe('info');
+    expect(ownerFor('start', null, p)).toBe('info');
+    expect(ownerFor('start', null, null)).toBe('info');
     expect(ownerFor('park', null, p)).toBe('founder');
     expect(ownerFor('dirty-exit', null, p)).toBe('seat');
     // the reason decides first, then the event name

@@ -12,11 +12,16 @@
  *
  * Exit codes: 0 event (until-event) / done (once, follow); 3 `--max-wait` passed with nothing
  * seat-owned (or `--once` could not reach the board); 2 bad arguments, a lock held by another
- * watch, a rejected token at startup, or a scope that cannot resolve. `status`: 0 alive, 1 none
- * or stale.
+ * watch, a rejected token at startup, a scope that cannot resolve (a key, or a milestone, not in
+ * the CLI's active project), or a seat profile whose `project:` is not that project. `status`:
+ * 0 alive, 1 none or stale.
+ *
+ * Every run starts with a `start` event naming the board it reads: the project's name and key,
+ * the target (`prod` / `staging` / `custom`, from the Supabase URL the CLI uses) and the scope
+ * with its ticket count. It is `info` and never ends an `--until-event` wait.
  *
  * Files and formats: docs/harmony-watch-files.md. Output: one line per event on stdout (`--json`:
- * one JSON object per line); health lines are events too. Diagnostics go to stderr.
+ * one JSON object per line); health and start lines are events too. Diagnostics go to stderr.
  */
 import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
@@ -27,8 +32,9 @@ import { harmonyEnv } from '../../env.js';
 import { startHintSubscription, type HintChannelLike } from '../../daemon/hint-subscription.js';
 import { getActiveProject, type ProjectConfig } from '../config.js';
 import { resolveSupabaseTarget } from '../resolve-supabase-target.js';
-import { createBoardReader, type BoardReader } from '../../watch/board-read.js';
-import { healthEvent, ownerFor, type WatchEvent } from '../../watch/classify.js';
+import { createBoardReader, type BoardReader, type MilestoneInfo, type ProjectInfo } from '../../watch/board-read.js';
+import { healthEvent, ownerFor, startEvent, type WatchEvent } from '../../watch/classify.js';
+import { resolveEnvironment } from '../../tools/environment.js';
 import type { CurrentRow } from '../../watch/cursor.js';
 import {
   createGuardedClient,
@@ -90,6 +96,29 @@ export interface WatchCliDeps {
   pollMs?: number;
   hintDelayMs?: number;
   settleMs?: number;
+  /** The board target of a Supabase URL (default: src/tools/environment.ts's resolver). */
+  resolveTarget?(url: string): Promise<BoardTarget>;
+  /** The CLI's active project config name, read locally; null when there is none. */
+  activeProjectName?(): string | null;
+}
+
+export type BoardTarget = 'prod' | 'staging' | 'custom';
+
+/** The target get_project reports for this URL: the same resolver, never a second KNOWN_REFS. */
+export async function resolveBoardTarget(url: string): Promise<BoardTarget> {
+  try {
+    return (await resolveEnvironment(process.env, import.meta.url, null, url || undefined)).target;
+  } catch {
+    return 'custom';
+  }
+}
+
+function localActiveProjectName(): string | null {
+  try {
+    return getActiveProject().name;
+  } catch {
+    return null;
+  }
 }
 
 /** Real setTimeout sleep that resolves early on abort. */
@@ -164,6 +193,8 @@ function defaultDeps(): WatchCliDeps {
       };
     },
     installGuards: (onHealth) => installProcessGuards(onHealth),
+    resolveTarget: resolveBoardTarget,
+    activeProjectName: localActiveProjectName,
     now: () => Date.now(),
     sleep: realSleep,
     out: (line) => process.stdout.write(`${line}\n`),
@@ -181,6 +212,10 @@ function defaultDeps(): WatchCliDeps {
   };
 }
 
+function isScopeError(err: unknown): boolean {
+  return !!err && typeof err === 'object' && (err as { name?: unknown }).name === 'ScopeError';
+}
+
 // ---------------------------------------------------------------------------
 // Formatting
 // ---------------------------------------------------------------------------
@@ -196,6 +231,7 @@ export function formatAge(seconds: number | null): string {
 }
 
 export function formatEvent(e: WatchEvent): string {
+  if (e.event === 'start') return `${e.ts} start ${e.detail ?? ''}`;
   if (e.event === 'health') {
     return `${e.ts} health ${e.status ?? ''}${e.detail ? `: ${e.detail}` : ''}${e.since && e.status !== 'recovered' ? ` (since ${e.since})` : ''}`;
   }
@@ -302,6 +338,13 @@ export async function runWatchCommand(args: WatchArgs, deps: WatchCliDeps): Prom
     deps.err(`harmony watch: ${safeErrorMessage(e)}`);
     return 2;
   }
+  let supabaseUrl = '';
+  try {
+    supabaseUrl = auth.getSupabaseUrl();
+  } catch {
+    // an auth without a URL: the target reads as custom
+  }
+  const target: BoardTarget = await (deps.resolveTarget ?? resolveBoardTarget)(supabaseUrl);
 
   const abort = new AbortController();
   let stoppedBy: string | null = null;
@@ -326,20 +369,31 @@ export async function runWatchCommand(args: WatchArgs, deps: WatchCliDeps): Prom
     };
     let offlineShown = false;
     let fatal: string | null = null;
+    let bootProject: ProjectInfo | null = null;
     const boot = await retryWithBackoff(
       async () => {
         await auth.getAccessToken();
         const client = deps.makeClient(auth, guardHealth);
         const projectId = auth.getProjectId();
         const reader = deps.makeReader(client, projectId);
-        const key = await reader.projectKey();
-        return { client, projectId, reader, key };
+        const project = await reader.projectInfo();
+        bootProject = project;
+        // Resolve the scope once now, so a scope that cannot resolve (a foreign key, a milestone
+        // not in this project) is fatal before anything else, and the start line can count it.
+        const milestone: MilestoneInfo | null = args.scope.kind === 'milestone' ? await reader.resolveMilestone(args.scope.id) : null;
+        const ids = await reader.resolveScope(args.scope);
+        return { client, projectId, reader, key: project.key, project, milestone, ids };
       },
       {
         now: deps.now,
         sleep: deps.sleep,
         signal: abort.signal,
         onFailure: (err, attempt) => {
+          if (isScopeError(err)) {
+            const p = bootProject as ProjectInfo | null;
+            fatal = `${safeErrorMessage(err)}; the CLI's active project is ${p ? `${p.name} (${p.key})` : 'unknown'} on ${target} (check \`harmony project info\`, change it with \`harmony project switch <name>\`)`;
+            return 'stop';
+          }
           if (isAuthError(err)) {
             fatal = `token rejected: ${safeErrorMessage(err)}`;
             return 'stop';
@@ -362,9 +416,19 @@ export async function runWatchCommand(args: WatchArgs, deps: WatchCliDeps): Prom
       return 3;
     }
     if (offlineShown) print(healthEvent(deps.now(), 'recovered', profile, { detail: 'startup' }));
-    const { client, reader, projectId } = boot.value;
+    const { client, reader, projectId, project, milestone } = boot.value;
     projectKey = boot.value.key;
     const slug = scopeSlug(args.scope);
+    const boardText = `${project.name} (${project.key}) on ${target}`;
+
+    // The seat profile names the board the seat drives; the CLI must be pointed at that board.
+    if (profile?.project && profile.project.toUpperCase() !== project.key.toUpperCase()) {
+      deps.err(
+        `harmony watch: seat profile ${args.seat} names project ${profile.project}, but the CLI's active project is ${boardText}; ` +
+          'point the CLI at the board the seat drives (`harmony project info`, `harmony project switch <name>`) or fix the profile',
+      );
+      return 2;
+    }
 
     // Lock.
     if (args.mode !== 'once' && args.seat) {
@@ -387,6 +451,15 @@ export async function runWatchCommand(args: WatchArgs, deps: WatchCliDeps): Prom
         print(healthEvent(deps.now(), 'warning', profile, { detail: `cursor ${c.path} is malformed (${c.error}); starting fresh` }));
       }
     }
+
+    // Every run states what it watches (an info event; never a wake).
+    const startScope: NonNullable<WatchEvent['scope']> =
+      args.scope.kind === 'milestone'
+        ? { kind: 'milestone', id: milestone?.id ?? args.scope.id, name: milestone?.name ?? null }
+        : args.scope.kind === 'keys'
+          ? { kind: 'keys', keys: [...args.scope.keys] }
+          : { kind: 'conductions' };
+    print(startEvent(deps.now(), { name: project.name, key: project.key }, target, startScope, boot.value.ids.length, cursor?.seq ?? 0));
 
     const pollMs = deps.pollMs ?? 30_000;
     if (args.mode !== 'once') {
@@ -417,6 +490,9 @@ export async function runWatchCommand(args: WatchArgs, deps: WatchCliDeps): Prom
           : undefined,
       printCurrent: (rows) => {
         for (const r of rows) deps.out(args.json ? JSON.stringify({ event: 'current', ...r }) : formatCurrentRow(r));
+        if (!args.json && !rows.some((r) => r.waiting)) {
+          deps.out(`nothing waiting (${rows.length} ticket${rows.length === 1 ? '' : 's'} watched in ${pk} on ${target})`);
+        }
       },
       log: deps.err,
       signal: abort.signal,
@@ -460,7 +536,11 @@ export async function runWatchCommand(args: WatchArgs, deps: WatchCliDeps): Prom
 // watch status
 // ---------------------------------------------------------------------------
 
-export function runWatchStatus(seat: string | null, json: boolean, deps: Pick<WatchCliDeps, 'now' | 'out' | 'err' | 'home'>): number {
+export function runWatchStatus(
+  seat: string | null,
+  json: boolean,
+  deps: Pick<WatchCliDeps, 'now' | 'out' | 'err' | 'home' | 'activeProjectName'>,
+): number {
   if (!seat) {
     deps.err('harmony watch status: --seat <name> is required');
     return 2;
@@ -471,6 +551,15 @@ export function runWatchStatus(seat: string | null, json: boolean, deps: Pick<Wa
   }
   const homeOpts = deps.home ? { home: deps.home } : {};
   const profile = readSeatProfile(seat, homeOpts);
+  if (profile.status === 'ok' && profile.value.project) {
+    // The CLI's local config stores a project's name, token and URL, never its key, so the
+    // profile's `project:` can only be checked against the board. Say so; never go to the network.
+    const active = (deps.activeProjectName ?? localActiveProjectName)();
+    deps.err(
+      `harmony watch status: not checking the profile's project ${profile.value.project} against the CLI's active project` +
+        `${active ? ` "${active}"` : ''}: its key is known only from the board. \`harmony watch\` checks it at start (exit 2 on a mismatch).`,
+    );
+  }
   const projects =
     profile.status === 'ok' && profile.value.project && isSafeName(profile.value.project) ? [profile.value.project] : listWatchProjects(homeOpts);
 

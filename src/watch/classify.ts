@@ -33,7 +33,8 @@ export type WatchEventName =
   | 'added'
   | 'removed'
   | 'idle'
-  | 'health';
+  | 'health'
+  | 'start';
 
 export const WATCH_EVENT_NAMES: readonly WatchEventName[] = [
   'ready',
@@ -47,6 +48,7 @@ export const WATCH_EVENT_NAMES: readonly WatchEventName[] = [
   'removed',
   'idle',
   'health',
+  'start',
 ];
 
 export type Owner = 'seat' | 'founder' | 'info';
@@ -79,6 +81,14 @@ export interface WatchEvent {
   detail?: string;
   /** Task uuid (not part of the printed line's identity; handy for consumers). */
   task_id?: string;
+  /** Start event only: the board the watch reads. */
+  project?: { name: string; key: string };
+  /** Start event only: `prod` / `staging` / `custom`, from the Supabase URL the CLI uses. */
+  target?: 'prod' | 'staging' | 'custom';
+  /** Start event only: the resolved scope. */
+  scope?: { kind: 'milestone'; id: string; name: string | null } | { kind: 'keys'; keys: string[] } | { kind: 'conductions' };
+  /** Start event only: how many tickets the scope resolved to. */
+  tickets?: number;
 }
 
 /** Gate aliases accepted in a seat profile's `owns` / `held_for_founder` (docs/harmony-watch-files.md). */
@@ -155,7 +165,7 @@ function expand(entries: readonly string[]): Set<string> {
 
 /**
  * Who an event belongs to.
- *   - `waiting`, `acted`, `state` are always `info`.
+ *   - `waiting`, `acted`, `state` and `start` are always `info`.
  *   - `ready` / `question`: decided by the reason. Listed in `held_for_founder` → `founder`; listed in
  *     `owns` → `seat`; listed nowhere → `seat` (fail toward waking). The event name itself is also
  *     accepted as an entry (`ready`, `question`), after the reason.
@@ -163,7 +173,7 @@ function expand(entries: readonly string[]): Set<string> {
  *   - no profile → `seat`.
  */
 export function ownerFor(event: WatchEventName, reason: string | null, profile: SeatProfile | null): Owner {
-  if (event === 'waiting' || event === 'acted' || event === 'state') return 'info';
+  if (event === 'waiting' || event === 'acted' || event === 'state' || event === 'start') return 'info';
   if (!profile) return 'seat';
   const held = expand(profile.held_for_founder);
   const owns = expand(profile.owns);
@@ -398,5 +408,49 @@ export function healthEvent(
     status,
     ...(extra.since ? { since: extra.since } : {}),
     ...(extra.detail ? { detail: extra.detail } : {}),
+  };
+}
+
+/**
+ * The `start` event (always `info`, never a wake): what this run watches. `detail` is the
+ * readable line, for example
+ * `watching milestone v1.14 (c5a35a47…) in project Backlogs (B) on prod — 7 tickets`.
+ */
+export function startEvent(
+  now: number,
+  project: { name: string; key: string },
+  target: 'prod' | 'staging' | 'custom',
+  scope: NonNullable<WatchEvent['scope']>,
+  tickets: number,
+  cursorSeq = 0,
+): WatchEvent {
+  let what: string;
+  if (scope.kind === 'milestone') {
+    what = scope.name && scope.name !== scope.id ? `milestone ${scope.name} (${scope.id.slice(0, 8)}…)` : `milestone ${scope.id}`;
+  } else if (scope.kind === 'keys') {
+    what = `tickets ${scope.keys.join(', ')}`;
+  } else {
+    what = 'live conductions';
+  }
+  return {
+    ts: new Date(now).toISOString(),
+    event: 'start',
+    owner: 'info',
+    key: null,
+    title: null,
+    state: null,
+    reason: null,
+    ref: null,
+    conduction: null,
+    leg: null,
+    waiting_on: null,
+    first_seen: null,
+    reminder: 0,
+    cursor: cursorSeq,
+    detail: `watching ${what} in project ${project.name} (${project.key}) on ${target} — ${tickets} ticket${tickets === 1 ? '' : 's'}`,
+    project,
+    target,
+    scope,
+    tickets,
   };
 }

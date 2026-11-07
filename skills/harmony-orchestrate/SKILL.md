@@ -217,11 +217,15 @@ subscriber or a tail of the conductor log as the primary signal.
    ticket keys, or `--conductions`) with `run_in_background` and a timeout longer than the
    max-wait. Never a shell-`&` orphan: an orphan dies with its shell and you wake to a dead watch.
 4. `harmony watch status --seat <name>` exits 0 when the watch is alive, 1 when none or stale.
+- **The watch reads the CLI's active project.** Its first line, `start`, names the project, key,
+  board target and ticket count. If that is not the board you drive, stop and
+  `harmony project switch <name>` (check with `harmony project info`). A profile `project:` that
+  differs, or a milestone not on that board, exits 2.
 
 **Exit codes.** The harness wakes you when the watch exits. `0`: events you own. `3`: the
 max-wait passed with nothing new; a quiet milestone is the steady state. `2`: fatal configuration
-(a rejected token, bad arguments, a scope that cannot resolve, or a held lock, naming the holder's
-pid); fix it or ask, never re-arm blindly. `130` / `143`: stopped by a signal.
+(a rejected token, bad arguments, a scope that cannot resolve, a profile `project:` that is not the
+CLI's active project, or a held lock, naming the holder's pid); fix it or ask, never re-arm blindly. `130` / `143`: stopped by a signal.
 
 **On every wake.**
 - **Re-arm FIRST**, with the same command, then handle each line whose `owner` is `seat`. Other

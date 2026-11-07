@@ -2,7 +2,7 @@
  * Test fakes for `harmony watch` (B-1422): a fake clock, an in-memory board reader, and a minimal
  * supabase-js query-builder fake. No network, no real timers.
  */
-import type { BoardReader, BoardSnapshot, ConductionSlice, MarkerComment, TicketSnapshot } from './board-read.js';
+import { ScopeError, type BoardReader, type BoardSnapshot, type ConductionSlice, type MarkerComment, type MilestoneInfo, type ProjectInfo, type TicketSnapshot } from './board-read.js';
 import type { WatchScope } from './seat-files.js';
 
 export const T0 = Date.parse('2026-11-07T10:00:00.000Z');
@@ -82,6 +82,12 @@ export function paused(n: number, reason = 'plan-draft', over: Partial<TicketSna
 /** In-memory board implementing the reader interface. */
 export class FakeBoard implements BoardReader {
   key = 'B';
+  name = 'Backlogs';
+  /**
+   * Milestones of this project. `null` (the default) resolves any milestone id with no name, as
+   * the older tests expect; a map refuses an id it does not hold, as the real reader does.
+   */
+  milestones: Map<string, MilestoneInfo> | null = null;
   tickets = new Map<string, TicketSnapshot>();
   legEndKnown = true;
   /** Errors thrown by the next `readSnapshot` calls, in order. */
@@ -105,9 +111,21 @@ export class FakeBoard implements BoardReader {
   async projectKey(): Promise<string> {
     return this.key;
   }
+  async projectInfo(): Promise<ProjectInfo> {
+    return { key: this.key, name: this.name };
+  }
+  async resolveMilestone(idOrName: string): Promise<MilestoneInfo> {
+    if (this.milestones === null) return { id: idOrName, name: null };
+    const hit = this.milestones.get(idOrName) ?? [...this.milestones.values()].find((m) => m.name === idOrName);
+    if (!hit) throw new ScopeError(`milestone ${idOrName} is not in project ${this.key}`);
+    return hit;
+  }
   async resolveScope(scope: WatchScope): Promise<string[]> {
     const all = [...this.tickets.values()];
-    if (scope.kind === 'milestone') return all.filter((t) => t.milestone_id === scope.id && !t.archived).map((t) => t.id);
+    if (scope.kind === 'milestone') {
+      const m = await this.resolveMilestone(scope.id);
+      return all.filter((t) => t.milestone_id === m.id && !t.archived).map((t) => t.id);
+    }
     if (scope.kind === 'conductions') return all.filter((t) => t.conduction?.status === 'active').map((t) => t.id);
     const nums = new Set(scope.keys.map((k) => Number(String(k).replace(/^[A-Za-z]+-/, ''))));
     return all.filter((t) => nums.has(t.task_number)).map((t) => t.id);

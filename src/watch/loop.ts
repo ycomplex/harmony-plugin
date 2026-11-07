@@ -19,7 +19,8 @@
  *   - `once`: catch up, print the current state of every watched ticket, exit 0. The cursor is
  *     never written in this mode. If the board cannot be read after `ONCE_MAX_ATTEMPTS` tries it
  *     exits 3.
- * Exit 2 is reserved for fatal configuration (a scope that cannot resolve).
+ * Exit 2 is reserved for fatal configuration (a scope that cannot resolve). The `start` event is
+ * the command's, not the loop's; it is `info` and never a wake.
  */
 import type { BoardReader, BoardSnapshot } from './board-read.js';
 import { healthEvent, type WatchEvent } from './classify.js';
@@ -95,9 +96,9 @@ export interface RunWatchResult {
   detail?: string;
 }
 
-/** A wake: a seat-owned event other than `health`. */
+/** A wake: a seat-owned event other than `health` or `start`. */
 export function isWake(e: WatchEvent): boolean {
-  return e.owner === 'seat' && e.event !== 'health';
+  return e.owner === 'seat' && e.event !== 'health' && e.event !== 'start';
 }
 
 function isScopeError(err: unknown): boolean {
