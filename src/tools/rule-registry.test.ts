@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
-import { readRuleRegistry, readRuleRegistryTool, RULE_REGISTRY_UNAVAILABLE } from './rule-registry.js';
+import { createHash } from 'node:crypto';
+import { readRuleRegistry, readRuleRegistryTool, ruleFingerprint, RULE_REGISTRY_UNAVAILABLE } from './rule-registry.js';
 import { registerTools } from './index.js';
 
 type Result = { data: unknown; error: unknown };
@@ -31,6 +32,60 @@ const ROW = {
   scope: 'product', reach: 'this_product', domains: ['ui'], surfaces: ['Board'],
 };
 
+const CONTENT = 'Buttons use the primary token.';
+const LIVE = createHash('sha256').update(CONTENT, 'utf8').digest('hex');
+
+describe('ruleFingerprint (B-1421)', () => {
+  it('matches the pinned cross-repo vector', () => {
+    // PINNED VECTOR: the web DB suite (supabase/tests/b1421_rule_registry_in_step.test.sql in
+    // harmony-web) asserts the same input hashes to the same value through b1047_rule_fingerprint,
+    // so the plugin's live fingerprint and the database's stale check cannot diverge silently.
+    expect(ruleFingerprint('Règle — fingerprint fixture ✓ 規則 (B-1421)'))
+      .toBe('1751bb42d8fc90230bf5ec2fc8094b8205ca7621050fde9b98cd18dacacbec6a');
+  });
+});
+
+describe('readRuleRegistry live fingerprint and drift (B-1421)', () => {
+  it('an in-step row reports drift false and the matching fingerprint', async () => {
+    const { client: c } = client({
+      knowledge_rule_registry: { data: [{ ...ROW, fingerprint: LIVE }], error: null },
+      knowledge_decisions: { data: [{ id: 'entry-1', title: 'Primary buttons', status: 'Accepted', content: CONTENT }], error: null },
+    });
+    const result = await readRuleRegistry(c, 'project-1');
+    expect(result.rules[0]).toMatchObject({ fingerprint: LIVE, stored_fingerprint: LIVE, drift: false });
+  });
+
+  it('a drifted row (content edited outside a rule_bundle) returns the live hash and drift true', async () => {
+    const stale = ruleFingerprint('Buttons used the old token.');
+    const { client: c } = client({
+      knowledge_rule_registry: { data: [{ ...ROW, fingerprint: stale }], error: null },
+      knowledge_decisions: { data: [{ id: 'entry-1', title: 'Primary buttons', status: 'Accepted', content: CONTENT }], error: null },
+    });
+    const result = await readRuleRegistry(c, 'project-1');
+    expect(result.rules[0]).toMatchObject({ fingerprint: LIVE, stored_fingerprint: stale, drift: true });
+  });
+
+  it('a missing entry or unreadable content falls back to the stored fingerprint with drift null', async () => {
+    const { client: c } = client({
+      knowledge_rule_registry: { data: [ROW, { ...ROW, entry_id: 'entry-2' }], error: null },
+      knowledge_decisions: { data: [{ id: 'entry-2', title: 'Hidden', status: 'Accepted', content: null }], error: null },
+    });
+    const result = await readRuleRegistry(c, 'project-1');
+    for (const rule of result.rules) {
+      expect(rule).toMatchObject({ fingerprint: ROW.fingerprint, stored_fingerprint: ROW.fingerprint, drift: null });
+    }
+  });
+
+  it('hashes an empty string content rather than treating it as unreadable', async () => {
+    const { client: c } = client({
+      knowledge_rule_registry: { data: [ROW], error: null },
+      knowledge_decisions: { data: [{ id: 'entry-1', title: 'Empty', status: 'Accepted', content: '' }], error: null },
+    });
+    const result = await readRuleRegistry(c, 'project-1');
+    expect(result.rules[0]).toMatchObject({ fingerprint: ruleFingerprint(''), drift: true });
+  });
+});
+
 describe('readRuleRegistry (B-1047)', () => {
   it('returns available rows joined with their entry title, status and content', async () => {
     const { client: c, built } = client({
@@ -41,8 +96,14 @@ describe('readRuleRegistry (B-1047)', () => {
     expect(result).toEqual({
       availability: 'available',
       rules: [
-        { ...ROW, title: 'Primary buttons', status: 'Accepted', content: 'Buttons use the primary token.' },
-        { ...ROW, entry_id: 'entry-2', domains: [], surfaces: [], title: null, status: null, content: null },
+        {
+          ...ROW, fingerprint: LIVE, stored_fingerprint: ROW.fingerprint, drift: true,
+          title: 'Primary buttons', status: 'Accepted', content: 'Buttons use the primary token.',
+        },
+        {
+          ...ROW, entry_id: 'entry-2', stored_fingerprint: ROW.fingerprint, drift: null,
+          domains: [], surfaces: [], title: null, status: null, content: null,
+        },
       ],
     });
     expect(built.knowledge_rule_registry.calls).toContainEqual(['eq', ['project_id', 'project-1']]);
