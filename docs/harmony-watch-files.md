@@ -274,8 +274,31 @@ A hook should fail open on `absent` and `malformed`.
 | `formatSeatProfile`, `writeSeatProfile` | Render and write a profile with `session_id:` first. |
 | `acquireLock(projectKey, seat, scope, mode, opts?)` | Returns `{ status: 'acquired', lock }` or `{ status: 'held', holder }`. |
 | `releaseLock(projectKey, seat, scope, opts?)` | Removes the lock only if its pid matches. |
+| `listWatchProjects(opts?)` | Project keys with a `<home>/watch/<key>/` directory. Never throws. |
+| `listLocks(projectKey, seat, opts?)` | Every `<seat>.<scope-slug>.lock` of the seat, as `ReadResult`s. Never throws. |
 
 Every helper takes an optional `{ home }` to override `<home>` (used by tests). The zod schemas
 (`HeartbeatSchema`, `WatchLockSchema`, `WatchCursorSchema`, `CursorTicketSchema`) and the types
 (`SeatProfile`, `Heartbeat`, `WatchLock`, `WatchCursor`, `CursorTicket`, `WatchScope`) are exported
 too.
+
+## The command that writes these files
+
+`harmony watch` (`src/cli/commands/watch.ts`) is the only writer of the cursor, heartbeat and lock.
+
+```
+harmony watch [keys...] | --milestone <id|name> | --conductions
+              [--seat <name>] [--until-event | --follow | --once]
+              [--remind <dur>] [--max-wait <dur>] [--json]
+harmony watch status --seat <name>
+```
+
+- Exactly one scope. At most one mode; with none, the mode is `--once`.
+- `--until-event` and `--follow` need `--seat` and take the lock. `--once` and `status` never lock,
+  and `--once` writes neither the cursor nor the heartbeat, so it never takes a seat's events.
+- Exit codes: `0` a seat-owned event (`--until-event`) or done; `3` `--max-wait` passed with nothing
+  seat-owned, or `--once` could not reach the board; `2` bad arguments, a held lock (the message
+  names the holder's pid), a token rejected at startup, or a scope that cannot resolve; `130` / `143`
+  stopped by SIGINT / SIGTERM. `status`: `0` alive, `1` none or stale.
+- `health` lines are printed as events but never end an `--until-event` wait.
+- `status` finds the heartbeat through the profile's `project`, else by scanning `<home>/watch/*/`.

@@ -21,6 +21,7 @@ import {
   linkSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   renameSync,
   unlinkSync,
@@ -649,4 +650,41 @@ export function releaseLock(projectKey: string, seat: string, scope: WatchScope,
   } catch {
     return false;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Listing (additive, for `harmony watch status`)
+// ---------------------------------------------------------------------------
+
+/** Project keys that have a watch directory under `<home>/watch/`. Never throws. */
+export function listWatchProjects(opts: HomeOpts = {}): string[] {
+  try {
+    return readdirSync(join(harmonyHome(opts.home), 'watch'), { withFileTypes: true })
+      .filter((d) => d.isDirectory() && isSafeName(d.name))
+      .map((d) => d.name)
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Every lock file of `seat` in `projectKey`'s watch directory (any scope), each read as a
+ * `ReadResult`. Never throws; an unsafe name or a missing directory gives `[]`.
+ */
+export function listLocks(projectKey: string, seat: string, opts: HomeOpts = {}): ReadResult<WatchLock>[] {
+  if (!isSafeName(projectKey) || !isSafeName(seat)) return [];
+  const dir = watchDir(projectKey, opts);
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return [];
+  }
+  const prefix = `${seat}.`;
+  return names
+    .filter((n) => n.startsWith(prefix) && n.endsWith('.lock') && !n.includes('.tmp-'))
+    .filter((n) => /^[a-z0-9-]+$/.test(n.slice(prefix.length, -'.lock'.length)))
+    .sort()
+    .map((n) => readJsonFile(join(dir, n), WatchLockSchema) as ReadResult<WatchLock>);
 }
