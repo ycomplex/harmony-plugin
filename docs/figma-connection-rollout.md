@@ -1,6 +1,6 @@
 # Workspace Figma: founder rollout (B-1201)
 
-> **Living · project · Tier 2** · verified against plugin 0.16.76 / web 3ba820b on 2026-10-30 · **revise when:** the connection switch, a Figma identity or secret slot, the refresh image's build or CronJobs, or the enable gate's proofs change. Convention: harmony-workspace `docs/README.md` (B-1044).
+> **Living · project · Tier 2** · verified against plugin 0.17.27 / web 8b255df on 2026-11-08 · **revise when:** the connection switch, a Figma identity or secret slot, the refresh image's build or CronJobs, or the enable gate's proofs change. Convention: harmony-workspace `docs/README.md` (B-1044).
 
 Nothing here authorizes a promote, IAM change or cluster apply by a worker. Use placeholders for
 identifiers; never paste credentials into board comments. Run **staging first**, prove it, then prod.
@@ -143,6 +143,9 @@ Record environment, proof outcomes and enabling time on B-1201. Do not unsuspend
    `INSERT INTO private.figma_refresh_operators(user_id) VALUES ('<REFRESH_BOARD_USER_UUID>') ON CONFLICT DO NOTHING`.
    Create Kubernetes Secret `harmony-figma-refresh-board` in `harmony-conductor` from private files with keys
    `token`, `url`, `anon-key`. URL/key must target the same staging project as the token; never rely on prod defaults.
+   Since B-1413 both board Secrets (this one and `harmony-figma-refresh-board-prod`) may also carry an optional
+   `publishable-key`; set one of the two key fields, or both to the same value, since differing values fail.
+   Existing legacy-only Secrets stay valid.
    Ordinary worker users are not registered refresh operators. Deleting this row revokes job board access.
 7. The refresh image is built by `container/figma/cloudbuild.yaml` (B-1337), never by hand. Per channel it builds
    `container/figma/Dockerfile`, runs `container/figma/smoke.sh` against the candidate, pushes
