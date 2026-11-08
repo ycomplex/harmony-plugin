@@ -1,6 +1,6 @@
 # Harmony Plugin for Claude Code
 
-> **Living · project · Tier 1** · verified against plugin 0.17.22 / web 108faf7 on 2026-11-06 · **revise when:** versioning, the staging channel, a release rule or a plugin convention changes. Convention: harmony-workspace `docs/README.md` (B-1044).
+> **Living · project · Tier 1** · verified against plugin 0.17.27 / web 8b255df on 2026-11-08 · **revise when:** versioning, the staging channel, a release rule or a plugin convention changes. Convention: harmony-workspace `docs/README.md` (B-1044).
 
 This is the Harmony plugin for Claude Code — an MCP server, CLI, and workflow skills for Harmony project management.
 
@@ -9,7 +9,7 @@ This is the Harmony plugin for Claude Code — an MCP server, CLI, and workflow 
 The `harmony` CLI provides the same functionality as the MCP server for direct terminal use.
 
 - **Binary:** `harmony`, on PATH after the plugin is installed: the SessionStart hook `hooks/link-cli.sh` (B-808) keeps a marker-guarded wrapper at `~/.local/bin/harmony` and a pointer at `~/.harmony/plugin-root`; never clobbers a foreign `harmony`, never edits a shell profile. Details, the manual fallback and the minimal operator-laptop host file are in [`docs/conductor-lifecycle.md`](docs/conductor-lifecycle.md#operator-machines-harmony-on-path-the-host-file-and-gcloud-b-808). Without the hook: local `node dist/bin/harmony.js`. `harmony --version` prints the `version` of `.claude-plugin/plugin.json` in the copy that is running (B-1079): the generated release on an installed plugin, `0.0.0-dev` in a source checkout
-- **Config:** `~/.harmony/config.json` (multi-project auth tokens): `harmony login --supabase-url <url> --supabase-anon-key <key> --token <token> --name <name>` registers a second project and `harmony project switch` selects it (B-1025)
+- **Config:** `~/.harmony/config.json` (multi-project auth tokens): `harmony login --supabase-url <url> --supabase-anon-key <key> --token <token> --name <name>` registers a second project and `harmony project switch` selects it (B-1025). Since B-1413 `--supabase-publishable-key` is an alias for `--supabase-anon-key`, saved projects may carry `supabasePublishableKey`, and `HARMONY_SUPABASE_PUBLISHABLE_KEY` aliases `HARMONY_SUPABASE_ANON_KEY`; either key format works, matching aliases are fine, and conflicting ones in the same source are refused with names only. The exchange sends the public key as `apikey` (an `sb_` key is never sent as a Bearer); `DEFAULT_SUPABASE_ANON_KEY` is unchanged
 - **Output modes:** Human-readable tables (default) or `--json` for scripting
 - **Help:** `harmony --help`, `harmony <command> --help`
 - **Conductor config (B-1170):** `harmony conductor config <migrate|doctor|sync>` — a project's conductor is configured by `.harmony/conductor.json` in its repo plus `~/.harmony/conductor-host.json`; reference in [`docs/conductor-config.md`](docs/conductor-config.md) **Conductor lifecycle (B-1171):** `harmony conductor <start|stop|restart|status>` — stop = no new launches (legs keep running, the next start adopts them), restart = stop + start + adopt, update = restart onto the channel's latest version; semantics, pre-flight and the nohup-to-launchd adoption sequence in [`docs/conductor-lifecycle.md`](docs/conductor-lifecycle.md)
@@ -175,7 +175,7 @@ nothing else: the channel's "staging" is the staging *Supabase project*.)
 **Engage it via the setup script, into a DEDICATED out-of-repo dogfood directory** — never inside this repo, harmony-web, or the workspace root (`promote-prod.sh` aborts on untracked files, and dogfood residue like `.claude/` would trip it):
 
 ```bash
-./scripts/setup-staging-channel.sh ~/harmony-dogfood <staging-api-token> [staging-anon-key]
+./scripts/setup-staging-channel.sh ~/harmony-dogfood <staging-api-token> [staging-anon-or-publishable-key]
 cd ~/harmony-dogfood && claude --plugin-dir /path/to/main/checkout/of/harmony-plugin
 ```
 
