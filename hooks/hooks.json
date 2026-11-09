@@ -30,6 +30,16 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/seat-session-start.sh\"",
+            "timeout": 30
+          }
+        ]
       }
     ],
     "Stop": [
@@ -39,6 +49,15 @@
             "type": "command",
             "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/stop-gate.sh\"",
             "timeout": 30
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/seat-stop-guard.sh\"",
+            "timeout": 10
           }
         ]
       }

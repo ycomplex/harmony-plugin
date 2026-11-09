@@ -33,6 +33,8 @@ beforeEach(() => {
   writeFileSync(join(plugin, 'hooks', 'stop-gate.sh'), 'exit 0\n');
   writeFileSync(join(plugin, 'hooks', 'pretooluse-gate.sh'), 'exit 0\n');
   writeFileSync(join(plugin, 'hooks', 'link-cli.sh'), 'exit 0\n');
+  writeFileSync(join(plugin, 'hooks', 'seat-session-start.sh'), 'exit 0\n');
+  writeFileSync(join(plugin, 'hooks', 'seat-stop-guard.sh'), 'exit 0\n');
   writeFileSync(join(ws, 'CLAUDE.md'), 'WS-GUIDANCE\n');
   writeFileSync(join(plugin, 'CLAUDE.md'), 'PLUGIN-GUIDANCE\n');
   writeFileSync(join(ws, 'web', 'CLAUDE.md'), 'WEB-GUIDANCE\n');
@@ -71,7 +73,13 @@ describe('provisionCodex', () => {
   });
 
   it('B-1149: preflightHookScripts lists the scripts it checked when all are present', () => {
-    expect(preflightHookScripts(plugin)).toEqual([join(plugin, 'hooks', 'link-cli.sh'), join(plugin, 'hooks', 'stop-gate.sh'), join(plugin, 'hooks', 'pretooluse-gate.sh')]);
+    expect(preflightHookScripts(plugin)).toEqual([
+      join(plugin, 'hooks', 'link-cli.sh'),
+      join(plugin, 'hooks', 'seat-session-start.sh'),
+      join(plugin, 'hooks', 'stop-gate.sh'),
+      join(plugin, 'hooks', 'seat-stop-guard.sh'),
+      join(plugin, 'hooks', 'pretooluse-gate.sh'),
+    ]);
   });
 
   it('B-1149: the guarded command keeps a blocking exit 2 and skips a vanished script with exit 0', () => {

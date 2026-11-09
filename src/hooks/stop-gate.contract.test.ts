@@ -124,7 +124,9 @@ describe('the Stop hook is wired up and degrades safely (B-870)', () => {
   it('hooks.json registers a Stop hook alongside the existing SessionStart entry', () => {
     expect(hooksJson.hooks.SessionStart?.length).toBeGreaterThanOrEqual(1);
     const stop = hooksJson.hooks.Stop;
-    expect(stop?.length).toBe(1);
+    // B-1423: the seat stop guard is a SECOND Stop entry; the stop gate stays the first, unchanged.
+    expect(stop?.length).toBe(2);
+    expect(stop[1].hooks[0].command).toContain('hooks/seat-stop-guard.sh');
     const cmd = stop[0].hooks[0];
     expect(cmd.type).toBe('command');
     expect(cmd.command).toContain('hooks/stop-gate.sh');
