@@ -11310,8 +11310,8 @@ var require_RealtimeChannel = __commonJS({
       }
       /** @internal */
       _notThisChannelEvent(event, ref) {
-        const { close, error: error2, leave, join: join18 } = constants_1.CHANNEL_EVENTS;
-        const events2 = [close, error2, leave, join18];
+        const { close, error: error2, leave, join: join19 } = constants_1.CHANNEL_EVENTS;
+        const events2 = [close, error2, leave, join19];
         return ref && events2.includes(event) && ref !== this.joinPush.ref;
       }
       /** @internal */
@@ -12154,7 +12154,7 @@ var require_errors2 = __commonJS({
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.AuthInvalidJwtError = exports.AuthWeakPasswordError = exports.AuthRetryableFetchError = exports.AuthPKCECodeVerifierMissingError = exports.AuthPKCEGrantCodeExchangeError = exports.AuthImplicitGrantRedirectError = exports.AuthInvalidCredentialsError = exports.AuthInvalidTokenResponseError = exports.AuthSessionMissingError = exports.CustomAuthError = exports.AuthUnknownError = exports.AuthApiError = exports.AuthError = void 0;
-    exports.isAuthError = isAuthError;
+    exports.isAuthError = isAuthError2;
     exports.isAuthApiError = isAuthApiError;
     exports.isAuthSessionMissingError = isAuthSessionMissingError;
     exports.isAuthImplicitGrantRedirectError = isAuthImplicitGrantRedirectError;
@@ -12171,7 +12171,7 @@ var require_errors2 = __commonJS({
       }
     };
     exports.AuthError = AuthError;
-    function isAuthError(error2) {
+    function isAuthError2(error2) {
       return typeof error2 === "object" && error2 !== null && "__isAuthError" in error2;
     }
     var AuthApiError = class extends AuthError {
@@ -12184,7 +12184,7 @@ var require_errors2 = __commonJS({
     };
     exports.AuthApiError = AuthApiError;
     function isAuthApiError(error2) {
-      return isAuthError(error2) && error2.name === "AuthApiError";
+      return isAuthError2(error2) && error2.name === "AuthApiError";
     }
     var AuthUnknownError = class extends AuthError {
       constructor(message, originalError) {
@@ -12209,7 +12209,7 @@ var require_errors2 = __commonJS({
     };
     exports.AuthSessionMissingError = AuthSessionMissingError;
     function isAuthSessionMissingError(error2) {
-      return isAuthError(error2) && error2.name === "AuthSessionMissingError";
+      return isAuthError2(error2) && error2.name === "AuthSessionMissingError";
     }
     var AuthInvalidTokenResponseError = class extends CustomAuthError {
       constructor() {
@@ -12240,7 +12240,7 @@ var require_errors2 = __commonJS({
     };
     exports.AuthImplicitGrantRedirectError = AuthImplicitGrantRedirectError;
     function isAuthImplicitGrantRedirectError(error2) {
-      return isAuthError(error2) && error2.name === "AuthImplicitGrantRedirectError";
+      return isAuthError2(error2) && error2.name === "AuthImplicitGrantRedirectError";
     }
     var AuthPKCEGrantCodeExchangeError = class extends CustomAuthError {
       constructor(message, details = null) {
@@ -12265,7 +12265,7 @@ var require_errors2 = __commonJS({
     };
     exports.AuthPKCECodeVerifierMissingError = AuthPKCECodeVerifierMissingError;
     function isAuthPKCECodeVerifierMissingError(error2) {
-      return isAuthError(error2) && error2.name === "AuthPKCECodeVerifierMissingError";
+      return isAuthError2(error2) && error2.name === "AuthPKCECodeVerifierMissingError";
     }
     var AuthRetryableFetchError = class extends CustomAuthError {
       constructor(message, status) {
@@ -12274,7 +12274,7 @@ var require_errors2 = __commonJS({
     };
     exports.AuthRetryableFetchError = AuthRetryableFetchError;
     function isAuthRetryableFetchError(error2) {
-      return isAuthError(error2) && error2.name === "AuthRetryableFetchError";
+      return isAuthError2(error2) && error2.name === "AuthRetryableFetchError";
     }
     var AuthWeakPasswordError = class extends CustomAuthError {
       constructor(message, status, reasons) {
@@ -12284,7 +12284,7 @@ var require_errors2 = __commonJS({
     };
     exports.AuthWeakPasswordError = AuthWeakPasswordError;
     function isAuthWeakPasswordError(error2) {
-      return isAuthError(error2) && error2.name === "AuthWeakPasswordError";
+      return isAuthError2(error2) && error2.name === "AuthWeakPasswordError";
     }
     var AuthInvalidJwtError = class extends CustomAuthError {
       constructor(message) {
@@ -14205,10 +14205,10 @@ var require_webauthn = __commonJS({
         authenticatorAttachment: (_a2 = credentialWithAttachment.authenticatorAttachment) !== null && _a2 !== void 0 ? _a2 : void 0
       };
     }
-    function isValidDomain(hostname3) {
+    function isValidDomain(hostname4) {
       return (
         // Consider localhost valid as well since it's okay wrt Secure Contexts
-        hostname3 === "localhost" || /^([a-z0-9]+(-[a-z0-9]+)*\.)+[a-z]{2,}$/i.test(hostname3)
+        hostname4 === "localhost" || /^([a-z0-9]+(-[a-z0-9]+)*\.)+[a-z]{2,}$/i.test(hostname4)
       );
     }
     function browserSupportsWebAuthn() {
@@ -36448,7 +36448,18 @@ var CONDUCTION_STATUSES = [
   ...CONDUCTION_HUMAN_OWNED_STATUSES,
   ...CONDUCTION_TERMINAL_STATUSES
 ];
+function isConductionLive(status) {
+  return CONDUCTION_LIVE_STATUSES.includes(status);
+}
 var CONDUCTION_COLS = "id, task_id, status, mode, lease_holder, lease_acquired_at, last_heartbeat_at, leg_started_at, leg_count, clean_shutdown_at, reap_requested_at, retry_count, worker_kind, worker_ref, last_worker_exit_code, last_worker_exit_class, current_pr_ref, started_at, created_by, created_at, updated_at, run_config";
+var isMissingLastLegEndedAtColumn = (err) => {
+  if (!err) return false;
+  const code = err.code ?? "";
+  if (code === "42703" || code === "42P01" || code === "PGRST204" || code === "PGRST205") return true;
+  const msg = err.message ?? "";
+  if (/last_leg_ended_at/.test(msg) && /(does not exist|could not find|schema cache)/i.test(msg)) return true;
+  return false;
+};
 var ActiveConductionExistsError = class extends Error {
   code = "active-conduction-exists";
   task_id;
@@ -38909,10 +38920,10 @@ function validateSteps(file, extensionPoint, steps, projectRoot, existsSync8) {
 }
 function loadProjectManifest(projectRoot, deps = {}) {
   const existsSync8 = deps.existsSync ?? nodeExistsSync2;
-  const readFileSync20 = deps.readFileSync ?? ((p) => nodeReadFileSync2(p, "utf8"));
+  const readFileSync21 = deps.readFileSync ?? ((p) => nodeReadFileSync2(p, "utf8"));
   const file = nodeJoin2(projectRoot, PROJECT_MANIFEST_RELATIVE_PATH);
   if (!existsSync8(file)) return { kind: "absent" };
-  const raw = readFileSync20(file);
+  const raw = readFileSync21(file);
   let parsed;
   try {
     parsed = (0, import_yaml.parse)(raw);
@@ -51174,8 +51185,8 @@ async function random(size) {
   const evenDistCutoff = Math.pow(2, 8) - Math.pow(2, 8) % mask.length;
   let result = "";
   while (result.length < size) {
-    const randomBytes = await getRandomValues(size - result.length);
-    for (const randomByte of randomBytes) {
+    const randomBytes2 = await getRandomValues(size - result.length);
+    for (const randomByte of randomBytes2) {
       if (randomByte < evenDistCutoff) {
         result += mask[randomByte % mask.length];
       }
@@ -70937,9 +70948,9 @@ async function withWriteRetry(deps, opts, fn) {
       }
       const networkRetryAllowed = safety === "pre-send" || safety === "post-send" && opts.class === "idempotent";
       if (networkRetryAllowed && networkRetriesUsed < NETWORK_BACKOFFS_MS.length) {
-        const backoffMs = NETWORK_BACKOFFS_MS[networkRetriesUsed];
+        const backoffMs2 = NETWORK_BACKOFFS_MS[networkRetriesUsed];
         networkRetriesUsed += 1;
-        await deps.sleep(backoffMs);
+        await deps.sleep(backoffMs2);
         continue;
       }
       tagEndpoint(err, opts.endpoint);
@@ -75362,6 +75373,2014 @@ function registerFasttrackCommands(program3) {
   });
 }
 
+// src/cli/commands/watch.ts
+import { randomUUID as randomUUID6 } from "node:crypto";
+import { hostname as hostname3 } from "node:os";
+
+// src/daemon/hints.ts
+var HINT_EVENTS = ["task_change", "conduction_change"];
+var IGNORABLE_KEYS = /* @__PURE__ */ new Set(["last_heartbeat_at", "updated_at"]);
+function asRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
+}
+function hintDropReason(msg, leaseHolder) {
+  if (!msg.event || !HINT_EVENTS.includes(msg.event)) return "unknown-event";
+  const payload2 = asRecord(msg.payload);
+  if (!payload2) return null;
+  const record2 = asRecord(payload2.record);
+  if (!record2) return null;
+  if (typeof record2.lease_holder === "string" && record2.lease_holder === leaseHolder) {
+    return "self-lease";
+  }
+  const oldRecord = asRecord(payload2.old_record);
+  if (oldRecord) {
+    const keys = /* @__PURE__ */ new Set([...Object.keys(record2), ...Object.keys(oldRecord)]);
+    let differs = false;
+    for (const key of keys) {
+      if (JSON.stringify(record2[key]) === JSON.stringify(oldRecord[key])) continue;
+      if (!IGNORABLE_KEYS.has(key)) return null;
+      differs = true;
+    }
+    if (differs) return "heartbeat-only";
+  }
+  return null;
+}
+function createHintCoalescer(opts) {
+  let open = false;
+  let latched = false;
+  let waiter = null;
+  return {
+    accept(msg) {
+      const reason = hintDropReason(msg, opts.leaseHolder);
+      if (reason) return { action: "drop", reason };
+      if (open) return { action: "coalesce" };
+      open = true;
+      return { action: "open-window", debounceMs: opts.debounceMs };
+    },
+    closeWindow() {
+      open = false;
+      const resolve8 = waiter;
+      waiter = null;
+      if (resolve8) {
+        resolve8();
+        return;
+      }
+      latched = true;
+    },
+    next() {
+      if (latched) {
+        latched = false;
+        return Promise.resolve();
+      }
+      return new Promise((resolve8) => {
+        waiter = resolve8;
+      });
+    },
+    abandon() {
+      waiter = null;
+    },
+    pendingWake: () => latched,
+    windowOpen: () => open
+  };
+}
+function describe2(status, err) {
+  const detail = err instanceof Error ? err.message : err == null ? "" : String(err);
+  return detail ? `${status} (${detail})` : status;
+}
+var MAX_RECOVERY_ATTEMPTS = 3;
+function createHintLifecycle(opts) {
+  let subscribedOnce = false;
+  let dead = false;
+  let live = false;
+  let lastStatus = null;
+  let recoveryAttemptsThisOutage = 0;
+  return {
+    onStatus(status, err) {
+      if (dead) return { kind: "none" };
+      const repeat = status === lastStatus;
+      lastStatus = status;
+      if (status === "SUBSCRIBED") {
+        const first = !subscribedOnce;
+        subscribedOnce = true;
+        live = true;
+        recoveryAttemptsThisOutage = 0;
+        if (repeat) return { kind: "none" };
+        return {
+          kind: "log",
+          line: first ? `hint channel subscribed: ${opts.topic} \u2014 waking on board changes` : `hint channel re-subscribed: ${opts.topic} \u2014 hints resume`
+        };
+      }
+      live = false;
+      if (!subscribedOnce) {
+        dead = true;
+        return {
+          kind: "log-and-teardown",
+          line: `hint channel unavailable (${describe2(status, err)}) on ${opts.topic} \u2014 continuing on the poll interval alone; not retried in this process`
+        };
+      }
+      if (repeat) return { kind: "none" };
+      return {
+        kind: "log",
+        line: `hint channel ${describe2(status, err)} on ${opts.topic} \u2014 awaiting the client's own rejoin`
+      };
+    },
+    armRecovery() {
+      if (recoveryAttemptsThisOutage >= MAX_RECOVERY_ATTEMPTS) return "none";
+      if (lastStatus === "CHANNEL_ERROR" || lastStatus === "TIMED_OUT") {
+        recoveryAttemptsThisOutage += 1;
+        return "reauth";
+      }
+      if (lastStatus === "CLOSED") {
+        recoveryAttemptsThisOutage += 1;
+        return "recreate";
+      }
+      return "none";
+    },
+    acceptsMessages: () => live && !dead,
+    isDead: () => dead,
+    everSubscribed: () => subscribedOnce,
+    isDown: () => subscribedOnce && !live && !dead
+  };
+}
+
+// src/daemon/hint-subscription.ts
+function hintTopic(projectId) {
+  return `project:${projectId}`;
+}
+function startHintSubscription(deps) {
+  const topic = hintTopic(deps.projectId);
+  const coalescer = createHintCoalescer({
+    leaseHolder: deps.leaseHolder,
+    debounceMs: deps.debounceMs
+  });
+  const lifecycle = createHintLifecycle({ topic });
+  const downCadenceMs = deps.downCadenceMs ?? 3e5;
+  let channel = null;
+  let downTimerCancel = null;
+  const cancelDownTimer = () => {
+    if (downTimerCancel) {
+      downTimerCancel();
+      downTimerCancel = null;
+    }
+  };
+  const armDownTimer = (delayMs, elapsedAtFire) => {
+    downTimerCancel = deps.startTimeout(delayMs, () => {
+      downTimerCancel = null;
+      if (!lifecycle.isDown()) return;
+      deps.log(`hint channel down ${Math.round(elapsedAtFire / 1e3)}s, awaiting rejoin`);
+      runRecovery();
+      if (!downTimerCancel) armDownTimer(downCadenceMs, elapsedAtFire + downCadenceMs);
+    });
+  };
+  const checkDownTimer = () => {
+    if (lifecycle.isDown()) {
+      if (downTimerCancel) return;
+      armDownTimer(deps.pollMs, deps.pollMs);
+    } else {
+      cancelDownTimer();
+    }
+  };
+  const apply = (status, err) => {
+    const action = lifecycle.onStatus(status, err);
+    if (action.kind !== "none") {
+      deps.log(action.line);
+      if (action.kind === "log-and-teardown" && channel) {
+        const doomed = channel;
+        channel = null;
+        try {
+          void Promise.resolve(deps.removeChannel(doomed)).catch(() => {
+          });
+        } catch {
+        }
+      }
+    }
+    checkDownTimer();
+  };
+  const onMessage = (message) => {
+    if (!lifecycle.acceptsMessages()) return;
+    const action = coalescer.accept(message);
+    if (action.action !== "open-window") return;
+    deps.startTimeout(action.debounceMs, coalescer.closeWindow);
+  };
+  const logRefreshFailure = (refreshErr) => {
+    const message = refreshErr instanceof Error ? refreshErr.message : String(refreshErr);
+    deps.log(
+      `hint channel re-auth failed (${message}) \u2014 staying on the poll interval until the client's own rejoin recovers`
+    );
+  };
+  const subscribeChannel = () => {
+    try {
+      const newChannel = deps.createChannel(topic);
+      channel = newChannel;
+      for (const event of HINT_EVENTS) newChannel.on("broadcast", { event }, onMessage);
+      newChannel.subscribe((status, err) => {
+        apply(
+          ["SUBSCRIBED", "CHANNEL_ERROR", "TIMED_OUT", "CLOSED"].find(
+            (s) => s === status
+          ) ?? "CHANNEL_ERROR",
+          err
+        );
+      });
+    } catch (err) {
+      apply("SETUP_FAILED", err);
+    }
+  };
+  const runRecovery = () => {
+    const action = lifecycle.armRecovery();
+    if (action === "reauth") {
+      deps.log("hint channel recovery: reauth");
+      deps.forceRefresh().then(() => deps.setAuth()).catch(logRefreshFailure);
+    } else if (action === "recreate") {
+      deps.log("hint channel recovery: recreate");
+      deps.forceRefresh().then(() => deps.setAuth()).then(() => {
+        channel = null;
+        subscribeChannel();
+      }).catch(logRefreshFailure);
+    }
+  };
+  subscribeChannel();
+  return {
+    source: coalescer,
+    isDead: () => lifecycle.isDead(),
+    close: async () => {
+      cancelDownTimer();
+      const open = channel;
+      channel = null;
+      if (!open) return;
+      await deps.removeChannel(open);
+    }
+  };
+}
+
+// src/watch/board-read.ts
+var ScopeError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "ScopeError";
+  }
+};
+var UUID2 = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+var KEY_RE = /^(?:([A-Za-z][A-Za-z0-9]*)-)?(\d+)$/;
+function parseTicketKey(key) {
+  const m = KEY_RE.exec(String(key).trim());
+  if (!m) return null;
+  return { prefix: m[1] ?? null, number: Number(m[2]) };
+}
+var TASK_COLS = "id, task_number, title, workflow_state, awaiting_human_input, awaiting_human_reason, awaiting_human_ref, updated_at, field_values, archived, milestone_id";
+var COND_COLS_BASE = "id, task_id, status, leg_started_at, last_worker_exit_class, created_at";
+var COND_COLS = `${COND_COLS_BASE}, last_leg_ended_at`;
+function throwIf(error2) {
+  if (error2) throw error2;
+}
+function createBoardReader(client, projectId, deps = {}) {
+  const getTaskMeta = deps.getTaskMeta ?? ((taskId) => getTask(client, projectId, { task_id: taskId, view: "meta" }));
+  let info = null;
+  const milestones = /* @__PURE__ */ new Map();
+  const seenUpdatedAt = /* @__PURE__ */ new Map();
+  const metaCache = /* @__PURE__ */ new Map();
+  let legEndColumn = true;
+  async function projectInfo() {
+    if (info !== null) return info;
+    const { data, error: error2 } = await client.from("projects").select("key, name").eq("id", projectId).single();
+    throwIf(error2);
+    const row = data ?? null;
+    const k = row?.key;
+    if (typeof k !== "string" || !k) throw new Error("project has no key");
+    info = { key: k, name: typeof row?.name === "string" && row.name ? row.name : k };
+    return info;
+  }
+  async function projectKey() {
+    return (await projectInfo()).key;
+  }
+  async function resolveMilestone(idOrName) {
+    const cached2 = milestones.get(idOrName);
+    if (cached2) return cached2;
+    const pk = await projectKey();
+    let resolved;
+    if (UUID2.test(idOrName)) {
+      const { data, error: error2 } = await client.from("milestones").select("id, name, project_id").eq("id", idOrName);
+      throwIf(error2);
+      const rows = data ?? [];
+      const row = rows[0];
+      if (!row || row.project_id !== projectId) {
+        throw new ScopeError(`milestone ${idOrName} is not in project ${pk}`);
+      }
+      resolved = { id: row.id, name: typeof row.name === "string" ? row.name : null };
+    } else {
+      const { data, error: error2 } = await client.from("milestones").select("id, name").eq("project_id", projectId).eq("name", idOrName);
+      throwIf(error2);
+      const rows = data ?? [];
+      if (rows.length === 0) throw new ScopeError(`no milestone named ${JSON.stringify(idOrName)} in project ${pk}`);
+      if (rows.length > 1) throw new ScopeError(`milestone name ${JSON.stringify(idOrName)} is ambiguous in project ${pk}; pass its id`);
+      resolved = { id: rows[0].id, name: typeof rows[0].name === "string" ? rows[0].name : idOrName };
+    }
+    milestones.set(idOrName, resolved);
+    return resolved;
+  }
+  async function resolveScope(scope) {
+    switch (scope.kind) {
+      case "keys": {
+        const pk = await projectKey();
+        const numbers = [];
+        for (const k of scope.keys) {
+          const parsed = parseTicketKey(k);
+          if (!parsed) throw new ScopeError(`not a ticket key: ${JSON.stringify(k)}`);
+          if (parsed.prefix !== null && parsed.prefix.toUpperCase() !== pk.toUpperCase()) {
+            throw new ScopeError(`ticket ${k} is not in project ${pk}`);
+          }
+          numbers.push(parsed.number);
+        }
+        const { data, error: error2 } = await client.from("tasks").select("id, task_number").eq("project_id", projectId).in("task_number", [...new Set(numbers)]);
+        throwIf(error2);
+        return (data ?? []).map((r) => r.id);
+      }
+      case "milestone": {
+        const mid = (await resolveMilestone(scope.id)).id;
+        const { data, error: error2 } = await client.from("tasks").select("id").eq("project_id", projectId).eq("milestone_id", mid).eq("archived", false);
+        throwIf(error2);
+        return (data ?? []).map((r) => r.id);
+      }
+      case "conductions": {
+        const { data, error: error2 } = await client.from("conductions").select("task_id").in("status", [...CONDUCTION_LIVE_STATUSES]);
+        throwIf(error2);
+        return [...new Set((data ?? []).map((r) => r.task_id))];
+      }
+      default:
+        throw new ScopeError("unknown scope");
+    }
+  }
+  async function readConductions(ids) {
+    if (legEndColumn) {
+      const { data: data2, error: error3 } = await client.from("conductions").select(COND_COLS).in("task_id", ids).order("created_at", { ascending: false });
+      if (!error3) return { rows: data2 ?? [], legEndKnown: true };
+      if (!isMissingLastLegEndedAtColumn(error3)) throw error3;
+      legEndColumn = false;
+    }
+    const { data, error: error2 } = await client.from("conductions").select(COND_COLS_BASE).in("task_id", ids).order("created_at", { ascending: false });
+    throwIf(error2);
+    return { rows: data ?? [], legEndKnown: false };
+  }
+  async function readSnapshot2(taskIds) {
+    const ids = [...new Set(taskIds)];
+    if (ids.length === 0) return { tickets: [], legEndKnown: legEndColumn };
+    const pk = await projectKey();
+    const { data, error: error2 } = await client.from("tasks").select(TASK_COLS).in("id", ids).eq("project_id", projectId);
+    throwIf(error2);
+    const rows = data ?? [];
+    const cond = await readConductions(ids);
+    const latest = /* @__PURE__ */ new Map();
+    for (const r of cond.rows) {
+      const tid = String(r.task_id);
+      if (latest.has(tid)) continue;
+      const slice = {
+        id: String(r.id),
+        status: String(r.status),
+        leg_started_at: r.leg_started_at ?? null,
+        last_worker_exit_class: r.last_worker_exit_class ?? null
+      };
+      if (cond.legEndKnown) slice.last_leg_ended_at = r.last_leg_ended_at ?? null;
+      latest.set(tid, slice);
+    }
+    const tickets = rows.map((r) => {
+      const fv = r.field_values ?? null;
+      return {
+        id: String(r.id),
+        key: `${pk}-${r.task_number}`,
+        task_number: Number(r.task_number),
+        title: String(r.title ?? ""),
+        workflow_state: r.workflow_state ?? null,
+        awaiting_human_input: r.awaiting_human_input === true,
+        awaiting_human_reason: r.awaiting_human_reason ?? null,
+        awaiting_human_ref: r.awaiting_human_ref ?? null,
+        updated_at: String(r.updated_at),
+        archived: r.archived === true,
+        milestone_id: r.milestone_id ?? null,
+        waiting_on: fv?.waiting_on ?? null,
+        conduction: latest.get(String(r.id)) ?? null,
+        meta: metaCache.get(String(r.id)) ?? null
+      };
+    });
+    const needMeta = tickets.filter((t) => t.awaiting_human_input || seenUpdatedAt.get(t.id) !== t.updated_at);
+    await Promise.all(
+      needMeta.map(async (t) => {
+        try {
+          const m = await getTaskMeta(t.id);
+          const meta = {
+            active_brief_iteration: typeof m?.active_brief_iteration === "number" ? m.active_brief_iteration : null,
+            active_exchange: m?.active_exchange ?? null
+          };
+          metaCache.set(t.id, meta);
+          seenUpdatedAt.set(t.id, t.updated_at);
+          t.meta = meta;
+        } catch {
+        }
+      })
+    );
+    return { tickets, legEndKnown: cond.legEndKnown };
+  }
+  async function listMarkerComments(taskIds) {
+    const ids = [...new Set(taskIds)];
+    if (ids.length === 0) return [];
+    const { data, error: error2 } = await client.from("task_comments").select("task_id, content, created_at").in("task_id", ids).ilike("content", "%SEAT-%").order("created_at", { ascending: true });
+    throwIf(error2);
+    return (data ?? []).map((c) => ({
+      task_id: String(c.task_id),
+      content: String(c.content ?? ""),
+      created_at: String(c.created_at)
+    }));
+  }
+  return { projectKey, projectInfo, resolveMilestone, resolveScope, readSnapshot: readSnapshot2, listMarkerComments };
+}
+
+// src/conductor/ball-axis.ts
+function ballWithHuman(row) {
+  return row.awaiting_human_input === true;
+}
+
+// src/watch/classify.ts
+var GATE_ALIASES = {
+  clarify: "clarification-draft",
+  decompose: "decomposition-proposal",
+  design: "design-decision-draft",
+  plan: "plan-draft",
+  release: "release-decision-pending",
+  verify: "verification-ack-pending"
+};
+var DEFAULT_QUIET_MS = 9e4;
+var DEFAULT_IDLE_MS = 30 * 6e4;
+var CLEAN_EXIT_CLASSES = [
+  "clean-pause",
+  "waiting-on",
+  "terminal",
+  "terminal-no-leg",
+  "complete",
+  "split-umbrella",
+  "ticket-parked",
+  "ticket-parked-no-leg",
+  "ticket-archived",
+  "no-progress",
+  "repo-active-board-silent",
+  "stale",
+  "worker-timeout",
+  "operator-reap",
+  "quota",
+  "quota-repeated",
+  "rate-limit",
+  "fast-track-inadmissible",
+  "agent-ineligible",
+  "model-handoff"
+];
+function isDirtyExitClass(cls) {
+  if (cls === null || cls === void 0 || cls === "") return false;
+  if (cls.startsWith("dirty")) return true;
+  return !CLEAN_EXIT_CLASSES.includes(cls);
+}
+function expand2(entries) {
+  const out = /* @__PURE__ */ new Set();
+  for (const e of entries) {
+    out.add(e);
+    const alias = GATE_ALIASES[e];
+    if (alias) out.add(alias);
+  }
+  return out;
+}
+function ownerFor(event, reason, profile) {
+  if (event === "waiting" || event === "acted" || event === "state" || event === "start") return "info";
+  if (!profile) return "seat";
+  const held = expand2(profile.held_for_founder);
+  const owns = expand2(profile.owns);
+  if (event === "ready" || event === "question") {
+    if (reason !== null) {
+      if (held.has(reason)) return "founder";
+      if (owns.has(reason)) return "seat";
+    }
+    if (held.has(event)) return "founder";
+    return "seat";
+  }
+  return held.has(event) ? "founder" : "seat";
+}
+function refOf(cur) {
+  if (!cur.awaiting_human_input) return null;
+  const raw = cur.awaiting_human_ref ?? null;
+  const type = raw ? raw.type ?? raw.kind ?? null : null;
+  const idRaw = raw ? raw.id ?? raw.exchange_id ?? raw.pr_url ?? raw.pr_number ?? null : null;
+  const id = idRaw === null || idRaw === void 0 ? null : String(idRaw);
+  let iteration = null;
+  if (raw && typeof raw.round === "number") iteration = raw.round;
+  else if (cur.meta?.active_exchange && typeof cur.meta.active_exchange.round === "number" && type === "elicitation")
+    iteration = cur.meta.active_exchange.round;
+  else if (cur.meta && typeof cur.meta.active_brief_iteration === "number") iteration = cur.meta.active_brief_iteration;
+  return { type, id, iteration };
+}
+function legRunning(cur) {
+  const c = cur.conduction;
+  if (!c || !c.leg_started_at) return false;
+  if (c.last_leg_ended_at === void 0) return true;
+  if (c.last_leg_ended_at === null) return true;
+  return Date.parse(c.leg_started_at) > Date.parse(c.last_leg_ended_at);
+}
+function legEnded(cur, ctx) {
+  const c = cur.conduction;
+  if (!c || !c.leg_started_at) return true;
+  if (ctx.legEndKnown && c.last_leg_ended_at !== void 0) return !legRunning(cur);
+  const quiet = ctx.quietMs ?? DEFAULT_QUIET_MS;
+  const since = Date.parse(cur.updated_at);
+  return !Number.isNaN(since) && ctx.now - since >= quiet;
+}
+function isTerminal2(state) {
+  return state !== null && TICKET_TERMINAL_STATES.includes(state);
+}
+function openItemOf(cur, ctx) {
+  if (ballWithHuman(cur) && legEnded(cur, ctx)) {
+    return {
+      event: cur.awaiting_human_reason === "elicitation-round" ? "question" : "ready",
+      reason: cur.awaiting_human_reason,
+      ref: refOf(cur)
+    };
+  }
+  if (cur.conduction?.status === "parked" && !isTerminal2(cur.workflow_state)) {
+    return { event: "park", reason: cur.conduction.last_worker_exit_class, ref: null };
+  }
+  return null;
+}
+function sameOpenItem(prev, item) {
+  if (!prev) return false;
+  if (item.event === "park") return !prev.awaiting && prev.conduction_status === "parked";
+  return prev.awaiting === true && prev.reason === item.reason && prev.ref_id === (item.ref?.id ?? null) && // A missing iteration on either side (a meta read that failed) matches, so it never re-reports.
+  (prev.iteration === null || (item.ref?.iteration ?? null) === null || prev.iteration === item.ref?.iteration);
+}
+function isIdle(cur, ctx) {
+  const c = cur.conduction;
+  if (!c || !isConductionLive(c.status)) return false;
+  if (isTerminal2(cur.workflow_state)) return false;
+  if (ballWithHuman(cur)) return false;
+  if (cur.waiting_on !== null && cur.waiting_on !== void 0) return false;
+  if (legRunning(cur) && (ctx.legEndKnown || !legEnded(cur, ctx))) return false;
+  const since = Date.parse(cur.updated_at);
+  return !Number.isNaN(since) && ctx.now - since >= (ctx.idleMs ?? DEFAULT_IDLE_MS);
+}
+function idleNow(cur, ctx) {
+  return isIdle(cur, ctx);
+}
+function jsonEq(a3, b) {
+  return JSON.stringify(a3 ?? null) === JSON.stringify(b ?? null);
+}
+function baseEvent(event, cur, ctx, prev, extra = {}) {
+  const reason = extra.reason !== void 0 ? extra.reason : cur.awaiting_human_reason;
+  return {
+    ts: new Date(ctx.now).toISOString(),
+    event,
+    owner: ownerFor(event, reason, ctx.profile),
+    key: cur.key,
+    title: cur.title,
+    state: cur.workflow_state,
+    reason,
+    ref: extra.ref !== void 0 ? extra.ref : refOf(cur),
+    conduction: cur.conduction?.id ?? null,
+    leg: cur.conduction ? { ended: legEnded(cur, ctx), exit: cur.conduction.last_worker_exit_class } : null,
+    waiting_on: cur.waiting_on ?? null,
+    first_seen: prev?.first_seen ?? new Date(ctx.now).toISOString(),
+    reminder: extra.reminder ?? 0,
+    cursor: 0,
+    task_id: cur.id
+  };
+}
+function classify(prev, cur, ctx) {
+  const events2 = [];
+  const push = (e) => events2.push(e);
+  if (!prev && !ctx.initial) push(baseEvent("added", cur, ctx, prev));
+  if (prev) {
+    if (prev.state !== cur.workflow_state) push(baseEvent("state", cur, ctx, prev));
+    if (prev.awaiting && !cur.awaiting_human_input) push(baseEvent("acted", cur, ctx, prev, { reason: prev.reason }));
+    if (!jsonEq(prev.waiting_on, cur.waiting_on)) push(baseEvent("waiting", cur, ctx, prev));
+  }
+  const cls = cur.conduction?.last_worker_exit_class ?? null;
+  if (cur.conduction && isDirtyExitClass(cls)) {
+    let fresh;
+    if (ctx.legEndKnown && cur.conduction.last_leg_ended_at !== void 0) {
+      fresh = !!cur.conduction.last_leg_ended_at && cur.conduction.last_leg_ended_at !== (prev?.leg_ended_at ?? null);
+    } else {
+      const seen = ctx.exitSeen?.get(cur.id);
+      fresh = seen === void 0 ? !prev || ctx.initial === true : seen !== cls;
+    }
+    if (fresh) push(baseEvent("dirty-exit", cur, ctx, prev, { reason: cls, ref: null }));
+  }
+  const open = openItemOf(cur, ctx);
+  let parkNow = false;
+  if (open?.event === "park") parkNow = !(sameOpenItem(prev, open) && prev?.last_reported != null);
+  else if (cur.conduction?.status === "parked" && !!prev && prev.conduction_status !== "parked") parkNow = true;
+  else if (cur.workflow_state === "Parked" && !!prev && prev.state !== "Parked") parkNow = true;
+  if (parkNow) push(baseEvent("park", cur, ctx, prev, { reason: cls, ref: null }));
+  if (open && open.event !== "park") {
+    const reported = sameOpenItem(prev, open) && prev?.last_reported != null;
+    if (!reported) push(baseEvent(open.event, cur, ctx, prev, { reason: open.reason, ref: open.ref }));
+  }
+  if (isIdle(cur, ctx)) {
+    const lr = prev?.last_reported ? Date.parse(prev.last_reported) : NaN;
+    const reportedThisSpell = !Number.isNaN(lr) && lr >= Date.parse(cur.updated_at);
+    if (!reportedThisSpell) push(baseEvent("idle", cur, ctx, prev, { reason: null, ref: null }));
+  }
+  return events2;
+}
+function classifyRemoved(taskId, prev, ctx, last) {
+  return {
+    ts: new Date(ctx.now).toISOString(),
+    event: "removed",
+    owner: ownerFor("removed", null, ctx.profile),
+    key: prev.key,
+    title: last?.title ?? null,
+    state: last?.workflow_state ?? prev.state,
+    reason: null,
+    ref: null,
+    conduction: last?.conduction?.id ?? null,
+    leg: null,
+    waiting_on: last ? last.waiting_on ?? null : prev.waiting_on,
+    first_seen: prev.first_seen,
+    reminder: 0,
+    cursor: 0,
+    task_id: taskId
+  };
+}
+function healthEvent(now, status, profile, extra = {}) {
+  return {
+    ts: new Date(now).toISOString(),
+    event: "health",
+    owner: ownerFor("health", null, profile),
+    key: null,
+    title: null,
+    state: null,
+    reason: null,
+    ref: null,
+    conduction: null,
+    leg: null,
+    waiting_on: null,
+    first_seen: null,
+    reminder: 0,
+    cursor: 0,
+    status,
+    ...extra.since ? { since: extra.since } : {},
+    ...extra.detail ? { detail: extra.detail } : {}
+  };
+}
+function startEvent(now, project, target, scope, tickets, cursorSeq = 0) {
+  let what;
+  if (scope.kind === "milestone") {
+    what = scope.name && scope.name !== scope.id ? `milestone ${scope.name} (${scope.id.slice(0, 8)}\u2026)` : `milestone ${scope.id}`;
+  } else if (scope.kind === "keys") {
+    what = `tickets ${scope.keys.join(", ")}`;
+  } else {
+    what = "live conductions";
+  }
+  return {
+    ts: new Date(now).toISOString(),
+    event: "start",
+    owner: "info",
+    key: null,
+    title: null,
+    state: null,
+    reason: null,
+    ref: null,
+    conduction: null,
+    leg: null,
+    waiting_on: null,
+    first_seen: null,
+    reminder: 0,
+    cursor: cursorSeq,
+    detail: `watching ${what} in project ${project.name} (${project.key}) on ${target} \u2014 ${tickets} ticket${tickets === 1 ? "" : "s"}`,
+    project,
+    target,
+    scope,
+    tickets
+  };
+}
+
+// src/watch/guarded-client.ts
+function isAuthError(err) {
+  if (!err) return false;
+  if (err instanceof TokenExchangeError) return err.status === 401 || err.status === 403;
+  const e = err;
+  if (e.name === "TokenExchangeError" && (e.status === 401 || e.status === 403)) return true;
+  if (e.code === "PGRST301" || e.code === "PGRST303") return true;
+  if (e.status === 401) return true;
+  const msg = typeof e.message === "string" ? e.message : "";
+  if (/Token exchange failed \((401|403)\)/.test(msg)) return true;
+  if (/JWT expired|invalid JWT|JWSError/i.test(msg)) return true;
+  return false;
+}
+function guardedTokenGetter(auth2, onHealth) {
+  let lastGood = null;
+  return async () => {
+    try {
+      const token = await auth2.getAccessToken();
+      lastGood = token;
+      return token;
+    } catch (error2) {
+      try {
+        onHealth({ kind: isAuthError(error2) ? "auth-failed" : "offline", error: error2 });
+      } catch {
+      }
+      if (lastGood !== null) return lastGood;
+      throw error2;
+    }
+  };
+}
+function createGuardedClient(auth2, onHealth) {
+  return createClient(auth2.getSupabaseUrl(), auth2.getSupabaseAnonKey(), {
+    accessToken: guardedTokenGetter(auth2, onHealth),
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false
+    }
+  });
+}
+function installProcessGuards(onHealth, proc = process) {
+  const onRejection = (error2) => {
+    try {
+      onHealth({ kind: "unhandled-rejection", error: error2 });
+    } catch {
+    }
+  };
+  const onException = (error2) => {
+    try {
+      onHealth({ kind: "uncaught-exception", error: error2 });
+    } catch {
+    }
+  };
+  proc.on("unhandledRejection", onRejection);
+  proc.on("uncaughtException", onException);
+  return () => {
+    proc.off("unhandledRejection", onRejection);
+    proc.off("uncaughtException", onException);
+  };
+}
+function safeErrorMessage(err, secrets = []) {
+  const raw = err instanceof Error ? err.message : typeof err === "object" && err && "message" in err ? String(err.message) : String(err);
+  return redactFigmaMessage(raw, secrets);
+}
+
+// src/watch/cursor.ts
+var DEFAULT_REMIND_MS = 20 * 6e4;
+function ctxFor(ctx, snapshot, initial) {
+  return {
+    now: ctx.now,
+    profile: ctx.profile,
+    legEndKnown: snapshot.legEndKnown,
+    remindMs: ctx.remindMs ?? DEFAULT_REMIND_MS,
+    quietMs: ctx.quietMs,
+    idleMs: ctx.idleMs,
+    initial,
+    exitSeen: ctx.exitSeen
+  };
+}
+function nextEntry(prev, cur, cctx, emitted2) {
+  const nowIso = new Date(cctx.now).toISOString();
+  const open = openItemOf(cur, cctx);
+  const ref = refOf(cur);
+  let lastReported = null;
+  let reminders = 0;
+  let reminder = null;
+  if (open) {
+    if (emitted2.some((e) => e.event === open.event)) {
+      lastReported = nowIso;
+    } else if (sameOpenItem(prev, open) && prev?.last_reported) {
+      lastReported = prev.last_reported;
+      reminders = prev.reminders;
+      const owner = ownerFor(open.event, open.reason, cctx.profile);
+      const age = cctx.now - Date.parse(prev.last_reported);
+      if (owner === "seat" && age >= cctx.remindMs) {
+        reminders += 1;
+        reminder = baseEvent(open.event, cur, cctx, prev, { reason: open.reason, ref: open.ref, reminder: reminders });
+        lastReported = nowIso;
+      }
+    }
+  } else if (idleNow(cur, cctx)) {
+    lastReported = emitted2.some((e) => e.event === "idle") ? nowIso : prev?.last_reported ?? null;
+  }
+  const entry = {
+    key: cur.key,
+    state: cur.workflow_state,
+    awaiting: cur.awaiting_human_input,
+    reason: cur.awaiting_human_reason,
+    ref_id: ref?.id ?? null,
+    // Keep a known iteration when this read's meta is missing, so a failed meta read never makes
+    // the same pause look new.
+    iteration: ref?.iteration ?? (prev && prev.awaiting && prev.reason === cur.awaiting_human_reason ? prev.iteration : null),
+    conduction_status: cur.conduction?.status ?? null,
+    leg_ended_at: cur.conduction?.last_leg_ended_at ?? null,
+    waiting_on: cur.waiting_on ?? null,
+    first_seen: prev?.first_seen ?? nowIso,
+    last_reported: lastReported,
+    reminders
+  };
+  return { entry, reminder };
+}
+function catchUp(cursor, snapshot, ctx) {
+  const initial = cursor === null;
+  const cctx = ctxFor(ctx, snapshot, initial);
+  const prevTickets = cursor?.tickets ?? {};
+  const tickets = {};
+  const events2 = [];
+  const seenIds = /* @__PURE__ */ new Set();
+  for (const cur of snapshot.tickets) {
+    seenIds.add(cur.id);
+    const prev = prevTickets[cur.id];
+    const inScope = ctx.inScope ? ctx.inScope.has(cur.id) : true;
+    if (!inScope && !prev) continue;
+    const emitted2 = classify(prev, cur, cctx);
+    const { entry, reminder } = nextEntry(prev, cur, cctx, emitted2);
+    events2.push(...emitted2);
+    if (reminder) events2.push(reminder);
+    ctx.exitSeen?.set(cur.id, cur.conduction?.last_worker_exit_class ?? null);
+    if (inScope) tickets[cur.id] = entry;
+    else if (prev) events2.push(classifyRemoved(cur.id, prev, cctx, cur));
+  }
+  for (const [id, prev] of Object.entries(prevTickets)) {
+    if (seenIds.has(id)) continue;
+    events2.push(classifyRemoved(id, prev, cctx));
+  }
+  const before = cursor ? JSON.stringify(cursor.tickets) : null;
+  const changed = events2.length > 0 || before !== JSON.stringify(tickets);
+  let seq = cursor?.seq ?? 0;
+  for (const e of events2) {
+    seq += 1;
+    e.cursor = seq;
+  }
+  if (changed && events2.length === 0) seq += 1;
+  const next = changed ? {
+    schema: 1,
+    project: ctx.projectKey,
+    seat: ctx.seat,
+    seq,
+    updated_at: new Date(ctx.now).toISOString(),
+    tickets
+  } : cursor;
+  return { events: events2, next, changed };
+}
+function currentRows(snapshot, ctx) {
+  const cctx = { now: ctx.now, legEndKnown: snapshot.legEndKnown, quietMs: ctx.quietMs };
+  return snapshot.tickets.map((t) => {
+    const open = openItemOf(t, cctx);
+    const since = open ? t.updated_at : null;
+    const age = since ? Math.max(0, Math.round((ctx.now - Date.parse(since)) / 1e3)) : null;
+    return {
+      key: t.key,
+      title: t.title,
+      state: t.workflow_state,
+      waiting: open?.event ?? null,
+      reason: open?.reason ?? null,
+      on: open ? ownerFor(open.event, open.reason, ctx.profile) : null,
+      since,
+      age_s: age,
+      waiting_on: t.waiting_on ?? null,
+      conduction: t.conduction?.id ?? null,
+      conduction_status: t.conduction?.status ?? null
+    };
+  }).sort((a3, b) => a3.key.localeCompare(b.key, void 0, { numeric: true }));
+}
+
+// src/watch/loop.ts
+var DEFAULT_POLL_MS = 3e4;
+var DEFAULT_HINT_DELAY_MS = 1e4;
+var DEFAULT_SETTLE_MS = 3e3;
+var DEFAULT_MARKER_SCAN_MS = 10 * 6e4;
+var ONCE_MAX_ATTEMPTS = 3;
+var BACKOFF_MS = [5e3, 15e3, 3e4, 6e4];
+function backoffMs(failures) {
+  return BACKOFF_MS[Math.min(Math.max(failures, 1), BACKOFF_MS.length) - 1];
+}
+function isWake(e) {
+  return e.owner === "seat" && e.event !== "health" && e.event !== "start";
+}
+function isScopeError(err) {
+  return !!err && typeof err === "object" && err.name === "ScopeError";
+}
+async function runWatch(deps) {
+  const o = deps.options;
+  const pollMs = o.pollMs ?? DEFAULT_POLL_MS;
+  const hintDelayMs = o.hintDelayMs ?? DEFAULT_HINT_DELAY_MS;
+  const settleMs = o.settleMs ?? DEFAULT_SETTLE_MS;
+  const markerScanMs = o.markerScanMs ?? DEFAULT_MARKER_SCAN_MS;
+  const remindMs = o.remindMs ?? DEFAULT_REMIND_MS;
+  const startedAt = deps.now();
+  const startedIso = new Date(startedAt).toISOString();
+  const log = deps.log ?? (() => {
+  });
+  let cursor = deps.cursor;
+  let failures = 0;
+  let failureKind = null;
+  let failureSince = null;
+  let lastFetchAt = null;
+  let lastOkAt = null;
+  let hbSeq = 0;
+  let degradedReported = false;
+  let lastMarkerScan = -Infinity;
+  const warnedSessions = /* @__PURE__ */ new Set();
+  let lastIds = [];
+  let firstWakeAt = null;
+  const exitSeen = /* @__PURE__ */ new Map();
+  const aborted2 = () => deps.signal?.aborted === true;
+  const emit2 = (e) => {
+    try {
+      deps.emit(e);
+    } catch (err) {
+      log(`watch: emit failed: ${safeErrorMessage(err)}`);
+    }
+  };
+  const healthNow = () => {
+    if (failureKind) return failureKind;
+    if (deps.hintDead?.()) return "degraded";
+    return "ok";
+  };
+  const heartbeat = () => {
+    if (!deps.writeHeartbeat) return;
+    try {
+      deps.writeHeartbeat({
+        schema: 1,
+        pid: o.pid ?? process.pid,
+        seat: o.seat,
+        scope: o.scopeSlug,
+        mode: deps.mode,
+        poll_interval_s: pollMs / 1e3,
+        started_at: startedIso,
+        last_fetch_at: lastFetchAt,
+        last_ok_at: lastOkAt,
+        health: healthNow(),
+        seq: hbSeq++
+      });
+    } catch (err) {
+      log(`watch: heartbeat write failed: ${safeErrorMessage(err)}`);
+    }
+  };
+  const healthSeq = (e) => {
+    e.cursor = cursor?.seq ?? 0;
+    return e;
+  };
+  const fetchOnce = async () => {
+    const t = deps.now();
+    lastFetchAt = new Date(t).toISOString();
+    let snapshot;
+    let ids;
+    try {
+      ids = await deps.reader.resolveScope(deps.scope);
+      const union2 = [.../* @__PURE__ */ new Set([...ids, ...Object.keys(cursor?.tickets ?? {})])];
+      snapshot = await deps.reader.readSnapshot(union2);
+    } catch (err) {
+      if (isScopeError(err)) return { ok: false, fatal: safeErrorMessage(err) };
+      failures += 1;
+      const kind = isAuthError(err) ? "auth-failed" : "offline";
+      if (failureKind !== kind) {
+        failureKind = kind;
+        failureSince = failureSince ?? lastFetchAt;
+        emit2(healthSeq(healthEvent(t, kind, o.profile, { since: failureSince, detail: safeErrorMessage(err) })));
+      }
+      heartbeat();
+      return { ok: false };
+    }
+    lastIds = ids;
+    lastOkAt = lastFetchAt;
+    if (failureKind) {
+      emit2(healthSeq(healthEvent(t, "recovered", o.profile, { since: failureSince ?? void 0, detail: `${failureKind} since ${failureSince}` })));
+      failures = 0;
+      failureKind = null;
+      failureSince = null;
+    }
+    const result = catchUp(cursor, snapshot, {
+      now: t,
+      profile: o.profile,
+      projectKey: o.projectKey,
+      seat: o.seat,
+      remindMs,
+      quietMs: o.quietMs,
+      idleMs: o.idleMs,
+      inScope: new Set(ids),
+      exitSeen
+    });
+    for (const e of result.events) emit2(e);
+    if (result.changed) {
+      if (deps.mode !== "once" && deps.writeCursor) {
+        try {
+          deps.writeCursor(result.next);
+        } catch (err) {
+          log(`watch: cursor write failed: ${safeErrorMessage(err)}`);
+        }
+      }
+    }
+    cursor = result.next;
+    heartbeat();
+    return { ok: true, events: result.events, snapshot };
+  };
+  const scanMarkers = async () => {
+    if (!deps.markerScan || lastIds.length === 0) return;
+    const t = deps.now();
+    if (t - lastMarkerScan < markerScanMs) return;
+    lastMarkerScan = t;
+    try {
+      const hits = await deps.markerScan(lastIds);
+      for (const h2 of hits) {
+        if (warnedSessions.has(h2.session)) continue;
+        warnedSessions.add(h2.session);
+        emit2(
+          healthSeq(
+            healthEvent(deps.now(), "warning", o.profile, {
+              detail: `another seat (${h2.seat}, session ${h2.session}) has an open seat-start on this milestone`
+            })
+          )
+        );
+      }
+    } catch (err) {
+      log(`watch: seat-marker scan failed: ${safeErrorMessage(err)}`);
+    }
+  };
+  const checkDegraded = () => {
+    if (!degradedReported && deps.hint && deps.hintDead?.()) {
+      degradedReported = true;
+      emit2(healthSeq(healthEvent(deps.now(), "degraded", o.profile, { detail: "realtime hints unavailable; polling every " + pollMs / 1e3 + "s" })));
+    }
+  };
+  const waitNext = async (ms, allowHint) => {
+    if (ms <= 0 || aborted2()) return;
+    const child = new AbortController();
+    const onAbort = () => child.abort();
+    deps.signal?.addEventListener("abort", onAbort, { once: true });
+    try {
+      if (!allowHint || !deps.hint) {
+        await deps.sleep(ms, child.signal);
+        return;
+      }
+      let hinted = false;
+      const hintP = Promise.resolve().then(() => deps.hint.next()).then(
+        () => {
+          hinted = true;
+        },
+        () => {
+        }
+      );
+      await Promise.race([deps.sleep(ms, child.signal), hintP]);
+      try {
+        deps.hint.abandon?.();
+      } catch {
+      }
+      child.abort();
+      if (hinted && !aborted2()) await deps.sleep(Math.min(hintDelayMs, ms), deps.signal);
+    } finally {
+      child.abort();
+      deps.signal?.removeEventListener("abort", onAbort);
+    }
+  };
+  const maxWait = deps.mode === "until-event" ? o.maxWaitMs ?? null : null;
+  const remaining = () => maxWait === null ? Infinity : maxWait - (deps.now() - startedAt);
+  for (; ; ) {
+    if (aborted2()) return { exitCode: 0, reason: "aborted", cursor };
+    const res = await fetchOnce();
+    if (!res.ok && res.fatal) {
+      return { exitCode: 2, reason: "fatal", cursor, detail: res.fatal };
+    }
+    if (res.ok) {
+      if (deps.mode === "once") {
+        deps.printCurrent?.(currentRows(res.snapshot, { now: deps.now(), profile: o.profile, quietMs: o.quietMs }));
+        return { exitCode: 0, reason: "once", cursor };
+      }
+      await scanMarkers();
+      if (deps.mode === "until-event" && firstWakeAt === null && res.events.some(isWake)) firstWakeAt = deps.now();
+    }
+    checkDegraded();
+    if (deps.mode === "until-event") {
+      if (firstWakeAt !== null) {
+        const settleLeft = settleMs - (deps.now() - firstWakeAt);
+        if (settleLeft <= 0) return { exitCode: 0, reason: "event", cursor };
+        await waitNext(settleLeft, false);
+        continue;
+      }
+      if (remaining() <= 0) return { exitCode: 3, reason: "max-wait", cursor };
+    }
+    if (deps.mode === "once" && !res.ok && failures >= ONCE_MAX_ATTEMPTS) {
+      return { exitCode: 3, reason: "max-wait", cursor, detail: "board unreachable" };
+    }
+    const base2 = res.ok ? pollMs : backoffMs(failures);
+    await waitNext(Math.min(base2, remaining()), res.ok);
+    if (deps.mode === "until-event" && firstWakeAt === null && remaining() <= 0 && !aborted2()) {
+      const last = await fetchOnce();
+      if (last.ok && last.events.some(isWake)) {
+        firstWakeAt = deps.now();
+        continue;
+      }
+      return { exitCode: 3, reason: "max-wait", cursor };
+    }
+  }
+}
+async function retryWithBackoff(fn, opts) {
+  const start = opts.now();
+  let attempt = 0;
+  let lastErr = null;
+  for (; ; ) {
+    if (opts.signal?.aborted) return { ok: false, error: lastErr };
+    try {
+      return { ok: true, value: await fn() };
+    } catch (err) {
+      lastErr = err;
+      attempt += 1;
+      if (opts.onFailure(err, attempt) === "stop") return { ok: false, error: err };
+    }
+    let wait = backoffMs(attempt);
+    if (opts.deadlineMs != null) {
+      const left = opts.deadlineMs - (opts.now() - start);
+      if (left <= 0) return { ok: false, error: lastErr };
+      wait = Math.min(wait, left);
+    }
+    await opts.sleep(wait, opts.signal);
+  }
+}
+
+// src/watch/markers.ts
+var MARKER_RE = /^\s*SEAT-(START|STANDDOWN) v1 seat=(\S+) milestone=(\S+) session=(\S+)\s*$/;
+function parseMarkers(comments) {
+  const out = [];
+  for (const c of comments) {
+    for (const line2 of c.content.split(/\r?\n/)) {
+      const m = MARKER_RE.exec(line2);
+      if (!m) continue;
+      out.push({
+        kind: m[1] === "START" ? "start" : "standdown",
+        seat: m[2],
+        milestone: m[3],
+        session: m[4],
+        at: c.created_at,
+        task_id: c.task_id
+      });
+    }
+  }
+  return out;
+}
+function openSeatStarts(comments, ownSession) {
+  const markers = parseMarkers(comments).sort((a3, b) => Date.parse(a3.at) - Date.parse(b.at));
+  const latest = /* @__PURE__ */ new Map();
+  for (const m of markers) latest.set(m.session, m);
+  return [...latest.values()].filter((m) => m.kind === "start" && m.session !== ownSession);
+}
+
+// src/watch/seat-files.ts
+var import_yaml3 = __toESM(require_dist(), 1);
+import { createHash as createHash10, randomBytes } from "node:crypto";
+import {
+  closeSync as closeSync3,
+  fsyncSync,
+  linkSync as linkSync2,
+  mkdirSync as mkdirSync9,
+  openSync as openSync3,
+  readdirSync as readdirSync2,
+  readFileSync as readFileSync20,
+  renameSync as renameSync6,
+  unlinkSync as unlinkSync3,
+  writeSync
+} from "node:fs";
+import { homedir as homedir7, hostname as osHostname } from "node:os";
+import { dirname as dirname10, join as join18 } from "node:path";
+function harmonyHome(home) {
+  if (home) return home;
+  const env2 = process.env.HARMONY_HOME;
+  if (env2 && env2.length > 0) return env2;
+  return join18(homedir7(), ".harmony");
+}
+var SAFE_NAME = /^[A-Za-z0-9._-]+$/;
+function isSafeName(name) {
+  return typeof name === "string" && SAFE_NAME.test(name) && name !== "." && name !== "..";
+}
+function assertSafeName(kind, name) {
+  if (!isSafeName(name)) {
+    throw new Error(`invalid ${kind} ${JSON.stringify(name)}: only [A-Za-z0-9._-] allowed`);
+  }
+}
+var SCOPE_SLUG_MAX = 80;
+function slugPart(s) {
+  return s.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+}
+function scopeSlug(scope) {
+  let slug2;
+  switch (scope.kind) {
+    case "milestone": {
+      const id = slugPart(String(scope.id ?? ""));
+      if (!id) throw new Error("milestone scope needs a non-empty id");
+      slug2 = `milestone-${id}`;
+      break;
+    }
+    case "conductions":
+      slug2 = "conductions";
+      break;
+    case "keys": {
+      const keys = [...new Set((scope.keys ?? []).map((k) => slugPart(String(k))).filter(Boolean))].sort();
+      if (keys.length === 0) throw new Error("keys scope needs at least one key");
+      slug2 = `keys-${keys.join("-")}`;
+      break;
+    }
+    default:
+      throw new Error(`unknown scope kind ${JSON.stringify(scope.kind)}`);
+  }
+  if (slug2.length <= SCOPE_SLUG_MAX) return slug2;
+  const hash = createHash10("sha256").update(slug2).digest("hex").slice(0, 8);
+  const head2 = slug2.slice(0, SCOPE_SLUG_MAX - hash.length - 1).replace(/-+$/, "");
+  return `${head2}-${hash}`;
+}
+function seatProfilePath(name, opts = {}) {
+  assertSafeName("seat name", name);
+  return join18(harmonyHome(opts.home), "seats", `${name}.yml`);
+}
+function watchDir(projectKey, opts = {}) {
+  assertSafeName("project key", projectKey);
+  return join18(harmonyHome(opts.home), "watch", projectKey);
+}
+function cursorPath(projectKey, seat, opts = {}) {
+  assertSafeName("seat name", seat);
+  return join18(watchDir(projectKey, opts), `${seat}.json`);
+}
+function heartbeatPath(projectKey, seat, opts = {}) {
+  assertSafeName("seat name", seat);
+  return join18(watchDir(projectKey, opts), `${seat}.heartbeat.json`);
+}
+function lockPath(projectKey, seat, scope, opts = {}) {
+  assertSafeName("seat name", seat);
+  return join18(watchDir(projectKey, opts), `${seat}.${scopeSlug(scope)}.lock`);
+}
+var nullableString = external_exports.string().nullable();
+var isoString = external_exports.string().refine((s) => !Number.isNaN(Date.parse(s)), "not an ISO timestamp");
+var nullableIso = isoString.nullable();
+var nonNegInt = external_exports.number().int().nonnegative();
+var pidSchema = external_exports.number().int().positive();
+var stringList = external_exports.union([external_exports.array(external_exports.string()), external_exports.null()]).optional().transform((v2) => v2 ?? []);
+var optionalNullableString = external_exports.union([external_exports.string(), external_exports.number()]).nullable().optional().transform((v2) => v2 === void 0 || v2 === null ? null : String(v2));
+var SeatProfileSchema = external_exports.object({
+  session_id: optionalNullableString,
+  project: optionalNullableString,
+  milestone: optionalNullableString,
+  anchor: optionalNullableString,
+  owns: stringList,
+  held_for_founder: stringList,
+  remind: optionalNullableString.refine((v2) => v2 === null || parseDuration2(v2) !== null, {
+    message: "remind must be a duration like 20m, 1h, 90s"
+  })
+});
+var HeartbeatSchema = external_exports.object({
+  schema: external_exports.literal(1),
+  pid: pidSchema,
+  seat: external_exports.string(),
+  scope: external_exports.string(),
+  mode: external_exports.enum(["until-event", "follow", "once"]),
+  poll_interval_s: external_exports.number().positive(),
+  started_at: isoString,
+  last_fetch_at: nullableIso,
+  last_ok_at: nullableIso,
+  health: external_exports.enum(["ok", "degraded", "offline", "auth-failed"]),
+  seq: nonNegInt
+});
+var WatchLockSchema = external_exports.object({
+  schema: external_exports.literal(1),
+  pid: pidSchema,
+  hostname: external_exports.string(),
+  scope: external_exports.string(),
+  mode: external_exports.enum(["until-event", "follow"]),
+  started_at: isoString
+});
+var CursorTicketSchema = external_exports.object({
+  key: external_exports.string(),
+  state: nullableString,
+  awaiting: external_exports.boolean(),
+  reason: nullableString,
+  ref_id: nullableString,
+  iteration: external_exports.number().int().nullable(),
+  conduction_status: nullableString,
+  leg_ended_at: nullableIso,
+  waiting_on: external_exports.unknown().transform((v2) => v2 === void 0 ? null : v2),
+  first_seen: isoString,
+  last_reported: nullableIso,
+  reminders: nonNegInt
+});
+var WatchCursorSchema = external_exports.object({
+  schema: external_exports.literal(1),
+  project: external_exports.string(),
+  seat: external_exports.string(),
+  seq: nonNegInt,
+  updated_at: isoString,
+  tickets: external_exports.record(external_exports.string(), CursorTicketSchema)
+});
+var UNIT_MS2 = { s: 1e3, m: 6e4, h: 36e5, d: 864e5 };
+function parseDuration2(s) {
+  if (typeof s !== "string") return null;
+  const t = s.trim().toLowerCase();
+  if (!/^(\d+[smhd])+$/.test(t)) return null;
+  let total = 0;
+  for (const m of t.matchAll(/(\d+)([smhd])/g)) total += Number(m[1]) * UNIT_MS2[m[2]];
+  return total > 0 && Number.isSafeInteger(total) ? total : null;
+}
+function readRaw(path4) {
+  try {
+    return { ok: true, text: readFileSync20(path4, "utf8") };
+  } catch (err) {
+    const code = err.code;
+    if (code === "ENOENT" || code === "ENOTDIR") return { ok: false, absent: true };
+    return { ok: false, absent: false, error: `unreadable: ${err.message}` };
+  }
+}
+function zodError(err) {
+  return err.issues.map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`).join("; ");
+}
+function readJsonFile(path4, schema) {
+  const raw = readRaw(path4);
+  if (!raw.ok) return raw.absent ? { status: "absent", path: path4 } : { status: "malformed", path: path4, error: raw.error };
+  let data;
+  try {
+    data = JSON.parse(raw.text);
+  } catch (err) {
+    return { status: "malformed", path: path4, error: `invalid JSON: ${err.message}` };
+  }
+  if (typeof data !== "object" || data === null || Array.isArray(data)) {
+    return { status: "malformed", path: path4, error: "not a JSON object" };
+  }
+  const schemaVersion = data.schema;
+  if (schemaVersion !== 1) {
+    return { status: "malformed", path: path4, error: `unsupported schema ${JSON.stringify(schemaVersion ?? null)} (expected 1)` };
+  }
+  const parsed = schema.safeParse(data);
+  if (!parsed.success) return { status: "malformed", path: path4, error: zodError(parsed.error) };
+  return { status: "ok", value: parsed.data, path: path4 };
+}
+function unsafePath(...parts) {
+  return parts.map((p) => String(p)).join("/");
+}
+function readSeatProfile(name, opts = {}) {
+  if (!isSafeName(name)) {
+    return {
+      status: "malformed",
+      path: unsafePath(harmonyHome(opts.home), "seats", `${String(name)}.yml`),
+      error: "invalid seat name"
+    };
+  }
+  const path4 = seatProfilePath(name, opts);
+  const raw = readRaw(path4);
+  if (!raw.ok) return raw.absent ? { status: "absent", path: path4 } : { status: "malformed", path: path4, error: raw.error };
+  let data;
+  try {
+    data = (0, import_yaml3.parse)(raw.text);
+  } catch (err) {
+    return { status: "malformed", path: path4, error: `invalid YAML: ${err.message}` };
+  }
+  if (typeof data !== "object" || data === null || Array.isArray(data)) {
+    return { status: "malformed", path: path4, error: "not a YAML mapping" };
+  }
+  const parsed = SeatProfileSchema.safeParse(data);
+  if (!parsed.success) return { status: "malformed", path: path4, error: zodError(parsed.error) };
+  return { status: "ok", value: parsed.data, path: path4 };
+}
+function badNames(projectKey, seat, opts, file) {
+  if (isSafeName(projectKey) && isSafeName(seat)) return null;
+  return {
+    status: "malformed",
+    path: unsafePath(harmonyHome(opts.home), "watch", String(projectKey), file),
+    error: !isSafeName(projectKey) ? "invalid project key" : "invalid seat name"
+  };
+}
+function readHeartbeat(projectKey, seat, opts = {}) {
+  const bad = badNames(projectKey, seat, opts, `${String(seat)}.heartbeat.json`);
+  if (bad) return bad;
+  return readJsonFile(heartbeatPath(projectKey, seat, opts), HeartbeatSchema);
+}
+function readCursor(projectKey, seat, opts = {}) {
+  const bad = badNames(projectKey, seat, opts, `${String(seat)}.json`);
+  if (bad) return bad;
+  return readJsonFile(cursorPath(projectKey, seat, opts), WatchCursorSchema);
+}
+function readLock(projectKey, seat, scope, opts = {}) {
+  const bad = badNames(projectKey, seat, opts, `${String(seat)}.lock`);
+  if (bad) return bad;
+  let path4;
+  try {
+    path4 = lockPath(projectKey, seat, scope, opts);
+  } catch (err) {
+    return {
+      status: "malformed",
+      path: unsafePath(harmonyHome(opts.home), "watch", projectKey, `${seat}.lock`),
+      error: err.message
+    };
+  }
+  return readJsonFile(path4, WatchLockSchema);
+}
+var HEARTBEAT_STALE_MIN_MS = 5 * 6e4;
+function heartbeatStaleAfterMs(hb) {
+  return Math.max(3 * hb.poll_interval_s * 1e3, HEARTBEAT_STALE_MIN_MS);
+}
+function isHeartbeatStale(hb, now = Date.now()) {
+  const ref = Date.parse(hb.last_fetch_at ?? hb.started_at);
+  if (Number.isNaN(ref)) return true;
+  return now - ref > heartbeatStaleAfterMs(hb);
+}
+function defaultIsPidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === "EPERM";
+  }
+}
+function isLockHeld(lock, opts = {}) {
+  const here = opts.hostname ?? osHostname();
+  if (lock.hostname !== here) return true;
+  return (opts.isPidAlive ?? defaultIsPidAlive)(lock.pid);
+}
+function tmpPathFor(path4) {
+  return `${path4}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
+}
+function writeFileSynced(path4, content, flags) {
+  const fd = openSync3(path4, flags, 420);
+  try {
+    writeSync(fd, content);
+    fsyncSync(fd);
+  } finally {
+    closeSync3(fd);
+  }
+}
+function fsyncDir(dir) {
+  try {
+    const fd = openSync3(dir, "r");
+    try {
+      fsyncSync(fd);
+    } finally {
+      closeSync3(fd);
+    }
+  } catch {
+  }
+}
+function jsonText(value) {
+  return `${JSON.stringify(value, null, 2)}
+`;
+}
+function writeJsonAtomic(path4, value) {
+  writeTextAtomic(path4, jsonText(value));
+}
+function writeTextAtomic(path4, text4) {
+  const dir = dirname10(path4);
+  mkdirSync9(dir, { recursive: true });
+  const tmp = tmpPathFor(path4);
+  try {
+    writeFileSynced(tmp, text4, "wx");
+    renameSync6(tmp, path4);
+  } catch (err) {
+    try {
+      unlinkSync3(tmp);
+    } catch {
+    }
+    throw err;
+  }
+  fsyncDir(dir);
+}
+function writeHeartbeat(projectKey, seat, hb, opts = {}) {
+  const path4 = heartbeatPath(projectKey, seat, opts);
+  writeJsonAtomic(path4, HeartbeatSchema.parse(hb));
+  return path4;
+}
+function writeCursor(projectKey, seat, cursor, opts = {}) {
+  const path4 = cursorPath(projectKey, seat, opts);
+  writeJsonAtomic(path4, WatchCursorSchema.parse(cursor));
+  return path4;
+}
+function acquireLock(projectKey, seat, scope, mode, opts = {}) {
+  const path4 = lockPath(projectKey, seat, scope, opts);
+  const lock = WatchLockSchema.parse({
+    schema: 1,
+    pid: opts.pid ?? process.pid,
+    hostname: opts.hostname ?? osHostname(),
+    scope: scopeSlug(scope),
+    mode,
+    started_at: (opts.now ? opts.now() : /* @__PURE__ */ new Date()).toISOString()
+  });
+  mkdirSync9(dirname10(path4), { recursive: true });
+  const tmp = tmpPathFor(path4);
+  writeFileSynced(tmp, jsonText(lock), "wx");
+  try {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        linkSync2(tmp, path4);
+        fsyncDir(dirname10(path4));
+        return { status: "acquired", lock, path: path4 };
+      } catch (err) {
+        if (err.code !== "EEXIST") throw err;
+      }
+      const existing = readLock(projectKey, seat, scope, opts);
+      if (existing.status === "ok" && isLockHeld(existing.value, opts)) {
+        return { status: "held", holder: existing.value, path: path4 };
+      }
+      if (attempt === 0) {
+        try {
+          unlinkSync3(path4);
+        } catch (err) {
+          if (err.code !== "ENOENT") throw err;
+        }
+      }
+    }
+    const now = readLock(projectKey, seat, scope, opts);
+    if (now.status === "ok") return { status: "held", holder: now.value, path: path4 };
+    throw new Error(`could not acquire lock ${path4}`);
+  } finally {
+    try {
+      unlinkSync3(tmp);
+    } catch {
+    }
+  }
+}
+function releaseLock(projectKey, seat, scope, opts = {}) {
+  const existing = readLock(projectKey, seat, scope, opts);
+  if (existing.status !== "ok") return false;
+  if (existing.value.pid !== (opts.pid ?? process.pid)) return false;
+  if (existing.value.hostname !== (opts.hostname ?? osHostname())) return false;
+  try {
+    unlinkSync3(existing.path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function listWatchProjects(opts = {}) {
+  try {
+    return readdirSync2(join18(harmonyHome(opts.home), "watch"), { withFileTypes: true }).filter((d) => d.isDirectory() && isSafeName(d.name)).map((d) => d.name).sort();
+  } catch {
+    return [];
+  }
+}
+function listLocks(projectKey, seat, opts = {}) {
+  if (!isSafeName(projectKey) || !isSafeName(seat)) return [];
+  const dir = watchDir(projectKey, opts);
+  let names;
+  try {
+    names = readdirSync2(dir);
+  } catch {
+    return [];
+  }
+  const prefix = `${seat}.`;
+  return names.filter((n) => n.startsWith(prefix) && n.endsWith(".lock") && !n.includes(".tmp-")).filter((n) => /^[a-z0-9-]+$/.test(n.slice(prefix.length, -".lock".length))).sort().map((n) => readJsonFile(join18(dir, n), WatchLockSchema));
+}
+
+// src/cli/commands/watch.ts
+async function resolveBoardTarget(url2) {
+  try {
+    return (await resolveEnvironment(process.env, import.meta.url, null, url2 || void 0)).target;
+  } catch {
+    return "custom";
+  }
+}
+function localActiveProjectName() {
+  try {
+    return getActiveProject().name;
+  } catch {
+    return null;
+  }
+}
+function realSleep2(ms, signal) {
+  return new Promise((resolve8) => {
+    if (signal?.aborted) return resolve8();
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve8();
+    };
+    const timer = setTimeout(done, ms);
+    signal?.addEventListener("abort", done, { once: true });
+  });
+}
+function makeCliAuth() {
+  let project;
+  let usedFallback = false;
+  try {
+    project = getActiveProject();
+  } catch (configErr) {
+    const token = harmonyEnv("HARMONY_API_TOKEN");
+    if (!token) throw configErr;
+    project = { name: "(env token)", token };
+    usedFallback = true;
+  }
+  const target = resolveSupabaseTarget({ flags: {}, project: usedFallback ? void 0 : project });
+  return new HarmonyAuth(project.token, target.url, target.anonKey);
+}
+function defaultDeps() {
+  return {
+    makeAuth: makeCliAuth,
+    makeClient: (auth2, onHealth) => createGuardedClient(auth2, onHealth),
+    makeReader: (client, projectId) => createBoardReader(client, projectId),
+    startHints: (client, auth2, projectId, pollMs, log) => {
+      let realChannel = null;
+      const sub = startHintSubscription({
+        createChannel: (topic) => {
+          realChannel = client.channel(topic, { config: { private: true } });
+          return realChannel;
+        },
+        removeChannel: () => realChannel ? client.removeChannel(realChannel) : Promise.resolve(),
+        projectId,
+        // Not a lease holder: a unique value so no hint is dropped as "our own write".
+        leaseHolder: `watch:${hostname3()}:${process.pid}:${randomUUID6().slice(0, 8)}`,
+        debounceMs: 1e3,
+        startTimeout: (ms, fn) => {
+          const t = setTimeout(fn, ms);
+          return () => clearTimeout(t);
+        },
+        log,
+        forceRefresh: () => auth2.forceRefresh(),
+        setAuth: () => client.realtime.setAuth(),
+        pollMs
+      });
+      return {
+        source: sub.source,
+        isDead: () => sub.isDead(),
+        close: async () => {
+          await sub.close();
+          try {
+            client.realtime.disconnect();
+          } catch {
+          }
+        }
+      };
+    },
+    installGuards: (onHealth) => installProcessGuards(onHealth),
+    resolveTarget: resolveBoardTarget,
+    activeProjectName: localActiveProjectName,
+    now: () => Date.now(),
+    sleep: realSleep2,
+    out: (line2) => process.stdout.write(`${line2}
+`),
+    err: (line2) => process.stderr.write(`${line2}
+`),
+    onSignal: (handler) => {
+      const onInt = () => handler("SIGINT");
+      const onTerm = () => handler("SIGTERM");
+      process.on("SIGINT", onInt);
+      process.on("SIGTERM", onTerm);
+      return () => {
+        process.off("SIGINT", onInt);
+        process.off("SIGTERM", onTerm);
+      };
+    }
+  };
+}
+function isScopeError2(err) {
+  return !!err && typeof err === "object" && err.name === "ScopeError";
+}
+function formatAge(seconds) {
+  if (seconds === null) return "";
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.floor(seconds / 60);
+  if (m < 60) return `${m}m`;
+  const h2 = Math.floor(m / 60);
+  if (h2 < 48) return `${h2}h${m % 60 ? `${m % 60}m` : ""}`;
+  return `${Math.floor(h2 / 24)}d`;
+}
+function formatEvent(e) {
+  if (e.event === "start") return `${e.ts} start ${e.detail ?? ""}`;
+  if (e.event === "health") {
+    return `${e.ts} health ${e.status ?? ""}${e.detail ? `: ${e.detail}` : ""}${e.since && e.status !== "recovered" ? ` (since ${e.since})` : ""}`;
+  }
+  const parts = [e.ts, e.event + (e.reminder ? ` (reminder ${e.reminder})` : ""), `[${e.owner}]`, e.key ?? ""];
+  if (e.state) parts.push(e.state);
+  if (e.reason) parts.push(e.reason);
+  if (e.waiting_on && e.event === "waiting") parts.push(`waiting_on=${JSON.stringify(e.waiting_on)}`);
+  return `${parts.join(" ")}${e.title ? ` \u2014 ${e.title}` : ""}`;
+}
+function formatCurrentRow(r) {
+  const head2 = `${r.key} ${r.state ?? "?"}`;
+  const tail = r.title ? ` \u2014 ${r.title}` : "";
+  if (!r.waiting) {
+    const w2 = r.waiting_on ? ` waiting_on=${JSON.stringify(r.waiting_on)}` : "";
+    return `${head2}: nothing waiting${w2}${tail}`;
+  }
+  return `${head2}: ${r.waiting}${r.reason ? ` (${r.reason})` : ""} on ${r.on} for ${formatAge(r.age_s)}${tail}`;
+}
+var UsageError = class extends Error {
+};
+function parseWatchArgs(keys, opts, json) {
+  const scopes = [];
+  if (keys.length > 0) scopes.push({ kind: "keys", keys });
+  if (typeof opts.milestone === "string") scopes.push({ kind: "milestone", id: opts.milestone });
+  if (opts.conductions === true) scopes.push({ kind: "conductions" });
+  if (scopes.length !== 1) throw new UsageError("give exactly one scope: ticket keys, --milestone <id> or --conductions");
+  for (const k of keys) {
+    if (!/^(?:[A-Za-z][A-Za-z0-9]*-)?\d+$/.test(k)) throw new UsageError(`not a ticket key: ${k}`);
+  }
+  const modes = [];
+  if (opts.untilEvent === true) modes.push("until-event");
+  if (opts.follow === true) modes.push("follow");
+  if (opts.once === true) modes.push("once");
+  if (modes.length > 1) throw new UsageError("give at most one of --until-event, --follow, --once");
+  const mode = modes[0] ?? "once";
+  const seat = typeof opts.seat === "string" ? opts.seat : null;
+  if (seat !== null && !isSafeName(seat)) throw new UsageError(`invalid seat name ${JSON.stringify(seat)}: only [A-Za-z0-9._-]`);
+  if (mode !== "once" && seat === null) throw new UsageError(`--${mode} needs --seat <name>`);
+  let remindMs = null;
+  if (typeof opts.remind === "string") {
+    remindMs = parseDuration2(opts.remind);
+    if (remindMs === null) throw new UsageError(`bad --remind ${JSON.stringify(opts.remind)}: use a duration like 20m, 1h, 90s`);
+  }
+  let maxWaitMs = null;
+  if (typeof opts.maxWait === "string") {
+    maxWaitMs = parseDuration2(opts.maxWait);
+    if (maxWaitMs === null) throw new UsageError(`bad --max-wait ${JSON.stringify(opts.maxWait)}: use a duration like 20m, 1h, 90s`);
+    if (mode !== "until-event") throw new UsageError("--max-wait only applies to --until-event");
+  }
+  try {
+    scopeSlug(scopes[0]);
+  } catch (e) {
+    throw new UsageError(e.message);
+  }
+  return { scope: scopes[0], mode, seat, remindMs, maxWaitMs, json };
+}
+async function runWatchCommand(args, deps) {
+  const homeOpts = deps.home ? { home: deps.home } : {};
+  const print = (e) => deps.out(args.json ? JSON.stringify(e) : formatEvent(e));
+  const startupHealth = [];
+  let profile = null;
+  if (args.seat) {
+    const p = readSeatProfile(args.seat, homeOpts);
+    if (p.status === "ok") profile = p.value;
+    else {
+      startupHealth.push(
+        healthEvent(deps.now(), "warning", null, {
+          detail: p.status === "absent" ? `no seat profile at ${p.path}; every event is treated as seat-owned` : `seat profile ${p.path} is malformed (${p.error}); every event is treated as seat-owned`
+        })
+      );
+    }
+  }
+  for (const h2 of startupHealth) print(h2);
+  let auth2;
+  try {
+    auth2 = deps.makeAuth();
+  } catch (e) {
+    deps.err(`harmony watch: ${safeErrorMessage(e)}`);
+    return 2;
+  }
+  let supabaseUrl = "";
+  try {
+    supabaseUrl = auth2.getSupabaseUrl();
+  } catch {
+  }
+  const target = await (deps.resolveTarget ?? resolveBoardTarget)(supabaseUrl);
+  const abort = new AbortController();
+  let stoppedBy = null;
+  const offSignal = deps.onSignal((sig) => {
+    stoppedBy = sig;
+    abort.abort();
+  });
+  const disposeGuards = deps.installGuards(
+    (h2) => print(healthEvent(deps.now(), "warning", profile, { detail: `${h2.kind}: ${safeErrorMessage(h2.error)}` }))
+  );
+  let hints = null;
+  let lockTaken = false;
+  let projectKey = null;
+  try {
+    const reported = /* @__PURE__ */ new Set();
+    const guardHealth = (h2) => {
+      if (reported.has(h2.kind)) return;
+      reported.add(h2.kind);
+      deps.err(`harmony watch: token refresh failed (${h2.kind}): ${safeErrorMessage(h2.error)}`);
+    };
+    let offlineShown = false;
+    let fatal = null;
+    let bootProject = null;
+    const boot = await retryWithBackoff(
+      async () => {
+        await auth2.getAccessToken();
+        const client2 = deps.makeClient(auth2, guardHealth);
+        const projectId2 = auth2.getProjectId();
+        const reader2 = deps.makeReader(client2, projectId2);
+        const project2 = await reader2.projectInfo();
+        bootProject = project2;
+        const milestone2 = args.scope.kind === "milestone" ? await reader2.resolveMilestone(args.scope.id) : null;
+        const ids = await reader2.resolveScope(args.scope);
+        return { client: client2, projectId: projectId2, reader: reader2, key: project2.key, project: project2, milestone: milestone2, ids };
+      },
+      {
+        now: deps.now,
+        sleep: deps.sleep,
+        signal: abort.signal,
+        onFailure: (err, attempt) => {
+          if (isScopeError2(err)) {
+            const p = bootProject;
+            fatal = `${safeErrorMessage(err)}; the CLI's active project is ${p ? `${p.name} (${p.key})` : "unknown"} on ${target} (check \`harmony project info\`, change it with \`harmony project switch <name>\`)`;
+            return "stop";
+          }
+          if (isAuthError(err)) {
+            fatal = `token rejected: ${safeErrorMessage(err)}`;
+            return "stop";
+          }
+          if (!offlineShown) {
+            offlineShown = true;
+            print(healthEvent(deps.now(), "offline", profile, { since: new Date(deps.now()).toISOString(), detail: safeErrorMessage(err) }));
+          }
+          if (args.mode === "once" && attempt >= ONCE_MAX_ATTEMPTS) return "stop";
+          return "retry";
+        }
+      }
+    );
+    if (!boot.ok) {
+      if (fatal) {
+        deps.err(`harmony watch: ${fatal}`);
+        return 2;
+      }
+      if (stoppedBy) return 0;
+      return 3;
+    }
+    if (offlineShown) print(healthEvent(deps.now(), "recovered", profile, { detail: "startup" }));
+    const { client, reader, projectId, project, milestone } = boot.value;
+    projectKey = boot.value.key;
+    const slug2 = scopeSlug(args.scope);
+    const boardText = `${project.name} (${project.key}) on ${target}`;
+    if (profile?.project && profile.project.toUpperCase() !== project.key.toUpperCase()) {
+      deps.err(
+        `harmony watch: seat profile ${args.seat} names project ${profile.project}, but the CLI's active project is ${boardText}; point the CLI at the board the seat drives (\`harmony project info\`, \`harmony project switch <name>\`) or fix the profile`
+      );
+      return 2;
+    }
+    if (args.mode !== "once" && args.seat) {
+      const res = acquireLock(projectKey, args.seat, args.scope, args.mode, homeOpts);
+      if (res.status === "held") {
+        deps.err(
+          `harmony watch: another watch holds ${res.path} (pid ${res.holder.pid} on ${res.holder.hostname}, ${res.holder.mode} since ${res.holder.started_at})`
+        );
+        return 2;
+      }
+      lockTaken = true;
+    }
+    let cursor = null;
+    if (args.seat) {
+      const c = readCursor(projectKey, args.seat, homeOpts);
+      if (c.status === "ok") cursor = c.value;
+      else if (c.status === "malformed") {
+        print(healthEvent(deps.now(), "warning", profile, { detail: `cursor ${c.path} is malformed (${c.error}); starting fresh` }));
+      }
+    }
+    const startScope = args.scope.kind === "milestone" ? { kind: "milestone", id: milestone?.id ?? args.scope.id, name: milestone?.name ?? null } : args.scope.kind === "keys" ? { kind: "keys", keys: [...args.scope.keys] } : { kind: "conductions" };
+    print(startEvent(deps.now(), { name: project.name, key: project.key }, target, startScope, boot.value.ids.length, cursor?.seq ?? 0));
+    const pollMs = deps.pollMs ?? 3e4;
+    if (args.mode !== "once") {
+      try {
+        hints = deps.startHints(client, auth2, projectId, pollMs, (l) => deps.err(`harmony watch: ${l}`));
+      } catch (e) {
+        deps.err(`harmony watch: realtime hints unavailable (${safeErrorMessage(e)})`);
+        hints = null;
+      }
+    }
+    const seat = args.seat;
+    const pk = projectKey;
+    const result = await runWatch({
+      now: deps.now,
+      sleep: deps.sleep,
+      reader,
+      scope: args.scope,
+      hint: hints ? hints.source : null,
+      hintDead: hints ? () => hints.isDead() : void 0,
+      emit: print,
+      cursor,
+      writeCursor: seat ? (c) => writeCursor(pk, seat, c, homeOpts) : void 0,
+      writeHeartbeat: seat && args.mode !== "once" ? (hb) => writeHeartbeat(pk, seat, hb, homeOpts) : void 0,
+      markerScan: args.scope.kind === "milestone" ? async (ids) => openSeatStarts(await reader.listMarkerComments(ids), profile?.session_id ?? null) : void 0,
+      printCurrent: (rows) => {
+        for (const r of rows) deps.out(args.json ? JSON.stringify({ event: "current", ...r }) : formatCurrentRow(r));
+        if (!args.json && !rows.some((r) => r.waiting)) {
+          deps.out(`nothing waiting (${rows.length} ticket${rows.length === 1 ? "" : "s"} watched in ${pk} on ${target})`);
+        }
+      },
+      log: deps.err,
+      signal: abort.signal,
+      mode: args.mode,
+      options: {
+        seat: seat ?? "once",
+        projectKey: pk,
+        scopeSlug: slug2,
+        profile,
+        pollMs,
+        hintDelayMs: deps.hintDelayMs,
+        settleMs: deps.settleMs,
+        maxWaitMs: args.maxWaitMs,
+        remindMs: args.remindMs ?? (profile?.remind ? parseDuration2(profile.remind) ?? void 0 : void 0)
+      }
+    });
+    if (result.exitCode === 2) deps.err(`harmony watch: ${result.detail ?? "fatal"}`);
+    if (result.reason === "aborted") return stoppedBy === "SIGTERM" ? 143 : 130;
+    return result.exitCode;
+  } finally {
+    disposeGuards();
+    offSignal();
+    if (hints) {
+      try {
+        await hints.close();
+      } catch {
+      }
+    }
+    if (lockTaken && projectKey && args.seat) {
+      try {
+        releaseLock(projectKey, args.seat, args.scope, homeOpts);
+      } catch {
+      }
+    }
+  }
+}
+function runWatchStatus(seat, json, deps) {
+  if (!seat) {
+    deps.err("harmony watch status: --seat <name> is required");
+    return 2;
+  }
+  if (!isSafeName(seat)) {
+    deps.err(`harmony watch status: invalid seat name ${JSON.stringify(seat)}`);
+    return 2;
+  }
+  const homeOpts = deps.home ? { home: deps.home } : {};
+  const profile = readSeatProfile(seat, homeOpts);
+  if (profile.status === "ok" && profile.value.project) {
+    const active = (deps.activeProjectName ?? localActiveProjectName)();
+    deps.err(
+      `harmony watch status: not checking the profile's project ${profile.value.project} against the CLI's active project${active ? ` "${active}"` : ""}: its key is known only from the board. \`harmony watch\` checks it at start (exit 2 on a mismatch).`
+    );
+  }
+  const projects = profile.status === "ok" && profile.value.project && isSafeName(profile.value.project) ? [profile.value.project] : listWatchProjects(homeOpts);
+  let best = null;
+  for (const p of projects) {
+    const r = readHeartbeat(p, seat, homeOpts);
+    if (r.status !== "ok") continue;
+    const at2 = Date.parse(r.value.last_fetch_at ?? r.value.started_at);
+    const bestAt = best ? Date.parse(best.hb.last_fetch_at ?? best.hb.started_at) : -Infinity;
+    if (!best || at2 > bestAt) best = { project: p, hb: r.value };
+  }
+  const now = deps.now();
+  if (!best) {
+    if (json) deps.out(JSON.stringify({ seat, status: "none" }));
+    else deps.out(`watch ${seat}: none (no heartbeat)`);
+    return 1;
+  }
+  const hb = best.hb;
+  const stale = isHeartbeatStale(hb, now);
+  const ref = Date.parse(hb.last_fetch_at ?? hb.started_at);
+  const ageS = Number.isNaN(ref) ? null : Math.max(0, Math.round((now - ref) / 1e3));
+  const locks = listLocks(best.project, seat, homeOpts).filter((l) => l.status === "ok").map((l) => l.value);
+  const status = stale ? "stale" : "alive";
+  const cur = readCursor(best.project, seat, homeOpts);
+  const profileValue = profile.status === "ok" ? profile.value : null;
+  const waiting = cur.status === "ok" ? Object.values(cur.value.tickets).filter((t) => t.awaiting).map((t) => {
+    const since = Date.parse(t.first_seen);
+    return {
+      key: t.key,
+      reason: t.reason,
+      on: ownerFor(t.reason === "elicitation-round" ? "question" : "ready", t.reason, profileValue),
+      since: t.first_seen,
+      age_s: Number.isNaN(since) ? null : Math.max(0, Math.round((now - since) / 1e3))
+    };
+  }).sort((a3, b) => a3.key.localeCompare(b.key)) : [];
+  if (json) {
+    deps.out(
+      JSON.stringify({
+        seat,
+        project: best.project,
+        status,
+        health: hb.health,
+        pid: hb.pid,
+        scope: hb.scope,
+        mode: hb.mode,
+        last_fetch_at: hb.last_fetch_at,
+        last_ok_at: hb.last_ok_at,
+        last_fetch_age_s: ageS,
+        locks,
+        waiting
+      })
+    );
+  } else {
+    const lockText = locks.length ? `; lock: ${locks.map((l) => `${l.scope} pid ${l.pid}@${l.hostname}`).join(", ")}` : "; no lock";
+    deps.out(
+      `watch ${seat} (${best.project}): ${status}, health ${hb.health}, last fetch ${ageS === null ? "?" : formatAge(ageS)} ago, pid ${hb.pid}, ${hb.mode} ${hb.scope}${lockText}`
+    );
+    for (const w2 of waiting) {
+      deps.out(`  waiting on ${w2.on}: ${w2.key} ${w2.reason ?? ""} for ${w2.age_s === null ? "?" : formatAge(w2.age_s)}`);
+    }
+  }
+  return stale ? 1 : 0;
+}
+function registerWatchCommands(program3, override = {}) {
+  const deps = () => ({ ...defaultDeps(), ...override });
+  const watch = program3.command("watch").description("Watch tickets for events a seat must act on (default mode: --once)").argument("[keys...]", "ticket keys (B-1422 or 1422)").option("--milestone <id>", "watch the non-archived tickets of a milestone (id or name)").option("--conductions", "watch the tickets with a live conduction").option("--seat <name>", "seat name (keys the profile, cursor, heartbeat and lock)").option("--until-event", "exit 0 at the first seat-owned event (3 on --max-wait)").option("--follow", "stream every event until stopped").option("--once", "print what is waiting now and exit (the default)").option("--remind <dur>", "re-raise a seat-owned item still open after this long (default 20m)").option("--max-wait <dur>", "with --until-event: give up (exit 3) after this long").action(async (keys, opts) => {
+    const d = deps();
+    const json = program3.opts().json === true || opts.json === true;
+    let args;
+    try {
+      args = parseWatchArgs(keys ?? [], opts, json);
+    } catch (e) {
+      d.err(`harmony watch: ${e.message}`);
+      process.exitCode = 2;
+      return;
+    }
+    const code = await runWatchCommand(args, d);
+    process.exitCode = code;
+    if (args.mode !== "once") {
+      setTimeout(() => process.exit(code), 2e3).unref();
+    }
+  });
+  watch.command("status").description("Is this seat's watch alive? (exit 0 alive, 1 none or stale)").option("--seat <name>", "seat name").action((opts) => {
+    const d = deps();
+    const seat = opts.seat ?? watch.opts().seat ?? null;
+    const json = program3.opts().json === true;
+    process.exitCode = runWatchStatus(seat, json, d);
+  });
+}
+
 // src/cli/index.ts
 var require2 = createRequire(import.meta.url);
 var { version: version4 } = require2("../../.claude-plugin/plugin.json");
@@ -75404,4 +77423,5 @@ registerDoctorCommands(program2);
 registerRecordCommand(program2);
 registerFasttrackCommands(program2);
 registerConductionsCommands(program2);
+registerWatchCommands(program2);
 program2.parse();

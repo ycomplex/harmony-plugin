@@ -147,45 +147,86 @@ describe('harmony-orchestrate skill contract', () => {
   });
 
   describe('watch mechanics (§6)', () => {
-    it('the board-watch subscriber is the primary signal, replacing the daemon log', () => {
-      expect(flat).toMatch(/your project's own board-watch subscriber/);
-      expect(flat).toMatch(/primary signal/);
+    it('harmony watch is the primary signal, armed with --until-event and a max-wait', () => {
+      expect(flat).toMatch(/the primary signal is `harmony watch`/);
+      expect(skill.body).toContain('harmony watch --milestone <id> --seat <name> --until-event --max-wait 55m --json');
+      expect(flat).toMatch(/polling is the truth/);
     });
 
-    it('documents the four leg-end line categories, covering held/human-held tickets too', () => {
-      expect(flat).toMatch(/clean-pause/);
-      expect(flat).toMatch(/park \(<reason>\)/);
-      expect(flat).toMatch(/complete \(terminal\)/);
-      expect(flat).toMatch(/dirty-exit/);
-      expect(flat).toMatch(/including the held and human-held ones/);
+    it('retires the hand-built signals: no Monitor, restart wrapper, sweep, own subscriber or conductor-log tail', () => {
+      expect(flat).toMatch(
+        /never use a `monitor`, a restart wrapper, a hand-written sweep, your own realtime subscriber or a tail of the conductor log as the primary signal/,
+      );
+      expect(flat).not.toMatch(/board-watch subscriber/);
+      expect(flat).not.toMatch(/arm a `?monitor`? on/);
+      expect(flat).not.toMatch(/fall back to whatever log-tailing option/);
+      expect(flat).not.toMatch(/conductor log line/);
     });
 
-    it('an awaiting_human_input flip is documented as a HINT, never a pause', () => {
-      expect(flat).toMatch(/hint/);
-      expect(flat).toMatch(/never as a pause/);
+    it('the seat writes its profile with session_id first and posts SEAT-START / SEAT-STANDDOWN on the anchor ticket', () => {
+      expect(skill.body).toContain('~/.harmony/seats/<name>.yml');
+      expect(skill.body).toContain('session_id: <your Claude Code');
+      expect(skill.body).toContain('SEAT-START v1 seat=<name> milestone=<id> session=<id>');
+      expect(skill.body).toContain('SEAT-STANDDOWN v1 seat=<name> milestone=<id> session=<id>');
+      expect(referencedHarmonyTools(skill.body)).toContain('add_comment');
+      expect(flat).toMatch(/milestones have no comments, so the anchor carries it/);
     });
 
-    it('documents the UNAVAILABLE exit and the fallback chain (daemon log, then polling)', () => {
-      expect(flat).toMatch(/unavailable/);
-      expect(flat).toMatch(/does not retry in-process/);
-      expect(flat).toMatch(/fall back to whatever log-tailing option the project's own guidance documents/);
+    it('documents the exit codes: 0 seat-owned events, 3 max-wait, 2 fatal configuration incl. a held lock', () => {
+      expect(flat).toMatch(/`0`: events you own/);
+      expect(flat).toMatch(/`3`: the max-wait passed with nothing new/);
+      expect(flat).toMatch(/`2`: fatal configuration/);
+      expect(flat).toMatch(/a held lock, naming the holder'?s pid/);
+    });
+
+    it('re-arms FIRST on every wake, then handles seat-owned lines', () => {
+      expect(flat).toMatch(/re-arm first\*?\*?, with the same command, then handle each line whose `owner` is `seat`/);
+    });
+
+    it('matches the brief id AND the iteration on a re-read before any resolve', () => {
+      expect(flat).toMatch(/before any resolve, re-read the row and match the brief id and the iteration/);
+      expect(flat).toMatch(/match the brief id in `awaiting_human_ref`, its iteration and the reason/);
+    });
+
+    it('reminders repeat until handled; human-held items never wake the seat; --once lists them with their age', () => {
+      expect(flat).toMatch(/reminders repeat\*?\*? every `--remind`/);
+      expect(flat).toMatch(/items held for the human never wake you/);
+      expect(skill.body).toContain('--once');
+    });
+
+    it('failures never end the watch: health offline, recovered and a catch-up from the cursor', () => {
+      expect(flat).toMatch(/failures do not end the watch/);
+      expect(flat).toMatch(/health offline/);
+      expect(flat).toMatch(/health recovered/);
+      expect(flat).toMatch(/never ends an `--until-event` wait/);
+    });
+
+    it('harmony watch status reports liveness', () => {
+      expect(skill.body).toContain('harmony watch status --seat <name>');
     });
 
     it('the watch runs harness-backgrounded, never a shell `&` orphan', () => {
       expect(flat).toMatch(/run_in_background/);
       expect(flat).toMatch(/orphan dies with its shell/);
     });
+
+    it('a follow tail takes the same lock, so it needs a different seat name', () => {
+      expect(flat).toMatch(/`--follow`.*takes the same lock, so it needs a different `--seat` name/);
+    });
+
+    it('describes B-1423 seat hooks only as future', () => {
+      expect(flat).toMatch(/b-1423 adds seat hooks/);
+      expect(flat).toMatch(/there are none yet/);
+      expect(flat).not.toMatch(/harmony await/);
+    });
   });
 
   describe('re-invocation semantics (B-917 design-gate addition)', () => {
-    it('SAME-SESSION re-invocation piggybacks the ONE existing watch loop — never a second watch', () => {
+    it('SAME-SESSION re-invocation piggybacks the ONE existing watch — never a second watch', () => {
       expect(flat).toMatch(/same-session re-invocation/);
       expect(flat).toMatch(/piggyback by design/);
-      expect(flat).toMatch(/merge into the one existing watch loop'?s grep sets and single cursor/);
-    });
-
-    it('states plainly that parallel watch loops on the same conductor log are forbidden', () => {
-      expect(flat).toMatch(/parallel watch loops on the same conductor log are forbidden/);
+      expect(flat).toMatch(/the new ticket joins the one existing watch/);
+      expect(flat).toMatch(/never start a second one/);
     });
 
     it('the duplicate-conduction guard makes an overlapping create_conduction call refuse cleanly, so re-listing an already-shepherded ticket is harmless', () => {
@@ -196,16 +237,18 @@ describe('harmony-orchestrate skill contract', () => {
       expect(flat).toMatch(/harmless/);
     });
 
-    it('SECOND-SESSION invocation on the same board is UNGUARDED and dangerous — states the one-orchestrator-seat-per-board rule prominently, in both §1 and §6', () => {
-      const occurrences = flat.match(/one orchestrator seat per board/g) ?? [];
-      expect(occurrences.length).toBeGreaterThanOrEqual(2);
-      expect(flat).toMatch(/currently unguarded and dangerous/);
-      expect(flat).toMatch(/two seats race reviews and resolves on the same briefs/);
+    it('one orchestrator seat per milestone, enforced by the watch lock and the seat-start marker', () => {
+      expect(flat).toMatch(/one orchestrator seat per milestone/);
+      expect(flat).toMatch(/two seats on the same tickets race reviews and resolves on the same briefs/);
+      expect(flat).toMatch(/the watch lock and the seat-start marker enforce it/);
+      expect(flat).toMatch(/refuses with exit 2 and names the pid that holds the lock/);
+      expect(flat).toMatch(/the warning never blocks/);
     });
 
-    it('records a successor note: a future session lease/lock mechanizes the one-orchestrator-seat-per-board rule', () => {
-      expect(flat).toMatch(/session lease\/lock/);
-      expect(flat).toMatch(/mechanizes the one-orchestrator-seat-per-board rule/);
+    it('the retired discipline-only wording is gone', () => {
+      expect(flat).not.toMatch(/currently unguarded and dangerous/);
+      expect(flat).not.toMatch(/grep sets and single cursor/);
+      expect(flat).not.toMatch(/same conductor log/);
     });
 
     it('records a successor note: a future conductor-enforced repo-lane lock supersedes this section (§4)', () => {
