@@ -76453,14 +76453,21 @@ function createGuardedClient(auth2, onHealth) {
     }
   });
 }
+function isBrokenPipe(err) {
+  if (!err || typeof err !== "object") return false;
+  const code = err.code;
+  return code === "EPIPE" || code === "ERR_STREAM_DESTROYED";
+}
 function installProcessGuards(onHealth, proc = process) {
   const onRejection = (error2) => {
+    if (isBrokenPipe(error2)) return;
     try {
       onHealth({ kind: "unhandled-rejection", error: error2 });
     } catch {
     }
   };
   const onException = (error2) => {
+    if (isBrokenPipe(error2)) return;
     try {
       onHealth({ kind: "uncaught-exception", error: error2 });
     } catch {
@@ -77256,6 +77263,17 @@ function releaseLock(projectKey, seat, scope, opts = {}) {
     return false;
   }
 }
+function removeHeartbeat(projectKey, seat, pid, opts = {}) {
+  try {
+    const existing = readHeartbeat(projectKey, seat, opts);
+    if (existing.status !== "ok") return false;
+    if (existing.value.pid !== pid) return false;
+    unlinkSync3(existing.path);
+    return true;
+  } catch {
+    return false;
+  }
+}
 function listWatchProjects(opts = {}) {
   try {
     return readdirSync2(join18(harmonyHome(opts.home), "watch"), { withFileTypes: true }).filter((d) => d.isDirectory() && isSafeName(d.name)).map((d) => d.name).sort();
@@ -77317,6 +77335,81 @@ function makeCliAuth() {
   const target = resolveSupabaseTarget({ flags: {}, project: usedFallback ? void 0 : project });
   return new HarmonyAuth(project.token, target.url, target.anonKey);
 }
+function watchStdout(stream) {
+  let dead = null;
+  const handlers = /* @__PURE__ */ new Set();
+  const die = (reason) => {
+    if (dead !== null) return;
+    dead = reason;
+    for (const h2 of [...handlers]) {
+      try {
+        h2(reason);
+      } catch {
+      }
+    }
+  };
+  const onError = (err) => {
+    const code = err?.code;
+    die(isBrokenPipe(err) && typeof code === "string" ? code : "EPIPE");
+  };
+  stream.on("error", onError);
+  return {
+    isDead: () => dead !== null || stream.destroyed === true,
+    markDead: die,
+    onClosed: (handler) => {
+      if (dead !== null) {
+        handler(dead);
+        return () => {
+        };
+      }
+      handlers.add(handler);
+      return () => handlers.delete(handler);
+    },
+    dispose: () => stream.off("error", onError)
+  };
+}
+var processStdout = null;
+function processStdoutWatch() {
+  if (!processStdout) processStdout = watchStdout(process.stdout);
+  return processStdout;
+}
+async function exitAfterDrain(stream, code, opts) {
+  const isDead = () => (opts.isDead ? opts.isDead() : false) || stream.destroyed === true;
+  const deadCode = code === 0 ? 141 : code;
+  if (isDead()) {
+    opts.exit(deadCode);
+    return deadCode;
+  }
+  let broken = false;
+  await new Promise((resolve8) => {
+    let settled = false;
+    const finish2 = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      stream.off("error", onError);
+      resolve8();
+    };
+    const onError = () => {
+      broken = true;
+      finish2();
+    };
+    const timer = setTimeout(finish2, opts.capMs ?? 2e3);
+    stream.on("error", onError);
+    try {
+      stream.write("", (err) => {
+        if (err) broken = true;
+        finish2();
+      });
+    } catch {
+      broken = true;
+      finish2();
+    }
+  });
+  const final = broken || isDead() ? deadCode : code;
+  opts.exit(final);
+  return final;
+}
 function defaultDeps() {
   return {
     makeAuth: makeCliAuth,
@@ -77360,8 +77453,16 @@ function defaultDeps() {
     activeProjectName: localActiveProjectName,
     now: () => Date.now(),
     sleep: realSleep2,
-    out: (line2) => process.stdout.write(`${line2}
-`),
+    out: (line2) => {
+      const sw = processStdoutWatch();
+      if (sw.isDead()) return;
+      try {
+        process.stdout.write(`${line2}
+`);
+      } catch (e) {
+        sw.markDead(isBrokenPipe(e) ? String(e.code) : "EPIPE");
+      }
+    },
     err: (line2) => process.stderr.write(`${line2}
 `),
     onSignal: (handler) => {
@@ -77373,6 +77474,10 @@ function defaultDeps() {
         process.off("SIGINT", onInt);
         process.off("SIGTERM", onTerm);
       };
+    },
+    onStdoutClosed: (handler) => processStdoutWatch().onClosed(handler),
+    exit: async (code) => {
+      await exitAfterDrain(process.stdout, code, { exit: (c) => process.exit(c), capMs: 2e3, isDead: () => processStdoutWatch().isDead() });
     }
   };
 }
@@ -77448,7 +77553,9 @@ function parseWatchArgs(keys, opts, json) {
 }
 async function runWatchCommand(args, deps) {
   const homeOpts = deps.home ? { home: deps.home } : {};
-  const print = (e) => deps.out(args.json ? JSON.stringify(e) : formatEvent(e));
+  let stdoutDead = false;
+  const out = (line2) => stdoutDead ? deps.err(line2) : deps.out(line2);
+  const print = (e) => out(args.json ? JSON.stringify(e) : formatEvent(e));
   const startupHealth = [];
   let profile = null;
   if (args.seat) {
@@ -77478,10 +77585,16 @@ async function runWatchCommand(args, deps) {
   const target = await (deps.resolveTarget ?? resolveBoardTarget)(supabaseUrl);
   const abort = new AbortController();
   let stoppedBy = null;
-  const offSignal = deps.onSignal((sig) => {
+  const stop = (sig) => {
     stoppedBy = sig;
     abort.abort();
-  });
+  };
+  const offSignal = deps.onSignal(stop);
+  const offStdout = deps.onStdoutClosed ? deps.onStdoutClosed(() => {
+    stdoutDead = true;
+    stop("EPIPE");
+  }) : () => {
+  };
   const disposeGuards = deps.installGuards(
     (h2) => print(healthEvent(deps.now(), "warning", profile, { detail: `${h2.kind}: ${safeErrorMessage(h2.error)}` }))
   );
@@ -77538,6 +77651,7 @@ async function runWatchCommand(args, deps) {
         deps.err(`harmony watch: ${fatal}`);
         return 2;
       }
+      if (stoppedBy === "EPIPE") return 141;
       if (stoppedBy) return 0;
       return 3;
     }
@@ -77596,9 +77710,9 @@ async function runWatchCommand(args, deps) {
       writeHeartbeat: seat && args.mode !== "once" ? (hb) => writeHeartbeat(pk, seat, hb, homeOpts) : void 0,
       markerScan: args.scope.kind === "milestone" ? async (ids) => openSeatStarts(await reader.listMarkerComments(ids), profile?.session_id ?? null) : void 0,
       printCurrent: (rows) => {
-        for (const r of rows) deps.out(args.json ? JSON.stringify({ event: "current", ...r }) : formatCurrentRow(r));
+        for (const r of rows) out(args.json ? JSON.stringify({ event: "current", ...r }) : formatCurrentRow(r));
         if (!args.json && !rows.some((r) => r.waiting)) {
-          deps.out(`nothing waiting (${rows.length} ticket${rows.length === 1 ? "" : "s"} watched in ${pk} on ${target})`);
+          out(`nothing waiting (${rows.length} ticket${rows.length === 1 ? "" : "s"} watched in ${pk} on ${target})`);
         }
       },
       log: deps.err,
@@ -77617,11 +77731,13 @@ async function runWatchCommand(args, deps) {
       }
     });
     if (result.exitCode === 2) deps.err(`harmony watch: ${result.detail ?? "fatal"}`);
-    if (result.reason === "aborted") return stoppedBy === "SIGTERM" ? 143 : 130;
+    if (result.reason === "aborted") return stoppedBy === "SIGTERM" ? 143 : stoppedBy === "EPIPE" ? 141 : 130;
+    if (stdoutDead && result.exitCode === 0) return 141;
     return result.exitCode;
   } finally {
     disposeGuards();
     offSignal();
+    offStdout();
     if (hints) {
       try {
         await hints.close();
@@ -77633,6 +77749,7 @@ async function runWatchCommand(args, deps) {
         releaseLock(projectKey, args.seat, args.scope, homeOpts);
       } catch {
       }
+      removeHeartbeat(projectKey, args.seat, process.pid, homeOpts);
     }
   }
 }
@@ -77729,9 +77846,7 @@ function registerWatchCommands(program3, override = {}) {
     }
     const code = await runWatchCommand(args, d);
     process.exitCode = code;
-    if (args.mode !== "once") {
-      setTimeout(() => process.exit(code), 2e3).unref();
-    }
+    if (d.exit) await d.exit(code);
   });
   watch.command("status").description("Is this seat's watch alive? (exit 0 alive, 1 none or stale)").option("--seat <name>", "seat name").action((opts) => {
     const d = deps();

@@ -303,7 +303,7 @@ included, skips both with one directory test and one grep; no interpreter starts
   `${HARMONY_HOME:-~/.harmony}/conduct-sessions/current-session`, but every session on the machine
   overwrites that file, so prefer the context. A resumed or continued session keeps its id, so the
   hooks find it again. A fresh session gets a new id, and the hooks cannot know it is a seat until
-  you write it.
+  you write it. The value may be unquoted, or in double or single quotes; all three work.
 - **Session start** runs a one-shot board check (`harmony watch --once --seat <name>`, plus the
   profile's milestone) and puts its summary in your context. It does **not** arm your watch: the
   context names the re-arm command, and you run it. A failed or timed-out check says so and names

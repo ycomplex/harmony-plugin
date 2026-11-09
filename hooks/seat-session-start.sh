@@ -2,7 +2,8 @@
 # B-1423 — the SEAT SESSION-START hook (Claude Code `SessionStart`).
 #
 # Acts ONLY for a session named by a seat profile: a `session_id: <id>` line in
-# ${HARMONY_HOME:-$HOME/.harmony}/seats/<name>.yml (format: docs/harmony-watch-files.md). For such a
+# ${HARMONY_HOME:-$HOME/.harmony}/seats/<name>.yml (format: docs/harmony-watch-files.md). The id may
+# be unquoted, double- or single-quoted (B-1429); the one grep takes all three fixed lines. For such a
 # session it runs `dist/bin/seat-hook.js start`, which puts a one-shot `harmony watch --once` board
 # summary in the session's context.
 #
@@ -28,7 +29,7 @@ esac
 
 D="${HARMONY_HOME:-$HOME/.harmony}/seats"
 [ -d "$D" ] || noop
-PROFILE=$(grep -l -x -F "session_id: $ID" "$D"/*.yml 2>/dev/null | head -n 1)
+PROFILE=$(grep -l -x -F -e "session_id: $ID" -e "session_id: \"$ID\"" -e "session_id: '$ID'" "$D"/*.yml 2>/dev/null | head -n 1)
 [ -n "$PROFILE" ] || noop
 
 ROOT="${CLAUDE_PLUGIN_ROOT:-$(dirname "$0")/..}"

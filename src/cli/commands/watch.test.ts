@@ -19,7 +19,19 @@ import {
 import { conduction, FakeBoard, FakeClock, fakeSupabase, paused, T0, ticket } from '../../watch/test-fakes.js';
 import { createBoardReader } from '../../watch/board-read.js';
 import { isWake } from '../../watch/loop.js';
-import { parseWatchArgs, registerWatchCommands, resolveBoardTarget, runWatchCommand, runWatchStatus, UsageError, type WatchCliDeps } from './watch.js';
+import { EventEmitter } from 'node:events';
+import {
+  exitAfterDrain,
+  parseWatchArgs,
+  registerWatchCommands,
+  resolveBoardTarget,
+  runWatchCommand,
+  runWatchStatus,
+  UsageError,
+  watchStdout,
+  type OutStream,
+  type WatchCliDeps,
+} from './watch.js';
 
 let home: string;
 beforeEach(() => {
@@ -182,19 +194,24 @@ describe('runWatchCommand', () => {
     expect(existsSync(heartbeatPath('B', 'orch', { home }))).toBe(false);
   });
 
-  it('--follow writes cursor and heartbeat, and releases its lock on SIGINT', async () => {
+  it('--follow writes cursor and heartbeat, and on SIGINT releases its lock and removes its heartbeat', async () => {
     const f = fake();
     f.board.put(ticket(1, { conduction: conduction() }));
+    let hbWhileRunning: ReturnType<typeof readHeartbeat> | null = null;
     f.clock.onTick((t) => {
-      if (t >= T0 + 60_000) f.stop();
+      if (t >= T0 + 60_000 && !hbWhileRunning) {
+        hbWhileRunning = readHeartbeat('B', 'orch', { home });
+        f.stop();
+      }
     });
     const scope = { kind: 'keys' as const, keys: ['B-1'] };
     const code = await runWatchCommand(parseWatchArgs(['B-1'], { seat: 'orch', follow: true }, true), f.deps);
     expect(code).toBe(130);
     expect(readCursor('B', 'orch', { home }).status).toBe('ok');
-    const hb = readHeartbeat('B', 'orch', { home });
-    expect(hb.status === 'ok' && hb.value).toMatchObject({ pid: process.pid, mode: 'follow', scope: 'keys-b-1', health: 'ok', poll_interval_s: 30 });
+    const hb = hbWhileRunning as ReturnType<typeof readHeartbeat> | null;
+    expect(hb?.status === 'ok' && hb.value).toMatchObject({ pid: process.pid, mode: 'follow', scope: 'keys-b-1', health: 'ok', poll_interval_s: 30 });
     expect(readLock('B', 'orch', scope, { home }).status).toBe('absent');
+    expect(readHeartbeat('B', 'orch', { home }).status).toBe('absent');
   });
 
   it('an absent seat profile: all events seat-owned, plus one health warning', async () => {
@@ -204,6 +221,216 @@ describe('runWatchCommand', () => {
     const lines = jsonLines(f.out);
     expect(lines.filter((l) => l.event === 'health')).toHaveLength(1);
     expect(lines.find((l) => l.event === 'ready').owner).toBe('seat');
+  });
+});
+
+describe('a closed stdout and every stop (B-1429)', () => {
+  /** A fake whose stdout "breaks" after `okLines` lines: later writes reach the closed-reader handler. */
+  function brokenAfter(okLines: number, over: Partial<WatchCliDeps> = {}, afterDeath: () => void = () => {}) {
+    let closed: ((reason: string) => void) | null = null;
+    let disposed = false;
+    let writesAtDeath: number | null = null;
+    const writes: string[] = [];
+    const f = fake({
+      onStdoutClosed: (h) => {
+        closed = (r) => {
+          if (writesAtDeath !== null) return;
+          writesAtDeath = writes.length;
+          h(r);
+          afterDeath();
+        };
+        return () => {
+          disposed = true;
+          closed = null;
+        };
+      },
+      ...over,
+    });
+    f.deps.out = (l) => {
+      writes.push(l);
+      // The real stream reports EPIPE asynchronously on the write after the reader left.
+      if (writes.length > okLines) queueMicrotask(() => closed?.('EPIPE'));
+    };
+    return { ...f, writes, wasDisposed: () => disposed, writesAtDeath: () => writesAtDeath };
+  }
+
+  const seatScope = { kind: 'keys' as const, keys: ['B-1'] };
+
+  it('--once: exits 141, writes nothing more to stdout once it is dead', async () => {
+    const f = brokenAfter(1);
+    for (let n = 1; n <= 5; n++) f.board.put(paused(n));
+    const code = await runWatchCommand(parseWatchArgs(['B-1', 'B-2', 'B-3', 'B-4', 'B-5'], { once: true }, true), f.deps);
+    expect(code).toBe(141);
+    // --once prints synchronously, so (as on a real stream) the error lands after its writes;
+    // what matters is that nothing reaches stdout after the death
+    expect(f.writesAtDeath()).not.toBeNull();
+    expect(f.writes).toHaveLength(f.writesAtDeath()!);
+    expect(f.wasDisposed()).toBe(true);
+  });
+
+  it.each([
+    ['follow', { follow: true }],
+    ['until-event', { untilEvent: true }],
+  ])('--%s: exits 141, frees the lock and leaves no heartbeat', async (_mode, opts) => {
+    const f = brokenAfter(1);
+    f.board.put(ticket(1, { conduction: conduction() }));
+    let flip = false;
+    f.clock.onTick(() => {
+      flip = !flip;
+      f.board.update('task-1', flip ? paused(1) : ticket(1, { conduction: conduction() }));
+    });
+    const code = await runWatchCommand(parseWatchArgs(['B-1'], { seat: 'orch', ...opts }, true), f.deps);
+    expect(code).toBe(141);
+    expect(readLock('B', 'orch', seatScope, { home }).status).toBe('absent');
+    expect(readHeartbeat('B', 'orch', { home }).status).toBe('absent');
+    expect(f.writesAtDeath()).not.toBeNull();
+    expect(f.writes).toHaveLength(f.writesAtDeath()!);
+  });
+
+  it('once stdout is dead, guard health lines go to stderr, never stdout', async () => {
+    let guard: ((h: { kind: 'uncaught-exception' | 'unhandled-rejection'; error: unknown }) => void) | null = null;
+    const f = brokenAfter(
+      0,
+      {
+        installGuards: (h) => {
+          guard = h;
+          return () => {
+            guard = null;
+          };
+        },
+      },
+      // a guard reports an unrelated error while the watch is stopping
+      () => guard?.({ kind: 'uncaught-exception', error: new Error('socket blew up') }),
+    );
+    f.board.put(ticket(1, { conduction: conduction() }));
+    const code = await runWatchCommand(parseWatchArgs(['B-1'], { seat: 'orch', follow: true }, true), f.deps);
+    expect(code).toBe(141);
+    expect(f.writes.some((l) => l.includes('socket blew up'))).toBe(false);
+    expect(f.err.some((l) => l.includes('uncaught-exception: socket blew up'))).toBe(true);
+  });
+
+  it('SIGTERM exits 143, frees the lock and removes the heartbeat', async () => {
+    let handler: ((sig: string) => void) | null = null;
+    const f = fake({
+      onSignal: (h) => {
+        handler = h;
+        return () => {
+          handler = null;
+        };
+      },
+    });
+    f.board.put(ticket(1, { conduction: conduction() }));
+    f.clock.onTick((t) => {
+      if (t >= T0 + 60_000) handler?.('SIGTERM');
+    });
+    const code = await runWatchCommand(parseWatchArgs(['B-1'], { seat: 'orch', follow: true }, true), f.deps);
+    expect(code).toBe(143);
+    expect(readLock('B', 'orch', seatScope, { home }).status).toBe('absent');
+    expect(readHeartbeat('B', 'orch', { home }).status).toBe('absent');
+  });
+
+  it('--until-event finishing on its event removes its heartbeat; status then reports none', async () => {
+    const f = fake();
+    f.board.put(paused(1));
+    const code = await runWatchCommand(parseWatchArgs(['B-1'], { seat: 'orch', untilEvent: true }, true), f.deps);
+    expect(code).toBe(0);
+    expect(readHeartbeat('B', 'orch', { home }).status).toBe('absent');
+    expect(readLock('B', 'orch', seatScope, { home }).status).toBe('absent');
+    f.out.length = 0;
+    expect(runWatchStatus('orch', false, f.deps)).toBe(1);
+    expect(f.out).toEqual(['watch orch: none (no heartbeat)']);
+  });
+
+  it('a heartbeat recorded by another pid is left alone', async () => {
+    const f = fake();
+    f.board.put(paused(1));
+    const code = await runWatchCommand(parseWatchArgs(['B-1'], { seat: 'orch', untilEvent: true }, true), {
+      ...f.deps,
+      // the stop happens; then a foreign heartbeat appears before cleanup would see it
+      onSignal: () => {
+        return () => {
+          writeHeartbeat('B', 'orch', { schema: 1, pid: process.pid + 100_000, seat: 'orch', scope: 'keys-b-1', mode: 'follow', poll_interval_s: 30, started_at: new Date(T0).toISOString(), last_fetch_at: null, last_ok_at: null, health: 'ok', seq: 0 }, { home });
+        };
+      },
+    });
+    expect(code).toBe(0);
+    const hb = readHeartbeat('B', 'orch', { home });
+    expect(hb.status === 'ok' && hb.value.pid).toBe(process.pid + 100_000);
+  });
+
+  it('the registered command hands the exit code to deps.exit in every mode, --once included', async () => {
+    const f = fake();
+    f.board.put(ticket(1));
+    const codes: number[] = [];
+    const program = new Command().option('--json');
+    registerWatchCommands(program, { ...f.deps, exit: (c) => void codes.push(c) });
+    await program.parseAsync(['watch', 'B-1', '--once'], { from: 'user' });
+    expect(codes).toEqual([0]);
+    expect(process.exitCode).toBe(0);
+  });
+});
+
+describe('watchStdout / exitAfterDrain (B-1429)', () => {
+  class FakeStream extends EventEmitter {
+    destroyed = false;
+    pending: Array<(err?: Error | null) => void> = [];
+    write(_chunk: string, cb?: (err?: Error | null) => void): boolean {
+      if (cb) this.pending.push(cb);
+      return true;
+    }
+  }
+  const asOut = (s: FakeStream) => s as unknown as OutStream;
+
+  it('watchStdout: an EPIPE error marks the stream dead and calls each handler once', () => {
+    const s = new FakeStream();
+    const w = watchStdout(asOut(s));
+    const seen: string[] = [];
+    w.onClosed((r) => seen.push(r));
+    expect(w.isDead()).toBe(false);
+    s.emit('error', Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }));
+    s.emit('error', Object.assign(new Error('again'), { code: 'ERR_STREAM_DESTROYED' }));
+    expect(w.isDead()).toBe(true);
+    expect(seen).toEqual(['EPIPE']);
+    const late: string[] = [];
+    w.onClosed((r) => late.push(r));
+    expect(late).toEqual(['EPIPE']);
+    w.dispose();
+    expect(s.listenerCount('error')).toBe(0);
+  });
+
+  it('exitAfterDrain: a live stream exits with the code once the write callback fires', async () => {
+    const s = new FakeStream();
+    const exits: number[] = [];
+    const p = exitAfterDrain(asOut(s), 0, { exit: (c) => void exits.push(c), capMs: 5_000 });
+    await new Promise((r) => setTimeout(r, 5));
+    expect(exits).toEqual([]);
+    s.pending.shift()!();
+    expect(await p).toBe(0);
+    expect(exits).toEqual([0]);
+    expect(s.listenerCount('error')).toBe(0);
+  });
+
+  it('exitAfterDrain: a dead stream is not drained; 0 becomes 141, other codes are kept', async () => {
+    const s = new FakeStream();
+    s.destroyed = true;
+    const exits: number[] = [];
+    expect(await exitAfterDrain(asOut(s), 0, { exit: (c) => void exits.push(c) })).toBe(141);
+    expect(await exitAfterDrain(asOut(s), 143, { exit: (c) => void exits.push(c) })).toBe(143);
+    expect(s.pending).toEqual([]);
+    expect(await exitAfterDrain(asOut(new FakeStream()), 0, { exit: (c) => void exits.push(c), isDead: () => true })).toBe(141);
+    expect(exits).toEqual([141, 143, 141]);
+  });
+
+  it('exitAfterDrain: an error during the drain exits 141; a stuck reader is capped', async () => {
+    const s = new FakeStream();
+    const exits: number[] = [];
+    const p = exitAfterDrain(asOut(s), 0, { exit: (c) => void exits.push(c), capMs: 5_000 });
+    s.emit('error', Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }));
+    expect(await p).toBe(141);
+    const t0 = Date.now();
+    expect(await exitAfterDrain(asOut(new FakeStream()), 3, { exit: (c) => void exits.push(c), capMs: 20 })).toBe(3);
+    expect(Date.now() - t0).toBeLessThan(1_000);
+    expect(exits).toEqual([141, 3]);
   });
 });
 
