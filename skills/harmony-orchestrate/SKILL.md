@@ -1,6 +1,6 @@
 ---
 name: harmony-orchestrate
-description: The orchestrator seat — drive MANY conductions through their gates concurrently, sitting between the conductor (which runs the legs) and the human (who holds the release/verify floor). `harmony-conduct` takes one ticket to its terminal state; this skill is its many-ticket sibling — it never runs a gate itself, it REVIEWS and RESOLVES what the legs produce, serializes the PR pipeline the builds feed, and keeps the human's queue clean. Triggers on "orchestrate", "harmony orchestrate", "shepherd these tickets", "watch B-123 and B-456 through to verified", "pick up B-789" (when a watch loop is already running this session). Requires the B-894 conduction tools (`create_conduction`, `list_conductions`), a running conductor whose log is readable, `gh` access to the repos, and the full resolve verb set.
+description: The orchestrator seat — drive MANY conductions through their gates concurrently, sitting between the conductor (which runs the legs) and the human (who holds the release/verify floor). `harmony-conduct` takes one ticket to its terminal state; this skill is its many-ticket sibling — it never runs a gate itself, it REVIEWS and RESOLVES what the legs produce, serializes the PR pipeline the builds feed, and keeps the human's queue clean. Triggers on "orchestrate", "harmony orchestrate", "shepherd these tickets", "watch B-123 and B-456 through to verified", "pick up B-789" (when a watch loop is already running this session). Requires the B-894 conduction tools (`create_conduction`, `list_conductions`), a running conductor, the `harmony watch` CLI command, `gh` access to the repos, and the full resolve verb set.
 capabilities: harmony-mcp read shell:gh shell:git shell:node forbid:NotebookEdit
 allowed-tools: mcp__harmony__* Read Grep Glob Bash(gh *) Bash(git *) Bash(node *)
 disallowed-tools: NotebookEdit
@@ -15,14 +15,15 @@ it never runs a gate itself, it REVIEWS and RESOLVES what the legs produce, seri
 pipeline the builds feed, and keeps the human's queue clean.
 
 Prerequisites: the B-894 conduction tools (`mcp__harmony__create_conduction`,
-`mcp__harmony__list_conductions`), a running conductor whose log is readable, `gh` access
-to the repos, and the full resolve verb set. This skill writes directly to the board (comments,
+`mcp__harmony__list_conductions`), a running conductor, the `harmony watch` CLI command, `gh`
+access to the repos, and the full resolve verb set. This skill writes directly to the board (comments,
 entry heals, corrections) rather than routing every write through a gate skill's accept path —
 unlike `harmony-conduct`, whose `disallowed-tools` keep it read-only between gates, this skill's
 job REQUIRES `Bash(gh *)` / `Bash(git *)` for PR/CI inspection and branch comparison, and the full
 `mcp__harmony__*` surface for resolving briefs, answering elicitations, and disclosing direct board
-writes (§1). It stays `Write`/`Edit`-free — every board write goes through an MCP tool, never a
-local file edit — and drops only `NotebookEdit`, which this seat never has cause to touch.
+writes (§1). It edits no repository file: every board write goes through an MCP tool. The one
+local file it writes is its own seat profile (§6). It drops only `NotebookEdit`, which this seat
+never has cause to touch.
 
 ## 1. The contract (non-negotiable defaults; the human can widen or narrow per session)
 
@@ -66,43 +67,38 @@ local file edit — and drops only `NotebookEdit`, which this seat never has cau
   target details). `detail` is inert. Ordering/precondition feedback is an `iterate`, never a
   remark — a remark cannot reshape the artifact it rides past.
 - **Re-invocation semantics (B-917 design gate).** Being asked to pick up another ticket, or
-  re-invoked in a fresh session, means something different depending on which session is asking:
+  re-invoked in a fresh session, means different things depending on which session asks:
   - **SAME-SESSION re-invocation** ("pick up B-x" while this session is already orchestrating) is
-    a **piggyback by design**: the new ticket(s) merge into the ONE existing watch loop's grep sets
-    and single cursor (§6) — do not open a second watch. `mcp__harmony__create_conduction` for a
-    ticket already shepherded by this session's loop refuses cleanly on the board's
-    duplicate-conduction guard, so re-listing an already-picked-up ticket is harmless; just fold
-    it into the existing grep sets and continue.
-  - > **Parallel watch loops on the same conductor log are forbidden — always, not just within one
-    > session.** Separate cursors double-fire and race each other's advances (§6's cursor
-    > discipline assumes exactly one reader). Never arm a second watch against the same log while
-    > one is already live.
-  - **SECOND-SESSION invocation on the same board is currently UNGUARDED and dangerous.** There is
-    no mechanical lock stopping a second orchestrator session from standing up its own watch loop
-    against the same board — and if one does, two seats race reviews and resolves on the same
-    briefs (the exact "state moved under you" failure §2's iron rules exist to prevent, now with a
-    second agent as the mover). **One orchestrator seat per board, full stop.** Before arming a
-    watch, check for signs a seat is already running (an existing conduct-session breadcrumb
-    pattern, a recent orchestrator comment trail, ask the human) and if in doubt, ASK before
-    standing up a second loop — do not assume you're the only one.
-  - **Successor note:** a future session lease/lock mechanizes the one-orchestrator-seat-per-board
-    rule above (the conductor or the board itself refusing a second concurrent orchestrator session,
-    the way `create_conduction`'s duplicate guard already mechanizes the same-ticket case); until
-    it lands, the rule is enforced by discipline and this prose, not by the system.
+    a **piggyback by design**: the new ticket joins the ONE existing watch (§6). Never start a
+    second one. A `--milestone` watch picks up a ticket added to the milestone on its next poll. A
+    ticket-key watch is stopped and re-armed with the longer key list.
+    `mcp__harmony__create_conduction` for a ticket this session already shepherds refuses cleanly
+    on the board's duplicate-conduction guard, so re-listing an already-picked-up ticket is
+    harmless.
+  - > **One orchestrator seat per milestone.** Two seats on the same tickets race reviews and
+    resolves on the same briefs. That is the "state moved under you" failure §2's iron rules
+    exist to prevent, with a second agent as the mover.
+  - **The watch lock and the seat-start marker enforce it.** A second `harmony watch` for the same
+    seat name and scope refuses with exit 2 and names the pid that holds the lock. On a
+    `--milestone` watch, another session's open `SEAT-START` marker shows as a `health` warning
+    line. The warning never blocks and never wakes you. When you see it, stop resolving and ask
+    the human which seat drives the milestone.
 
 ## 2. The loop
 
 For each shepherded ticket, forever until terminal:
-watch → leg clean-pauses → re-read the row → review the artifact → resolve → re-arm the watch.
+the watch wakes you → re-arm the watch → re-read the row → review the artifact → resolve.
 
 Iron rules, each bought with a real failure:
 
-- **Never read or act on a brief before its leg's clean-pause** (the conductor log line
-  `worker exit code=0 → conduction waiting (clean-pause)`). The `awaiting_human_input` flag flips MID-LEG,
-  while the leg may still recompose; a resolution written into that window is silently discarded
-  at recompose, and a brief read there may not be the brief that ends up active.
-- **Re-read the row immediately before EVERY resolve verb** and match BOTH the brief id in
-  `awaiting_human_ref` AND the reason against what you reviewed. `resolve_brief` targets the
+- **Never read or act on a brief before its leg has ended.** The `awaiting_human_input` flag flips
+  MID-LEG, while the leg may still recompose; a resolution written into that window is silently
+  discarded at recompose, and a brief read there may not be the brief that ends up active.
+  `harmony watch` reports `ready` or `question` only when the ball is with a human AND the leg has
+  ended (§6). The flag alone is not that signal.
+- **Re-read the row immediately before EVERY resolve verb** and match the brief id in
+  `awaiting_human_ref`, its iteration AND the reason against what you reviewed (B-1411). The watch
+  line's `ref.id` and `ref.iteration` are what you reviewed against. `resolve_brief` targets the
   ACTIVE brief by task id — if the state moved under you (a browser accept, a recompose), your
   verb lands on the wrong brief. A message from whoever holds release authority, like "I merged it", is a tripwire: re-read
   before touching anything.
@@ -202,79 +198,68 @@ package goes into the human's queue, with your independent findings summarized b
 
 ## 6. Watching effectively
 
-**The primary signal is your project's own board-watch subscriber** — a Realtime subscriber on
-the board's own private project topic (`project:<project uuid>`; an API token is project-scoped and
-is refused on the workspace topic, B-1285), not the conductor's console log; if the project provides
-one, its own orchestration guidance names it and gives the exact invocation. It runs from any
-machine holding the right credentials; the board's `awaiting_human_input` flag is still a trap
-when read directly (§2) — the subscriber exists precisely so you never have to poll it yourself.
+**The primary signal is `harmony watch`**, the plugin's board watch. It decides whose ball each
+item is and whether its leg has ended, so you never read the `awaiting_human_input` flag raw (§2).
+Polling is the truth: it reads the board every 30 seconds, and a Realtime hint only makes it look
+sooner. Never use a `Monitor`, a restart wrapper, a hand-written sweep, your own Realtime
+subscriber or a tail of the conductor log as the primary signal.
 
-- **Run it against the tickets you're shepherding, by key** (see the project's own orchestration
-  guidance for the concrete command). It should refetch (never trust the broadcast payload alone)
-  on every hint and print one line per ticket the moment its leg cleanly pauses, parks, or
-  finishes — `clean-pause`, `park (<reason>)`, `complete (terminal)`, or `dirty-exit` — covering
-  EVERY shepherded ticket, including the held and human-held ones. A park needs you regardless of
-  whose queue the brief is in.
-- **An `awaiting_human_input` flip prints as a `HINT` line, never as a pause** — the flag flips
-  mid-leg, so a HINT means "something moved, worth a look", not "the ball is here now". Re-read
-  the row before treating any signal as a resolved pause.
-- **Run it under the harness** (`run_in_background`), never as a shell-`&` orphan — an orphan
-  dies with its shell and you wake up to a dead watch.
-- **Printing is not waking — arm a `Monitor` on the subscriber's output (B-1049).**
-  `run_in_background` is necessary but not sufficient: the harness re-invokes you when a
-  backgrounded command EXITS, and the subscriber is built never to exit. Its lines land in a file
-  that is read only when you next happen to run a command against it, so a leg that paused hours
-  ago looks exactly like a quiet board — a live watch nobody reads is indistinguishable, from inside
-  the session, from the dead watch the line above warns about. (On 2026-09-22 a correct, live
-  subscriber printed two clean pauses that the seat read four hours later, when the human asked.)
-  Tail the output file under a `Monitor`, filtering the four terminal categories plus
-  `UNAVAILABLE` — `clean-pause|park \(|complete \(terminal\)|dirty-exit|UNAVAILABLE` — so each
-  matching line becomes a notification that re-invokes you. Three things about that shape:
-  - **Tail the file; never wrap the subscriber in the `Monitor` itself.** A `Monitor` expires (30
-    minutes is the cap); wrapping would kill the subscriber and drop and re-establish the Realtime
-    subscription on every expiry. Tailing keeps ONE long-lived subscription alive across re-arms.
-  - **Never wake on `HINT`.** It flips mid-leg (next bullet), so waking on it walks you straight
-    back into reading a brief that may still recompose — the trap §2 exists to prevent.
-  - **Re-arm on every expiry, and know the residual.** Between an expiry you did not notice and
-    the next event the seat is blind. That is a far smaller hole than no wake at all, but it is not
-    zero: re-read the shepherded rows whenever you are invoked for any other reason, including a
-    human message about something else, and **every time the subscriber restarts** — a restart
-    wrapper's sleep and a dropped channel are both windows where a pause can land unprinted (a
-    release brief landed in one on 2026-10-30 and was found only by the re-read). (A background `until grep -qE <pattern> <file>; do sleep
-    5; done` also wakes you — it exits on the first match — and has no expiry, but it is single-shot
-    and must be re-armed after every wake.)
-- **Adding a ticket mid-session**: same-session re-invocation is a **piggyback by design** (§2) —
-  fold the new key into the SAME subscriber's argument list (restart it) rather than leaving it
-  unwatched or starting a second one.
-- **`UNAVAILABLE` means the board channel itself could not be reached** (e.g. this project's
-  realtime layer is not live yet) — the subscriber says so in one unmistakable line and exits; it
-  does not retry in-process. Fall back to whatever log-tailing option the project's own guidance
-  documents (only if you happen to be co-located with the host running the leg) or to polling the
-  board (`list_conductions` heartbeat + `get_task` on every dispatched ticket) until it's resolved.
-- **A dropped-then-recovered connection reconnects on its own** — the library's own capped
-  rejoin is left to run unwrapped; you'll see one log line on the drop and one on the
-  re-subscribe, with no human action needed in between.
-- **Timeouts are clean exits, not failures**: if nothing has printed in a while, that means
-  nothing has happened — re-check the board once if you're unsure, but a quiet subscriber on a
-  quiet ticket set is the expected steady state, not a failure to diagnose.
-- **CI runs get their own until-loop polls** (`until status == completed; sleep 30`), one per
-  run, background — they are not this watch's job. **A poll must not swallow its probe's errors.**
-  Run the probe command once in the foreground and read its output before backgrounding it; never
-  send its stderr to `/dev/null`; on a non-zero exit, print the error and exit; print a line per
-  stage (CI done, deploy run found, deploy done) as each is reached; and give the loop a timeout.
-  A poll whose `--jq` filter was malformed failed on every pass with its stderr discarded, so it
-  printed nothing for twenty minutes after the deploy had finished — silence that looks exactly like
-  "still waiting" (2026-10-30).
-- **After a resolve, expect the wake within a couple of seconds**, not a minute — a wake that
-  doesn't come is worth one manual re-read of the row and the pending-event marker before
-  suspecting the subscriber.
-- **Re-invocation and the ONE watch loop (B-917).** A same-session "pick up B-x" folds the new
-  ticket straight into this loop's existing subscriber process — never a second
-  `run_in_background` watch (§1). > **One orchestrator seat per board.** Before arming a watch at
-  all, satisfy yourself no other session already has one running against this board — a second
-  live watch means two processes racing the same briefs. This is currently enforced only by
-  discipline (no mechanical lock exists yet, §1's successor note); when in doubt, ask the human
-  rather than assume the loop is yours alone to start.
+**Starting the seat.**
+1. Write your seat profile `~/.harmony/seats/<name>.yml` (under `$HARMONY_HOME` when set) from
+   the human's grant, and show it to the human. The first line is `session_id: <your Claude Code
+   session id>`, then `project`, `milestone`, `anchor` (a ticket in the milestone), `owns`,
+   `held_for_founder` and `remind` (for example `20m`). `owns` and `held_for_founder` take gate
+   aliases (`plan`, `release`, `verify`, …), exact `awaiting_human_reason` values or event names.
+   Release and verify always go in `held_for_founder` (§1). A reason listed nowhere wakes you.
+2. Post `SEAT-START v1 seat=<name> milestone=<id> session=<id>` with the profile as a comment on
+   the anchor (`mcp__harmony__add_comment`). Milestones have no comments, so the anchor carries it.
+3. Arm `harmony watch --milestone <id> --seat <name> --until-event --max-wait 55m --json` (or
+   ticket keys, or `--conductions`) with `run_in_background` and a timeout longer than the
+   max-wait. Never a shell-`&` orphan: an orphan dies with its shell and you wake to a dead watch.
+4. `harmony watch status --seat <name>` exits 0 when the watch is alive, 1 when none or stale.
+- **The watch reads the CLI's active project.** Its first line, `start`, names the project, key,
+  board target and ticket count. If that is not the board you drive, stop and
+  `harmony project switch <name>` (check with `harmony project info`). A profile `project:` that
+  differs, or a milestone not on that board, exits 2.
+
+**Exit codes.** The harness wakes you when the watch exits. `0`: events you own. `3`: the
+max-wait passed with nothing new; a quiet milestone is the steady state. `2`: fatal configuration
+(a rejected token, bad arguments, a scope that cannot resolve, a profile `project:` that is not the
+CLI's active project, or a held lock, naming the holder's pid); fix it or ask, never re-arm blindly. `130` / `143`: stopped by a signal.
+
+**On every wake.**
+- **Re-arm FIRST**, with the same command, then handle each line whose `owner` is `seat`. Other
+  lines are context. A `--json` line carries `event`, `key`, `reason`, `ref` (`id`, `iteration`)
+  and `reminder`.
+- `ready` means a brief waits and its leg has ended; `question` is an elicitation round. `park`,
+  `dirty-exit` and `idle` need you, whoever's queue the brief is in. `state`, `acted`, `waiting`,
+  `added` and `removed` are edges; `health` is the watch itself.
+- Before any resolve, re-read the row and match the brief id AND the iteration (§2).
+- **Reminders repeat** every `--remind` (default 20 minutes, or the profile's `remind`) until the
+  board shows the item handled. Items held for the human never wake you and are never reminded;
+  `harmony watch --milestone <id> --seat <name> --once` lists everything waiting with its age.
+
+**Failures do not end the watch.** A network or token error prints one `health offline` (or
+`auth-failed`) line and backs off; `health recovered` follows, with a catch-up from the on-disk
+cursor. A dead Realtime channel is one `health degraded` line; polling goes on. A `health` line
+never ends an `--until-event` wait. A restarted watch reports what changed while it was down.
+
+**A human tail.** A person can run `--follow` in a terminal. It takes the same lock, so it needs a
+different `--seat` name from yours.
+
+**Before the command reaches your session.** An interactive seat gets `harmony watch` only once the
+plugin release carrying it is installed and the session restarts. Until then, run it from a plugin
+checkout, as the project's own guidance describes.
+
+**Standing down.** Stop the watch and post
+`SEAT-STANDDOWN v1 seat=<name> milestone=<id> session=<id>` on the anchor. B-1423 adds seat hooks
+for session-start catch-up and a stop guard; there are none yet.
+
+**CI runs get their own until-loop polls** (`until status == completed; sleep 30`), one per run,
+background; they are not this watch's job. **A poll must not swallow its probe's errors.** Run the
+probe once in the foreground first; never send its stderr to `/dev/null`; on a non-zero exit, print
+the error and exit; print a line per stage; give the loop a timeout. A poll with a malformed `--jq`
+filter printed nothing for twenty minutes after the deploy finished (2026-10-30).
 
 ## 7. Talking to the human
 
@@ -282,7 +267,8 @@ Digest, don't relay: each handled brief gets an outcome-first summary — what t
 what you checked, what you changed or sent back and why. Keep a visible queue table when more
 than two tickets are in flight. Every release/verify handover carries the full verified package
 (§5). Disclose direct writes. When the board goes fully human-held, say what the queue is
-waiting on and stand down the watch loudly, not silently.
+waiting on and stand down the watch loudly, not silently: stop it and post the `SEAT-STANDDOWN`
+marker (§6).
 
 ## Follow-up comment protocol (B-1193)
 

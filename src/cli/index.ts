@@ -41,6 +41,7 @@ import { registerRecordCommand } from './commands/record.js';
 import { registerFasttrackCommands } from './commands/fasttrack.js';
 import { registerConductionsCommands } from './commands/conductions.js';
 import { registerDesignCommands } from './commands/design.js';
+import { registerWatchCommands } from './commands/watch.js';
 
 const program = new Command();
 
@@ -87,5 +88,6 @@ registerDoctorCommands(program);
 registerRecordCommand(program);
 registerFasttrackCommands(program);
 registerConductionsCommands(program);
+registerWatchCommands(program);
 
 program.parse();
