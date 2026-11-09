@@ -55,6 +55,16 @@ export const HARMONY_HOOKS: HooksFile = {
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"{pluginRoot}/hooks/seat-session-start.sh\"",
+            "timeout": 30
+          }
+        ]
       }
     ],
     "Stop": [
@@ -64,6 +74,15 @@ export const HARMONY_HOOKS: HooksFile = {
             "type": "command",
             "command": "sh \"{pluginRoot}/hooks/stop-gate.sh\"",
             "timeout": 30
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh \"{pluginRoot}/hooks/seat-stop-guard.sh\"",
+            "timeout": 10
           }
         ]
       }

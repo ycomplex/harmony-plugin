@@ -12325,13 +12325,13 @@ var require_base64url = __commonJS({
       }
       return charMap;
     })();
-    function byteToBase64URL(byte, state, emit2) {
+    function byteToBase64URL(byte, state, emit3) {
       if (byte !== null) {
         state.queue = state.queue << 8 | byte;
         state.queuedBits += 8;
         while (state.queuedBits >= 6) {
           const pos = state.queue >> state.queuedBits - 6 & 63;
-          emit2(TO_BASE64URL[pos]);
+          emit3(TO_BASE64URL[pos]);
           state.queuedBits -= 6;
         }
       } else if (state.queuedBits > 0) {
@@ -12339,18 +12339,18 @@ var require_base64url = __commonJS({
         state.queuedBits = 6;
         while (state.queuedBits >= 6) {
           const pos = state.queue >> state.queuedBits - 6 & 63;
-          emit2(TO_BASE64URL[pos]);
+          emit3(TO_BASE64URL[pos]);
           state.queuedBits -= 6;
         }
       }
     }
-    function byteFromBase64URL(charCode, state, emit2) {
+    function byteFromBase64URL(charCode, state, emit3) {
       const bits = FROM_BASE64URL[charCode];
       if (bits > -1) {
         state.queue = state.queue << 6 | bits;
         state.queuedBits += 6;
         while (state.queuedBits >= 8) {
-          emit2(state.queue >> state.queuedBits - 8 & 255);
+          emit3(state.queue >> state.queuedBits - 8 & 255);
           state.queuedBits -= 8;
         }
       } else if (bits === -2) {
@@ -12389,29 +12389,29 @@ var require_base64url = __commonJS({
       }
       return conv.join("");
     }
-    function codepointToUTF8(codepoint, emit2) {
+    function codepointToUTF8(codepoint, emit3) {
       if (codepoint <= 127) {
-        emit2(codepoint);
+        emit3(codepoint);
         return;
       } else if (codepoint <= 2047) {
-        emit2(192 | codepoint >> 6);
-        emit2(128 | codepoint & 63);
+        emit3(192 | codepoint >> 6);
+        emit3(128 | codepoint & 63);
         return;
       } else if (codepoint <= 65535) {
-        emit2(224 | codepoint >> 12);
-        emit2(128 | codepoint >> 6 & 63);
-        emit2(128 | codepoint & 63);
+        emit3(224 | codepoint >> 12);
+        emit3(128 | codepoint >> 6 & 63);
+        emit3(128 | codepoint & 63);
         return;
       } else if (codepoint <= 1114111) {
-        emit2(240 | codepoint >> 18);
-        emit2(128 | codepoint >> 12 & 63);
-        emit2(128 | codepoint >> 6 & 63);
-        emit2(128 | codepoint & 63);
+        emit3(240 | codepoint >> 18);
+        emit3(128 | codepoint >> 12 & 63);
+        emit3(128 | codepoint >> 6 & 63);
+        emit3(128 | codepoint & 63);
         return;
       }
       throw new Error(`Unrecognized Unicode codepoint: ${codepoint.toString(16)}`);
     }
-    function stringToUTF8(str3, emit2) {
+    function stringToUTF8(str3, emit3) {
       for (let i = 0; i < str3.length; i += 1) {
         let codepoint = str3.charCodeAt(i);
         if (codepoint > 55295 && codepoint <= 56319) {
@@ -12420,13 +12420,13 @@ var require_base64url = __commonJS({
           codepoint = (lowSurrogate | highSurrogate) + 65536;
           i += 1;
         }
-        codepointToUTF8(codepoint, emit2);
+        codepointToUTF8(codepoint, emit3);
       }
     }
-    function stringFromUTF8(byte, state, emit2) {
+    function stringFromUTF8(byte, state, emit3) {
       if (state.utf8seq === 0) {
         if (byte <= 127) {
-          emit2(byte);
+          emit3(byte);
           return;
         }
         for (let leadingBit = 1; leadingBit < 6; leadingBit += 1) {
@@ -12452,7 +12452,7 @@ var require_base64url = __commonJS({
         state.codepoint = state.codepoint << 6 | byte & 63;
         state.utf8seq -= 1;
         if (state.utf8seq === 0) {
-          emit2(state.codepoint);
+          emit3(state.codepoint);
         }
       }
     }
@@ -35300,7 +35300,7 @@ async function searchKnowledge(client, projectId, args, started = performance.no
   if (!Number.isInteger(offset) || offset < 0) throw new Error("Knowledge offset must be a non-negative integer");
   if (args.as_of !== void 0 && !(typeof args.as_of === "string" && /^\d{4}-\d{2}-\d{2}([T ][\d:.]+(Z|[+-]\d{2}:?\d{2})?)?$/.test(args.as_of) && !Number.isNaN(Date.parse(args.as_of)))) throw new Error("as_of must be an ISO 8601 timestamp, for example 2026-01-15T00:00:00Z");
   const historical = Boolean(args.as_of || args.include_superseded);
-  const finish = () => {
+  const finish2 = () => {
     for (const route of routes) route.elapsed_ms ??= routes.find((r) => r.route === route.route && r.elapsed_ms !== void 0)?.elapsed_ms ?? 0;
     sealed = true;
     controller.abort();
@@ -35359,7 +35359,7 @@ async function searchKnowledge(client, projectId, args, started = performance.no
   const scope = await bounded2("scope", (signal2) => client.from("projects").select("workspace_id").eq("id", projectId).abortSignal(signal2).single());
   if (!scope) {
     incomplete = true;
-    return finish();
+    return finish2();
   }
   const coverage = await prose;
   const proseAvailable = coverage?.available === true && Array.isArray(coverage.sources) && Array.isArray(coverage.pointers);
@@ -35415,7 +35415,7 @@ async function searchKnowledge(client, projectId, args, started = performance.no
   })() : Promise.resolve();
   if (args.definitions_only) {
     await definitions;
-    return finish();
+    return finish2();
   }
   let absent = false;
   let scoredCompleted = false;
@@ -35608,7 +35608,7 @@ async function searchKnowledge(client, projectId, args, started = performance.no
     ]);
   }
   if (result.capability === "scored" && (incomplete || coveragePartial)) result.count_coverage = "partial-scored-union";
-  return finish();
+  return finish2();
 }
 
 // src/tools/knowledge-supersession.ts
@@ -39417,9 +39417,9 @@ function renderFrame(frame) {
         out.push("**Not reopened here:**", ...frame.not_reopened.map((r) => `- ${r}`));
       }
       if (frame.derisk) {
-        const run = frame.derisk.run?.length ? frame.derisk.run.join("; ") : "nothing";
+        const run2 = frame.derisk.run?.length ? frame.derisk.run.join("; ") : "nothing";
         const notRun = frame.derisk.not_run?.length ? frame.derisk.not_run.join("; ") : "nothing load-bearing outstanding";
-        out.push(`**De-risked by running:** ${run}`, `**Not run:** ${notRun}`);
+        out.push(`**De-risked by running:** ${run2}`, `**Not run:** ${notRun}`);
       }
       if (frame.files_on_accept?.length) {
         out.push("**Files on accept:**", ...frame.files_on_accept.map((f2) => `- ${f2}`));
@@ -50777,6 +50777,347 @@ function registerWaitCommands(program3) {
   });
 }
 
+// src/tools/await.ts
+import { execFile } from "node:child_process";
+var AWAIT_EXIT = { met: 0, unmeetable: 1, fatal: 2, timedOut: 3 };
+var AwaitFatalError = class extends Error {
+};
+var DEFAULT_INTERVAL_S = 30;
+var DEFAULT_MAX_WAIT_S = 1800;
+var REPO_RE2 = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+var SHA_RE = /^[0-9a-fA-F]{7,40}$/;
+var AUTH_FAILURE_RE = /not logged in|authentication required|gh auth login|bad credentials|HTTP 401/i;
+var defaultGhRunner = (args) => new Promise((resolve8) => {
+  execFile(
+    "gh",
+    args,
+    { maxBuffer: 64 * 1024 * 1024, env: { ...process.env, GH_PROMPT_DISABLED: "1" } },
+    (error2, stdout, stderr) => {
+      const out = String(stdout ?? "");
+      const errText3 = String(stderr ?? "");
+      if (!error2) {
+        resolve8({ code: 0, stdout: out, stderr: errText3 });
+        return;
+      }
+      const e = error2;
+      if (e.code === "ENOENT") {
+        resolve8({ code: 127, stdout: out, stderr: errText3 || e.message, notFound: true });
+        return;
+      }
+      resolve8({ code: typeof e.code === "number" ? e.code : 1, stdout: out, stderr: errText3 || e.message });
+    }
+  );
+});
+function defaultAwaitDeps(json) {
+  return {
+    gh: defaultGhRunner,
+    now: () => Date.now(),
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    io: { out: (l) => process.stdout.write(`${l}
+`), err: (l) => process.stderr.write(`${l}
+`) },
+    json
+  };
+}
+function quoteArg(a3) {
+  return /^[A-Za-z0-9_./:@=,+-]+$/.test(a3) ? a3 : `'${a3.replace(/'/g, `'\\''`)}'`;
+}
+function formatGhCommand(args) {
+  return ["gh", ...args].map(quoteArg).join(" ");
+}
+async function ghJson(deps, args) {
+  const res = await deps.gh(args);
+  const cmd = formatGhCommand(args);
+  const stderr = res.stderr.trim();
+  if (res.notFound) throw new AwaitFatalError(`gh is not installed or not on PATH (${cmd}: ${stderr || "ENOENT"})`);
+  if (res.code !== 0) {
+    if (AUTH_FAILURE_RE.test(stderr)) throw new AwaitFatalError(`gh is not logged in (${cmd} exited ${res.code}: ${stderr})`);
+    deps.io.err(`probe failed: ${cmd} exited ${res.code}: ${stderr || "(no stderr)"}`);
+    return void 0;
+  }
+  try {
+    return JSON.parse(res.stdout);
+  } catch (e) {
+    deps.io.err(`probe failed: ${cmd} exited 0 with unparseable JSON (${e.message}): stderr: ${stderr || "(no stderr)"}`);
+    return void 0;
+  }
+}
+function emit(deps, event, text4) {
+  deps.io.out(deps.json ? JSON.stringify(event) : text4);
+}
+function parseSeconds(raw, fallback, name, allowZero) {
+  if (raw === void 0) return fallback;
+  const n = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isFinite(n) || n < 0 || !allowZero && n === 0) {
+    throw new AwaitArgError(`${name} must be a ${allowZero ? "non-negative" : "positive"} number of seconds (got ${String(raw)})`);
+  }
+  return n;
+}
+var AwaitArgError = class extends Error {
+};
+function requireRepo(raw, flag) {
+  if (!raw) throw new AwaitArgError(`${flag} <owner/name> is required`);
+  if (!REPO_RE2.test(raw)) throw new AwaitArgError(`${flag} must be owner/name (got ${raw})`);
+  return raw;
+}
+function requireSha(raw, flag) {
+  if (!raw) throw new AwaitArgError(`${flag} <sha> is required`);
+  if (!SHA_RE.test(raw)) throw new AwaitArgError(`${flag} must be a commit sha (got ${raw})`);
+  return raw;
+}
+function optionalSha(raw, flag) {
+  return raw === void 0 ? void 0 : requireSha(raw, flag);
+}
+async function pollUntil(deps, mode, common, probe) {
+  const intervalMs = parseSeconds(common.interval, DEFAULT_INTERVAL_S, "--interval", false) * 1e3;
+  const maxWaitMs = parseSeconds(common.maxWait, DEFAULT_MAX_WAIT_S, "--max-wait", true) * 1e3;
+  const start = deps.now();
+  for (let attempt = 1; ; attempt++) {
+    const outcome = await probe();
+    const elapsedMs = deps.now() - start;
+    emit(
+      deps,
+      { event: "probe", mode, attempt, state: outcome.state, summary: outcome.summary, elapsed_s: Math.round(elapsedMs / 1e3), ...outcome.detail },
+      `await ${mode}: ${outcome.state} \u2014 ${outcome.summary}`
+    );
+    if (outcome.state === "met") return finish(deps, mode, "met", AWAIT_EXIT.met, outcome.summary);
+    if (outcome.state === "unmeetable") return finish(deps, mode, "can-no-longer-be-met", AWAIT_EXIT.unmeetable, outcome.summary);
+    if (elapsedMs >= maxWaitMs) {
+      return finish(deps, mode, "timed-out", AWAIT_EXIT.timedOut, `max wait ${maxWaitMs / 1e3}s passed; still pending: ${outcome.summary}`);
+    }
+    await deps.sleep(Math.min(intervalMs, maxWaitMs - elapsedMs));
+  }
+}
+function finish(deps, mode, outcome, exitCode, summary2) {
+  emit(deps, { event: "result", mode, outcome, exit_code: exitCode, summary: summary2 }, `await ${mode}: ${outcome} (exit ${exitCode}) \u2014 ${summary2}`);
+  return exitCode;
+}
+async function guarded(deps, mode, body) {
+  try {
+    return await body();
+  } catch (e) {
+    if (e instanceof AwaitArgError || e instanceof AwaitFatalError) {
+      deps.io.err(`await ${mode}: fatal \u2014 ${e.message}`);
+      if (deps.json) deps.io.out(JSON.stringify({ event: "result", mode, outcome: "fatal", exit_code: AWAIT_EXIT.fatal, summary: e.message }));
+      return AWAIT_EXIT.fatal;
+    }
+    throw e;
+  }
+}
+var FAILING_CONCLUSIONS = /* @__PURE__ */ new Set(["FAILURE", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE", "ERROR"]);
+var SKIPPED_CONCLUSIONS = /* @__PURE__ */ new Set(["SKIPPED", "NEUTRAL"]);
+function normalizeRollup(rollup2) {
+  return rollup2.map((raw) => {
+    const c = raw ?? {};
+    if (c.__typename === "StatusContext" || c.context !== void 0 && c.status === void 0) {
+      const state = String(c.state ?? "").toUpperCase();
+      return { name: String(c.context ?? "(unnamed status)"), complete: state !== "PENDING" && state !== "EXPECTED" && state !== "", conclusion: state };
+    }
+    const status = String(c.status ?? "").toUpperCase();
+    return { name: String(c.name ?? "(unnamed check)"), complete: status === "COMPLETED", conclusion: String(c.conclusion ?? "").toUpperCase() };
+  });
+}
+function normalizeCheckRuns(runs) {
+  return runs.map((raw) => {
+    const c = raw ?? {};
+    return {
+      name: String(c.name ?? "(unnamed check)"),
+      complete: String(c.status ?? "").toLowerCase() === "completed",
+      conclusion: String(c.conclusion ?? "").toUpperCase()
+    };
+  });
+}
+function classifyChecks(checks) {
+  if (checks.length === 0) return { state: "pending", summary: "no checks reported yet", detail: { checks: [] } };
+  const failed = checks.filter((c) => c.complete && (FAILING_CONCLUSIONS.has(c.conclusion) || !SKIPPED_CONCLUSIONS.has(c.conclusion) && c.conclusion !== "SUCCESS"));
+  const incomplete = checks.filter((c) => !c.complete);
+  const skipped = checks.filter((c) => c.complete && SKIPPED_CONCLUSIONS.has(c.conclusion));
+  const passed = checks.filter((c) => c.complete && c.conclusion === "SUCCESS");
+  const detail = {
+    passed: passed.map((c) => c.name),
+    not_covered: skipped.map((c) => `${c.name} (${c.conclusion.toLowerCase()})`),
+    failed: failed.map((c) => `${c.name} (${c.conclusion.toLowerCase() || "no conclusion"})`),
+    pending: incomplete.map((c) => c.name)
+  };
+  const notCovered = skipped.length ? `; not covered: ${detail.not_covered.join(", ")}` : "";
+  if (failed.length) return { state: "unmeetable", summary: `failed: ${detail.failed.join(", ")}${notCovered}`, detail };
+  if (incomplete.length) {
+    return { state: "pending", summary: `${checks.length - incomplete.length}/${checks.length} checks complete; waiting on: ${detail.pending.join(", ")}`, detail };
+  }
+  return { state: "met", summary: `${passed.length} passed${notCovered}`, detail };
+}
+async function awaitCi(opts, deps) {
+  return guarded(deps, "ci", async () => {
+    const repo = requireRepo(opts.repo, "--repo");
+    if (opts.sha === void 0 === (opts.pr === void 0)) throw new AwaitArgError("give exactly one of --sha <sha> or --pr <n>");
+    let probe;
+    if (opts.pr !== void 0) {
+      const pr = parsePrNumber(opts.pr);
+      const args = ["pr", "view", String(pr), "--repo", repo, "--json", "statusCheckRollup,headRefOid"];
+      probe = async () => {
+        const data = await ghJson(deps, args);
+        if (data === void 0) return { state: "pending", summary: "probe failed; retrying" };
+        if (!Array.isArray(data.statusCheckRollup)) return probeShapeFailure(deps, args, "statusCheckRollup is not an array");
+        const o = classifyChecks(normalizeRollup(data.statusCheckRollup));
+        return { ...o, summary: `PR #${pr} head ${String(data.headRefOid ?? "?").slice(0, 7)}: ${o.summary}`, detail: { ...o.detail, head: data.headRefOid } };
+      };
+    } else {
+      const sha = requireSha(opts.sha, "--sha");
+      const args = ["api", `repos/${repo}/commits/${sha}/check-runs?per_page=100`];
+      probe = async () => {
+        const data = await ghJson(deps, args);
+        if (data === void 0) return { state: "pending", summary: "probe failed; retrying" };
+        if (!Array.isArray(data.check_runs)) return probeShapeFailure(deps, args, "check_runs is not an array");
+        const o = classifyChecks(normalizeCheckRuns(data.check_runs));
+        return { ...o, summary: `commit ${sha.slice(0, 7)}: ${o.summary}`, detail: { ...o.detail, head: sha } };
+      };
+    }
+    return pollUntil(deps, "ci", opts, probe);
+  });
+}
+function probeShapeFailure(deps, args, why) {
+  deps.io.err(`probe failed: ${formatGhCommand(args)} exited 0 with unexpected JSON: ${why}`);
+  return { state: "pending", summary: "probe failed; retrying" };
+}
+function parsePrNumber(raw) {
+  const n = typeof raw === "number" ? raw : Number(raw);
+  if (raw === void 0 || raw === "" || !Number.isInteger(n) || n <= 0) throw new AwaitArgError(`PR number must be a positive integer (got ${String(raw)})`);
+  return n;
+}
+async function awaitPr(prRaw, opts, deps) {
+  return guarded(deps, "pr", async () => {
+    const pr = parsePrNumber(prRaw);
+    const repo = requireRepo(opts.repo, "--repo");
+    const until = opts.until ?? "merged";
+    if (until !== "merged" && until !== "mergeable") throw new AwaitArgError(`--until must be merged or mergeable (got ${until})`);
+    const args = ["pr", "view", String(pr), "--repo", repo, "--json", "state,mergeable,mergedAt"];
+    return pollUntil(deps, "pr", opts, async () => {
+      const data = await ghJson(deps, args);
+      if (data === void 0) return { state: "pending", summary: "probe failed; retrying" };
+      const state = String(data.state ?? "").toUpperCase();
+      const mergeable = String(data.mergeable ?? "").toUpperCase();
+      const detail = { pr, state, mergeable, merged_at: data.mergedAt ?? null };
+      const label = `PR #${pr} state ${state || "?"}, mergeable ${mergeable || "?"}`;
+      if (state === "MERGED") return { state: "met", summary: `${label} (merged ${data.mergedAt ?? ""})`.trim(), detail };
+      if (state === "CLOSED") return { state: "unmeetable", summary: `${label}: closed without merging`, detail };
+      if (until === "mergeable") {
+        if (mergeable === "MERGEABLE") return { state: "met", summary: label, detail };
+        if (mergeable === "CONFLICTING") return { state: "unmeetable", summary: `${label}: has conflicts`, detail };
+      }
+      return { state: "pending", summary: label, detail };
+    });
+  });
+}
+async function branchNames(deps, repo, branch, sha) {
+  const args = ["api", `repos/${repo}/compare/${sha}...${branch}`, "--jq", "{status: .status, ahead_by: .ahead_by, behind_by: .behind_by}"];
+  const data = await ghJson(deps, args);
+  if (data === void 0) return void 0;
+  const status = String(data.status ?? "");
+  if (!status) {
+    probeShapeFailure(deps, args, "no .status");
+    return void 0;
+  }
+  return { names: status === "identical" || status === "ahead", status };
+}
+function validBranch(raw, label) {
+  if (!raw) throw new AwaitArgError(`${label} is required`);
+  if (!/^[A-Za-z0-9_./-]+$/.test(raw)) throw new AwaitArgError(`${label} is not a valid branch name (got ${raw})`);
+  return raw;
+}
+async function awaitBranch(branchRaw, opts, deps) {
+  return guarded(deps, "branch", async () => {
+    const branch = validBranch(branchRaw, "branch");
+    const repo = requireRepo(opts.repo, "--repo");
+    const sha = requireSha(opts.names, "--names");
+    return pollUntil(deps, "branch", opts, async () => {
+      const r = await branchNames(deps, repo, branch, sha);
+      if (r === void 0) return { state: "pending", summary: "probe failed; retrying" };
+      const detail = { repo, branch, sha, compare_status: r.status };
+      return { state: r.names ? "met" : "pending", summary: `${repo} ${branch} ${r.names ? "names" : "does not yet name"} ${sha.slice(0, 7)} (compare ${r.status})`, detail };
+    });
+  });
+}
+async function branchHead(deps, repo, branch) {
+  const args = ["api", `repos/${repo}/branches/${branch}`, "--jq", "{sha: .commit.sha}"];
+  const data = await ghJson(deps, args);
+  if (data === void 0) return void 0;
+  if (typeof data.sha !== "string" || !SHA_RE.test(data.sha)) {
+    probeShapeFailure(deps, args, "no .commit.sha");
+    return void 0;
+  }
+  return data.sha;
+}
+async function awaitPromote(opts, deps) {
+  return guarded(deps, "promote", async () => {
+    const webRepo = requireRepo(opts.webRepo ?? "ycomplex/harmony-web", "--web-repo");
+    const pluginRepo = requireRepo(opts.pluginRepo ?? "ycomplex/harmony-plugin", "--plugin-repo");
+    const sides = [
+      { label: "web", repo: webRepo, source: "main", target: optionalSha(opts.webSha, "--web-sha"), given: opts.webSha !== void 0 },
+      { label: "plugin", repo: pluginRepo, source: "staging", target: optionalSha(opts.pluginSha, "--plugin-sha"), given: opts.pluginSha !== void 0 }
+    ];
+    const announce = (s) => emit(
+      deps,
+      { event: "target", side: s.label, repo: s.repo, sha: s.target, from: s.given ? "flag" : `${s.source} head` },
+      `await promote: ${s.label} target ${s.target} (${s.given ? "given" : `head of ${s.repo} ${s.source}`})`
+    );
+    for (const s of sides) {
+      if (s.target === void 0) s.target = await branchHead(deps, s.repo, s.source);
+      if (s.target !== void 0) announce(s);
+    }
+    return pollUntil(deps, "promote", opts, async () => {
+      const parts = [];
+      let allMet = true;
+      const detail = {};
+      for (const s of sides) {
+        if (s.target === void 0) {
+          s.target = await branchHead(deps, s.repo, s.source);
+          if (s.target === void 0) {
+            allMet = false;
+            parts.push(`${s.label} target not captured yet`);
+            continue;
+          }
+          announce(s);
+        }
+        const r = await branchNames(deps, s.repo, "prod", s.target);
+        if (r === void 0) {
+          allMet = false;
+          parts.push(`${s.label} probe failed`);
+          continue;
+        }
+        if (!r.names) allMet = false;
+        detail[`${s.label}_prod`] = { sha: s.target, compare_status: r.status, names: r.names };
+        parts.push(`${s.label} prod ${r.names ? "names" : "does not yet name"} ${s.target.slice(0, 7)} (compare ${r.status})`);
+      }
+      return { state: allMet ? "met" : "pending", summary: parts.join("; "), detail };
+    });
+  });
+}
+
+// src/cli/commands/await.ts
+function withCommon(cmd) {
+  return cmd.option("--interval <seconds>", "Seconds between probes", "30").option("--max-wait <seconds>", "Give up (exit 3) after this many seconds still pending", "1800");
+}
+async function run(program3, body) {
+  const deps = defaultAwaitDeps(Boolean(program3.opts().json));
+  try {
+    process.exitCode = await body(deps);
+  } catch (e) {
+    process.stderr.write(`await: fatal \u2014 ${e.message}
+`);
+    process.exitCode = AWAIT_EXIT.fatal;
+  }
+}
+function registerAwaitCommands(program3) {
+  const awaitCmd = program3.command("await").description("Block until a GitHub condition holds (probed through gh). Exit 0 met, 1 can no longer be met, 2 fatal, 3 max wait passed");
+  awaitCmd.exitOverride((err) => {
+    process.exit(err.exitCode === 0 ? 0 : AWAIT_EXIT.fatal);
+  });
+  withCommon(awaitCmd.command("ci").description("Wait until every check run on a commit (or a PR head) is complete and none failed").option("--repo <owner/name>", "GitHub repository").option("--sha <sha>", "Commit sha").option("--pr <n>", "Pull request number (waits on its head)")).action(async (opts) => run(program3, (deps) => awaitCi(opts, deps)));
+  withCommon(awaitCmd.command("pr").description("Wait until a PR is merged (default) or mergeable").argument("<n>", "Pull request number").option("--repo <owner/name>", "GitHub repository").option("--until <state>", "merged | mergeable", "merged")).action(async (n, opts) => run(program3, (deps) => awaitPr(n, opts, deps)));
+  withCommon(awaitCmd.command("branch").description("Wait until a branch names a commit (the sha is its head or an ancestor of it)").argument("<branch>", "Branch name").option("--repo <owner/name>", "GitHub repository").option("--names <sha>", "Commit the branch must contain")).action(async (branch, opts) => run(program3, (deps) => awaitBranch(branch, opts, deps)));
+  withCommon(awaitCmd.command("promote").description("Wait until web prod names the web target and plugin prod names the plugin target").option("--web-repo <owner/name>", "Web repository", "ycomplex/harmony-web").option("--plugin-repo <owner/name>", "Plugin repository", "ycomplex/harmony-plugin").option("--web-sha <sha>", "Web target (default: current head of web main)").option("--plugin-sha <sha>", "Plugin target (default: current head of plugin staging)")).action(async (opts) => run(program3, (deps) => awaitPromote(opts, deps)));
+}
+
 // src/cli/index.ts
 import { createRequire } from "node:module";
 
@@ -58155,7 +58496,7 @@ function candidateKeysFrom(res) {
 function registerDesignCommands(program3) {
   const design = program3.command("design").description("Accepted-design helpers (B-1203)");
   const fp = design.command("fingerprint").description("Content fingerprint of the accepted Figma design");
-  async function run(fn, task) {
+  async function run2(fn, task) {
     try {
       const ctx = await getAuthenticatedContext();
       const deps = {
@@ -58174,8 +58515,8 @@ function registerDesignCommands(program3) {
       process.exit(1);
     }
   }
-  fp.command("take").description("Take and store the fingerprint of the ticket's accepted Figma design (run right after the design accept)").requiredOption("--task <id>", "Task ID (UUID, number, or B-123)").action(async (opts) => run((t, d) => fingerprintTake(t, d), opts.task));
-  fp.command("compare").description("Compare the live design with the stored fingerprint and record the drift verdict").requiredOption("--task <id>", "Task ID (UUID, number, or B-123)").requiredOption("--by <gate>", "Who is checking: plan, build, ...").action(async (opts) => run((t, d) => fingerprintCompare(t, opts.by, d), opts.task));
+  fp.command("take").description("Take and store the fingerprint of the ticket's accepted Figma design (run right after the design accept)").requiredOption("--task <id>", "Task ID (UUID, number, or B-123)").action(async (opts) => run2((t, d) => fingerprintTake(t, d), opts.task));
+  fp.command("compare").description("Compare the live design with the stored fingerprint and record the drift verdict").requiredOption("--task <id>", "Task ID (UUID, number, or B-123)").requiredOption("--by <gate>", "Who is checking: plan, build, ...").action(async (opts) => run2((t, d) => fingerprintCompare(t, opts.by, d), opts.task));
   design.command("adopt-check").description("Read-only: find the designer's Figma frame links on the ticket and say which are library-built (adoptable as drawn)").requiredOption("--task <id>", "Task ID (UUID, number, or B-123)").option("--links-only", "Only report the links and whether each names a readable frame (no library check)").option("--url <figma-link>", "Check this Figma link instead of the ticket's links (repeatable)", (v2, prev = []) => [...prev, v2]).action(async (opts) => {
     try {
       const ctx = await getAuthenticatedContext();
@@ -69672,7 +70013,7 @@ function registerConfigCommands(program3) {
 }
 
 // src/cli/commands/conductor-config.ts
-import { execFile } from "node:child_process";
+import { execFile as execFile2 } from "node:child_process";
 import { chmodSync as chmodSync5, existsSync as fsExistsSync3, mkdirSync as mkdirSync5, readFileSync as fsReadFileSync3, writeFileSync as writeFileSync8 } from "node:fs";
 import { dirname as dirname7, resolve as resolve6 } from "node:path";
 
@@ -71926,11 +72267,11 @@ async function restartLocal(deps, opts, onLine, ctx) {
   out.line(`Restarted: conductor pid ${newPid}; plugin ${versionBefore === versionAfter ? versionAfter : `${versionBefore} -> ${versionAfter}`}; ${held.length === 0 ? "it held no conductions" : "all held conductions confirmed on the board"}.`);
   return out.result(EXIT.ok, { restarted: true, old_pids: oldPids, new_pid: newPid, plugin_version_before: versionBefore, plugin_version_after: versionAfter, adopted, supervisor: sup.kind });
 }
-async function emitLive(program3, run) {
+async function emitLive(program3, run2) {
   const json = Boolean(program3.opts().json);
   let result;
   try {
-    result = await run(json ? void 0 : (l) => console.log(l));
+    result = await run2(json ? void 0 : (l) => console.log(l));
   } catch (err) {
     result = { exitCode: 1, lines: [], errLines: [err instanceof Error ? err.message : String(err)], data: { ok: false, error: err instanceof Error ? err.message : String(err) } };
   }
@@ -71950,7 +72291,7 @@ function registerConductorLifecycleCommands(program3, conductor, makeDeps = defa
 // src/cli/commands/conductor-config.ts
 var gcloudSecretExists = (name, ctx) => new Promise((resolveCheck) => {
   const args = ["secrets", "describe", name, "--format=value(name)", ...ctx.project ? [`--project=${ctx.project}`] : [], ...ctx.account ? [`--account=${ctx.account}`] : []];
-  execFile("gcloud", args, { timeout: 3e4 }, (err, _stdout, stderr) => {
+  execFile2("gcloud", args, { timeout: 3e4 }, (err, _stdout, stderr) => {
     if (!err) return resolveCheck("exists");
     resolveCheck(/NOT_FOUND|not found/i.test(String(stderr)) ? "missing" : "unchecked");
   });
@@ -72324,7 +72665,7 @@ function runDoctor(deps, opts = {}) {
     }
   };
 }
-function emit(program3, result) {
+function emit2(program3, result) {
   const json = Boolean(program3.opts().json);
   if (json) {
     console.log(formatOutput(result.data, { json: true }));
@@ -72338,16 +72679,16 @@ function registerConductorCommands(program3, makeDeps = defaultCliDeps) {
   const conductor = program3.command("conductor").description("Conductor operations");
   registerConductorLifecycleCommands(program3, conductor);
   const config2 = conductor.command("config").description("The two-file conductor config (.harmony/conductor.json + ~/.harmony/conductor-host.json)");
-  config2.command("sync").description("Fetch .harmony/conductor.json from config_repo main into the last-good snapshot now (needs the harmony-daemon App installation to include config_repo)").action(async () => emit(program3, await runSync(makeDeps())));
+  config2.command("sync").description("Fetch .harmony/conductor.json from config_repo main into the last-good snapshot now (needs the harmony-daemon App installation to include config_repo)").action(async () => emit2(program3, await runSync(makeDeps())));
   config2.command("migrate").description("Propose the project + host files from the current deployment.json and env knobs. Dry run unless --write; never modifies the old files").option("--profile <name>", "Which deployment.json profile to migrate (cloud|gke)").option("--config <path>", "Explicit deployment.json path (overrides HARMONY_DEPLOYMENT_CONFIG)").option("--write", "Write the new files (requires --out-project)", false).option("--out-project <path>", "Where to write the project file (no default)").option("--out-host <path>", "Where to write the host file (default: the resolved host-file path)").option("--force", "Overwrite an existing output file", false).option("--secret-api-token <name>", `Secret Manager secret NAME for HARMONY_API_TOKEN (default ${DEFAULT_SECRET_NAMES.api_token})`).option("--secret-github-app-key <name>", `Secret Manager secret NAME for the GitHub App private key (default ${DEFAULT_SECRET_NAMES.github_app_private_key})`).option("--secret-claude-oauth-token <name>", `Secret Manager secret NAME for the Claude OAuth token, a record for preflight/docs the conductor never reads (default ${DEFAULT_SECRET_NAMES.claude_oauth_token})`).action(
-    async (opts) => emit(program3, await runMigrate(makeDeps(), opts))
+    async (opts) => emit2(program3, await runMigrate(makeDeps(), opts))
   );
-  config2.command("doctor").description("Explain the conductor config: sources, every issue, conflicts between layers, legacy sources in use. Exits 1 on any issue").option("--config <path>", "Explicit deployment.json path (overrides HARMONY_DEPLOYMENT_CONFIG)").action((opts) => emit(program3, runDoctor(makeDeps(), opts)));
+  config2.command("doctor").description("Explain the conductor config: sources, every issue, conflicts between layers, legacy sources in use. Exits 1 on any issue").option("--config <path>", "Explicit deployment.json path (overrides HARMONY_DEPLOYMENT_CONFIG)").action((opts) => emit2(program3, runDoctor(makeDeps(), opts)));
 }
 
 // src/cli/commands/conductor-logs.ts
 import { existsSync as fsExistsSync4, readFileSync as fsReadFileSync4 } from "node:fs";
-import { execFile as execFile2 } from "node:child_process";
+import { execFile as execFile3 } from "node:child_process";
 
 // src/daemon/conductor-logger.ts
 import { homedir as homedir5 } from "node:os";
@@ -72374,7 +72715,7 @@ function defaultLogsDeps() {
     existsSync: fsExistsSync4,
     readFileSync: (p) => fsReadFileSync4(p, "utf8"),
     runGcloud: (args) => new Promise((resolve8) => {
-      execFile2("gcloud", args, { maxBuffer: 64 * 1024 * 1024, timeout: 6e4 }, (err, stdout, stderr) => {
+      execFile3("gcloud", args, { maxBuffer: 64 * 1024 * 1024, timeout: 6e4 }, (err, stdout, stderr) => {
         const code = err ? typeof err.code === "number" ? err.code : 1 : 0;
         resolve8({ code, stdout: String(stdout ?? ""), stderr: String(stderr ?? err?.message ?? "") });
       });
@@ -72786,6 +73127,16 @@ var HARMONY_HOOKS = {
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": 'sh "{pluginRoot}/hooks/seat-session-start.sh"',
+            "timeout": 30
+          }
+        ]
       }
     ],
     "Stop": [
@@ -72795,6 +73146,15 @@ var HARMONY_HOOKS = {
             "type": "command",
             "command": 'sh "{pluginRoot}/hooks/stop-gate.sh"',
             "timeout": 30
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": 'sh "{pluginRoot}/hooks/seat-stop-guard.sh"',
+            "timeout": 10
           }
         ]
       }
@@ -74639,9 +74999,9 @@ function evaluateEligibility(input) {
 }
 var GITHUB_PR_URL = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?/i;
 async function runGhCommand(args) {
-  const { execFile: execFile3 } = await import("node:child_process");
+  const { execFile: execFile4 } = await import("node:child_process");
   return await new Promise((resolve8, reject) => {
-    execFile3("gh", args, { maxBuffer: 10 * 1024 * 1024 }, (err, stdout) => {
+    execFile4("gh", args, { maxBuffer: 10 * 1024 * 1024 }, (err, stdout) => {
       if (err) reject(err);
       else resolve8(stdout);
     });
@@ -74734,9 +75094,9 @@ function buildAttestation(args, userId) {
 }
 var GH_RELEASE_INFO_TIMEOUT_MS = 5e3;
 async function runGhForReleaseInfo(args) {
-  const { execFile: execFile3 } = await import("node:child_process");
+  const { execFile: execFile4 } = await import("node:child_process");
   return await new Promise((resolve8, reject) => {
-    execFile3("gh", args, { timeout: GH_RELEASE_INFO_TIMEOUT_MS, maxBuffer: 1024 * 1024 }, (err, stdout) => {
+    execFile4("gh", args, { timeout: GH_RELEASE_INFO_TIMEOUT_MS, maxBuffer: 1024 * 1024 }, (err, stdout) => {
       if (err) reject(err);
       else resolve8(String(stdout));
     });
@@ -76279,7 +76639,7 @@ async function runWatch(deps) {
   let firstWakeAt = null;
   const exitSeen = /* @__PURE__ */ new Map();
   const aborted2 = () => deps.signal?.aborted === true;
-  const emit2 = (e) => {
+  const emit3 = (e) => {
     try {
       deps.emit(e);
     } catch (err) {
@@ -76331,7 +76691,7 @@ async function runWatch(deps) {
       if (failureKind !== kind) {
         failureKind = kind;
         failureSince = failureSince ?? lastFetchAt;
-        emit2(healthSeq(healthEvent(t, kind, o.profile, { since: failureSince, detail: safeErrorMessage(err) })));
+        emit3(healthSeq(healthEvent(t, kind, o.profile, { since: failureSince, detail: safeErrorMessage(err) })));
       }
       heartbeat();
       return { ok: false };
@@ -76339,7 +76699,7 @@ async function runWatch(deps) {
     lastIds = ids;
     lastOkAt = lastFetchAt;
     if (failureKind) {
-      emit2(healthSeq(healthEvent(t, "recovered", o.profile, { since: failureSince ?? void 0, detail: `${failureKind} since ${failureSince}` })));
+      emit3(healthSeq(healthEvent(t, "recovered", o.profile, { since: failureSince ?? void 0, detail: `${failureKind} since ${failureSince}` })));
       failures = 0;
       failureKind = null;
       failureSince = null;
@@ -76355,7 +76715,7 @@ async function runWatch(deps) {
       inScope: new Set(ids),
       exitSeen
     });
-    for (const e of result.events) emit2(e);
+    for (const e of result.events) emit3(e);
     if (result.changed) {
       if (deps.mode !== "once" && deps.writeCursor) {
         try {
@@ -76379,7 +76739,7 @@ async function runWatch(deps) {
       for (const h2 of hits) {
         if (warnedSessions.has(h2.session)) continue;
         warnedSessions.add(h2.session);
-        emit2(
+        emit3(
           healthSeq(
             healthEvent(deps.now(), "warning", o.profile, {
               detail: `another seat (${h2.seat}, session ${h2.session}) has an open seat-start on this milestone`
@@ -76394,7 +76754,7 @@ async function runWatch(deps) {
   const checkDegraded = () => {
     if (!degradedReported && deps.hint && deps.hintDead?.()) {
       degradedReported = true;
-      emit2(healthSeq(healthEvent(deps.now(), "degraded", o.profile, { detail: "realtime hints unavailable; polling every " + pollMs / 1e3 + "s" })));
+      emit3(healthSeq(healthEvent(deps.now(), "degraded", o.profile, { detail: "realtime hints unavailable; polling every " + pollMs / 1e3 + "s" })));
     }
   };
   const waitNext = async (ms, allowHint) => {
@@ -77390,6 +77750,7 @@ registerAuthCommands(program2);
 registerFigmaCommands(program2);
 registerTaskCommands(program2);
 registerWaitCommands(program2);
+registerAwaitCommands(program2);
 registerDesignCommands(program2);
 registerQueryCommand(program2);
 registerCommentCommands(program2);
