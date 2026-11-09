@@ -150,6 +150,34 @@ describe('seat hooks: a matching profile reaches node', () => {
     expect(readFileSync(sb.marker, 'utf8')).toContain(`seat-hook.js stop ${p}`);
   });
 
+  for (const [form, line] of [
+    ['double-quoted', `session_id: "${SID}"`],
+    ['single-quoted', `session_id: '${SID}'`],
+  ] as const) {
+    it(`a ${form} session_id turns both hooks on (B-1429)`, () => {
+      const sb = sandbox();
+      mkdirSync(sb.seats, { recursive: true });
+      const p = join(sb.seats, 'orch.yml');
+      writeFileSync(p, `${line}\nproject: B\nmilestone: v1.13\n`);
+      const s = run(START, sb, startInput());
+      expect(s.status).toBe(0);
+      expect(s.stdout.trim()).toBe('{"stub":true}');
+      expect(run(STOP, sb, stopInput()).status).toBe(0);
+      const calls = readFileSync(sb.marker, 'utf8');
+      expect(calls).toContain(`seat-hook.js start ${p}`);
+      expect(calls).toContain(`seat-hook.js stop ${p}`);
+    });
+
+    it(`a ${form} session_id naming ANOTHER session stays on the no-node path`, () => {
+      const sb = sandbox();
+      mkdirSync(sb.seats, { recursive: true });
+      writeFileSync(join(sb.seats, 'orch.yml'), `${line.replace(SID, 'some-other-session')}\n`);
+      expect(run(START, sb, startInput()).stdout.trim()).toBe('{}');
+      expect(run(STOP, sb, stopInput()).status).toBe(0);
+      expect(existsSync(sb.marker)).toBe(false);
+    });
+  }
+
   it('an empty HARMONY_HOME counts as unset ($HOME/.harmony)', () => {
     const sb = sandbox();
     const fakeHome = join(sb.home, 'userhome');
@@ -206,7 +234,7 @@ describe('hooks.json registers the seat hooks beside the existing ones', () => {
     for (const script of [START, STOP]) {
       const body = readFileSync(script, 'utf8');
       const dirTest = body.indexOf('[ -d "$D" ]');
-      const grep = body.indexOf('grep -l -x -F "session_id: $ID"');
+      const grep = body.indexOf(`grep -l -x -F -e "session_id: $ID" -e "session_id: \\"$ID\\"" -e "session_id: '$ID'"`);
       const node = body.indexOf('node "$HOOK"');
       expect(dirTest).toBeGreaterThan(-1);
       expect(grep).toBeGreaterThan(dirTest);

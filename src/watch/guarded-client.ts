@@ -11,6 +11,8 @@
  *   - with no good token yet, rethrows, so the caller's poll catches it and backs off.
  *
  * `installProcessGuards(onHealth)` keeps a stray rejection or exception from killing the watch.
+ * It ignores broken-pipe errors (`isBrokenPipe`): the watch handles a closed stdout itself, and a
+ * health line about it would be written to the same dead pipe (B-1429).
  * Token values are never logged.
  */
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
@@ -80,12 +82,21 @@ export interface ProcessGuardHealth {
   error: unknown;
 }
 
+/** Is this a write to a closed pipe or a destroyed stream (`EPIPE`, `ERR_STREAM_DESTROYED`)? */
+export function isBrokenPipe(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const code = (err as { code?: unknown }).code;
+  return code === 'EPIPE' || code === 'ERR_STREAM_DESTROYED';
+}
+
 /**
  * Register `unhandledRejection` and `uncaughtException` handlers that report a health line and do
- * NOT exit. Returns a disposer that removes exactly these handlers.
+ * NOT exit. Broken-pipe errors (`isBrokenPipe`) are ignored: no health line, no write. Returns a
+ * disposer that removes exactly these handlers.
  */
 export function installProcessGuards(onHealth: (h: ProcessGuardHealth) => void, proc: NodeJS.Process = process): () => void {
   const onRejection = (error: unknown) => {
+    if (isBrokenPipe(error)) return;
     try {
       onHealth({ kind: 'unhandled-rejection', error });
     } catch {
@@ -93,6 +104,7 @@ export function installProcessGuards(onHealth: (h: ProcessGuardHealth) => void, 
     }
   };
   const onException = (error: unknown) => {
+    if (isBrokenPipe(error)) return;
     try {
       onHealth({ kind: 'uncaught-exception', error });
     } catch {

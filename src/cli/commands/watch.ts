@@ -13,8 +13,14 @@
  * Exit codes: 0 event (until-event) / done (once, follow); 3 `--max-wait` passed with nothing
  * seat-owned (or `--once` could not reach the board); 2 bad arguments, a lock held by another
  * watch, a rejected token at startup, a scope that cannot resolve (a key, or a milestone, not in
- * the CLI's active project), or a seat profile whose `project:` is not that project. `status`:
+ * the CLI's active project), or a seat profile whose `project:` is not that project; 130 stopped
+ * by SIGINT; 143 stopped by SIGTERM; 141 the reader of stdout went away (EPIPE). `status`:
  * 0 alive, 1 none or stale.
+ *
+ * Stopping (B-1429): a closed stdout stops the watch the way a signal does. After that nothing
+ * more is written to stdout; later lines go to stderr. On every stop a locking watch releases its
+ * lock and removes its own heartbeat. Before the process exits, stdout is drained (capped at 2 s)
+ * unless it is already dead; every mode then exits explicitly.
  *
  * Every run starts with a `start` event naming the board it reads: the project's name and key,
  * the target (`prod` / `staging` / `custom`, from the Supabase URL the CLI uses) and the scope
@@ -40,6 +46,7 @@ import {
   createGuardedClient,
   installProcessGuards,
   isAuthError,
+  isBrokenPipe,
   safeErrorMessage,
   type AuthLike,
   type GuardHealth,
@@ -58,6 +65,7 @@ import {
   readHeartbeat,
   readSeatProfile,
   releaseLock,
+  removeHeartbeat,
   scopeSlug,
   writeCursor,
   writeHeartbeat,
@@ -93,6 +101,13 @@ export interface WatchCliDeps {
   home?: string;
   /** Signals that stop a running watch. */
   onSignal(handler: (sig: string) => void): () => void;
+  /**
+   * Call `handler` once when stdout can no longer be written (its reader went away: EPIPE, a
+   * destroyed stream). Returns a disposer. Absent: stdout is never treated as closed.
+   */
+  onStdoutClosed?(handler: (reason: string) => void): () => void;
+  /** Runs after the watch returns its exit code: drain stdout, then exit (default: `exitAfterDrain`). */
+  exit?(code: number): Promise<void> | void;
   pollMs?: number;
   hintDelayMs?: number;
   settleMs?: number;
@@ -151,6 +166,129 @@ export function makeCliAuth(): HarmonyAuth {
   return new HarmonyAuth(project.token, target.url, target.anonKey);
 }
 
+// ---------------------------------------------------------------------------
+// stdout: closed-reader detection and the drain before exit (B-1429)
+// ---------------------------------------------------------------------------
+
+/** The slice of a writable stream the stdout watcher and the drain need. */
+export interface OutStream {
+  write(chunk: string, cb?: (err?: Error | null) => void): boolean;
+  on(event: 'error', listener: (err: unknown) => void): unknown;
+  off(event: 'error', listener: (err: unknown) => void): unknown;
+  readonly destroyed?: boolean;
+  readonly writableLength?: number;
+}
+
+export interface StdoutWatch {
+  /** True once the stream errored with a broken pipe or was destroyed. */
+  isDead(): boolean;
+  /** Mark the stream dead (for a write that threw synchronously). */
+  markDead(reason: string): void;
+  /** Call `handler` once when the stream dies (at once if it already has). Returns a disposer. */
+  onClosed(handler: (reason: string) => void): () => void;
+  /** Remove the error listener. */
+  dispose(): void;
+}
+
+/**
+ * Keep an `error` listener on `stream` so a closed reader never surfaces as an uncaught exception,
+ * and remember that the stream is dead. Any error on the stream counts: a Writable that errors is
+ * destroyed, so nothing more can be written to it.
+ */
+export function watchStdout(stream: OutStream): StdoutWatch {
+  let dead: string | null = null;
+  const handlers = new Set<(reason: string) => void>();
+  const die = (reason: string) => {
+    if (dead !== null) return;
+    dead = reason;
+    for (const h of [...handlers]) {
+      try {
+        h(reason);
+      } catch {
+        // a stop handler must not break the others
+      }
+    }
+  };
+  const onError = (err: unknown) => {
+    const code = (err as { code?: unknown } | null)?.code;
+    die(isBrokenPipe(err) && typeof code === 'string' ? code : 'EPIPE');
+  };
+  stream.on('error', onError);
+  return {
+    isDead: () => dead !== null || stream.destroyed === true,
+    markDead: die,
+    onClosed: (handler) => {
+      if (dead !== null) {
+        handler(dead);
+        return () => {};
+      }
+      handlers.add(handler);
+      return () => handlers.delete(handler);
+    },
+    dispose: () => stream.off('error', onError),
+  };
+}
+
+let processStdout: StdoutWatch | null = null;
+/** The one watcher of `process.stdout`, created on first use and kept until the process exits. */
+function processStdoutWatch(): StdoutWatch {
+  if (!processStdout) processStdout = watchStdout(process.stdout);
+  return processStdout;
+}
+
+export interface ExitAfterDrainOpts {
+  exit: (code: number) => void;
+  /** Longest wait for the drain (default 2000 ms). */
+  capMs?: number;
+  /** Is the stream already known to be dead? (default: `stream.destroyed`) */
+  isDead?: () => boolean;
+}
+
+/**
+ * Exit with `code` once everything written to `stream` has been handed to the OS, so a slow but
+ * live reader gets every line. A dead stream is not drained: exit at once. The drain waits for a
+ * write callback (writes complete in order), at most `capMs`. A stream that is dead before or
+ * during the drain turns a success (0) into 141, the code for a reader that went away; any other
+ * code is kept. Returns the code passed to `exit`.
+ */
+export async function exitAfterDrain(stream: OutStream, code: number, opts: ExitAfterDrainOpts): Promise<number> {
+  const isDead = () => (opts.isDead ? opts.isDead() : false) || stream.destroyed === true;
+  const deadCode = code === 0 ? 141 : code;
+  if (isDead()) {
+    opts.exit(deadCode);
+    return deadCode;
+  }
+  let broken = false;
+  await new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      stream.off('error', onError);
+      resolve();
+    };
+    const onError = () => {
+      broken = true;
+      finish();
+    };
+    const timer = setTimeout(finish, opts.capMs ?? 2_000);
+    stream.on('error', onError);
+    try {
+      stream.write('', (err) => {
+        if (err) broken = true;
+        finish();
+      });
+    } catch {
+      broken = true;
+      finish();
+    }
+  });
+  const final = broken || isDead() ? deadCode : code;
+  opts.exit(final);
+  return final;
+}
+
 function defaultDeps(): WatchCliDeps {
   return {
     makeAuth: makeCliAuth,
@@ -197,7 +335,15 @@ function defaultDeps(): WatchCliDeps {
     activeProjectName: localActiveProjectName,
     now: () => Date.now(),
     sleep: realSleep,
-    out: (line) => process.stdout.write(`${line}\n`),
+    out: (line) => {
+      const sw = processStdoutWatch();
+      if (sw.isDead()) return;
+      try {
+        process.stdout.write(`${line}\n`);
+      } catch (e) {
+        sw.markDead(isBrokenPipe(e) ? String((e as { code: string }).code) : 'EPIPE');
+      }
+    },
     err: (line) => process.stderr.write(`${line}\n`),
     onSignal: (handler) => {
       const onInt = () => handler('SIGINT');
@@ -208,6 +354,10 @@ function defaultDeps(): WatchCliDeps {
         process.off('SIGINT', onInt);
         process.off('SIGTERM', onTerm);
       };
+    },
+    onStdoutClosed: (handler) => processStdoutWatch().onClosed(handler),
+    exit: async (code) => {
+      await exitAfterDrain(process.stdout, code, { exit: (c) => process.exit(c), capMs: 2_000, isDead: () => processStdoutWatch().isDead() });
     },
   };
 }
@@ -310,7 +460,11 @@ export function parseWatchArgs(keys: string[], opts: Record<string, unknown>, js
 
 export async function runWatchCommand(args: WatchArgs, deps: WatchCliDeps): Promise<number> {
   const homeOpts = deps.home ? { home: deps.home } : {};
-  const print = (e: WatchEvent) => deps.out(args.json ? JSON.stringify(e) : formatEvent(e));
+  // Once stdout is dead (its reader went away), nothing more goes to it: later lines, guard
+  // health included, go to stderr.
+  let stdoutDead = false;
+  const out = (line: string) => (stdoutDead ? deps.err(line) : deps.out(line));
+  const print = (e: WatchEvent) => out(args.json ? JSON.stringify(e) : formatEvent(e));
   const startupHealth: WatchEvent[] = [];
 
   // Seat profile.
@@ -348,10 +502,18 @@ export async function runWatchCommand(args: WatchArgs, deps: WatchCliDeps): Prom
 
   const abort = new AbortController();
   let stoppedBy: string | null = null;
-  const offSignal = deps.onSignal((sig) => {
+  const stop = (sig: string) => {
     stoppedBy = sig;
     abort.abort();
-  });
+  };
+  const offSignal = deps.onSignal(stop);
+  // A closed stdout stops the watch through the same path as a signal, recorded as EPIPE.
+  const offStdout = deps.onStdoutClosed
+    ? deps.onStdoutClosed(() => {
+        stdoutDead = true;
+        stop('EPIPE');
+      })
+    : () => {};
   const disposeGuards = deps.installGuards((h) =>
     print(healthEvent(deps.now(), 'warning', profile, { detail: `${h.kind}: ${safeErrorMessage(h.error)}` })),
   );
@@ -412,6 +574,7 @@ export async function runWatchCommand(args: WatchArgs, deps: WatchCliDeps): Prom
         deps.err(`harmony watch: ${fatal}`);
         return 2;
       }
+      if (stoppedBy === 'EPIPE') return 141;
       if (stoppedBy) return 0;
       return 3;
     }
@@ -489,9 +652,9 @@ export async function runWatchCommand(args: WatchArgs, deps: WatchCliDeps): Prom
           ? async (ids) => openSeatStarts(await reader.listMarkerComments(ids), profile?.session_id ?? null)
           : undefined,
       printCurrent: (rows) => {
-        for (const r of rows) deps.out(args.json ? JSON.stringify({ event: 'current', ...r }) : formatCurrentRow(r));
+        for (const r of rows) out(args.json ? JSON.stringify({ event: 'current', ...r }) : formatCurrentRow(r));
         if (!args.json && !rows.some((r) => r.waiting)) {
-          deps.out(`nothing waiting (${rows.length} ticket${rows.length === 1 ? '' : 's'} watched in ${pk} on ${target})`);
+          out(`nothing waiting (${rows.length} ticket${rows.length === 1 ? '' : 's'} watched in ${pk} on ${target})`);
         }
       },
       log: deps.err,
@@ -510,11 +673,14 @@ export async function runWatchCommand(args: WatchArgs, deps: WatchCliDeps): Prom
       },
     });
     if (result.exitCode === 2) deps.err(`harmony watch: ${result.detail ?? 'fatal'}`);
-    if (result.reason === 'aborted') return stoppedBy === 'SIGTERM' ? 143 : 130;
+    if (result.reason === 'aborted') return stoppedBy === 'SIGTERM' ? 143 : stoppedBy === 'EPIPE' ? 141 : 130;
+    // stdout died after the loop's last abort check: a success becomes 141.
+    if (stdoutDead && result.exitCode === 0) return 141;
     return result.exitCode;
   } finally {
     disposeGuards();
     offSignal();
+    offStdout();
     if (hints) {
       try {
         await hints.close();
@@ -528,6 +694,8 @@ export async function runWatchCommand(args: WatchArgs, deps: WatchCliDeps): Prom
       } catch {
         // best effort
       }
+      // Only a lock-holding watch writes a heartbeat; remove ours so `watch status` says none.
+      removeHeartbeat(projectKey, args.seat, process.pid, homeOpts);
     }
   }
 }
@@ -665,11 +833,9 @@ export function registerWatchCommands(program: Command, override: Partial<WatchC
       }
       const code = await runWatchCommand(args, d);
       process.exitCode = code;
-      if (args.mode !== 'once') {
-        // The loop has shut down and released its lock; do not let a lingering socket keep the
-        // process alive past this point.
-        setTimeout(() => process.exit(code), 2_000).unref();
-      }
+      // Every mode exits explicitly: the loop has shut down and released its lock, and a
+      // lingering socket must not keep the process alive. stdout is drained first unless dead.
+      if (d.exit) await d.exit(code);
     });
 
   watch

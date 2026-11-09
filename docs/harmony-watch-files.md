@@ -48,7 +48,7 @@ read as `null` (or `[]` for lists).
 
 | Field | Type | Meaning |
 |---|---|---|
-| `session_id` | string or null | The seat's Claude Code session id. Always a plain top-level line `session_id: <id>`, so B-1423 can find the seat with `grep 'session_id: <id>' ~/.harmony/seats/*.yml`. |
+| `session_id` | string or null | The seat's Claude Code session id, as a plain top-level line. The value may be unquoted (`session_id: <id>`, what `writeSeatProfile` writes), double-quoted (`session_id: "<id>"`) or single-quoted (`session_id: '<id>'`). The seat hooks (B-1423) find the seat with one fixed-string grep that accepts all three forms, and the parser reads them the same (B-1429). |
 | `project` | string or null | Project key, for example `B`. |
 | `milestone` | string or null | Milestone the seat is driving. |
 | `anchor` | string or null | Ticket key that carries the seat-start and stand-down markers. |
@@ -274,6 +274,7 @@ A hook should fail open on `absent` and `malformed`.
 | `formatSeatProfile`, `writeSeatProfile` | Render and write a profile with `session_id:` first. |
 | `acquireLock(projectKey, seat, scope, mode, opts?)` | Returns `{ status: 'acquired', lock }` or `{ status: 'held', holder }`. |
 | `releaseLock(projectKey, seat, scope, opts?)` | Removes the lock only if its pid matches. |
+| `removeHeartbeat(projectKey, seat, pid, opts?)` | Removes the heartbeat only if it records `pid`. Returns whether it removed it. Never throws. |
 | `listWatchProjects(opts?)` | Project keys with a `<home>/watch/<key>/` directory. Never throws. |
 | `listLocks(projectKey, seat, opts?)` | Every `<seat>.<scope-slug>.lock` of the seat, as `ReadResult`s. Never throws. |
 
@@ -300,7 +301,15 @@ harmony watch status --seat <name>
   seat-owned, or `--once` could not reach the board; `2` bad arguments, a held lock (the message
   names the holder's pid), a token rejected at startup, a scope that cannot resolve, or a seat
   profile whose `project:` is not the CLI's active project (see "Which board" below); `130` / `143`
-  stopped by SIGINT / SIGTERM. `status`: `0` alive, `1` none or stale.
+  stopped by SIGINT / SIGTERM; `141` the reader of its output went away (for example
+  `harmony watch --once | head -1`). `status`: `0` alive, `1` none or stale.
+- When the reader of its output goes away, the watch stops the same way as on SIGTERM. It writes
+  nothing more to stdout; any later line goes to stderr.
+- A watch that holds the lock (`--until-event`, `--follow`) releases it and removes its own
+  heartbeat whenever it stops: an event, a signal, or a reader that went away. `status` then says
+  `none`, and a new watch for the seat starts at once.
+- Before it exits, the watch waits up to 2 seconds for stdout to drain, so a slow reader still gets
+  every line. It skips the wait when the reader is gone.
 - `health` and `start` lines are printed as events but never end an `--until-event` wait.
 - `status` finds the heartbeat through the profile's `project`, else by scanning `<home>/watch/*/`.
 - `status` also lists every ticket the cursor records as waiting on a human, with its reason, who it is

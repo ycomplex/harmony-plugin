@@ -652,6 +652,24 @@ export function releaseLock(projectKey: string, seat: string, scope: WatchScope,
   }
 }
 
+/**
+ * Delete the seat's heartbeat only if it still records `pid` (the own-pid rule `releaseLock`
+ * uses), so a watch that stops leaves no heartbeat saying it is alive (B-1429). Returns true when
+ * removed. Never throws: an absent, malformed or foreign heartbeat, or an unsafe name, is left
+ * alone and gives false.
+ */
+export function removeHeartbeat(projectKey: string, seat: string, pid: number, opts: HomeOpts = {}): boolean {
+  try {
+    const existing = readHeartbeat(projectKey, seat, opts);
+    if (existing.status !== 'ok') return false;
+    if (existing.value.pid !== pid) return false;
+    unlinkSync(existing.path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Listing (additive, for `harmony watch status`)
 // ---------------------------------------------------------------------------
