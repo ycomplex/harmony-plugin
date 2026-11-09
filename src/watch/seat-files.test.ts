@@ -18,6 +18,7 @@ import {
   readLock,
   readSeatProfile,
   releaseLock,
+  removeHeartbeat,
   scopeSlug,
   seatProfilePath,
   writeCursor,
@@ -212,6 +213,21 @@ describe('readSeatProfile', () => {
     expect(readSeatProfile('../etc/passwd', { home })).toMatchObject({ status: 'malformed', error: 'invalid seat name' });
   });
 
+  it('reads a double- or single-quoted session_id exactly like the unquoted form (B-1429)', () => {
+    mkdirSync(join(home, 'seats'), { recursive: true });
+    const id = profile.session_id as string;
+    writeFileSync(join(home, 'seats', 'plain.yml'), `session_id: ${id}\nproject: B\n`);
+    writeFileSync(join(home, 'seats', 'dq.yml'), `session_id: "${id}"\nproject: B\n`);
+    writeFileSync(join(home, 'seats', 'sq.yml'), `session_id: '${id}'\nproject: B\n`);
+    const plain = readSeatProfile('plain', { home });
+    expect(plain.status === 'ok' && plain.value.session_id).toBe(id);
+    for (const name of ['dq', 'sq']) {
+      const r = readSeatProfile(name, { home });
+      expect(r.status).toBe('ok');
+      if (r.status === 'ok' && plain.status === 'ok') expect(r.value).toEqual(plain.value);
+    }
+  });
+
   it('formatSeatProfile refuses an unsafe session id', () => {
     expect(() => formatSeatProfile({ ...profile, session_id: 'a\nb: c' })).toThrow();
   });
@@ -339,6 +355,29 @@ describe('acquireLock / releaseLock', () => {
     expect(releaseLock('B', 'orch', scope, { home, pid: 111 })).toBe(true);
     expect(existsSync(lockPath('B', 'orch', scope, { home }))).toBe(false);
     expect(releaseLock('B', 'orch', scope, { home, pid: 111 })).toBe(false);
+  });
+});
+
+describe('removeHeartbeat (B-1429)', () => {
+  it('removes the heartbeat only when it records this pid', () => {
+    writeHeartbeat('B', 'orch', hb({ pid: 111 }), { home });
+    expect(removeHeartbeat('B', 'orch', 222, { home })).toBe(false);
+    expect(readHeartbeat('B', 'orch', { home }).status).toBe('ok');
+    expect(removeHeartbeat('B', 'orch', 111, { home })).toBe(true);
+    expect(readHeartbeat('B', 'orch', { home }).status).toBe('absent');
+    expect(removeHeartbeat('B', 'orch', 111, { home })).toBe(false);
+  });
+
+  it('never throws: missing, malformed, unreadable, unsafe names', () => {
+    expect(removeHeartbeat('B', 'nobody', 1, { home })).toBe(false);
+    mkdirSync(join(home, 'watch', 'B'), { recursive: true });
+    writeFileSync(heartbeatPath('B', 'orch', { home }), '{not json');
+    expect(removeHeartbeat('B', 'orch', 1, { home })).toBe(false);
+    expect(existsSync(heartbeatPath('B', 'orch', { home }))).toBe(true);
+    mkdirSync(heartbeatPath('B', 'other', { home }), { recursive: true });
+    expect(removeHeartbeat('B', 'other', 1, { home })).toBe(false);
+    expect(removeHeartbeat('../x', 'orch', 1, { home })).toBe(false);
+    expect(removeHeartbeat('B', 'a/b', 1, { home })).toBe(false);
   });
 });
 

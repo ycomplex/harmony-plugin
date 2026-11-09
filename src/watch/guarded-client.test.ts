@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
 import { TokenExchangeError } from '../auth.js';
 import { healthEvent, type WatchEvent } from './classify.js';
-import { createGuardedClient, guardedTokenGetter, installProcessGuards, isAuthError, safeErrorMessage, type GuardHealth } from './guarded-client.js';
+import { createGuardedClient, guardedTokenGetter, installProcessGuards, isAuthError, isBrokenPipe, safeErrorMessage, type GuardHealth } from './guarded-client.js';
 
 describe('guardedTokenGetter (AC3: TokenExchangeError on the accessToken path)', () => {
   it('returns the last good token and reports auth-failed when the exchange is rejected', async () => {
@@ -80,6 +80,38 @@ describe('installProcessGuards (AC3)', () => {
     }
     expect((proc as unknown as EventEmitter).listenerCount('unhandledRejection')).toBe(0);
     expect((proc as unknown as EventEmitter).listenerCount('uncaughtException')).toBe(0);
+  });
+
+  it('ignores broken-pipe errors (EPIPE, ERR_STREAM_DESTROYED): no health line, no write (B-1429)', () => {
+    const proc = new EventEmitter() as unknown as NodeJS.Process;
+    const kinds: string[] = [];
+    const dispose = installProcessGuards((h) => kinds.push(`${h.kind}: ${safeErrorMessage(h.error)}`), proc);
+    try {
+      const epipe = Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
+      const destroyed = Object.assign(new Error('Cannot call write after a stream was destroyed'), { code: 'ERR_STREAM_DESTROYED' });
+      for (const e of [epipe, destroyed]) {
+        proc.emit('uncaughtException', e);
+        proc.emit('unhandledRejection', e, Promise.resolve());
+      }
+      expect(kinds).toEqual([]);
+      // every other error keeps today's behaviour
+      proc.emit('uncaughtException', Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }));
+      proc.emit('unhandledRejection', new TokenExchangeError('/x', 401, {}), Promise.resolve());
+      expect(kinds).toHaveLength(2);
+      expect(kinds[0]).toBe('uncaught-exception: connect ECONNREFUSED');
+      expect(kinds[1]).toMatch(/^unhandled-rejection: /);
+    } finally {
+      dispose();
+    }
+  });
+
+  it('isBrokenPipe recognises only EPIPE and ERR_STREAM_DESTROYED', () => {
+    expect(isBrokenPipe({ code: 'EPIPE' })).toBe(true);
+    expect(isBrokenPipe(Object.assign(new Error('x'), { code: 'ERR_STREAM_DESTROYED' }))).toBe(true);
+    expect(isBrokenPipe({ code: 'ECONNRESET' })).toBe(false);
+    expect(isBrokenPipe(new Error('EPIPE'))).toBe(false);
+    expect(isBrokenPipe(null)).toBe(false);
+    expect(isBrokenPipe('EPIPE')).toBe(false);
   });
 
   it('on the real process, registers and disposes exactly its own handlers', () => {
