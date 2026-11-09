@@ -18,6 +18,9 @@ keys, the three `harmony conductor config` commands, the adoption runbook and th
 `--remote` forms: what each verb does, the shared pre-flight, adopting running legs, and the operator machine (the
 CLI on PATH, the minimal laptop host file, gcloud and `gke-gcloud-auth-plugin`).
 
+`harmony-watch-files.md` (B-1422, B-1423, B-1429) is the contract for the seat profile, cursor, heartbeat and
+lock that `harmony watch` and the seat hooks share: paths, formats, who writes each, and the exit codes.
+
 `doctor-auth-hook.md` (B-1035, B-1300) is the operator reference for `harmony doctor auth-hook`: the two hook halves it prints, the before-user-created mismatch WARNs, and the access-token-only exit-code contract.
 
 `recorded-walk-contract.md` (B-1062) is the contract for recording a ticket's gates instead of conducting them: the
