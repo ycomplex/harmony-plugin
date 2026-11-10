@@ -1028,12 +1028,12 @@ describe.skipIf(!CAPABLE)('setup-cluster.sh steps 18-26 — the remote conductor
     expect(sm[0]).toContain('harmony-daemon-app-private-key');
   });
 
-  it('step 22 is skipped, loudly, without --cloud-run-runtime-sa: no serviceAccountUser grant at all', () => {
+  it('step 22 is skipped without --cloud-run-runtime-sa (an informational note, B-1435): no serviceAccountUser grant at all', () => {
     const world = makeWorld();
     const r = setupAll(world);
     expect(r.status).toBe(0);
     expect(r.stdout).toContain('skipped: --cloud-run-runtime-sa was not given');
-    expect(r.stdout).toContain('step 22 was skipped');
+    expect(r.stdout).toContain('note: step 22 (Cloud Run runtime SA) was not requested; pass --cloud-run-runtime-sa only if you will launch Cloud Run legs');
     expect(bindings(world).some((c) => c.includes('--role=roles/iam.serviceAccountUser'))).toBe(false);
   });
 
@@ -1070,6 +1070,34 @@ describe.skipIf(!CAPABLE)('setup-cluster.sh steps 18-26 — the remote conductor
     expect(r.status).toBe(1);
     expect(r.stderr).toContain('HARMONY_API_TOKEN');
     expect(mutating(world)).toEqual([]);
+  });
+
+  it('B-1435: the closing summary prints region and registry and a ready sed line for the manifest placeholders, pod path first', () => {
+    const world = makeWorld();
+    const r = setupAll(world, ['--zone', 'europe-west1-b']);
+    expect(r.status).toBe(0);
+    const done = r.stdout.slice(r.stdout.indexOf('Done. Values for the deployment config'));
+    expect(done).toMatch(/^region: +europe-west1$/m);
+    expect(done).toMatch(/^registry: +europe-west1-docker\.pkg\.dev\/proj-x\/harmony-workers$/m);
+    expect(done).toContain('sed -e "s|__GCP_PROJECT__|proj-x|g" -e "s|__REGION__|europe-west1|g" -e "s|__ZONE__|europe-west1-b|g"');
+    expect(done).toContain('-e "s|__REGISTRY__|europe-west1-docker.pkg.dev/proj-x/harmony-workers|g" -e "s|__CONDUCTOR_GSA__|harmony-conductor@proj-x.iam.gserviceaccount.com|g"');
+    expect(done).toContain('-e "s|__CONDUCTOR_VERSION__|<plugin version>-<channel>|g" -e "s|__CONFIG_REPO__|<owner>/<config-repo>|g"');
+    expect(done).toContain('-e "s|__GITHUB_APP_ID__|<app id>|g" -e "s|__GITHUB_INSTALLATION_ID__|<installation id>|g"');
+    const pod = done.indexOf('remote conductor (the primary path)');
+    const fallback = done.indexOf('Fallback (a local conductor on a machine host instead of the pod)');
+    expect(pod).toBeGreaterThan(-1);
+    expect(fallback).toBeGreaterThan(pod);
+    expect(done.indexOf('gcloud container clusters get-credentials')).toBeGreaterThan(fallback);
+    expect(done.indexOf('sweep-ticket-disks.sh on the conductor host')).toBeGreaterThan(fallback);
+  });
+
+  it('B-1435: with --no-conductor the closing summary has no manifest sed line and labels the machine-host path', () => {
+    const world = makeWorld();
+    const r = setupAll(world, ['--no-conductor']);
+    expect(r.status).toBe(0);
+    const done = r.stdout.slice(r.stdout.indexOf('Done. Values for the deployment config'));
+    expect(done).not.toContain('__GCP_PROJECT__');
+    expect(done).toContain('Local conductor on a machine host (--no-conductor)');
   });
 
   it('--no-conductor skips steps 18-26 entirely', () => {

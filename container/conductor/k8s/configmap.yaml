@@ -8,9 +8,15 @@
 # B-1194: concurrency.max_workers below is 2 on purpose. The leg pool's node maximum (setup-cluster.sh --max-nodes)
 # defaults to 5; raise max_workers to the same number only after the GCP quotas for that ceiling are granted
 # (docs/remote-conductor-runbook.md §3a). A cap above the pool's capacity does not fail, but legs wait in Pending.
-# Fill the REPLACE-WITH-* placeholders (App id and installation id are identifiers, not secrets) and config_repo
-# before applying. `harmony conductor config doctor` checks a filled copy; the image smoke checks the example host
-# file with the same schema.
+# B-1435: every deployment-specific value is a __NAME__ placeholder (docs/remote-conductor-runbook.md step 4 lists
+# them; setup-cluster.sh prints the GCP ones). The App id and installation id are identifiers, not secrets. Fill them
+# all and apply in one line:
+#   sed -e "s|__GCP_PROJECT__|<project>|g" -e "s|__REGION__|<region>|g" -e "s|__ZONE__|<zone>|g" \
+#       -e "s|__CONDUCTOR_GSA__|<conductor service-account email>|g" -e "s|__CONFIG_REPO__|<owner>/<config-repo>|g" \
+#       -e "s|__GITHUB_APP_ID__|<app id>|g" -e "s|__GITHUB_INSTALLATION_ID__|<installation id>|g" \
+#       container/conductor/k8s/configmap.yaml | kubectl apply -f -
+# Check the filled copy first with `harmony conductor config doctor --configmap <filled file> --isolated`; the image
+# smoke checks the example host file with the same schema.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -20,21 +26,20 @@ data:
   conductor-host.json: |
     {
       "version": 1,
-      "config_repo": "REPLACE-OWNER/REPLACE-CONFIG-REPO",
+      "config_repo": "__CONFIG_REPO__",
       "plugin_dir": "/opt/harmony-plugin",
       "github_app": {
-        "app_id": "REPLACE-WITH-APP-ID",
-        "installation_id": "REPLACE-WITH-INSTALLATION-ID"
+        "app_id": "__GITHUB_APP_ID__",
+        "installation_id": "__GITHUB_INSTALLATION_ID__"
       },
       "gcloud": {
-        "account": "harmony-conductor@harmony-conductor.iam.gserviceaccount.com"
+        "account": "__CONDUCTOR_GSA__"
       },
       "gcp": {
-        "project": "harmony-conductor",
-        "region": "us-central1"
+        "project": "__GCP_PROJECT__",
+        "region": "__REGION__"
       },
       "secrets": {
-        "codex_auth": "harmony-codex-auth",
         "api_token": "HARMONY_API_TOKEN",
         "github_app_private_key": "harmony-daemon-app-private-key"
       }
@@ -45,22 +50,18 @@ data:
       "channel": "prod",
       "profile": "gke",
       "gcp": {
-        "project": "harmony-conductor",
-        "region": "us-central1"
+        "project": "__GCP_PROJECT__",
+        "region": "__REGION__"
       },
       "gke": {
         "cluster": "harmony-legs",
-        "location": "us-central1-a",
+        "location": "__ZONE__",
         "namespace": "harmony-legs",
-        "registry": "us-central1-docker.pkg.dev/harmony-conductor/harmony-workers",
         "ticket_disk": "20Gi",
         "storage_class": "harmony-ticket-disk"
       },
       "concurrency": {
         "max_workers": 2
-      },
-      "model_policy": {
-        "default": "claude-sonnet-5-5"
       },
       "log_shipping": true
     }
