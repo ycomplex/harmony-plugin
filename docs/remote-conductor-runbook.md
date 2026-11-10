@@ -1,6 +1,6 @@
 # Remote conductor runbook (B-1173, B-1186)
 
-> **Living · product · Tier 2** · verified against plugin source 2e94916 / web 5330f8c on 2026-11-10 · **revise when:** the conductor image, its manifests, `setup-cluster.sh`, the leg size or the quotas the ceiling needs change. Convention: harmony-workspace `docs/README.md` (B-1044).
+> **Living · product · Tier 2** · verified against plugin 0.17.40 (staging) / web 0f4caf8 (main) on 2026-11-10 · **revise when:** the conductor image, its manifests, `setup-cluster.sh`, the leg size or the quotas the ceiling needs change. Convention: harmony-workspace `docs/README.md` (B-1044).
 
 How to run a project's conductor as **one pod on the project's own GKE cluster**, from a machine that has only this
 plugin installed. Follow it top to bottom. Every command is written so it works from any directory: the plugin is
