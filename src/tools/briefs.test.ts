@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { validateBriefFrame } from './brief-frame-schema.js';
+import * as frameSchema from './brief-frame-schema.js';
 import { renderBrief, lintBrief, composeBrief, composeBriefTool, isMissingComposeBriefRevision, isMissingComposeBriefInitial, mergeBriefDoc, resetDocOnReasonChange, isMissingBriefHistorySubstrate, listBriefs, listBriefsTool, getBrief, getBriefTool, resolveBrief, resolveBriefTool, reshapeBrief, reshapeBriefTool, clearRevisionIterateFeedback, validateResolutionProvenance, PROVENANCE_AGENT_SYNTHESIZED, PROVENANCE_WEB_ONLY, fetchPendingResolution, fetchUnderwritingClaims, fetchPendingRemark, consumeAcceptRemark, SENTENCE_WORD_LIMIT, DEFAULT_TAIL, STALE_PATCH_TAIL, PROPOSED_ACS_HEADING, PROMISED_WRITES_HEADING, DE_SCOPE_HEADING, ENTRY_PROVENANCE_PREFIX, frameUnits, readBuildPr, readBuildPrReferences, FRAME_KIND_FOR_REASON, renderSlot, type BriefDoc, type BriefItem, type GateFrame, type CriterionRow } from './briefs.js';
 
 // Pass-through: the handlers delegate id resolution to resolveTaskId (like the sibling task tools); the
@@ -5414,6 +5415,39 @@ verify:
       'manifest:founder-clickthrough',
       'manifest:ui-screenshot',
     ]);
+  });
+
+  it.each([undefined, 42])('B-1339 — the overlay tolerates non-string runtime fields (%s)', async (value) => {
+    const doc = verifyDoc();
+    const frame = doc.frame as Extract<GateFrame, { kind: 'verify' }>;
+    // Isolate the overlay's defensive behavior: current compose validation rejects these inputs
+    // before enrichment. Do not loosen that production validation contract.
+    const validate = vi.spyOn(frameSchema, 'validateBriefFrame').mockImplementationOnce(() => {});
+    const criterion = { ...frame.criteria[0], ac_id: value, disposition: 'test-proven', backed_by: 'unit regression' };
+    if (value === undefined) {
+      delete criterion.ac_id;
+      delete frame.evidence_status;
+    } else {
+      Object.assign(frame, { evidence_status: value });
+    }
+    Object.assign(frame, { criteria: [...frame.criteria, criterion] });
+    const client = makeClient([
+      { data: null }, { data: [] }, { data: [] }, { data: briefRow974 }, { data: null },
+    ]);
+    try {
+      await expect(composeBrief(client, PROJECT_ID, USER_ID, {
+        task_id: 'task-974', reason: 'verification-ack-pending', doc: doc as any,
+        manifest_root: manifestRoot(TWO_ENTRY_MANIFEST),
+        changed_paths: ['src/components/SavedView.tsx'],
+      })).resolves.toBeDefined();
+      const persisted = client.insert.mock.calls[0][0] as { doc: BriefDoc };
+      const result = persisted.doc.frame as Extract<GateFrame, { kind: 'verify' }>;
+      expect(result.criteria[1]).toEqual(criterion);
+      expect(result.criteria).toHaveLength(4);
+      expect(result.evidence_status).toBe('Declared evidence — 2 outstanding: founder-clickthrough, ui-screenshot');
+    } finally {
+      validate.mockRestore();
+    }
   });
 
   it('B-1339 — two partial recomposes keep each manifest row and the rendered counts singular', async () => {
