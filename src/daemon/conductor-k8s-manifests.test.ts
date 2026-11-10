@@ -118,7 +118,7 @@ describe('Deployment harmony-conductor', () => {
 
   it('pins a VERSION tag placeholder, never a moving tag', () => {
     const [repo, tag] = c.image.split(':').length === 2 ? c.image.split(':') : [c.image, ''];
-    expect(repo).toBe('us-central1-docker.pkg.dev/harmony-conductor/harmony-workers/harmony-conductor');
+    expect(repo).toBe('__REGISTRY__/harmony-conductor'); // B-1435: the registry is the operator's placeholder
     expect(tag).toBe('__CONDUCTOR_VERSION__');
     expect(c.image).not.toMatch(/:(latest|staging|prod|candidate)$/);
     expect(one('CronJob').spec.jobTemplate.spec.template.spec.containers[0].image).toBe(c.image);
@@ -145,7 +145,7 @@ describe('Deployment harmony-conductor', () => {
     const env = Object.fromEntries(c.env.map((e: Doc) => [e.name, e.value]));
     expect(env).toMatchObject({
       HARMONY_CONDUCTOR_REMOTE: '1',
-      HARMONY_CONDUCTOR_IMAGE: 'us-central1-docker.pkg.dev/harmony-conductor/harmony-workers/harmony-conductor',
+      HARMONY_CONDUCTOR_IMAGE: '__REGISTRY__/harmony-conductor',
       HARMONY_PLUGIN_POSTURE: 'prod',
       HARMONY_HOME: '/var/harmony',
       HARMONY_CONDUCTOR_HOST_FILE: '/etc/harmony/conductor-host.json',
@@ -163,25 +163,35 @@ describe('ServiceAccount, ConfigMap and RBAC', () => {
   it('the service account is annotated for Workload Identity', () => {
     const sa = one('ServiceAccount');
     expect(sa.metadata.name).toBe('harmony-conductor');
-    expect(sa.metadata.annotations['iam.gke.io/gcp-service-account']).toBe('harmony-conductor@harmony-conductor.iam.gserviceaccount.com');
+    expect(sa.metadata.annotations['iam.gke.io/gcp-service-account']).toBe('__CONDUCTOR_GSA__');
   });
 
   it('the ConfigMap files validate against the strict schemas and the secrets block holds names only', () => {
     const cm = one('ConfigMap');
     const host = JSON.parse(cm.data['conductor-host.json']);
     const project = JSON.parse(cm.data['conductor-project.json']);
-    expect(HostFileSchema.safeParse(host).success).toBe(true);
-    expect(ProjectFileSchema.safeParse(project).success).toBe(true);
+    // B-1435: the shipped blobs carry __NAME__ placeholders (config_repo's is not owner/name-shaped until filled), so
+    // the schemas are checked on a filled copy; the raw shapes below are checked as shipped.
+    const fill = (t: string): string =>
+      t.replace('__CONFIG_REPO__', 'acme/config').replace(/__[A-Z][A-Z0-9_]*__/g, (m) => m.toLowerCase().replace(/_/g, 'x'));
+    expect(HostFileSchema.safeParse(JSON.parse(fill(cm.data['conductor-host.json']))).success).toBe(true);
+    expect(ProjectFileSchema.safeParse(JSON.parse(fill(cm.data['conductor-project.json']))).success).toBe(true);
     for (const v of Object.values(host.secrets) as string[]) expect(looksLikeSecretValue(v)).toBe(false);
-    expect(Object.keys(host.secrets).sort()).toEqual(['api_token', 'codex_auth', 'github_app_private_key']);
+    // B-1435: no codex_auth — the legacy Codex login is opt-in, set by an operator who uses it
+    expect(Object.keys(host.secrets).sort()).toEqual(['api_token', 'github_app_private_key']);
     expect(host.github_app.private_key_path).toBeUndefined();
     expect(project.gke.namespace).toBe('harmony-legs');
     expect(project.gke.storage_class).toBe('harmony-ticket-disk');
     expect(project.images).toBeUndefined();
-    expect(host.gcp.project).toBe('harmony-conductor');
-    expect(host.gcloud.account).toBe('harmony-conductor@harmony-conductor.iam.gserviceaccount.com');
+    expect(host.gcp.project).toBe('__GCP_PROJECT__');
+    expect(host.gcloud.account).toBe('__CONDUCTOR_GSA__');
+    // B-1435: no seed gke.registry (it defaults from gcp.project) and no model_policy (each adopter sets its own)
+    expect(project.gke.registry).toBeUndefined();
+    expect(project.model_policy).toBeUndefined();
+    expect(project.gke.location).toBe('__ZONE__');
     // the schema still ACCEPTS the legacy secrets.base so old host files load
-    expect(HostFileSchema.safeParse({ ...host, secrets: { ...host.secrets, base: 'harmony-worker-base-env' } }).success).toBe(true);
+    const filledHost = JSON.parse(fill(cm.data['conductor-host.json']));
+    expect(HostFileSchema.safeParse({ ...filledHost, secrets: { ...filledHost.secrets, base: 'harmony-worker-base-env' } }).success).toBe(true);
     expect(JSON.stringify(cm)).not.toMatch(/BEGIN [A-Z ]*PRIVATE KEY/);
   });
 

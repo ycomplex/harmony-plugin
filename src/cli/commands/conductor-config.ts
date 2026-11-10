@@ -7,6 +7,9 @@
 //            file: proving the new files suffice (by renaming the old ones away) is the operator's act.
 //   doctor   explain the config: every source considered, EVERY issue (not just the first), every key set
 //            to different values in two layers, every legacy source still in use. Exit 1 on any issue.
+//            B-1435: --configmap <file> reads the host and project layers from a remote conductor's ConfigMap
+//            manifest (no API server); --isolated ignores deployment.json, the legacy env knobs and the
+//            HARMONY_HOME default paths, so with --configmap the ConfigMap is the only source.
 //
 // Like `harmony config get` (config.ts) none of these go through runCommand/getAuthenticatedContext: they
 // read local files (and, for sync, one GitHub API call), and must work with no project logged in.
@@ -20,6 +23,7 @@ import { execFile } from 'node:child_process';
 import { chmodSync, existsSync as fsExistsSync, mkdirSync, readFileSync as fsReadFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { Command } from 'commander';
+import { parseAllDocuments } from 'yaml';
 import {
   ConductorConfigError,
   conductorEnvVarName,
@@ -412,27 +416,144 @@ export function findConflicts(l: DoctorLayers): Conflict[] {
 
 const getPathValue = (o: Obj, path: string[]): unknown => path.reduce<unknown>((cur, seg) => (isPlain(cur) ? cur[seg] : undefined), o);
 
-export function runDoctor(deps: ConductorCliDeps, opts: { config?: string } = {}): CliResult {
-  const env = deps.env;
+export interface DoctorOptions {
+  /** Explicit deployment.json path (overrides HARMONY_DEPLOYMENT_CONFIG). */
+  config?: string;
+  /** B-1435: a Kubernetes ConfigMap manifest; its data['conductor-host.json'] and data['conductor-project.json']
+   *  are the host and project layers (read from the file, never from an API server). */
+  configmap?: string;
+  /** B-1435: ignore deployment.json, the legacy env knobs and the HARMONY_HOME default paths. */
+  isolated?: boolean;
+}
+
+/** The two ConfigMap data keys a remote conductor mounts at /etc/harmony. */
+export const CONFIGMAP_HOST_KEY = 'conductor-host.json';
+export const CONFIGMAP_PROJECT_KEY = 'conductor-project.json';
+
+/** B-1435: the host and project blobs of a ConfigMap manifest. Problems come back as issues, never a throw. */
+export function readConfigMapBlobs(
+  text: string,
+  path: string,
+): { host?: string; project?: string; issues: ConductorConfigIssue[]; placeholders: ConductorConfigIssue[] } {
+  const file = path.split('/').pop() || path;
+  const issue = (key: string, problem: string, fix: string): ConductorConfigIssue => ({ file, key, problem, fix });
+  let docs: unknown[];
+  try {
+    const parsed = parseAllDocuments(text);
+    const list = Array.isArray(parsed) ? parsed : [parsed];
+    const bad = list.find((d) => d.errors.length > 0);
+    if (bad) return { issues: [issue('(file)', `is not valid YAML: ${bad.errors[0]!.message.split('\n')[0]}`, `correct ${path}`)], placeholders: [] };
+    docs = list.map((d) => d.toJS() as unknown);
+  } catch (err) {
+    return { issues: [issue('(file)', `is not valid YAML: ${err instanceof Error ? err.message : String(err)}`, `correct ${path}`)], placeholders: [] };
+  }
+  const cm = docs.find((d): d is Obj => isPlain(d) && d.kind === 'ConfigMap');
+  if (!cm) return { placeholders: [], issues: [issue('(file)', 'holds no document of kind ConfigMap', 'point --configmap at the conductor ConfigMap manifest (container/conductor/k8s/configmap.yaml, filled)')] };
+  const data = isPlain(cm.data) ? cm.data : {};
+  const out: { host?: string; project?: string; issues: ConductorConfigIssue[]; placeholders: ConductorConfigIssue[] } = { issues: [], placeholders: [] };
+  for (const [key, slot] of [[CONFIGMAP_HOST_KEY, 'host'], [CONFIGMAP_PROJECT_KEY, 'project']] as const) {
+    const v = data[key];
+    if (typeof v === 'string') {
+      out[slot] = v;
+      // the shipped manifest's __NAME__ placeholders (docs/remote-conductor-runbook.md step 4) left unfilled
+      const left = [...new Set(v.match(/__[A-Z][A-Z0-9_]*__/g) ?? [])];
+      if (left.length) out.placeholders.push(issue(`data.${key}`, `still holds unfilled placeholder(s) ${left.join(', ')}`, 'fill every placeholder with the sed line in the manifest header'));
+    } else out.issues.push(issue(`data.${key}`, v === undefined ? 'is missing' : 'is not a string', `add data["${key}"] to the ConfigMap`));
+  }
+  return out;
+}
+
+/** HARMONY_HOME stand-in under --isolated: nothing below it exists, so no default-path file is read. */
+const ISOLATED_HOME = '/nonexistent/harmony-doctor-isolated';
+
+export function runDoctor(deps0: ConductorCliDeps, opts: DoctorOptions = {}): CliResult {
+  // B-1435: --configmap / --isolated reshape what the doctor can see, then the SAME evaluation runs on it. The
+  // ConfigMap blobs become two virtual files named by HARMONY_CONDUCTOR_HOST_FILE / _PROJECT_FILE.
+  const isolated = Boolean(opts.isolated);
+  const virtual = new Map<string, string>();
+  const cmIssues: ConductorConfigIssue[] = [];
+  const placeholderIssues: ConductorConfigIssue[] = [];
+  let cmLoaded = false;
+  let env: NodeJS.ProcessEnv = deps0.env;
+  if (isolated) {
+    const legacyNames = new Set(LEGACY_ENV_KNOBS.map((k) => k.name));
+    env = Object.fromEntries(Object.entries(env).filter(([k]) => !legacyNames.has(k) && k !== 'HARMONY_DEPLOYMENT_CONFIG'));
+    env.HARMONY_HOME = ISOLATED_HOME;
+  }
+  if (opts.configmap) {
+    const cmPath = resolve(opts.configmap);
+    let text: string | null = null;
+    try {
+      text = deps0.readFileSync(cmPath);
+    } catch (err) {
+      cmIssues.push({ file: opts.configmap, key: '(file)', problem: `could not be read: ${err instanceof Error ? err.message : String(err)}`, fix: `check that ${cmPath} exists and is readable` });
+    }
+    const blobs = text === null ? { issues: [], placeholders: [] } : readConfigMapBlobs(text, cmPath);
+    cmIssues.push(...blobs.issues);
+    placeholderIssues.push(...blobs.placeholders);
+    const hostPath = `${cmPath}#data.${CONFIGMAP_HOST_KEY}`;
+    const projectPath = `${cmPath}#data.${CONFIGMAP_PROJECT_KEY}`;
+    if (isolated) {
+      // the ConfigMap is the ONLY source: no env override layer, no other path
+      env = { HARMONY_HOME: ISOLATED_HOME };
+    } else {
+      env = { ...env };
+      delete env.HARMONY_CONDUCTOR_SNAPSHOT_FILE;
+    }
+    env.HARMONY_CONDUCTOR_HOST_FILE = hostPath;
+    env.HARMONY_CONDUCTOR_PROJECT_FILE = projectPath;
+    if (cmIssues.length === 0 && blobs.host !== undefined && blobs.project !== undefined) {
+      cmLoaded = true;
+      virtual.set(hostPath, blobs.host);
+      virtual.set(projectPath, blobs.project);
+      // The pod resolves the GitHub App key from the Secret Manager secret its host blob NAMES, at boot, before the
+      // config is loaded; stand in for that so a ConfigMap that names the secret is not reported as keyless.
+      try {
+        const named = (JSON.parse(blobs.host) as { secrets?: { github_app_private_key?: unknown } }).secrets?.github_app_private_key;
+        if (typeof named === 'string' && named && !env.HARMONY_APP_PRIVATE_KEY) env.HARMONY_APP_PRIVATE_KEY = `(resolved at boot from Secret Manager secret ${named})`;
+      } catch {
+        // invalid JSON: the evaluation below reports it as an issue
+      }
+    }
+  }
+  const deps: ConductorCliDeps = {
+    ...deps0,
+    env,
+    existsSync: (p) => (virtual.has(p) ? true : isolated && p.startsWith(ISOLATED_HOME) ? false : opts.configmap && p.startsWith(resolve(opts.configmap) + '#') ? false : deps0.existsSync(p)),
+    readFileSync: (p) => {
+      const v = virtual.get(p);
+      return v !== undefined ? v : deps0.readFileSync(p);
+    },
+  };
+
   const paths = resolveConductorPaths(env);
   const legacyPath = resolveDeploymentConfigPath({ configPath: opts.config, env });
   const loadLegacy = () =>
-    loadLegacyDeploymentConfig({ configPath: opts.config, env, existsSync: deps.existsSync, readFileSync: deps.readFileSync });
+    isolated ? null : loadLegacyDeploymentConfig({ configPath: opts.config, env, existsSync: deps.existsSync, readFileSync: deps.readFileSync });
 
   // (a) SOURCES
-  const snap = readSnapshot(paths.snapshotFile);
+  const snap = opts.configmap || paths.snapshotFile.startsWith(ISOLATED_HOME) ? null : readSnapshot(paths.snapshotFile);
   const knobsSet = LEGACY_ENV_KNOBS.filter((k) => env[k.name] !== undefined && env[k.name] !== '').map((k) => k.name);
-  const sources = [
-    { source: 'project override file (HARMONY_CONDUCTOR_PROJECT_FILE)', path: paths.projectFile ?? null, found: paths.projectFile ? deps.existsSync(paths.projectFile) : false },
-    {
-      source: 'project snapshot (last-good copy of config_repo main)',
-      path: paths.snapshotFile,
-      found: snap !== null,
-      detail: snap ? `${snap.source.repo}@${snap.source.ref}, fetched ${snap.fetched_at}, sha ${snap.sha ?? 'unknown'}` : deps.existsSync(paths.snapshotFile) ? 'present but unreadable or malformed' : undefined,
-    },
-    { source: 'host file', path: paths.hostFile, found: deps.existsSync(paths.hostFile) },
-    { source: 'legacy deployment.json (deprecated)', path: legacyPath, found: deps.existsSync(legacyPath) },
-    { source: 'legacy env knobs in THIS shell (deprecated)', path: null, found: knobsSet.length > 0, detail: knobsSet.join(', ') || undefined },
+  const projectSource = opts.configmap
+    ? { source: `ConfigMap data["${CONFIGMAP_PROJECT_KEY}"] (project layer)`, path: resolve(opts.configmap), found: cmLoaded }
+    : { source: 'project override file (HARMONY_CONDUCTOR_PROJECT_FILE)', path: paths.projectFile ?? null, found: paths.projectFile ? deps.existsSync(paths.projectFile) : false };
+  const snapshotSource = {
+    source: 'project snapshot (last-good copy of config_repo main)',
+    path: paths.snapshotFile,
+    found: snap !== null,
+    detail: snap ? `${snap.source.repo}@${snap.source.ref}, fetched ${snap.fetched_at}, sha ${snap.sha ?? 'unknown'}` : deps.existsSync(paths.snapshotFile) ? 'present but unreadable or malformed' : undefined,
+  };
+  const hostSource = opts.configmap
+    ? { source: `ConfigMap data["${CONFIGMAP_HOST_KEY}"] (host layer)`, path: resolve(opts.configmap), found: cmLoaded }
+    : { source: 'host file', path: paths.hostFile, found: deps.existsSync(paths.hostFile) };
+  const legacyFileSource = { source: 'legacy deployment.json (deprecated)', path: legacyPath, found: isolated ? false : deps.existsSync(legacyPath) };
+  const legacyEnvSource = { source: 'legacy env knobs in THIS shell (deprecated)', path: null, found: knobsSet.length > 0, detail: knobsSet.join(', ') || undefined };
+  type Source = { source: string; path: string | null; found: boolean; detail?: string };
+  const sources: Source[] = [
+    projectSource,
+    ...(opts.configmap || (isolated && !snapshotSource.found) ? [] : [snapshotSource]),
+    hostSource,
+    ...(isolated ? [] : [legacyFileSource, legacyEnvSource]),
   ];
 
   let issues: ConductorConfigIssue[] = [];
@@ -442,7 +563,10 @@ export function runDoctor(deps: ConductorCliDeps, opts: { config?: string } = {}
   let evaluated = false;
   const notes: string[] = [];
   let dep = null as ReturnType<typeof loadLegacy>;
-  try {
+  if (cmIssues.length) {
+    // the ConfigMap itself is malformed: report that, and evaluate nothing built on a half-read file
+    issues = cmIssues;
+  } else try {
     dep = loadLegacy();
     const ev = evaluateConductorConfig({ env, existsSync: deps.existsSync, readFileSync: deps.readFileSync, warn: () => {}, loadLegacy: () => dep });
     if (ev) {
@@ -462,7 +586,9 @@ export function runDoctor(deps: ConductorCliDeps, opts: { config?: string } = {}
         env: ev.layers.env,
         legacyDeployment: depOnly.layer,
         legacyEnv: LEGACY_ENV_KNOBS.filter((k) => envOnly.envKnobs.includes(k.name)).map((k) => ({ name: k.name, key: k.path.join('.'), value: getPathValue(envOnly.layer, k.path) })),
-        labels: { project: snap && !paths.projectFile ? 'project (snapshot)' : 'project (conductor.json)', host: 'host (conductor-host.json)' },
+        labels: opts.configmap
+          ? { project: 'project (ConfigMap)', host: 'host (ConfigMap)' }
+          : { project: snap && !paths.projectFile ? 'project (snapshot)' : 'project (conductor.json)', host: 'host (conductor-host.json)' },
       });
     } else {
       const depOnly = legacyToConductor({ deployment: dep, env: {}, profileName: Object.keys(dep?.profiles ?? {}).find((n) => n === 'cloud' || n === 'gke') });
@@ -478,11 +604,13 @@ export function runDoctor(deps: ConductorCliDeps, opts: { config?: string } = {}
   // `harmony conductor … --remote` can reach the pod, but it runs no conductor. With no project source, no
   // legacy files and no conductor-host key in the host file, "no project file" is a fact about the machine,
   // not a problem with it: say so and stay green.
-  const projectSourceFound = sources[0].found || sources[1].found || sources[3].found || sources[4].found;
-  const hostRead = sources[2].found ? readHostFile(deps, paths.hostFile).host : null;
+  const projectSourceFound = projectSource.found || snapshotSource.found || legacyFileSource.found || (!isolated && legacyEnvSource.found);
+  const hostRead = hostSource.found ? readHostFile(deps, paths.hostFile).host : null;
   const notAConductorHost =
     !projectSourceFound && hostRead !== null && !['plugin_dir', 'github_app', 'config_repo'].some((k) => k in hostRead);
   if (notAConductorHost) issues = issues.filter((i) => !(i.key === '(file)' && i.file !== 'conductor-host.json'));
+
+  issues = [...placeholderIssues, ...issues];
 
   const hot = [...HOT_KEYS];
   const restart = [...RESTART_ONLY_KEYS];
@@ -497,6 +625,9 @@ export function runDoctor(deps: ConductorCliDeps, opts: { config?: string } = {}
       '',
       'NOTE: this machine is not a conductor host. Its host file names no plugin_dir, github_app or config_repo, and no project file exists here, which is expected on a machine that only drives a remote conductor (check that with `harmony conductor status --remote`). To run a conductor on this machine, see `harmony conductor config migrate` / `sync`.',
     );
+  }
+  if (isolated) {
+    lines.push('', `NOTE: --isolated: deployment.json, the legacy env knobs and the HARMONY_HOME default paths were not read${opts.configmap ? '; the ConfigMap is the only source' : ''}.`);
   }
   if (!evaluated && issues.length === 0) {
     lines.push('', 'No project file, snapshot or host file exists: nothing to validate. The conductor runs on the legacy files exactly as before.');
@@ -513,7 +644,7 @@ export function runDoctor(deps: ConductorCliDeps, opts: { config?: string } = {}
   lines.push('', `LEGACY IN USE (${legacyInUse.length})`);
   if (legacyInUse.length === 0) lines.push('  (none)');
   for (const w of legacyInUse) lines.push(`  ${w.replace(/^deprecated: /, '')}`);
-  lines.push('  (only THIS shell\'s environment is checked; to check the conductor\'s, run `set -a; . <conductor.env>; set +a` first)');
+  if (!isolated) lines.push('  (only THIS shell\'s environment is checked; to check the conductor\'s, run `set -a; . <conductor.env>; set +a` first)');
   if (warnings.length) {
     lines.push('', `WARNINGS (${warnings.length})`);
     for (const w of warnings) lines.push(`  ${w}`);
@@ -584,5 +715,7 @@ export function registerConductorCommands(program: Command, makeDeps: () => Cond
     .command('doctor')
     .description('Explain the conductor config: sources, every issue, conflicts between layers, legacy sources in use. Exits 1 on any issue')
     .option('--config <path>', 'Explicit deployment.json path (overrides HARMONY_DEPLOYMENT_CONFIG)')
-    .action((opts: { config?: string }) => emit(program, runDoctor(makeDeps(), opts)));
+    .option('--configmap <file>', "Read the host and project layers from a remote conductor's ConfigMap manifest (data['conductor-host.json'] / data['conductor-project.json']); no API server")
+    .option('--isolated', 'Ignore deployment.json, the legacy env knobs and the HARMONY_HOME default paths (with --configmap, the ConfigMap is the only source)', false)
+    .action((opts: DoctorOptions) => emit(program, runDoctor(makeDeps(), opts)));
 }

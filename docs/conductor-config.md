@@ -213,6 +213,21 @@ conflict with a legacy env knob carries the note *environment wins at launch (de
 remove it from conductor.env*. Exit **1** when there is any issue; conflicts and legacy use are warnings (exit
 0). To check what the conductor sees, load its environment first: `set -a; . <conductor.env>; set +a`.
 
+Two flags check a **remote conductor's** config without its cluster (B-1435):
+
+- `--configmap <file>` reads the host and project layers from a Kubernetes ConfigMap manifest (its
+  `data["conductor-host.json"]` and `data["conductor-project.json"]`, parsed from the file; no API server). A missing
+  data key, YAML that does not parse, a blob that is not valid JSON, or a `__NAME__` placeholder left unfilled is an
+  issue (exit 1), never a crash. A host blob that names `secrets.github_app_private_key` counts as carrying the App
+  key, because the pod resolves it from Secret Manager at boot.
+- `--isolated` ignores `deployment.json`, the legacy env knobs and the `HARMONY_HOME` default paths (an explicit
+  `HARMONY_CONDUCTOR_HOST_FILE` / `_PROJECT_FILE` / `_SNAPSHOT_FILE` is still read). With `--configmap`, the
+  ConfigMap is the only source.
+
+```
+$ harmony conductor config doctor --configmap /tmp/configmap.filled.yaml --isolated
+```
+
 ## Launch and reap exit codes (B-1187)
 
 The conductor reads only a launch script's exit code. Besides `0` (clean) and `1` (any dirty exit), a launcher

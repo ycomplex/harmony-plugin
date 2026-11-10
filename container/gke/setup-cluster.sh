@@ -846,8 +846,11 @@ if [ "$NO_CONDUCTOR" -eq 0 ]; then
 fi
 
 step "Done. Values for the deployment config"
+REGISTRY="$ARTIFACT_LOCATION-docker.pkg.dev/$ARTIFACT_PROJECT/$ARTIFACT_REPO"
 echo "project:        $PROJECT"
+echo "region:         $REGION"
 echo "zone:           $ZONE"
+echo "registry:       $REGISTRY"
 echo "cluster:        $CLUSTER"
 echo "node pool:      $POOL"
 echo "system pool:    $SYSTEM_POOL ($SYSTEM_NODES x $SYSTEM_MACHINE_TYPE)"
@@ -871,14 +874,25 @@ echo "Next steps:"
 if [ "$QUOTA_WARNED" -eq 1 ]; then
   echo "  - request an SSD_TOTAL_GB quota increase in $REGION (the warning above fired)."
 fi
+if [ "$NO_CONDUCTOR" -eq 0 ]; then
+  # B-1435: the remote-conductor pod is the primary path. The manifests carry __NAME__ placeholders; this sed fills
+  # every one this script knows. The <...> values are the operator's (docs/remote-conductor-runbook.md step 4).
+  echo "  - remote conductor (the primary path): fill the placeholders in container/conductor/k8s/ and apply each file"
+  echo "    (configmap.yaml, serviceaccount.yaml, deployment.yaml, cronjob-sweep.yaml; runbook step 4). Nothing here starts a conductor:"
+  echo "      sed -e \"s|__GCP_PROJECT__|$PROJECT|g\" -e \"s|__REGION__|$REGION|g\" -e \"s|__ZONE__|$ZONE|g\" \\"
+  echo "          -e \"s|__REGISTRY__|$REGISTRY|g\" -e \"s|__CONDUCTOR_GSA__|$CONDUCTOR_GSA_EMAIL|g\" \\"
+  echo "          -e \"s|__CONDUCTOR_VERSION__|<plugin version>-<channel>|g\" -e \"s|__CONFIG_REPO__|<owner>/<config-repo>|g\" \\"
+  echo "          -e \"s|__GITHUB_APP_ID__|<app id>|g\" -e \"s|__GITHUB_INSTALLATION_ID__|<installation id>|g\" \\"
+  echo "          container/conductor/k8s/<file> | kubectl apply -f -"
+  echo "    The pod's CronJob runs the ticket-disk sweep."
+  if [ -z "$CLOUD_RUN_RUNTIME_SA" ]; then
+    echo "  - note: step 22 (Cloud Run runtime SA) was not requested; pass --cloud-run-runtime-sa only if you will launch Cloud Run legs."
+  fi
+  echo "  Fallback (a local conductor on a machine host instead of the pod):"
+else
+  echo "  Local conductor on a machine host (--no-conductor):"
+fi
 echo "  - on the conductor host (with kubectl and gke-gcloud-auth-plugin installed), as the conductor service account:"
 echo "      CLOUDSDK_CORE_ACCOUNT=$DAEMON_SA gcloud container clusters get-credentials $CLUSTER --zone $ZONE --project $PROJECT"
 echo "  - if you changed the defaults, tell the launcher: HARMONY_GKE_TRANSCRIPT_BUCKET=$TRANSCRIPT_BUCKET HARMONY_GKE_SERVICE_ACCOUNT=$LEG_KSA"
-echo "  - schedule container/gke/sweep-ticket-disks.sh on the conductor host (cron / launchd) — or, for the remote conductor, let its CronJob do it."
-if [ "$NO_CONDUCTOR" -eq 0 ]; then
-  echo "  - remote conductor: edit and apply container/conductor/k8s/configmap.yaml, deployment.yaml and cronjob-sweep.yaml (fill the image version"
-  echo "    and the App identifiers; each file's header says how). Nothing here starts a conductor."
-  if [ -z "$CLOUD_RUN_RUNTIME_SA" ]; then
-    echo "  - step 22 was skipped: rerun with --cloud-run-runtime-sa <email> before the pod launches Cloud Run legs."
-  fi
-fi
+echo "  - schedule container/gke/sweep-ticket-disks.sh on the conductor host (cron / launchd)."

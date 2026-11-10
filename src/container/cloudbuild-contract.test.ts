@@ -54,8 +54,14 @@ function findBareSubstitutionReads(text: string): string[] {
   return matches;
 }
 
-describe('container/cloudbuild.yaml: no unescaped $NAME shell-variable reads (B-1074)', () => {
-  const raw = readFileSync(cloudbuildPath, 'utf8');
+// B-1435: the conductor image's build file resolves its image and channel in bash too, so it gets the same scan.
+const conductorCloudbuildPath = fileURLToPath(new URL('../../container/conductor/cloudbuild.yaml', import.meta.url));
+
+describe.each([
+  ['container/cloudbuild.yaml', cloudbuildPath],
+  ['container/conductor/cloudbuild.yaml', conductorCloudbuildPath],
+])('%s: no unescaped $NAME shell-variable reads (B-1074)', (_label, path) => {
+  const raw = readFileSync(path, 'utf8');
   const config = parseYaml(raw) as CloudBuildConfig;
 
   it('parses as YAML with at least one step', () => {
@@ -116,11 +122,13 @@ describe('container/cloudbuild.yaml: push-latest retags :latest from the version
     return script as string;
   }
 
-  it('push-latest retags ${_IMAGE}:latest from the version tag, and does so BEFORE the push', () => {
+  // B-1435: the image path is resolved once by resolve-images into /workspace/image.txt; push-latest reads it as $$IMAGE.
+  it('push-latest retags <image>:latest from the version tag, and does so BEFORE the push', () => {
     const script = getStepScript('push-latest');
 
-    const tagLine = 'docker tag "${_IMAGE}:$(cat /workspace/plugin_version.txt)" \'${_IMAGE}:latest\'';
-    const pushLine = "docker push '${_IMAGE}:latest'";
+    expect(script).toContain('IMAGE="$(cat /workspace/image.txt)"');
+    const tagLine = 'docker tag "$$IMAGE:$(cat /workspace/plugin_version.txt)" "$$IMAGE:latest"';
+    const pushLine = 'docker push "$$IMAGE:latest"';
 
     expect(
       script.includes(tagLine),
