@@ -62,6 +62,30 @@ describe('GitHub App installation check', () => {
     expect(JSON.stringify(output)).not.toContain(sentinel);
     expect(JSON.stringify(output)).not.toContain(opts.privateKeyPath);
   });
+  it.each([false, true])('accepts the observed conductor App fixture (optional deployments=%s)', async (withDeployments) => {
+    // Literal fixture from the seat's 2026-11-10 installation read, independent of production constants.
+    const grants = { actions: 'read', checks: 'read', contents: 'write', metadata: 'read', pull_requests: 'write', statuses: 'read', workflows: 'write', ...(withDeployments ? { deployments: 'read' } : {}) };
+    const data = await harness({ permissions: grants, events: [] }).run();
+    expect(data.ok).toBe(true);
+    const output = await wrap(data);
+    expect(output.exitCode).toBe(0);
+    expect(output.lines).toContain('OK: yes');
+    expect(output.lines).toContain(`Permissions: actions=read, checks=read, contents=write, ${withDeployments ? 'deployments=read, ' : ''}metadata=read, pull_requests=write, statuses=read, workflows=write`);
+    expect(data.permission_differences).toEqual({ missing: [], extra: [], wrong_level: [] });
+  });
+  it.each([
+    { actions: 'read', checks: 'read', contents: 'write', metadata: 'read', pull_requests: 'write', statuses: 'read', deployments: 'read' },
+    { ...EXPECTED_PERMISSIONS, workflows: 'read' },
+    { ...EXPECTED_PERMISSIONS, deployments: 'write' },
+    { ...EXPECTED_PERMISSIONS, deployments: 'admin' },
+    { ...EXPECTED_PERMISSIONS, administration: 'read' },
+    { ...EXPECTED_PERMISSIONS, administration: 'admin' },
+    { ...EXPECTED_PERMISSIONS, issues: 'read' },
+  ])('rejects missing/wrong workflows, excessive optional grants and other extras', async (permissions) => {
+    const data = await harness({ permissions }).run();
+    expect(data.ok).toBe(false);
+    expect((await wrap(data)).exitCode).toBe(1);
+  });
   it('collects all pages, including a terminal empty page for exact multiples of 100', async () => {
     const first = Array.from({ length: 100 }, (_, i) => repo(i + 1));
     const data = await harness({}, [{ total_count: 100, repositories: first }, { total_count: 100, repositories: [] }]).run();
@@ -185,6 +209,8 @@ describe('GitHub App installation check', () => {
     expect(readFileSync(resolve('scripts/check-app-installation.mjs'), 'utf8')).toContain("from './mint-installation-token.mjs'");
     const help = execFileSync(process.execPath, ['dist/bin/harmony.js', 'conductor', 'check-app', '--help'], { encoding: 'utf8' });
     expect(help).toContain('--private-key-path');
+    expect(help).toContain('workflows=write');
+    expect(help).toContain('Optional: deployments=read');
     const pack = JSON.parse(execFileSync('npm', ['pack', '--dry-run', '--json'], { encoding: 'utf8' }))[0];
     expect(pack.files.map((f: { path: string }) => f.path)).toEqual(expect.arrayContaining(['scripts/check-app-installation.mjs', 'scripts/mint-installation-token.mjs', '.claude-plugin/plugin.json']));
   });

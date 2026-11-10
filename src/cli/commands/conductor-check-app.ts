@@ -5,7 +5,8 @@ import type { Command } from 'commander';
 import { runningPluginRoot } from '../../config/plugin-source.js';
 
 const safeId = z.string().regex(/^[1-9][0-9]{0,15}$/).refine((v) => Number.isSafeInteger(Number(v)));
-const permissions = { actions: 'read', checks: 'read', contents: 'write', deployments: 'read', metadata: 'read', pull_requests: 'write', statuses: 'read' };
+const permissions = { actions: 'read', checks: 'read', contents: 'write', metadata: 'read', pull_requests: 'write', statuses: 'read', workflows: 'write' };
+const optionalPermissions = { deployments: 'read' };
 const resultSchema = z.object({
   app_id: safeId.nullable(), installation_id: safeId.nullable(),
   permissions: z.record(z.string().regex(/^[A-Za-z0-9_.-]{1,100}$/), z.enum(['read', 'write', 'admin'])).refine((v) => Object.keys(v).length <= 100),
@@ -41,7 +42,8 @@ export async function runAppCheck(opts: AppCheckOptions, deps: { root?: string |
     const data = resultSchema.parse(JSON.parse(child.stdout));
     if (data.app_id !== opts.appId || data.installation_id !== opts.installationId) return failure;
     // A child's success must agree with its evidence and process exit, never merely its `ok` field.
-    const expected = JSON.stringify(Object.fromEntries(Object.entries(data.permissions).sort())) === JSON.stringify(permissions);
+    const expected = Object.entries(permissions).every(([k, level]) => data.permissions[k] === level)
+      && Object.entries(data.permissions).every(([k, level]) => permissions[k as keyof typeof permissions] === level || optionalPermissions[k as keyof typeof optionalPermissions] === level);
     if (data.ok !== (data.expected_permissions && data.expected_events && data.app_identity_matches && data.repositories_complete) || data.expected_permissions !== expected || data.expected_events !== (data.repository_selection !== null && data.events.length === 0) || child.exitCode !== (data.ok ? 0 : 1)) return failure;
     const yes = (v: boolean) => v ? 'yes' : 'no';
     const lines = [`App: ${data.app_id}`, `Installation: ${data.installation_id}`, `Permissions: ${Object.entries(data.permissions).map(([k, v]) => `${k}=${v}`).join(', ')}`, `Events: ${JSON.stringify(data.events)}`, `Repository selection: ${data.repository_selection ?? 'unknown'}`, 'Repositories:', ...data.repositories.map((r) => `  ${r}`), `Expected permissions: ${yes(data.expected_permissions)}`, `Expected events: ${yes(data.expected_events)}`, `App identity matches: ${yes(data.app_identity_matches)}`, `Repositories complete: ${yes(data.repositories_complete)}`, `OK: ${yes(data.ok)}`];
@@ -56,6 +58,7 @@ export async function runAppCheck(opts: AppCheckOptions, deps: { root?: string |
 }
 export function registerAppCheck(program: Command, conductor: Command): void {
   conductor.command('check-app').description('Check an explicit GitHub App installation without printing credentials')
+    .addHelpText('after', '\nRequired grants: actions=read, checks=read, contents=write, metadata=read, pull_requests=write, statuses=read, workflows=write.\nOptional: deployments=read. All other extras (including administration) and nonempty events fail.\n')
     .requiredOption('--app-id <id>', 'GitHub App id')
     .requiredOption('--installation-id <id>', 'Installation id')
     .requiredOption('--private-key-path <path>', 'Path to the App private key (never printed)')

@@ -3,7 +3,8 @@ import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { buildJwt, mintInstallationToken } from './mint-installation-token.mjs';
 
-export const EXPECTED_PERMISSIONS = Object.freeze({ actions: 'read', checks: 'read', contents: 'write', deployments: 'read', metadata: 'read', pull_requests: 'write', statuses: 'read' });
+export const EXPECTED_PERMISSIONS = Object.freeze({ actions: 'read', checks: 'read', contents: 'write', metadata: 'read', pull_requests: 'write', statuses: 'read', workflows: 'write' });
+export const OPTIONAL_PERMISSIONS = Object.freeze({ deployments: 'read' });
 const API = 'https://api.github.com';
 const identifier = /^[1-9][0-9]{0,15}$/;
 const name = /^[A-Za-z0-9_.-]{1,100}$/;
@@ -48,8 +49,8 @@ export async function checkInstallation(opts, deps = {}) {
     result.repository_selection = installation.repository_selection;
     result.permission_differences = {
       missing: Object.keys(EXPECTED_PERMISSIONS).filter((k) => !(k in result.permissions)),
-      extra: Object.keys(result.permissions).filter((k) => !(k in EXPECTED_PERMISSIONS)),
-      wrong_level: Object.keys(EXPECTED_PERMISSIONS).filter((k) => k in result.permissions && result.permissions[k] !== EXPECTED_PERMISSIONS[k]).map((k) => ({ name: k, expected: EXPECTED_PERMISSIONS[k], actual: result.permissions[k] })),
+      extra: Object.keys(result.permissions).filter((k) => !Object.hasOwn(EXPECTED_PERMISSIONS, k) && !Object.hasOwn(OPTIONAL_PERMISSIONS, k)),
+      wrong_level: Object.entries({ ...EXPECTED_PERMISSIONS, ...OPTIONAL_PERMISSIONS }).filter(([k, level]) => k in result.permissions && result.permissions[k] !== level).map(([k, level]) => ({ name: k, expected: level, actual: result.permissions[k] })),
     };
     result.expected_permissions = Object.values(result.permission_differences).every((v) => v.length === 0);
     result.expected_events = result.events.length === 0;
