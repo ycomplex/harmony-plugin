@@ -15,7 +15,8 @@ Nothing here is specific to one project. Angle-bracket placeholders are yours to
 | `<zone>` / `<region>` | the cluster's zone, and the region it sits in | `us-central1-a` / `us-central1` |
 | `<daemon-account>` | the Google service account (or user) that runs kubectl for the conductor on the host | `conductor@<project>.iam.gserviceaccount.com` |
 | `<conductor-account>` | the Google service account the pod acts as (Workload Identity) | `harmony-conductor@<project>.iam.gserviceaccount.com` |
-| `<registry>` | the Artifact Registry repository holding the conductor image | `harmony-workers` |
+| `<artifact-repo>` | the Artifact Registry repository holding the conductor and worker images | `harmony-workers` |
+| `<registry>` | the full registry path `<region>-docker.pkg.dev/<project>/<artifact-repo>` (`setup-cluster.sh` prints it) | `us-central1-docker.pkg.dev/my-gcp-project/harmony-workers` |
 | `<config-repo>` | `owner/name` of the repo whose `main` holds `.harmony/conductor.json` | `my-org/my-workspace` |
 
 Secrets appear by **name only**. The values that are specific to one deployment (its project id, cluster, accounts,
@@ -30,7 +31,7 @@ secret names) belong in that deployment's own notes, not here.
 | Pod label | `app.kubernetes.io/name=harmony-conductor` |
 | Kubernetes identity | `harmony-conductor/harmony-conductor`, with a Role in `harmony-legs` and a Role in `harmony-conductor` (its own Deployment only). Nothing cluster-wide |
 | Google identity | `<conductor-account>` through Workload Identity |
-| Image | `<region>-docker.pkg.dev/<project>/<registry>/harmony-conductor`, tags `:<plugin version>-<channel>` (for example `0.16.41-staging`) and `:<channel>`; the Deployment is pinned to a version tag |
+| Image | `<registry>/harmony-conductor`, tags `:<plugin version>-<channel>` (for example `0.16.41-staging`) and `:<channel>`; the Deployment is pinned to a version tag |
 | Scheduling | the cluster's `default-pool` (the system pool), PriorityClass `harmony-conductor` |
 | Sweep | CronJob `harmony-sweep` in `harmony-conductor`, every 6 hours |
 | Codex owner (only with Codex legs) | CronJob `harmony-codex-refresh` in `harmony-conductor`, every minute, with its own PVC and service account, from the owner image built from `container/codex-auth/` (not the conductor image). It is set up by `docs/codex-auth-cutover.md`, not by this runbook |
@@ -111,6 +112,27 @@ Two triggers on the plugin repository, both using `container/conductor/cloudbuil
 
 - on push to the plugin's **`staging`** branch, with substitution `_CHANNEL=staging`;
 - on push to its **`prod`** branch, with `_CHANNEL=prod`.
+
+The build file names no project (B-1435). `_CHANNEL` may be left empty on a trigger: the build then derives it from
+the branch it built (`staging` or `prod`) and fails, naming `_CHANNEL`, on any other branch. The image path defaults
+from the build's own project: `_IMAGE` empty means `<_REGION>-docker.pkg.dev/<the build's PROJECT_ID>/<_ARTIFACT_REPO>/harmony-conductor`,
+with `_REGION` defaulting to `us-central1` and `_ARTIFACT_REPO` to `harmony-workers`. A trigger in your own project
+therefore needs only `_CHANNEL`; pass the others when your registry differs:
+
+```bash
+gcloud builds triggers create github --project <project> --name harmony-conductor-staging \
+  --repo-owner <owner> --repo-name <plugin-repo> --branch-pattern '^staging$' \
+  --build-config container/conductor/cloudbuild.yaml \
+  --substitutions _CHANNEL=staging
+gcloud builds triggers create github --project <project> --name harmony-conductor-prod \
+  --repo-owner <owner> --repo-name <plugin-repo> --branch-pattern '^prod$' \
+  --build-config container/conductor/cloudbuild.yaml \
+  --substitutions _CHANNEL=prod,_REGION=<region>,_ARTIFACT_REPO=<artifact-repo>
+# or the whole path at once: --substitutions _CHANNEL=prod,_IMAGE=<registry>/harmony-conductor
+```
+
+The worker-image build (`container/cloudbuild.yaml`) follows the same rule: `_IMAGE` and `_DOCKER_IMAGE` default to
+`<_REGION>-docker.pkg.dev/<the build's PROJECT_ID>/<_ARTIFACT_REPO>/harmony-build-env` and `.../harmony-build-env-docker`.
 
 Proves: a merge that regenerates `staging` publishes a staging image, and a promotion to `prod` publishes a prod
 image, each labelled `harmony.plugin_version`. The build runs `container/conductor/smoke.sh` against the candidate
@@ -222,8 +244,8 @@ Raising the ceiling, in this order (the pool first, the cap last):
 gcloud container clusters update <cluster> --project <project> --zone <zone> \
   --node-pool <pool> --enable-autoscaling --min-nodes 0 --max-nodes <ceiling>
 # edit concurrency.max_workers to <ceiling> in the project file (.harmony/conductor.json, or the configmap seed),
-# then for the pod's seed copy:
-kubectl -n harmony-conductor apply -f "$M/configmap.yaml"
+# then for the pod's seed copy (FILL is the sed list from step 4):
+sed "${FILL[@]}" "$M/configmap.yaml" | kubectl -n harmony-conductor apply -f -
 ```
 
 `concurrency.max_workers` is hot: the conductor re-reads the merged config every 5 minutes, so no restart is needed
@@ -231,35 +253,89 @@ kubectl -n harmony-conductor apply -f "$M/configmap.yaml"
 
 ## 4. Put the config in the manifests
 
-The shipped manifests carry **placeholders and the reference deployment's names**. Edit these before applying:
+The shipped manifests carry **no deployment's own values** (B-1435). Every value that is yours is a `__NAME__`
+placeholder, filled by `sed` at apply time:
 
-| File | What to set |
-|---|---|
-| `container/conductor/k8s/configmap.yaml` | `config_repo` (`<config-repo>`), the GitHub App `app_id` and `installation_id` (ids, not secrets), `gcloud.account`, `gcp.project` and `gcp.region`, and the `secrets` block (Secret Manager secret **names**). In the seed project file: `gke.cluster`, `gke.location`, `gke.registry` |
-| `container/conductor/k8s/deployment.yaml` | the image path and `HARMONY_CONDUCTOR_IMAGE` (`<region>-docker.pkg.dev/<project>/<registry>/harmony-conductor`), and `HARMONY_PLUGIN_POSTURE`: the channel the registry reports and Update follows. It ships as `prod` (B-1222); set `ack:staging` to run staging builds, and set the seed project file's `channel` to match. With Codex legs on token-only delivery, it also carries `HARMONY_CODEX_TOKEN_ONLY=1` and `HARMONY_CODEX_ACCESS_RESOURCE` (`docs/codex-auth-cutover.md`, step 5); keep them when you re-apply the manifest: without them Codex legs fall back to the copied-login path, which fails once that login has been removed |
-| `container/conductor/k8s/cronjob-sweep.yaml` | the same image path |
-| `container/conductor/k8s/serviceaccount.yaml` | the `iam.gke.io/gcp-service-account` annotation (`<conductor-account>`) |
+| Placeholder | What it is | Where `setup-cluster.sh` prints it | Files |
+|---|---|---|---|
+| `__GCP_PROJECT__` | the GCP project (`<project>`) | `project:` | `configmap.yaml` (host and seed `gcp.project`), `cronjob-sweep.yaml` |
+| `__REGION__` | the region (`<region>`) | `region:` | `configmap.yaml` (`gcp.region`) |
+| `__ZONE__` | the cluster's zone (`<zone>`), the seed's `gke.location` | `zone:` | `configmap.yaml` |
+| `__REGISTRY__` | the full registry path `<region>-docker.pkg.dev/<project>/<artifact-repo>` | `registry:` | `deployment.yaml` (image and `HARMONY_CONDUCTOR_IMAGE`), `cronjob-sweep.yaml` |
+| `__CONDUCTOR_GSA__` | the conductor's Google service-account email (`<conductor-account>`) | `conductor GSA:` | `configmap.yaml` (`gcloud.account`), `serviceaccount.yaml` (the `iam.gke.io/gcp-service-account` annotation), `cronjob-sweep.yaml` |
+| `__CONDUCTOR_VERSION__` | the image's version tag, `<plugin version>-<channel>` | not printed: the Cloud Build run publishes it (step 5) | `deployment.yaml`, `cronjob-sweep.yaml` |
+| `__CONFIG_REPO__` | `owner/name` of the config repo (`<config-repo>`) | not printed: yours | `configmap.yaml` |
+| `__GITHUB_APP_ID__` | the GitHub App's id (an identifier, not a secret) | not printed: yours | `configmap.yaml` |
+| `__GITHUB_INSTALLATION_ID__` | the App's installation id on your organisation | not printed: yours | `configmap.yaml` |
 
-Do this on a **copy** of the manifests (or a branch of your checkout), so the plugin directory stays clean. The
-config values live in the ConfigMap files, not in the pod's environment: a legacy `CLOUDSDK_*` or `HARMONY_GKE_*`
-variable in the Deployment would only produce a deprecation warning at boot.
+The one `sed` line that fills them all (`setup-cluster.sh` prints it at the end with the first five already filled;
+a placeholder a file does not hold is simply not matched):
 
-Check the filled files before applying: `node "$PLUGIN_DIR/dist/bin/harmony.js" conductor config doctor`
-(see `docs/conductor-config.md`).
+```bash
+FILL=(-e "s|__GCP_PROJECT__|<project>|g" -e "s|__REGION__|<region>|g" -e "s|__ZONE__|<zone>|g"
+      -e "s|__REGISTRY__|<registry>|g" -e "s|__CONDUCTOR_GSA__|<conductor-account>|g"
+      -e "s|__CONDUCTOR_VERSION__|<plugin version>-<channel>|g" -e "s|__CONFIG_REPO__|<config-repo>|g"
+      -e "s|__GITHUB_APP_ID__|<app id>|g" -e "s|__GITHUB_INSTALLATION_ID__|<installation id>|g")
+sed "${FILL[@]}" "$PLUGIN_DIR/container/conductor/k8s/<file>" | kubectl apply -f -
+```
+
+**Product-wide defaults the manifests keep.** They name no deployment, cannot by themselves point at anyone's
+resources, and are yours to change if you used other names:
+
+| Default | Where | Change it when |
+|---|---|---|
+| secret names `HARMONY_API_TOKEN` and `harmony-daemon-app-private-key` | `configmap.yaml` host `secrets` block (names only) | you passed other names to `setup-cluster.sh` |
+| `gke.cluster` and `gke.namespace` `harmony-legs` | `configmap.yaml` seed | you passed `--cluster` / `--namespace` |
+| `gke.storage_class` `harmony-ticket-disk` | `configmap.yaml` seed | you changed the storage class |
+| image name `harmony-conductor` | `deployment.yaml`, `cronjob-sweep.yaml` (after `__REGISTRY__/`) | never: the build publishes that name |
+| `_REGION` `us-central1`, `_ARTIFACT_REPO` `harmony-workers` | both `cloudbuild.yaml` files | your registry is elsewhere (step 2) |
+
+The Kubernetes object names and the `harmony-conductor` namespace are fixed: the lifecycle code patches them by name.
+
+**Keys the manifests no longer ship (B-1435).** Add them to your filled copy only if they apply to you:
+
+- `secrets.codex_auth` (host): set it only if you use the legacy Codex login. Token-only delivery
+  (`docs/codex-auth-cutover.md`) does not need it.
+- `model_policy` (seed): set your own workspace model policy, or leave it out.
+- `gke.registry` (seed): it defaults from `gcp.project` (`us-central1-docker.pkg.dev/<project>/harmony-workers`, B-1217); set
+  it only if your worker images live elsewhere.
+
+**The one sanctioned exception to the no-legacy-env rule.** The Deployment sets no `CLOUDSDK_*` or `HARMONY_GKE_*`
+variable: the config values live in the ConfigMap files, and such a variable would only produce a deprecation warning
+at boot. The sweep CronJob (`cronjob-sweep.yaml`) does keep `CLOUDSDK_CORE_ACCOUNT` and `CLOUDSDK_CORE_PROJECT`, filled
+from `__CONDUCTOR_GSA__` and `__GCP_PROJECT__`, the same values as the ConfigMap's `gcloud.account` and `gcp.project`.
+
+`deployment.yaml` also carries `HARMONY_PLUGIN_POSTURE`: the channel the registry reports and Update follows. It ships
+as `prod` (B-1222); set `ack:staging` to run staging builds, and set the seed project file's `channel` to match. With
+Codex legs on token-only delivery, it also carries `HARMONY_CODEX_TOKEN_ONLY=1` and `HARMONY_CODEX_ACCESS_RESOURCE`
+(`docs/codex-auth-cutover.md`, step 5); keep them when you re-apply the manifest: without them Codex legs fall back to
+the copied-login path, which fails once that login has been removed.
+
+Fill a **copy** (pipe through `sed` as above, or write the filled files outside the plugin directory), so the plugin
+directory stays clean. Check the filled ConfigMap before applying, with nothing else on the machine mixed in:
+
+```bash
+sed "${FILL[@]}" "$PLUGIN_DIR/container/conductor/k8s/configmap.yaml" > /tmp/configmap.filled.yaml
+node "$PLUGIN_DIR/dist/bin/harmony.js" conductor config doctor --configmap /tmp/configmap.filled.yaml --isolated
+```
+
+It reads the two ConfigMap files as the host and project layers (no API server), ignores this machine's
+`deployment.json` and legacy env knobs, and reports any placeholder left unfilled (see `docs/conductor-config.md`).
 
 ## 5. Apply the manifests
 
 The Deployment pins a **version** tag, never a moving one. Use the version the Cloud Build run published
-(`gcloud artifacts docker tags list <region>-docker.pkg.dev/<project>/<registry>/harmony-conductor`).
+(`gcloud artifacts docker tags list <registry>/harmony-conductor`) in `FILL` (step 4).
 
 ```bash
-M="$PLUGIN_DIR/container/conductor/k8s"            # or your edited copy
+M="$PLUGIN_DIR/container/conductor/k8s"
 kubectl apply --dry-run=server -f "$M/priorityclass.yaml"
 kubectl apply -f "$M/priorityclass.yaml"           # FIRST: the Deployment names it (cluster-scoped, operator-applied)
-kubectl apply -f "$M/configmap.yaml"
-sed "s/__CONDUCTOR_VERSION__/<plugin version>-<channel>/" "$M/cronjob-sweep.yaml" | kubectl apply -f -
-sed "s/__CONDUCTOR_VERSION__/<plugin version>-<channel>/" "$M/deployment.yaml" | kubectl apply --dry-run=server -f -
-sed "s/__CONDUCTOR_VERSION__/<plugin version>-<channel>/" "$M/deployment.yaml" | kubectl apply -f -
+sed "${FILL[@]}" "$M/configmap.yaml" | kubectl apply -f -
+sed "${FILL[@]}" "$M/serviceaccount.yaml" | kubectl apply -f -   # setup-cluster.sh already annotated it; harmless
+sed "${FILL[@]}" "$M/cronjob-sweep.yaml" | kubectl apply -f -
+sed "${FILL[@]}" "$M/deployment.yaml" | kubectl apply --dry-run=server -f -
+sed "${FILL[@]}" "$M/deployment.yaml" | kubectl apply -f -
 ```
 
 Proves: the manifests are valid on the live cluster. After that, the web panel's Update button (or `node "$PLUGIN_DIR/dist/bin/harmony.js" conductor restart` from a machine that runs no conductor, which asks the registry) moves the tag itself.

@@ -27,9 +27,17 @@ const stepText = (s: Step): string => (s.args ?? []).join('\n');
 const ids = build.steps.map((s) => s.id);
 
 describe('container/conductor/cloudbuild.yaml', () => {
-  it('is a separate file with the registry image and a channel substitution (project kept in the image substitution)', () => {
-    expect(build.substitutions._IMAGE).toBe('us-central1-docker.pkg.dev/harmony-conductor/harmony-workers/harmony-conductor');
-    expect(Object.keys(build.substitutions)).toContain('_CHANNEL');
+  it('is a separate file whose substitutions carry no deployment value: image and channel resolve at run time (B-1435)', () => {
+    expect(build.substitutions).toEqual({ _IMAGE: '', _CHANNEL: '', _REGION: 'us-central1', _ARTIFACT_REPO: 'harmony-workers' });
+    const first = stepText(build.steps[0]!);
+    expect(first).toContain("'${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_ARTIFACT_REPO}/harmony-conductor'");
+    expect(first).toContain("case '${BRANCH_NAME}' in");
+    expect(first).toMatch(/pass _CHANNEL=staging or _CHANNEL=prod/);
+    expect(first).toMatch(/pass _IMAGE=/);
+    expect(first).toContain('> /workspace/image.txt');
+    expect(first).toContain('> /workspace/channel.txt');
+    // every later step reads the resolved files, never the raw substitutions
+    for (const s of build.steps.slice(1)) expect(stepText(s)).not.toMatch(/\$\{_(IMAGE|CHANNEL)\}/);
     expect(read('container/cloudbuild.yaml')).not.toContain('harmony-conductor:candidate');
   });
 
@@ -37,11 +45,11 @@ describe('container/conductor/cloudbuild.yaml', () => {
     expect(ids).toEqual(['read-version', 'build', 'smoke', 'push-version', 'push-channel']);
     const firstPush = build.steps.findIndex((s) => /docker push/.test(stepText(s)));
     expect(ids.indexOf('smoke')).toBeLessThan(firstPush);
-    const channelPush = build.steps.findIndex((s) => /docker push '\$\{_IMAGE\}:\$\{_CHANNEL\}'/.test(stepText(s)));
+    const channelPush = build.steps.findIndex((s) => /docker push "\$\$IMAGE:\$\$CHANNEL"/.test(stepText(s)));
     expect(channelPush).toBe(ids.length - 1);
     // no step before the smoke pushes, and the build never tags the channel
     for (const s of build.steps.slice(0, ids.indexOf('smoke') + 1)) expect(stepText(s)).not.toMatch(/docker push/);
-    expect(stepText(build.steps[ids.indexOf('build')]!)).not.toContain('${_CHANNEL}');
+    expect(stepText(build.steps[ids.indexOf('build')]!)).not.toMatch(/CHANNEL/);
   });
 
   it('smoke invokes container/conductor/smoke.sh with the plugin version; the version comes from plugin.json', () => {
@@ -52,9 +60,9 @@ describe('container/conductor/cloudbuild.yaml', () => {
 
   it('tags :<plugin version>-<channel> and :<channel>, never a bare :<plugin version> a promote could re-point (B-1269), and labels the image through the PLUGIN_VERSION build-arg', () => {
     const pushVersion = stepText(build.steps[ids.indexOf('push-version')]!);
-    expect(pushVersion).toContain('${_IMAGE}:$(cat /workspace/plugin_version.txt)-${_CHANNEL}');
-    expect(pushVersion).not.toMatch(/\$\{_IMAGE\}:\$\(cat \/workspace\/plugin_version\.txt\)(?!-\$\{_CHANNEL\})/);
-    expect(stepText(build.steps[ids.indexOf('push-channel')]!)).toContain("'${_IMAGE}:${_CHANNEL}'");
+    expect(pushVersion).toContain('$$IMAGE:$(cat /workspace/plugin_version.txt)-$$CHANNEL');
+    expect(pushVersion).not.toMatch(/\$\$IMAGE:\$\(cat \/workspace\/plugin_version\.txt\)(?!-\$\$CHANNEL)/);
+    expect(stepText(build.steps[ids.indexOf('push-channel')]!)).toContain('"$$IMAGE:$$CHANNEL"');
     expect(stepText(build.steps[ids.indexOf('build')]!)).toContain('--build-arg PLUGIN_VERSION=');
     expect(read('container/conductor/Dockerfile')).toMatch(/LABEL harmony\.plugin_version="\$\{PLUGIN_VERSION\}"/);
   });
@@ -167,18 +175,24 @@ describe('the build script list', () => {
 // the config loader exactly as the pod would, then re-read config the way a child process does after the daemon has
 // pushed its resolved values into the environment, and assert no `deprecated:` line anywhere.
 describe('the shipped pod config boots with no deprecation warnings and no placeholders', () => {
+  // The placeholders the operator fills before applying (runbook step 4), with an adopter's fixture values (B-1435).
+  const FILLED: Record<string, string> = {
+    __GCP_PROJECT__: 'acme-proj',
+    __REGION__: 'europe-west1',
+    __ZONE__: 'europe-west1-b',
+    __REGISTRY__: 'europe-west1-docker.pkg.dev/acme-proj/acme-images',
+    __CONDUCTOR_GSA__: 'conductor@acme-proj.iam.gserviceaccount.com',
+    __CONFIG_REPO__: 'acme/config',
+    __GITHUB_APP_ID__: '123',
+    __GITHUB_INSTALLATION_ID__: '456',
+    __CONDUCTOR_VERSION__: '1.2.3-prod',
+  };
   const k8sText = (f: string): string => read(`container/conductor/k8s/${f}`);
+  const fill = (t: string): string => Object.entries(FILLED).reduce((acc, [k, v]) => acc.split(k).join(v), t);
   const configMap = parseAllDocuments(k8sText('configmap.yaml'))[0]!.toJS() as { data: Record<string, string> };
-  const deployment = parseAllDocuments(k8sText('deployment.yaml'))[0]!.toJS() as {
+  const deployment = parseAllDocuments(fill(k8sText('deployment.yaml')))[0]!.toJS() as {
     spec: { template: { spec: { containers: { env: { name: string; value: string }[] }[] } } };
   };
-  // The only placeholders the operator fills before applying (runbook: "Put the config in the ConfigMap").
-  const FILLED: Record<string, string> = {
-    'REPLACE-OWNER/REPLACE-CONFIG-REPO': 'acme/config',
-    'REPLACE-WITH-APP-ID': '123',
-    'REPLACE-WITH-INSTALLATION-ID': '456',
-  };
-  const fill = (t: string): string => Object.entries(FILLED).reduce((acc, [k, v]) => acc.split(k).join(v), t);
   const dockerEnv = (): Record<string, string> => {
     const m = /^ENV ((?:.*\\\n)*.*)$/m.exec(read('container/conductor/Dockerfile'));
     const out: Record<string, string> = {};
@@ -214,11 +228,14 @@ describe('the shipped pod config boots with no deprecation warnings and no place
     })!;
   };
 
-  it('the only placeholders in the shipped files are the three the runbook has the operator fill', () => {
-    const data = Object.values(configMap.data).join('\n');
-    const found = new Set(data.match(/REPLACE-[A-Z]+(?:-[A-Z]+)*(?:\/REPLACE-[A-Z]+(?:-[A-Z]+)*)?/g) ?? []);
+  it('the only placeholders in the shipped files are the ones the runbook has the operator fill (B-1435)', () => {
+    const found = new Set(
+      ['configmap.yaml', 'deployment.yaml', 'serviceaccount.yaml', 'cronjob-sweep.yaml'].flatMap((f) => k8sText(f).match(/__[A-Z][A-Z0-9_]*__/g) ?? []),
+    );
+    found.delete('__NAME__'); // the header comment's generic name for them
     expect([...found].sort()).toEqual(Object.keys(FILLED).sort());
-    expect(Object.values(files).join('\n')).not.toContain('REPLACE');
+    expect(Object.values(configMap.data).join('\n')).not.toContain('REPLACE');
+    expect(Object.values(files).join('\n')).not.toMatch(/__[A-Z][A-Z0-9_]*__/);
   });
 
   it('the Deployment env and Dockerfile ENV name no legacy knob that the files do not already resolve to', () => {
@@ -226,7 +243,7 @@ describe('the shipped pod config boots with no deprecation warnings and no place
     const r = load(podEnv(), (m) => seen.push(m));
     expect(seen.filter((m) => m.startsWith('deprecated:'))).toEqual([]);
     expect(r.warnings.filter((m) => m.startsWith('deprecated:'))).toEqual([]);
-    expect(r.merged.gcp?.project).toBe('harmony-conductor');
+    expect(r.merged.gcp?.project).toBe('acme-proj');
     expect(r.merged.gke?.storage_class).toBe('harmony-ticket-disk');
     expect(r.merged.plugin_dir).toBe('/opt/harmony-plugin');
   });
@@ -237,8 +254,8 @@ describe('the shipped pod config boots with no deprecation warnings and no place
     const childEnv: NodeJS.ProcessEnv = podEnv();
     const applied = new Set<string>();
     applyLaunchEnv(childEnv, launchEnvFromMerged(parent.merged), applied);
-    expect(childEnv.CLOUDSDK_CORE_PROJECT).toBe('harmony-conductor'); // the daemon really did push legacy-named vars
-    expect(childEnv.HARMONY_GKE_CONTEXT).toContain('gke_harmony-conductor_us-central1-a_harmony-legs');
+    expect(childEnv.CLOUDSDK_CORE_PROJECT).toBe('acme-proj'); // the daemon really did push legacy-named vars
+    expect(childEnv.HARMONY_GKE_CONTEXT).toContain('gke_acme-proj_europe-west1-b_harmony-legs');
     const childSeen: string[] = [];
     const child = load(childEnv, (m) => childSeen.push(m));
     expect([...parentSeen, ...childSeen].filter((m) => m.includes('deprecated'))).toEqual([]);

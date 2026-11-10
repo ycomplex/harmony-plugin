@@ -366,6 +366,103 @@ describe('doctor', () => {
     expect(r.lines.join('\n')).toContain('deployment.json › (file)');
   });
 
+  // B-1435: --configmap / --isolated
+  describe('--configmap and --isolated (B-1435)', () => {
+    const shipped = readFileSync(new URL('../../../container/conductor/k8s/configmap.yaml', import.meta.url), 'utf8');
+    const FILL: Record<string, string> = {
+      __GCP_PROJECT__: 'acme-proj',
+      __REGION__: 'europe-west1',
+      __ZONE__: 'europe-west1-b',
+      __CONDUCTOR_GSA__: 'conductor@acme-proj.iam.gserviceaccount.com',
+      __CONFIG_REPO__: 'acme/config',
+      __GITHUB_APP_ID__: '123',
+      __GITHUB_INSTALLATION_ID__: '456',
+    };
+    const filled = () => Object.entries(FILL).reduce((t, [k, v]) => t.split(k).join(v), shipped);
+    type Src = { source: string; path: string | null; found: boolean };
+    const sourcesOf = (r: { data: Record<string, unknown> }) => r.data.sources as Src[];
+
+    it('reads the shipped ConfigMap (placeholders filled) as its two layers, and reports no deployment.json or env source', () => {
+      const cm = write('configmap.yaml', filled());
+      expect(filled().split('\n').filter((l) => !l.trimStart().startsWith('#')).join('\n')).not.toMatch(/__[A-Z_]+__/);
+      const r = runDoctor(deps(), { configmap: cm, isolated: true });
+      expect(r.lines.join('\n')).toContain('ISSUES (0)');
+      expect(r.exitCode).toBe(0);
+      const src = sourcesOf(r);
+      expect(src.map((s) => s.source)).toEqual([
+        'ConfigMap data["conductor-project.json"] (project layer)',
+        'ConfigMap data["conductor-host.json"] (host layer)',
+      ]);
+      expect(src.every((s) => s.found && s.path === cm)).toBe(true);
+      const out = r.lines.join('\n');
+      const sourcesBlock = out.slice(0, out.indexOf('\n\n'));
+      expect(sourcesBlock).not.toMatch(/deployment\.json|legacy env knobs|host file|snapshot/);
+      expect(out).toContain('the ConfigMap is the only source');
+      expect(r.data.legacy_in_use).toEqual([]);
+    });
+
+    it('--isolated ignores a present deployment.json and a set legacy env knob that a normal run reports', () => {
+      writeFileSync(join(home, 'conductor-host.json'), j(hostOk));
+      const project = write('project.json', projectGke);
+      const legacy = write('deployment.json', legacyDeployment());
+      const env = { HARMONY_CONDUCTOR_PROJECT_FILE: project, HARMONY_CONDUCTOR_HOST_FILE: join(home, 'conductor-host.json'), HARMONY_DEPLOYMENT_CONFIG: legacy, HARMONY_GKE_CPU: '2' };
+
+      const normal = runDoctor(deps(env));
+      const normalSources = sourcesOf(normal);
+      expect(normalSources.find((s) => s.source.startsWith('legacy deployment.json'))?.found).toBe(true);
+      expect(normalSources.find((s) => s.source.startsWith('legacy env knobs'))?.found).toBe(true);
+      expect((normal.data.legacy_in_use as string[]).length).toBeGreaterThan(0);
+
+      const iso = runDoctor(deps(env), { isolated: true });
+      expect(iso.exitCode).toBe(0);
+      const isoSources = sourcesOf(iso);
+      expect(isoSources.some((s) => /legacy/.test(s.source))).toBe(false);
+      expect(iso.data.legacy_in_use).toEqual([]);
+      expect(iso.data.conflicts).toEqual([]);
+      expect(isoSources.find((s) => s.source === 'host file')?.found).toBe(true); // an EXPLICIT host-file path is still read
+      expect(iso.lines.join('\n')).not.toContain('HARMONY_GKE_CPU');
+    });
+
+    it('--isolated does not read the HARMONY_HOME default host file or snapshot', () => {
+      writeFileSync(join(home, 'conductor-host.json'), j(hostOk));
+      const r = runDoctor(deps(), { isolated: true });
+      expect(sourcesOf(r).find((s) => s.source === 'host file')?.found).toBe(false);
+      expect(r.lines.join('\n')).toContain('nothing to validate');
+    });
+
+    it('an unfilled __NAME__ placeholder in a blob is an issue', () => {
+      const r = runDoctor(deps(), { configmap: write('configmap.yaml', shipped), isolated: true });
+      expect(r.exitCode).toBe(1);
+      expect(r.lines.join('\n')).toMatch(/data\.conductor-host\.json: still holds unfilled placeholder\(s\) .*__GCP_PROJECT__/);
+    });
+
+    it('a ConfigMap missing a data key is an issue (exit 1), not a crash', () => {
+      const cm = write('configmap.yaml', filled().replace(/ {2}conductor-project\.json: \|[\s\S]*$/, ''));
+      const r = runDoctor(deps(), { configmap: cm, isolated: true });
+      expect(r.exitCode).toBe(1);
+      expect(r.lines.join('\n')).toContain('configmap.yaml › data.conductor-project.json: is missing');
+    });
+
+    it('a ConfigMap blob with invalid JSON is an issue (exit 1), not a crash', () => {
+      const cm = write('configmap.yaml', filled().replace('"version": 1,\n      "config_repo"', '"version": 1,,\n      "config_repo"'));
+      const r = runDoctor(deps(), { configmap: cm, isolated: true });
+      expect(r.exitCode).toBe(1);
+      expect((r.data.issues as { file: string }[]).some((i) => i.file === 'conductor-host.json')).toBe(true);
+    });
+
+    it('a file that is not a ConfigMap, or not YAML, is an issue', () => {
+      const notCm = write('other.yaml', 'apiVersion: v1\nkind: Secret\nmetadata:\n  name: x\n');
+      expect(runDoctor(deps(), { configmap: notCm }).lines.join('\n')).toContain('holds no document of kind ConfigMap');
+      const notYaml = write('bad.yaml', 'a: [1, 2\n');
+      const r = runDoctor(deps(), { configmap: notYaml });
+      expect(r.exitCode).toBe(1);
+      expect(r.lines.join('\n')).toContain('is not valid YAML');
+      const missing = runDoctor(deps(), { configmap: join(dir, 'nope.yaml') });
+      expect(missing.exitCode).toBe(1);
+      expect(missing.lines.join('\n')).toContain('could not be read');
+    });
+  });
+
   it('findConflicts / flattenLayer basics', () => {
     expect([...flattenLayer({ version: 1, a: { b: 1, c: [1] }, d: 'x' }).entries()]).toEqual([['a.b', 1], ['a.c', [1]], ['d', 'x']]);
     expect(

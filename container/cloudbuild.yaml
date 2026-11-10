@@ -29,12 +29,44 @@
 # after EVERY base push (push-version is the last base step) by design: the base image's content,
 # tags and steps are untouched, and a failure in the Docker steps turns the build red only AFTER the
 # base image has published. Ordering gives that; allowFailure is deliberately not used.
+#
+# B-1435: no substitution carries a deployment's own value. resolve-images (the first step) resolves both image paths
+# and writes them to /workspace/image.txt and /workspace/docker_image.txt; every later step reads those files, never
+# ${_IMAGE}/${_DOCKER_IMAGE}.
+#   IMAGE        = _IMAGE if set, else <_REGION>-docker.pkg.dev/<the build's own $PROJECT_ID>/<_ARTIFACT_REPO>/harmony-build-env
+#   DOCKER_IMAGE = _DOCKER_IMAGE if set, else the same registry path ending in /harmony-build-env-docker
+# _REGION and _ARTIFACT_REPO carry product-wide defaults (below); both are overridable. An unresolvable image
+# (no _IMAGE / _DOCKER_IMAGE and no PROJECT_ID) fails the build in that first step, naming the substitution.
 
 substitutions:
-  _IMAGE: us-central1-docker.pkg.dev/harmony-conductor/harmony-workers/harmony-build-env
-  _DOCKER_IMAGE: us-central1-docker.pkg.dev/harmony-conductor/harmony-workers/harmony-build-env-docker
+  _IMAGE: ''
+  _DOCKER_IMAGE: ''
+  _REGION: us-central1
+  _ARTIFACT_REPO: harmony-workers
 
 steps:
+  - id: resolve-images
+    name: node:22-bookworm-slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        IMAGE='${_IMAGE}'
+        DOCKER_IMAGE='${_DOCKER_IMAGE}'
+        if [ -z "$$IMAGE" ] || [ -z "$$DOCKER_IMAGE" ]; then
+          if [ -z '${PROJECT_ID}' ]; then
+            [ -n "$$IMAGE" ] || echo "cannot resolve the image: the build has no PROJECT_ID; pass _IMAGE=<region>-docker.pkg.dev/<project>/<repo>/harmony-build-env" >&2
+            [ -n "$$DOCKER_IMAGE" ] || echo "cannot resolve the Docker image: the build has no PROJECT_ID; pass _DOCKER_IMAGE=<region>-docker.pkg.dev/<project>/<repo>/harmony-build-env-docker" >&2
+            exit 1
+          fi
+          [ -n "$$IMAGE" ] || IMAGE='${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_ARTIFACT_REPO}/harmony-build-env'
+          [ -n "$$DOCKER_IMAGE" ] || DOCKER_IMAGE='${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_ARTIFACT_REPO}/harmony-build-env-docker'
+        fi
+        printf '%s\n' "$$IMAGE" > /workspace/image.txt
+        printf '%s\n' "$$DOCKER_IMAGE" > /workspace/docker_image.txt
+        echo "Resolved images: $$IMAGE and $$DOCKER_IMAGE"
+
   - id: resolve-claude-version
     name: node:22-bookworm-slim
     entrypoint: bash
@@ -72,12 +104,13 @@ steps:
       - -c
       - |
         set -euo pipefail
+        IMAGE="$(cat /workspace/image.txt)"
         docker build \
           --target agent-codex \
           --build-arg CLAUDE_CODE_VERSION="$(cat /workspace/claude_code_version.txt)" \
           --build-arg CODEX_VERSION="$(cat /workspace/codex_version.txt)" \
           --build-arg SOURCE_COMMIT_TIME="$(cat /workspace/source_commit_time.txt)" \
-          -t '${_IMAGE}:latest' container/
+          -t "$$IMAGE:latest" container/
 
   # B-929: the publish gate. Runs BETWEEN the build and the two pushes, so an image that fails the
   # smoke NEVER becomes :latest and the fleet keeps running the last good image. The assertions live
@@ -87,7 +120,7 @@ steps:
   - id: smoke
     name: gcr.io/cloud-builders/docker
     entrypoint: bash
-    args: ['container/smoke.sh', '${_IMAGE}:latest']
+    args: ['-c', 'bash container/smoke.sh "$(cat /workspace/image.txt):latest"']
 
   - id: read-version
     name: node:22-bookworm-slim
@@ -106,7 +139,8 @@ steps:
       - -c
       - |
         set -euo pipefail
-        docker tag "${_IMAGE}:latest" "${_IMAGE}:$(cat /workspace/plugin_version.txt)"
+        IMAGE="$(cat /workspace/image.txt)"
+        docker tag "$$IMAGE:latest" "$$IMAGE:$(cat /workspace/plugin_version.txt)"
 
   # B-1074: guards the :latest race between the two triggers (push to `main` touching container/**,
   # and push to `prod` on every promote) by COMMIT TIME, never by plugin version — `main` is
@@ -120,9 +154,10 @@ steps:
       - -c
       - |
         set -euo pipefail
+        IMAGE="$(cat /workspace/image.txt)"
         NEW_COMMIT_TIME="$(cat /workspace/source_commit_time.txt)"
-        if docker pull '${_IMAGE}:latest' >/dev/null 2>&1; then
-          CURRENT_COMMIT_TIME="$(docker inspect --format '{{ index .Config.Labels "harmony.source_commit_time" }}' '${_IMAGE}:latest' 2>/dev/null || echo unknown)"
+        if docker pull "$$IMAGE:latest" >/dev/null 2>&1; then
+          CURRENT_COMMIT_TIME="$(docker inspect --format '{{ index .Config.Labels "harmony.source_commit_time" }}' "$$IMAGE:latest" 2>/dev/null || echo unknown)"
           [ -n "$$CURRENT_COMMIT_TIME" ] || CURRENT_COMMIT_TIME=unknown
         else
           CURRENT_COMMIT_TIME=unknown
@@ -144,9 +179,10 @@ steps:
       - -c
       - |
         set -euo pipefail
+        IMAGE="$(cat /workspace/image.txt)"
         if [ "$(cat /workspace/push_latest_decision.txt)" = proceed ]; then
-          docker tag "${_IMAGE}:$(cat /workspace/plugin_version.txt)" '${_IMAGE}:latest'
-          docker push '${_IMAGE}:latest'
+          docker tag "$$IMAGE:$(cat /workspace/plugin_version.txt)" "$$IMAGE:latest"
+          docker push "$$IMAGE:latest"
         else
           echo "push-latest: skipped by guard-latest"
         fi
@@ -158,7 +194,8 @@ steps:
       - -c
       - |
         set -euo pipefail
-        docker push "${_IMAGE}:$(cat /workspace/plugin_version.txt)"
+        IMAGE="$(cat /workspace/image.txt)"
+        docker push "$$IMAGE:$(cat /workspace/plugin_version.txt)"
 
   # B-1162: the Docker-capable image, built ON the base just published. BASE is the VERSION tag, not
   # :latest — guard-latest `docker pull`s the registry's :latest over the local one, so the local
@@ -170,17 +207,19 @@ steps:
       - -c
       - |
         set -euo pipefail
+        IMAGE="$(cat /workspace/image.txt)"
+        DOCKER_IMAGE="$(cat /workspace/docker_image.txt)"
         docker build \
           -f container/docker-engine/Dockerfile \
-          --build-arg BASE=${_IMAGE}:$(cat /workspace/plugin_version.txt) \
-          -t '${_DOCKER_IMAGE}:candidate' container/docker-engine
+          --build-arg BASE="$$IMAGE:$(cat /workspace/plugin_version.txt)" \
+          -t "$$DOCKER_IMAGE:candidate" container/docker-engine
 
   # B-1162: the engine-image smoke. This step runs on the docker builder, so `docker run --privileged`
   # goes to the build's own docker daemon.
   - id: smoke-docker
     name: gcr.io/cloud-builders/docker
     entrypoint: bash
-    args: ['container/docker-engine/smoke.sh', '${_DOCKER_IMAGE}:candidate']
+    args: ['-c', 'bash container/docker-engine/smoke.sh "$(cat /workspace/docker_image.txt):candidate"']
 
   - id: push-docker-version
     name: gcr.io/cloud-builders/docker
@@ -189,8 +228,9 @@ steps:
       - -c
       - |
         set -euo pipefail
-        docker tag '${_DOCKER_IMAGE}:candidate' "${_DOCKER_IMAGE}:$(cat /workspace/plugin_version.txt)"
-        docker push "${_DOCKER_IMAGE}:$(cat /workspace/plugin_version.txt)"
+        DOCKER_IMAGE="$(cat /workspace/docker_image.txt)"
+        docker tag "$$DOCKER_IMAGE:candidate" "$$DOCKER_IMAGE:$(cat /workspace/plugin_version.txt)"
+        docker push "$$DOCKER_IMAGE:$(cat /workspace/plugin_version.txt)"
 
   # B-1162: follows guard-latest's decision for the base, so the two :latest tags move together.
   - id: push-docker-latest
@@ -200,9 +240,10 @@ steps:
       - -c
       - |
         set -euo pipefail
+        DOCKER_IMAGE="$(cat /workspace/docker_image.txt)"
         if [ "$(cat /workspace/push_latest_decision.txt)" = proceed ]; then
-          docker tag '${_DOCKER_IMAGE}:candidate' '${_DOCKER_IMAGE}:latest'
-          docker push '${_DOCKER_IMAGE}:latest'
+          docker tag "$$DOCKER_IMAGE:candidate" "$$DOCKER_IMAGE:latest"
+          docker push "$$DOCKER_IMAGE:latest"
         else
           echo "push-docker-latest: skipped by guard-latest"
         fi
