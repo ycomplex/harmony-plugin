@@ -4,6 +4,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveTaskId, resolveTaskIds } from './resolve-task-id.js';
 import { normalizeHtmlEntities, validateTitle } from './text-normalize.js';
 import { resolveAssignee } from './members.js';
+import { assertKnownArguments } from './known-arguments.js';
 import { fetchPendingResolution, fetchPendingRemark } from './briefs.js';
 import { fetchActiveExchange } from './elicitation.js';
 import { detectRiskClasses } from './risk-class.js';
@@ -471,6 +472,11 @@ export const createTaskTool = {
   },
 };
 
+const CREATE_TASK_ARGUMENT_HINTS: Record<string, string> = {
+  acceptance_criteria:
+    'To add acceptance criteria, create the task, then call manage_acceptance_criteria with add: [{ content }].',
+};
+
 export async function createTask(
   client: SupabaseClient,
   projectId: string,
@@ -489,6 +495,8 @@ export async function createTask(
     parent_task_id?: string;
   }
 ) {
+  // B-1400: refuse undocumented arguments before any client call (MCP and CLI alike).
+  assertKnownArguments(createTaskTool, args, CREATE_TASK_ARGUMENT_HINTS);
   // Resolve assignee (accepts name, email, or UUID)
   const assigneeId = args.assignee_id
     ? await resolveAssignee(client, projectId, args.assignee_id)

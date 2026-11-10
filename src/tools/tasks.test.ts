@@ -355,6 +355,59 @@ describe('createTask', () => {
     ).rejects.toThrow('Title contains disallowed markup: `</title>`');
     expect(insertSpy).not.toHaveBeenCalled();
   });
+
+  // B-1400: undocumented arguments are refused before any client call.
+  it('B-1400: refuses an unknown argument and never calls the client', async () => {
+    const insertSpy = vi.fn();
+    const client = makeClient(insertSpy, [], null);
+    const resolveMock = (await import('./resolve-task-id.js')).resolveTaskId as ReturnType<typeof vi.fn>;
+
+    await expect(
+      createTask(client, 'proj-1', 'user-1', { title: 'X', parent_task_id: 'C-88', labels: ['a'] } as any),
+    ).rejects.toThrow(/^create_task does not accept: labels\. Accepted arguments: title, status, priority,/);
+    expect(client.from).not.toHaveBeenCalled();
+    expect(resolveMock).not.toHaveBeenCalled();
+    expect(insertSpy).not.toHaveBeenCalled();
+  });
+
+  it('B-1400: refusing acceptance_criteria points at manage_acceptance_criteria', async () => {
+    const client = makeClient(vi.fn(), [], null);
+
+    const err = await createTask(client, 'proj-1', 'user-1', { title: 'X', acceptance_criteria: ['a'] } as any)
+      .then(() => null, (e: Error) => e);
+    expect(err?.message).toContain('create_task does not accept: acceptance_criteria.');
+    expect(err?.message).toContain(
+      'To add acceptance criteria, create the task, then call manage_acceptance_criteria with add: [{ content }].',
+    );
+    expect(client.from).not.toHaveBeenCalled();
+  });
+
+  it('B-1400: a known argument set to undefined is accepted', async () => {
+    const insertSpy = vi.fn();
+    const client = makeClient(insertSpy, [], null);
+
+    await createTask(client, 'proj-1', 'user-1', {
+      title: 'X', status: undefined, priority: undefined, assignee_id: undefined, epic_id: undefined,
+      description: undefined, due_date: undefined, cycle_id: undefined, milestone_id: undefined,
+    });
+
+    expect(insertSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('B-1400: a documented call still inserts as before', async () => {
+    const insertSpy = vi.fn();
+    const client = makeClient(insertSpy, [{ position: 4 }], null);
+
+    await createTask(client, 'proj-1', 'user-1', {
+      title: 'Documented', status: 'To Do', priority: 'high', description: 'Body', due_date: '2026-12-01',
+      field_values: { f: 1 }, cycle_id: 'cyc', milestone_id: 'ms',
+    });
+
+    expect(insertSpy.mock.calls[0][0]).toMatchObject({
+      title: 'Documented', status: 'To Do', priority: 'high', description: 'Body', due_date: '2026-12-01',
+      field_values: { f: 1 }, position: 5, cycle_id: 'cyc', milestone_id: 'ms', created_by: 'user-1',
+    });
+  });
 });
 
 describe('getTask', () => {
