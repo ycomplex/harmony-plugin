@@ -92,15 +92,38 @@ describe('bounded source sections',()=>{
 });
 
 describe('multi-part publication compatibility',()=>{
- const fixture=()=>{
+ const fixture=(repository='https://example.invalid/prose')=>{
   const root=mkdtempSync(join(tmpdir(),'prose-parts-'));
   const git=(...args:string[])=>execFileSync('git',['-C',root,...args],{stdio:'pipe'}).toString().trim();
   git('init');git('config','user.email','fixture@example.invalid');git('config','user.name','Fixture');git('remote','add','origin','https://example.invalid/prose');
-  mkdirSync(join(root,'.harmony'));writeFileSync(join(root,'.harmony/prose-sources.json'),JSON.stringify({version:1,repository:'https://example.invalid/prose',ref:'HEAD',sources:[{key:'docs',selectors:[selector]}]}));
+  mkdirSync(join(root,'.harmony'));writeFileSync(join(root,'.harmony/prose-sources.json'),JSON.stringify({version:1,repository,ref:'HEAD',sources:[{key:'docs',selectors:[selector]}]}));
   writeFileSync(join(root,'guide.md'),'# Rule\n'+'quasar '.repeat(6000));git('add','.');git('commit','-m','fixture');
-  const source={id:'source',source_key:'docs',repository:'https://example.invalid/prose',tracked_ref:'HEAD',config:{selectors:[selector]},revision:'revision',active_generation:'previous',indexed_commit:null,refresh_token:null,enabled:true,refresh_state:'failed',requested_commit:null,diagnostics:[]};
+  const source={id:'source',source_key:'docs',repository,tracked_ref:'HEAD',config:{selectors:[selector]},revision:'revision',active_generation:'previous',indexed_commit:null,refresh_token:null,enabled:true,refresh_state:'failed',requested_commit:null,diagnostics:[]};
   return {root,source};
  };
+ it.each([
+  ['git@example.invalid:prose.git', 'https://example.invalid/prose'],
+  ['git@EXAMPLE.INVALID:prose.git', 'https://example.invalid/prose'],
+  ['https://EXAMPLE.INVALID/prose.git', 'https://example.invalid/prose'],
+  ['git@example.invalid:prose', 'https://EXAMPLE.INVALID/prose.git/'],
+ ])('recognises equivalent repository origin %s against %s', async(origin,repository)=>{
+  const {root,source}=fixture(repository);
+  const rpc=vi.fn().mockResolvedValue({data:{available:true,chunk_parts:true,sources:[{...source,refresh_state:'current',indexed_commit:execFileSync('git',['-C',root,'rev-parse','HEAD']).toString().trim()}],pointers:[]},error:null});
+  try {
+   execFileSync('git',['-C',root,'remote','set-url','origin',origin]);
+   await expect(syncProse({rpc} as never,'project',root)).resolves.toEqual([{source_id:'source',unchanged:true}]);
+   expect(rpc.mock.calls.map(c=>c[0])).toEqual(['read_knowledge_prose']);
+  } finally {rmSync(root,{recursive:true,force:true});}
+ });
+ it.each(['git@other.invalid:prose.git','git@example.invalid:other.git','git@example.invalid:Prose.git'])(
+  'refuses a different repository identity %s before contacting the board',async(origin)=>{
+   const {root}=fixture();const rpc=vi.fn();
+   try {
+    execFileSync('git',['-C',root,'remote','set-url','origin',origin]);
+    await expect(syncProse({rpc} as never,'project',root)).rejects.toThrow('Repository identity differs');
+    expect(rpc).not.toHaveBeenCalled();
+   } finally {rmSync(root,{recursive:true,force:true});}
+  });
  it.each([undefined,false])('refuses an unsupported database (%s) before beginning or publishing any generation',async(chunk_parts)=>{
   const {root,source}=fixture();
   const rpc=vi.fn().mockResolvedValue({data:{available:true,chunk_parts,sources:[source],pointers:[]},error:null});

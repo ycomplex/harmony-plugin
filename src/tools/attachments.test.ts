@@ -365,6 +365,9 @@ describe('attachFile content-type derivation', () => {
   // Spot-check the rest of the allowlist + extension aliases.
   it.each([
     ['/work/note.txt', 'text/plain'],
+    ['/work/recovery.patch', 'text/plain'],
+    ['/work/recovery.diff', 'text/plain'],
+    ['/work/RECOVERY.PATCH', 'text/plain'],
     ['/work/readme.md', 'text/markdown'],
     ['/work/data.csv', 'text/csv'],
     ['/work/index.htm', 'text/html'],
@@ -379,6 +382,17 @@ describe('attachFile content-type derivation', () => {
   ])('maps %s → %s', async (filePath, expected) => {
     const headers = await putHeadersFor(filePath);
     expect(headers['Content-Type']).toBe(expected);
+  });
+
+  it('accepts the patch prescribed by start-work preservation guidance (B-852)', async () => {
+    const { readFileSync } = await vi.importActual<typeof import('node:fs')>('node:fs');
+    const skill = readFileSync('skills/start-work/SKILL.md', 'utf8');
+    expect(skill).toMatch(/Attach the patch when the WIP push rung failed/);
+    expect(skill).toContain('mcp__harmony__attach_file');
+    const example = skill.match(/`(\/tmp\/[^`]+\.patch)`/);
+    expect(example, 'start-work must keep a concrete attachable patch example').not.toBeNull();
+    const headers = await putHeadersFor(example![1].replace('<ticket>', 'B-852'), '--- a/file\n+++ b/file\n');
+    expect(headers['Content-Type']).toBe('text/plain');
   });
 
   // Case-insensitive on the extension (e.g. SCREaming-case from some tools).
