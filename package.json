@@ -9,7 +9,10 @@
   },
   "main": "./dist/index.js",
   "files": [
-    "dist/"
+    "dist/",
+    "scripts/check-app-installation.mjs",
+    "scripts/mint-installation-token.mjs",
+    ".claude-plugin/plugin.json"
   ],
   "scripts": {
     "build": "esbuild src/index.ts src/bin/harmony.ts src/bin/poll.ts src/bin/daemon.ts src/bin/stop-gate.ts src/bin/pretooluse-gate.ts src/bin/worker-image.ts src/bin/conductor-boot.ts src/bin/codex-auth.ts src/bin/seat-hook.ts --bundle --platform=node --format=esm --outdir=dist --outbase=src --target=node20 --metafile=.build/meta.json --banner:js=\"import{createRequire as __cr}from'node:module';const require=__cr(import.meta.url);\"",
