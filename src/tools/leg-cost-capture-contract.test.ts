@@ -31,6 +31,11 @@ import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
+import { installDarwinStatShim } from '../test/darwin-stat-shim.js';
+
+// B-1030: on macOS, put a GNU-`stat -c` shim first on PATH before any harness below builds its env
+// (every env reads process.env.PATH at call time). A no-op on Linux, so CI keeps real GNU stat.
+installDarwinStatShim();
 
 const provisionPath = fileURLToPath(new URL('../../container/provision.sh', import.meta.url));
 const provisionScript = readFileSync(provisionPath, 'utf8');
