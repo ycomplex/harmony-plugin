@@ -14,7 +14,7 @@ const safeId = (v) => typeof v === 'string' && identifier.test(v) && Number.isSa
 const fail = (code) => { throw new Error(code); };
 
 export async function checkInstallation(opts, deps = {}) {
-  const result = { app_id: null, installation_id: null, permissions: {}, events: [], repository_selection: null, repositories: [], expected_permissions: false, expected_events: false, app_identity_matches: false, repositories_complete: false, ok: false };
+  const result = { app_id: null, installation_id: null, permissions: {}, permission_differences: { missing: [], extra: [], wrong_level: [] }, events: [], repository_selection: null, repositories: [], expected_permissions: false, expected_events: false, app_identity_matches: false, repositories_complete: false, ok: false };
   let stage = 'input';
   let httpStatus;
   // Public output never contains raw exceptions, HTTP bodies, headers, paths or credentials.
@@ -46,7 +46,12 @@ export async function checkInstallation(opts, deps = {}) {
     result.permissions = Object.fromEntries(Object.entries(installation.permissions).sort(([a], [b]) => a.localeCompare(b)));
     result.events = [...installation.events].sort();
     result.repository_selection = installation.repository_selection;
-    result.expected_permissions = JSON.stringify(result.permissions) === JSON.stringify(EXPECTED_PERMISSIONS);
+    result.permission_differences = {
+      missing: Object.keys(EXPECTED_PERMISSIONS).filter((k) => !(k in result.permissions)),
+      extra: Object.keys(result.permissions).filter((k) => !(k in EXPECTED_PERMISSIONS)),
+      wrong_level: Object.keys(EXPECTED_PERMISSIONS).filter((k) => k in result.permissions && result.permissions[k] !== EXPECTED_PERMISSIONS[k]).map((k) => ({ name: k, expected: EXPECTED_PERMISSIONS[k], actual: result.permissions[k] })),
+    };
+    result.expected_permissions = Object.values(result.permission_differences).every((v) => v.length === 0);
     result.expected_events = result.events.length === 0;
     stage = 'mint';
     const { token } = await mintInstallationToken({ jwt, installationId: opts.installationId, fetchImpl: request });

@@ -59,6 +59,8 @@ export function resolvePluginSource(opts: {
           if (plugin.source?.source !== 'github' || plugin.source.repo !== result.repository) continue;
           if (plugin.source.ref === 'prod' || plugin.source.ref === 'staging') {
             channels.add(plugin.source.ref); evidence.add('matching installation and marketplace source.ref');
+          } else {
+            channels.add('unknown'); evidence.add('unrecognized marketplace source.ref');
           }
         }
       }

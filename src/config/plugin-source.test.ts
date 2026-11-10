@@ -33,6 +33,7 @@ describe('installed plugin source', () => {
     expect(fixture('prod', 'staging').resolve()).toMatchObject({ channel: 'unknown', evidence: 'conflicting installation evidence' });
     expect(fixture().resolve().channel).toBe('unknown');
     expect(fixture('main').resolve().channel).toBe('unknown');
+    expect(fixture('main', 'prod').resolve().channel).toBe('unknown');
   });
   it('requires the manifest repository to match the marketplace source', () => {
     const h = fixture('prod');

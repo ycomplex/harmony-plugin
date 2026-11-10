@@ -83,6 +83,16 @@ describe('GitHub App installation check', () => {
     expect(data.ok).toBe(false);
     expect((await wrap(data)).exitCode).toBe(1);
   });
+  it('names each missing, extra and wrong-level grant in human output', async () => {
+    const grants = { ...EXPECTED_PERMISSIONS, contents: 'read', administration: 'write' };
+    delete grants.checks;
+    const data = await harness({ permissions: grants, events: ['push'] }).run();
+    const output = await wrap(data);
+    expect(output.lines).toContain('Missing permissions: checks');
+    expect(output.lines).toContain('Extra permissions: administration');
+    expect(output.lines).toContain('Wrong-level permissions: contents=read (expected write)');
+    expect(output.lines).toContain('Unexpected events: push');
+  });
   it.each([{ app_id: 999 }, { id: 999 }, { suspended_at: '2026-11-10T00:00:00Z' }, { events: sentinel }, { permissions: { x: sentinel } }, { repository_selection: sentinel }])('rejects bad installation before minting', async (change) => {
     const h = harness(change);
     const data = await h.run();

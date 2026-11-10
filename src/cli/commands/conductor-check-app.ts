@@ -9,6 +9,11 @@ const permissions = { actions: 'read', checks: 'read', contents: 'write', deploy
 const resultSchema = z.object({
   app_id: safeId.nullable(), installation_id: safeId.nullable(),
   permissions: z.record(z.string().regex(/^[A-Za-z0-9_.-]{1,100}$/), z.enum(['read', 'write', 'admin'])).refine((v) => Object.keys(v).length <= 100),
+  permission_differences: z.object({
+    missing: z.array(z.string().regex(/^[A-Za-z0-9_.-]{1,100}$/)).max(100),
+    extra: z.array(z.string().regex(/^[A-Za-z0-9_.-]{1,100}$/)).max(100),
+    wrong_level: z.array(z.object({ name: z.string().regex(/^[A-Za-z0-9_.-]{1,100}$/), expected: z.enum(['read', 'write']), actual: z.enum(['read', 'write', 'admin']) }).strict()).max(100),
+  }).strict(),
   events: z.array(z.string().regex(/^[A-Za-z0-9_.-]{1,100}$/)).max(100),
   repository_selection: z.enum(['all', 'selected']).nullable(),
   repositories: z.array(z.string().regex(/^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/)).max(100_000),
@@ -40,6 +45,11 @@ export async function runAppCheck(opts: AppCheckOptions, deps: { root?: string |
     if (data.ok !== (data.expected_permissions && data.expected_events && data.app_identity_matches && data.repositories_complete) || data.expected_permissions !== expected || data.expected_events !== (data.repository_selection !== null && data.events.length === 0) || child.exitCode !== (data.ok ? 0 : 1)) return failure;
     const yes = (v: boolean) => v ? 'yes' : 'no';
     const lines = [`App: ${data.app_id}`, `Installation: ${data.installation_id}`, `Permissions: ${Object.entries(data.permissions).map(([k, v]) => `${k}=${v}`).join(', ')}`, `Events: ${JSON.stringify(data.events)}`, `Repository selection: ${data.repository_selection ?? 'unknown'}`, 'Repositories:', ...data.repositories.map((r) => `  ${r}`), `Expected permissions: ${yes(data.expected_permissions)}`, `Expected events: ${yes(data.expected_events)}`, `App identity matches: ${yes(data.app_identity_matches)}`, `Repositories complete: ${yes(data.repositories_complete)}`, `OK: ${yes(data.ok)}`];
+    const differences = data.permission_differences;
+    if (differences.missing.length) lines.push(`Missing permissions: ${differences.missing.join(', ')}`);
+    if (differences.extra.length) lines.push(`Extra permissions: ${differences.extra.join(', ')}`);
+    if (differences.wrong_level.length) lines.push(`Wrong-level permissions: ${differences.wrong_level.map((v) => `${v.name}=${v.actual} (expected ${v.expected})`).join(', ')}`);
+    if (data.events.length) lines.push(`Unexpected events: ${data.events.join(', ')}`);
     if (data.error) lines.push(`Error: ${data.error.stage}/${data.error.code}${data.error.http_status ? ` (HTTP ${data.error.http_status})` : ''}`);
     return { exitCode: data.ok ? 0 : 1, data, lines };
   } catch { return failure; }
