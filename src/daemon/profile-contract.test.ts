@@ -3905,3 +3905,126 @@ describe('provision.sh: B-929 toolchain activation wiring', () => {
     expect(handOffAt).toBeGreaterThan(activationAt);
   });
 });
+
+// --- B-1030: bash-3.2-safe expansion of possibly-empty arrays in provision.sh -------------------
+// macOS's stock bash 3.2 treats a bare `"${arr[@]}"` / `"${arr[*]}"` of an EMPTY array under
+// `set -u` as "unbound variable"; bash >= 4.4 expands it to nothing. provision.sh must use the
+// `${arr[@]+"${arr[@]}"}` form for every array it can leave empty, so the Mac test run works and
+// workers (bash 5) still get byte-identical command lines.
+describe('provision.sh: no bare expansion of a possibly-empty array (B-1030)', () => {
+  const script = readFileSync(provisionPath, 'utf8');
+
+  // Names that may be legitimately expanded bare, each with its reason.
+  const BARE_ALLOWED = new Set<string>([
+    // Length-checked by the surrounding `if [ "${#RENDER_REPO_ARGS[@]}" -gt 0 ]`.
+    'RENDER_REPO_ARGS',
+    // Reset to () but filled from `harmony agent argv` before every use.
+    'AGENT_ARGV',
+  ]);
+
+  function possiblyEmptyArrays(): Set<string> {
+    const names = new Set<string>();
+    // Every `name=()` — plain or inside a `local a=() b=() ...` line (several per line).
+    for (const m of script.matchAll(/(?:^|[\s;])([A-Za-z_][A-Za-z0-9_]*)=\(\)/gm)) names.add(m[1]);
+    // Assigned from a possibly-empty word list: `EXTRA_HEADLESS_FLAGS_BASE=(${CLAUDE_HEADLESS_FLAGS:-})`.
+    names.add('EXTRA_HEADLESS_FLAGS_BASE');
+    return names;
+  }
+
+  it('finds the known possibly-empty arrays (the scan cannot silently find nothing)', () => {
+    const names = possiblyEmptyArrays();
+    for (const expected of [
+      'window_args',
+      'resume_args',
+      'model_args',
+      'duration_args',
+      'usage_args',
+      'error_args',
+      'stderr_args',
+      'B895_REMAINING',
+      'B1148_CHECK_AGENT',
+      'EXTRA_HEADLESS_FLAGS_BASE',
+    ]) {
+      expect(names, `candidate set is missing ${expected}`).toContain(expected);
+    }
+  });
+
+  it('has no bare "${name[@]}" or "${name[*]}" for any of them', () => {
+    const offenders: string[] = [];
+    const lines = script.split('\n');
+    for (const name of possiblyEmptyArrays()) {
+      if (BARE_ALLOWED.has(name)) continue;
+      const bare = new RegExp(`"\\$\\{${name}\\[[@*]\\]\\}"`);
+      lines.forEach((line, i) => {
+        // Strip the safe form first: its inner `"${name[@]}"` is guarded by the `+` test.
+        const stripped = line
+          .split(`\${${name}[@]+"\${${name}[@]}"}`).join('')
+          .split(`\${${name}[*]+"\${${name}[*]}"}`).join('');
+        if (bare.test(stripped)) offenders.push(`${i + 1}: ${line.trim()}`);
+      });
+    }
+    expect(offenders).toEqual([]);
+  });
+});
+
+describe.skipIf(BASH_VERSION === undefined)('B-1030: safe array expansion is byte-identical to the bare form', () => {
+  it('prints the same argument list for every array shape, bare vs safe, [@] and [*]', () => {
+    const version = execFileSync('bash', ['-c', 'echo $BASH_VERSION'], { encoding: 'utf8' }).trim();
+    console.log('B-1030 equivalence test ran under bash', version);
+
+    const bashScript = `set -euo pipefail
+show() { printf '%s args\\n' "$#"; for a in "$@"; do printf '[%s]\\n' "$a"; done; }
+old_bash=0
+if [ "\${BASH_VERSINFO[0]}" -lt 4 ] || { [ "\${BASH_VERSINFO[0]}" -eq 4 ] && [ "\${BASH_VERSINFO[1]}" -lt 4 ]; }; then old_bash=1; fi
+check() {
+  local shape="$1"; shift
+  local arr=("$@")
+  if [ "$#" -eq 0 ]; then arr=(); fi
+  echo "== $shape @ bare"
+  if [ "$#" -eq 0 ] && [ "$old_bash" -eq 1 ]; then echo "0 args"; else show "\${arr[@]}"; fi
+  echo "== $shape @ safe"
+  show \${arr[@]+"\${arr[@]}"}
+  echo "== $shape * bare"
+  if [ "$#" -eq 0 ] && [ "$old_bash" -eq 1 ]; then echo "1 args"; echo "[]"; else show "\${arr[*]}"; fi
+  echo "== $shape * safe"
+  show "\${arr[*]+"\${arr[*]}"}"
+}
+check empty
+check one alpha
+check two alpha beta
+check spaces "a b" "  leading" "trailing  "
+check empty-string ""
+check glob '*' '?' '[ab]'
+`;
+    const dir = mkdtempSync(join(tmpdir(), 'b1030-'));
+    const file = join(dir, 'equiv.sh');
+    writeFileSync(file, bashScript);
+    const out = execFileSync('bash', [file], { encoding: 'utf8', cwd: dir });
+
+    const blocks = new Map<string, string>();
+    let key = '';
+    for (const line of out.replace(/\n$/, '').split('\n')) {
+      if (line.startsWith('== ')) {
+        key = line.slice(3);
+        blocks.set(key, '');
+      } else if (key) {
+        blocks.set(key, blocks.get(key) + line + '\n');
+      }
+    }
+    const shapes = ['empty', 'one', 'two', 'spaces', 'empty-string', 'glob'];
+    for (const shape of shapes) {
+      for (const form of ['@', '*']) {
+        const bare = blocks.get(`${shape} ${form} bare`);
+        const safe = blocks.get(`${shape} ${form} safe`);
+        expect(bare, `${shape} ${form} bare missing`).toBeDefined();
+        expect(safe, `${shape} ${form} [${form}]`).toBe(bare);
+      }
+    }
+    expect(blocks.get('empty @ safe')).toBe('0 args\n');
+    expect(blocks.get('empty * safe')).toBe('1 args\n[]\n');
+    expect(blocks.get('spaces @ safe')).toBe('3 args\n[a b]\n[  leading]\n[trailing  ]\n');
+    expect(blocks.get('spaces * safe')).toBe('1 args\n[a b   leading trailing  ]\n');
+    expect(blocks.get('empty-string @ safe')).toBe('1 args\n[]\n');
+    expect(blocks.get('glob @ safe')).toBe('3 args\n[*]\n[?]\n[[ab]]\n');
+  });
+});
