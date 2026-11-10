@@ -1,11 +1,19 @@
 # B-1173: publishes the remote-conductor image (container/conductor/Dockerfile).
 #
-# Run it from a Cloud Build trigger on the `staging` branch (with _CHANNEL=staging) and one on `prod`
-# (with _CHANNEL=prod): only those branches carry the built dist/ the image copies in (main is source only).
-# It is a SEPARATE file from container/cloudbuild.yaml on purpose — the worker-image build is untouched.
+# Run it from a Cloud Build trigger on the `staging` branch and one on `prod`: only those branches carry the built
+# dist/ the image copies in (main is source only). It is a SEPARATE file from container/cloudbuild.yaml on purpose —
+# the worker-image build is untouched.
 #
-# Tags: <_IMAGE>:<plugin version>-<_CHANNEL> (the version read from .claude-plugin/plugin.json), and
-# <_IMAGE>:<_CHANNEL>. The version tag is CHANNEL-QUALIFIED on purpose (B-1269): prod is a fast-forward of staging, so
+# B-1435: no substitution carries a deployment's own value. The first step resolves both and writes them to
+# /workspace/image.txt and /workspace/channel.txt; every later step reads those files, never ${_IMAGE}/${_CHANNEL}.
+#   IMAGE   = _IMAGE if set, else <_REGION>-docker.pkg.dev/<the build's own $PROJECT_ID>/<_ARTIFACT_REPO>/harmony-conductor
+#             (_REGION and _ARTIFACT_REPO carry product-wide defaults, below; both overridable).
+#   CHANNEL = _CHANNEL if set, else the branch the trigger built ($BRANCH_NAME staging -> staging, prod -> prod).
+# Either one unresolvable fails the build in the first step, naming the substitution to pass, before anything is
+# built or pushed.
+#
+# Tags: <IMAGE>:<plugin version>-<CHANNEL> (the version read from .claude-plugin/plugin.json), and
+# <IMAGE>:<CHANNEL>. The version tag is CHANNEL-QUALIFIED on purpose (B-1269): prod is a fast-forward of staging, so
 # both channels build the same plugin version, and a bare <version> tag pushed by the later (prod) build used to
 # re-point from the staging digest to the prod digest, leaving the staging image with no version tag and the web's
 # Update refusing. Each channel now owns its own tag family and cannot take the other's. The Deployment pins the
@@ -16,8 +24,10 @@
 # The image is labelled harmony.plugin_version (build-arg PLUGIN_VERSION).
 
 substitutions:
-  _IMAGE: us-central1-docker.pkg.dev/harmony-conductor/harmony-workers/harmony-conductor
-  _CHANNEL: staging
+  _IMAGE: ''
+  _CHANNEL: ''
+  _REGION: us-central1
+  _ARTIFACT_REPO: harmony-workers
 
 steps:
   - id: read-version
@@ -27,10 +37,25 @@ steps:
       - -c
       - |
         set -euo pipefail
-        case '${_CHANNEL}' in staging|prod) ;; *) echo "_CHANNEL must be staging or prod, got '${_CHANNEL}'" >&2; exit 1 ;; esac
+        IMAGE='${_IMAGE}'
+        if [ -z "$$IMAGE" ]; then
+          [ -n '${PROJECT_ID}' ] || { echo "cannot resolve the image: the build has no PROJECT_ID; pass _IMAGE=<region>-docker.pkg.dev/<project>/<repo>/harmony-conductor" >&2; exit 1; }
+          IMAGE='${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_ARTIFACT_REPO}/harmony-conductor'
+        fi
+        CHANNEL='${_CHANNEL}'
+        if [ -z "$$CHANNEL" ]; then
+          case '${BRANCH_NAME}' in
+            staging) CHANNEL=staging ;;
+            prod) CHANNEL=prod ;;
+            *) echo "cannot derive the channel from branch '${BRANCH_NAME}': pass _CHANNEL=staging or _CHANNEL=prod" >&2; exit 1 ;;
+          esac
+        fi
+        case "$$CHANNEL" in staging|prod) ;; *) echo "_CHANNEL must be staging or prod, got '$$CHANNEL'" >&2; exit 1 ;; esac
         [ -d dist ] || { echo "dist/ is absent: build the conductor image from the staging or prod branch, not main" >&2; exit 1; }
+        printf '%s\n' "$$IMAGE" > /workspace/image.txt
+        printf '%s\n' "$$CHANNEL" > /workspace/channel.txt
         node -e "console.log(require('./.claude-plugin/plugin.json').version)" > /workspace/plugin_version.txt
-        echo "Building conductor image version $(cat /workspace/plugin_version.txt) for channel ${_CHANNEL}"
+        echo "Building conductor image $$IMAGE version $(cat /workspace/plugin_version.txt) for channel $$CHANNEL"
 
   - id: build
     name: gcr.io/cloud-builders/docker
@@ -39,11 +64,12 @@ steps:
       - -c
       - |
         set -euo pipefail
+        IMAGE="$(cat /workspace/image.txt)"
         docker build \
           -f container/conductor/Dockerfile \
           --build-arg PLUGIN_VERSION="$(cat /workspace/plugin_version.txt)" \
           --build-arg SOURCE_COMMIT='${COMMIT_SHA}' \
-          -t '${_IMAGE}:candidate' .
+          -t "$$IMAGE:candidate" .
 
   # The publish gate. Nothing has been pushed yet.
   - id: smoke
@@ -53,7 +79,8 @@ steps:
       - -c
       - |
         set -euo pipefail
-        bash container/conductor/smoke.sh '${_IMAGE}:candidate' "$(cat /workspace/plugin_version.txt)"
+        IMAGE="$(cat /workspace/image.txt)"
+        bash container/conductor/smoke.sh "$$IMAGE:candidate" "$(cat /workspace/plugin_version.txt)"
 
   - id: push-version
     name: gcr.io/cloud-builders/docker
@@ -62,8 +89,10 @@ steps:
       - -c
       - |
         set -euo pipefail
-        docker tag '${_IMAGE}:candidate' "${_IMAGE}:$(cat /workspace/plugin_version.txt)-${_CHANNEL}"
-        docker push "${_IMAGE}:$(cat /workspace/plugin_version.txt)-${_CHANNEL}"
+        IMAGE="$(cat /workspace/image.txt)"
+        CHANNEL="$(cat /workspace/channel.txt)"
+        docker tag "$$IMAGE:candidate" "$$IMAGE:$(cat /workspace/plugin_version.txt)-$$CHANNEL"
+        docker push "$$IMAGE:$(cat /workspace/plugin_version.txt)-$$CHANNEL"
 
   # The channel tag moves LAST, only after the smoke passed and the version tag is in the registry.
   - id: push-channel
@@ -73,8 +102,10 @@ steps:
       - -c
       - |
         set -euo pipefail
-        docker tag '${_IMAGE}:candidate' '${_IMAGE}:${_CHANNEL}'
-        docker push '${_IMAGE}:${_CHANNEL}'
+        IMAGE="$(cat /workspace/image.txt)"
+        CHANNEL="$(cat /workspace/channel.txt)"
+        docker tag "$$IMAGE:candidate" "$$IMAGE:$$CHANNEL"
+        docker push "$$IMAGE:$$CHANNEL"
 
 timeout: 1800s
 

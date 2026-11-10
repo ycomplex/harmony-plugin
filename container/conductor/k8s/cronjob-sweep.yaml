@@ -11,7 +11,11 @@
 # (`kubectl -n harmony-conductor create job --from=cronjob/harmony-sweep sweep-first-run`, then read its log for
 # "sweep summary:"). Until then both exist; they are idempotent, so overlap is harmless.
 #
-# The image tag is the same placeholder as the Deployment's (see deployment.yaml for the sed that fills it).
+# B-1435: the image is the same placeholder pair as the Deployment's; the sweep's gcloud identity is two more. Fill
+# every placeholder and apply in one line:
+#   sed -e "s|__REGISTRY__|<registry>|g" -e "s|__CONDUCTOR_VERSION__|<plugin version>-<channel>|g" \
+#       -e "s|__CONDUCTOR_GSA__|<conductor service-account email>|g" -e "s|__GCP_PROJECT__|<project>|g" \
+#       container/conductor/k8s/cronjob-sweep.yaml | kubectl apply -f -
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -46,7 +50,7 @@ spec:
             fsGroup: 1000
           containers:
             - name: sweep
-              image: us-central1-docker.pkg.dev/harmony-conductor/harmony-workers/harmony-conductor:__CONDUCTOR_VERSION__
+              image: __REGISTRY__/harmony-conductor:__CONDUCTOR_VERSION__
               imagePullPolicy: IfNotPresent
               workingDir: /opt/harmony-plugin
               args:
@@ -64,10 +68,13 @@ spec:
                   value: /var/harmony
                 - name: HARMONY_CONDUCTOR_HOST_FILE
                   value: /etc/harmony/conductor-host.json
+                # B-1435: the ONE sanctioned exception to the no-legacy-env rule the Deployment follows (it sets no
+                # CLOUDSDK_*): the sweep job keeps its gcloud account and project in env. Fill them from the same values
+                # as the ConfigMap's gcloud.account and gcp.project.
                 - name: CLOUDSDK_CORE_ACCOUNT
-                  value: harmony-conductor@harmony-conductor.iam.gserviceaccount.com
+                  value: __CONDUCTOR_GSA__
                 - name: CLOUDSDK_CORE_PROJECT
-                  value: harmony-conductor
+                  value: __GCP_PROJECT__
               resources:
                 requests:
                   cpu: 50m
