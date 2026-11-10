@@ -1,6 +1,6 @@
 # Remote conductor runbook (B-1173, B-1186)
 
-> **Living · product · Tier 2** · verified against plugin 0.17.27 / web 8b255df on 2026-11-08 · **revise when:** the conductor image, its manifests, `setup-cluster.sh`, the leg size or the quotas the ceiling needs change. Convention: harmony-workspace `docs/README.md` (B-1044).
+> **Living · product · Tier 2** · verified against plugin source 2e94916 / web 5330f8c on 2026-11-10 · **revise when:** the conductor image, its manifests, `setup-cluster.sh`, the leg size or the quotas the ceiling needs change. Convention: harmony-workspace `docs/README.md` (B-1044).
 
 How to run a project's conductor as **one pod on the project's own GKE cluster**, from a machine that has only this
 plugin installed. Follow it top to bottom. Every command is written so it works from any directory: the plugin is
@@ -198,6 +198,7 @@ Add one node of headroom (`+1`) to the node-shaped rows: a GKE surge upgrade add
 | Quota (metric) | Scope | What uses it | Must be at least | Worked example: `C`=5, `V`=8, `S`=2, `s`=2 |
 |---|---|---|---|---|
 | `CPUS_ALL_REGIONS` ("CPUs (all regions)") | project | every node's vCPU, in every region | `(C + 1) x V + S x s` | 6 x 8 + 2 x 2 = 52: request **64** |
+| `E2_CPUS` (machine-family pool, where exposed) | region | E2 leg and system nodes | `(C + 1) x V + S x s` when both pools are E2 | 52: request **64**; inspect actual quota names |
 | `CPUS` ("CPUs") | region | the same vCPU, counted per region | `(C + 1) x V + S x s` | 52: often within the default |
 | `IN_USE_ADDRESSES` ("In-use IP addresses") | region | one external IP per node | `C + S + 1` | 8: request **16** (a default of 8 leaves no room for a rollout) |
 | `INSTANCES` ("VM instances") | region | one VM per node | `C + S + 1` | 8: usually within the default |
@@ -211,9 +212,11 @@ defaults. Defaults vary by project and billing history, so read yours first:
 gcloud compute project-info describe --project <project> --format=json \
   | jq -r '.quotas[] | select(.metric=="CPUS_ALL_REGIONS") | "\(.metric) \(.usage)/\(.limit)"'
 gcloud compute regions describe <region> --project <project> --format=json \
-  | jq -r '.quotas[] | select(.metric|IN("CPUS","IN_USE_ADDRESSES","INSTANCES","SSD_TOTAL_GB","DISKS_TOTAL_GB"))
+  | jq -r '.quotas[] | select(.metric|IN("CPUS","E2_CPUS","IN_USE_ADDRESSES","INSTANCES","SSD_TOTAL_GB","DISKS_TOTAL_GB"))
            | "\(.metric) \(.usage)/\(.limit)"'
 ```
+
+Check the actual machine-family CPU pool as well as `CPUS_ALL_REGIONS`: metric names and E2/N1 sharing vary by project. Include only system nodes in that pool in the family formula. In the Arcwood walk, the regional `E2_CPUS` limit was 24 while the global limit was 32. Two e2-medium system nodes and two e2-standard-8 legs consumed 20 vCPU; a third leg needed 28 and could not fit the family limit. Request that pool's increase too, retaining the extra-node rollout allowance. See [Compute Engine allocation quotas](https://docs.cloud.google.com/compute/resource-usage).
 
 **Requesting an increase**, once per quota that is short:
 
@@ -287,10 +290,14 @@ resources, and are yours to change if you used other names:
 | secret names `HARMONY_API_TOKEN` and `harmony-daemon-app-private-key` | `configmap.yaml` host `secrets` block (names only) | you passed other names to `setup-cluster.sh` |
 | `gke.cluster` and `gke.namespace` `harmony-legs` | `configmap.yaml` seed | you passed `--cluster` / `--namespace` |
 | `gke.storage_class` `harmony-ticket-disk` | `configmap.yaml` seed | you changed the storage class |
+| seed `channel` `prod`; Deployment `HARMONY_PLUGIN_POSTURE` `prod` | `configmap.yaml`, `deployment.yaml` | staging deployment: set `staging` and `ack:staging` respectively |
+| seed `concurrency.max_workers` `2`, `gke.ticket_disk` `20Gi`, `log_shipping` `true` | `configmap.yaml` | your granted ceiling, disk budget or logging policy differs |
 | image name `harmony-conductor` | `deployment.yaml`, `cronjob-sweep.yaml` (after `__REGISTRY__/`) | never: the build publishes that name |
 | `_REGION` `us-central1`, `_ARTIFACT_REPO` `harmony-workers` | both `cloudbuild.yaml` files | your registry is elsewhere (step 2) |
 
 The Kubernetes object names and the `harmony-conductor` namespace are fixed: the lifecycle code patches them by name.
+
+For a Claude-only deployment, retain the two host `secrets` keys shown above: `api_token` and `github_app_private_key`. The Claude credential secret is selected by the worker credential setup, not by adding a Codex login to this host block.
 
 **Keys the manifests no longer ship (B-1435).** Add them to your filled copy only if they apply to you:
 
