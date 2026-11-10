@@ -540,7 +540,7 @@ case "$MODE" in
         B895_I=$((B895_I + 1))
       done
       # shellcheck disable=SC2124
-      CLAUDE_HEADLESS_FLAGS="${B895_REMAINING[*]}"
+      CLAUDE_HEADLESS_FLAGS="${B895_REMAINING[*]+"${B895_REMAINING[*]}"}"
     fi
 
     # B-1148: only a Claude leg adopts an id from the flags — a Codex leg's cross-conduction thread
@@ -654,7 +654,7 @@ case "$MODE" in
       fi
       [ "$provider" != "openai" ] || return 0
       if [ -n "$window" ]; then window_args=(--context-window "$window"); fi
-      node "$PLUGIN_DIR/dist/bin/harmony.js" agent render-provider --plugin-dir "$PLUGIN_DIR" --provider "$provider" "${window_args[@]}" || {
+      node "$PLUGIN_DIR/dist/bin/harmony.js" agent render-provider --plugin-dir "$PLUGIN_DIR" --provider "$provider" ${window_args[@]+"${window_args[@]}"} || {
         echo "B-1178: \`harmony agent render-provider\` refused (see stderr above) — no worker launched." >&2
         exit 1
       }
@@ -675,8 +675,8 @@ case "$MODE" in
       AGENT_ARGV=()
       argv_file="$(mktemp)"
       if ! node "$PLUGIN_DIR/dist/bin/harmony.js" agent argv \
-        --plugin-dir "$PLUGIN_DIR" --prompt "$PROMPT" "${resume_args[@]}" "${model_args[@]}" ${CODEX_PROVIDER_ARGS[@]+"${CODEX_PROVIDER_ARGS[@]}"} \
-        -- "${EXTRA_HEADLESS_FLAGS_BASE[@]}" >"$argv_file"; then
+        --plugin-dir "$PLUGIN_DIR" --prompt "$PROMPT" ${resume_args[@]+"${resume_args[@]}"} ${model_args[@]+"${model_args[@]}"} ${CODEX_PROVIDER_ARGS[@]+"${CODEX_PROVIDER_ARGS[@]}"} \
+        -- ${EXTRA_HEADLESS_FLAGS_BASE[@]+"${EXTRA_HEADLESS_FLAGS_BASE[@]}"} >"$argv_file"; then
         rm -f "$argv_file"
         echo "B-1077: \`harmony agent argv\` refused or failed (see stderr above) — no worker launched." >&2
         exit 1
@@ -939,7 +939,7 @@ case "$MODE" in
         node "$PLUGIN_DIR/dist/bin/harmony.js" leg-cost record \
           --file "$1" --gate "$LEG_GATE" --leg-key "$LEG_KEY" \
           --invocation-index "$INVOCATION_INDEX" --invocation-id "$invocation_id" \
-          "${model_args[@]}" "${duration_args[@]}" "${usage_args[@]}" "${error_args[@]}" --ack-file "$ack_file" >/dev/null 2>&1 || true
+          ${model_args[@]+"${model_args[@]}"} ${duration_args[@]+"${duration_args[@]}"} ${usage_args[@]+"${usage_args[@]}"} ${error_args[@]+"${error_args[@]}"} --ack-file "$ack_file" >/dev/null 2>&1 || true
         if [ "$(cat "$ack_file" 2>/dev/null || true)" = "recorded" ]; then rm -f "$B1353_PENDING_FILE"; fi
         rm -f "$ack_file"
       fi
@@ -975,7 +975,7 @@ case "$MODE" in
         fi
         node "$PLUGIN_DIR/dist/bin/harmony.js" leg-output record \
           --file "$1" --source worker --agent "${AGENT_ID:-claude-code}" --leg-key "$LEG_KEY" --gate "$LEG_GATE" \
-          "${stderr_args[@]}" >/dev/null 2>&1 || true
+          ${stderr_args[@]+"${stderr_args[@]}"} >/dev/null 2>&1 || true
       fi
     }
 
@@ -1136,7 +1136,7 @@ case "$MODE" in
       else
         B1148_CHECK_AGENT=()
       fi
-      if ! node "$PLUGIN_DIR/dist/bin/harmony.js" model check-alias "${B1148_CHECK_AGENT[@]}" "$REQUESTED_MODEL" >/dev/null 2>&1; then
+      if ! node "$PLUGIN_DIR/dist/bin/harmony.js" model check-alias ${B1148_CHECK_AGENT[@]+"${B1148_CHECK_AGENT[@]}"} "$REQUESTED_MODEL" >/dev/null 2>&1; then
         echo "B-772: handoff requested model '$REQUESTED_MODEL', which is NOT in the canonical allowlist — rejecting and NOT looping further (last completed turn's exit code stands)." >&2
         node "$PLUGIN_DIR/dist/bin/harmony.js" model clear-handoff >/dev/null 2>&1 || true
         break

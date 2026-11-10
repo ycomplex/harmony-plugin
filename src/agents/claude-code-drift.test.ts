@@ -63,7 +63,7 @@ function headlessProblems(provision: string): string[] {
     `--plugin-dir "$PLUGIN_DIR" --prompt "$PROMPT"`,
     `resume_args=(--resume "$1")`,
     `model_args=(--model "$CURRENT_MODEL")`,
-    '-- "${EXTRA_HEADLESS_FLAGS_BASE[@]}"',
+    '-- ${EXTRA_HEADLESS_FLAGS_BASE[@]+"${EXTRA_HEADLESS_FLAGS_BASE[@]}"}',
     "read -r -d ''",
   ]) {
     if (!fn.includes(needle)) p.push(`_agent_argv() lacks ${needle}`);
@@ -186,7 +186,7 @@ describe('drift checks catch a mutation (positive controls)', () => {
     ['the resume build drops its session id', '_agent_argv "$RESUME_SESSION_ID"', '_agent_argv ""'],
     ['a launch site loses its argv build', '        _agent_argv ""\n        COLD_STDOUT_FILE', '        COLD_STDOUT_FILE'],
     ['the argv build stops passing the model', 'model_args=(--model "$CURRENT_MODEL")', 'model_args=()'],
-    ['the argv build stops passing upstream flags', '-- "${EXTRA_HEADLESS_FLAGS_BASE[@]}"', '--'],
+    ['the argv build stops passing upstream flags', '-- ${EXTRA_HEADLESS_FLAGS_BASE[@]+"${EXTRA_HEADLESS_FLAGS_BASE[@]}"}', '--'],
     ['provision.sh adds the output format itself again', 'EXTRA_HEADLESS_FLAGS_BASE=(${CLAUDE_HEADLESS_FLAGS:-})\n', 'EXTRA_HEADLESS_FLAGS_BASE=(${CLAUDE_HEADLESS_FLAGS:-})\n    EXTRA_HEADLESS_FLAGS_BASE+=(--output-format json)\n'],
     ['the presence probe hardcodes the binary', 'command -v "$AGENT_BINARY"', 'command -v claude'],
   ])('headless: %s', (_label, from, to) => {
