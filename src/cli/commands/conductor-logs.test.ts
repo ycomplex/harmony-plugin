@@ -80,6 +80,6 @@ describe('conductor logs', () => {
     registerConductorCommands(program);
     registerConductorLogsCommand(program, () => deps({}));
     const conductor = program.commands.find((c) => c.name() === 'conductor')!;
-    expect(conductor.commands.map((c) => c.name()).sort()).toEqual(['config', 'logs', 'restart', 'start', 'status', 'stop']);
+    expect(conductor.commands.map((c) => c.name()).sort()).toEqual(['check-app', 'config', 'logs', 'restart', 'start', 'status', 'stop']);
   });
 });

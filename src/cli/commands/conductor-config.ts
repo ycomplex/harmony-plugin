@@ -19,6 +19,8 @@
 // behaviour is testable against temp dirs with an injected fetch. Only `registerConductorCommands`
 // touches console/process.
 
+import { resolvePluginSource, type PluginSource } from '../../config/plugin-source.js';
+import { registerAppCheck } from './conductor-check-app.js';
 import { execFile } from 'node:child_process';
 import { chmodSync, existsSync as fsExistsSync, mkdirSync, readFileSync as fsReadFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -55,6 +57,7 @@ export type SecretCheck = 'exists' | 'missing' | 'unchecked';
 
 export interface ConductorCliDeps {
   env: NodeJS.ProcessEnv;
+  pluginSource?: () => PluginSource;
   existsSync: (path: string) => boolean;
   readFileSync: (path: string) => string;
   fetchImpl?: typeof fetch;
@@ -615,7 +618,13 @@ export function runDoctor(deps0: ConductorCliDeps, opts: DoctorOptions = {}): Cl
   const hot = [...HOT_KEYS];
   const restart = [...RESTART_ONLY_KEYS];
 
-  const lines: string[] = [];
+  const plugin = (deps.pluginSource ?? resolvePluginSource)();
+  const lines: string[] = [
+    `Plugin repository: ${plugin.repository ?? 'unknown'}`,
+    `Plugin clone URL: ${plugin.clone_url ?? 'unknown'}`,
+    `Plugin channel: ${plugin.channel}`,
+    '  prod = promoted release; staging = CI-generated build; local = source checkout; unknown = insufficient or conflicting evidence',
+  ];
   lines.push('SOURCES');
   for (const s of sources) {
     lines.push(`  ${s.found ? '[found ]' : '[absent]'} ${s.source}${s.path ? `: ${s.path}` : ''}${s.detail ? ` (${s.detail})` : ''}`);
@@ -658,6 +667,7 @@ export function runDoctor(deps0: ConductorCliDeps, opts: DoctorOptions = {}): Cl
     errLines: [],
     data: {
       ok: issues.length === 0,
+      plugin,
       sources,
       issues: issues.map((i) => ({ ...i, text: formatConfigIssue(i) })),
       conflicts,
@@ -687,6 +697,7 @@ function emit(program: Command, result: CliResult): void {
 
 export function registerConductorCommands(program: Command, makeDeps: () => ConductorCliDeps = defaultCliDeps): void {
   const conductor = program.command('conductor').description('Conductor operations');
+  registerAppCheck(program, conductor);
   registerConductorLifecycleCommands(program, conductor); // B-1171: start | stop | restart | status
   const config = conductor.command('config').description('The two-file conductor config (.harmony/conductor.json + ~/.harmony/conductor-host.json)');
 
