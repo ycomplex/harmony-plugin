@@ -40366,7 +40366,12 @@ async function withManifestEvidence(client, taskId, doc, args) {
   const frame = doc.frame;
   const withRows = {
     ...doc,
-    frame: { ...frame, criteria: [...frame.criteria ?? [], ...result.rows] }
+    frame: {
+      ...frame,
+      criteria: [...(frame.criteria ?? []).filter((row) => typeof row.ac_id !== "string" || !row.ac_id.startsWith("manifest:")), ...result.rows],
+      // A partial revision carries the prior overlay's summary as well as its rows.
+      evidence_status: typeof frame.evidence_status === "string" ? frame.evidence_status.split(" \xB7 Declared evidence \u2014")[0] : ""
+    }
   };
   return { doc: result.clause ? withEvidenceClause(withRows, result.clause) : withRows };
 }
