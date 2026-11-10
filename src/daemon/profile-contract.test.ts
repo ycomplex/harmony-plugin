@@ -27,6 +27,11 @@ import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { renderTemplate } from './config.js';
 import { WORKER_IMAGE_DEFAULT } from '../config/deployment-config.js';
 import { LEGACY_LOCAL_DOCKER_LAUNCH } from './local-docker-legacy-launch.js';
+import { installDarwinStatShim } from '../test/darwin-stat-shim.js';
+
+// B-1030: on macOS, put a GNU-`stat -c` shim first on PATH before any harness below builds its env
+// (every env reads process.env.PATH at call time). A no-op on Linux, so CI keeps real GNU stat.
+installDarwinStatShim();
 
 // --- B-869/B-826: hermetic-test capability probe -----------------------------------------------
 // AC1 of B-869 requires that a clean checkout either goes GREEN or announces an environment-driven
@@ -250,7 +255,7 @@ describe.skipIf(!SUBPROCESS_CAPABLE)('provision.sh: B-718 resume discovery + AC5
   }
   const CLAUDE_CLI_AVAILABLE = hasRealClaudeCli();
 
-  it.skipIf(!CLAUDE_CLI_AVAILABLE)('B-718 de-risk smoke test (LIVE, real claude CLI — step 1 of the ticket work list): a session id the CLI does not recognize fails FAST on stderr with "No conversation found with session ID", and the block correctly detects it and attempts the cold fallback', () => {
+  it.skipIf(!CLAUDE_CLI_AVAILABLE)('B-718 de-risk smoke test (LIVE, real claude CLI — step 1 of the ticket work list): a session id the CLI does not recognize fails FAST on stderr with "No conversation found with session ID", and the block correctly detects it and attempts the cold fallback', (ctx) => {
     const dir = mkdtempSync(join(tmpdir(), 'b718-provision-resume-live-'));
     const homeDir = join(dir, 'home');
     mkdirSync(homeDir, { recursive: true });
@@ -288,6 +293,16 @@ describe.skipIf(!SUBPROCESS_CAPABLE)('provision.sh: B-718 resume discovery + AC5
     }
 
     const combined = result.stdout + result.stderr;
+    // B-1030: a live test needs a logged-in CLI. A CLI that is installed but not logged in (seen on
+    // a developer Mac) answers the --resume attempt with "Not logged in" instead of the session
+    // lookup failure, so there is nothing to de-risk: skip, keyed only on the CLI's own output.
+    // A logged-out cold attempt AFTER a real "No conversation found" is the expected sandbox shape
+    // (see below) and still runs the assertions.
+    if (combined.includes('Not logged in') && !combined.includes('No conversation found with session ID')) {
+      console.log('B-718 de-risk smoke test skipped: the claude CLI is installed but not logged in ("Not logged in").');
+      ctx.skip();
+      return;
+    }
     expect(combined).toContain('B-718: attempting to resume prior session 00000000-0000-0000-0000-000000000000');
     expect(combined).toContain('No conversation found with session ID');
     expect(combined).toContain(
