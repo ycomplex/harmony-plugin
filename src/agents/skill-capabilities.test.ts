@@ -26,7 +26,7 @@ const BASELINE: Record<string, { allowed: string; disallowed?: string }> = {
   'harmony-fasttrack': { allowed: 'mcp__harmony__* Read Edit Write Bash Glob Grep' },
   'harmony-inception': { allowed: 'mcp__harmony__* Read Grep Glob Write Edit' },
   'harmony-next': { allowed: 'mcp__harmony__* Read Grep Glob' },
-  'harmony-orchestrate': { allowed: 'mcp__harmony__* Read Grep Glob Bash(gh *) Bash(git *) Bash(node *)', disallowed: 'NotebookEdit' },
+  'harmony-orchestrate': { allowed: 'mcp__harmony__* Read Grep Glob Bash(gh *) Bash(git *) Bash(node *) Bash(harmony *)', disallowed: 'NotebookEdit' },
   'harmony-queue': { allowed: 'mcp__harmony__* Read Grep Glob' },
   'harmony-research': { allowed: 'mcp__harmony__* Read Grep Glob WebSearch WebFetch' },
   'harmony-revise-scope': { allowed: 'mcp__harmony__* Read Grep Glob WebSearch WebFetch' },
@@ -81,6 +81,15 @@ describe('skill capability classes (B-1150)', () => {
       if (name === 'harmony-fasttrack') expect(allowed).toBe('mcp__harmony__* Read Grep Glob Edit Write Bash');
       else expect(allowed, name).toBe(BASELINE[name].allowed);
     }
+  });
+
+  it('orchestrate grants Harmony commands without broad shell or write permission (B-1425)', () => {
+    const classes = classesOf('harmony-orchestrate');
+    expect(classes).toContain('shell:harmony');
+    expect(classes).not.toContain('shell');
+    expect(classes).not.toContain('write');
+    expect(claudeSkillTools(classes).allowed).toContain('Bash(harmony *)');
+    expect(claudeSkillTools(classes).disallowed).toBe('NotebookEdit');
   });
 
   it('harmony-conduct declares NO disallowed-tools (B-1114 / B-1117)', () => {

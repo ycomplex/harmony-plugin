@@ -89,6 +89,12 @@ export function extractProse(root:string,commit:string,selectors:z.infer<typeof 
  }
  return {chunks,diagnostics:diagnostics.slice(0,1000)};
 }
+// Normalise transports and host case, preserving the case-sensitive repository path.
+function repositoryIdentity(repository: string): string {
+ const address = repository.replace(/^git@([^:]+):/, 'https://$1/').replace(/\/$/, '').replace(/\.git$/, '');
+ return address.replace(/^(https?:\/\/)([^/]+)/i, (_match, scheme: string, host: string) => scheme.toLowerCase() + host.toLowerCase());
+}
+
 export async function syncProse(client:SupabaseClient,projectId:string,root:string,declarationPath='.harmony/prose-sources.json',requested='HEAD') {
  if(declarationPath.startsWith('/')||declarationPath.split('/').includes('..'))throw new Error('Declaration must be repository-relative');
  const commit=git(root,['rev-parse','--verify',`${requested}^{commit}`]).toString().trim();
@@ -96,8 +102,8 @@ export async function syncProse(client:SupabaseClient,projectId:string,root:stri
  // A local branch may be behind its remote; if present, require the selected commit is precisely the tracked ref.
  const refCommit=git(root,['rev-parse','--verify',`${declaration.ref}^{commit}`]).toString().trim();
  if(refCommit!==commit)throw new Error('Refresh commit does not match the configured tracked ref; fetch/update before refreshing');
- const origin=git(root,['remote','get-url','origin']).toString().trim().replace(/^git@([^:]+):/,'https://').replace(/\.git$|\/$/g,'');
- if(origin!==declaration.repository.replace(/\.git$|\/$/g,''))throw new Error('Repository identity differs from configured source');
+ const origin=repositoryIdentity(git(root,['remote','get-url','origin']).toString().trim());
+ if(origin!==repositoryIdentity(declaration.repository))throw new Error('Repository identity differs from configured source');
  const read=await readProse(client,projectId);if(!read.available)throw new Error('Prose indexing capability is unavailable; no refresh attempted');
  const output:unknown[]=[];
  for(const spec of declaration.sources) {

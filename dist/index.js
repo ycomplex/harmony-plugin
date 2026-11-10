@@ -55597,6 +55597,8 @@ var EXTENSION_MIME = {
   // documents
   ".pdf": "application/pdf",
   ".txt": "text/plain",
+  ".patch": "text/plain",
+  ".diff": "text/plain",
   ".md": "text/markdown",
   ".csv": "text/csv",
   ".html": "text/html",

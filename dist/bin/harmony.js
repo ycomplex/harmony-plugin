@@ -67509,14 +67509,18 @@ function extractProse(root, commit, selectors) {
   }
   return { chunks, diagnostics: diagnostics.slice(0, 1e3) };
 }
+function repositoryIdentity(repository) {
+  const address = repository.replace(/^git@([^:]+):/, "https://$1/").replace(/\/$/, "").replace(/\.git$/, "");
+  return address.replace(/^(https?:\/\/)([^/]+)/i, (_match, scheme, host) => scheme.toLowerCase() + host.toLowerCase());
+}
 async function syncProse(client, projectId, root, declarationPath = ".harmony/prose-sources.json", requested = "HEAD") {
   if (declarationPath.startsWith("/") || declarationPath.split("/").includes("..")) throw new Error("Declaration must be repository-relative");
   const commit = git(root, ["rev-parse", "--verify", `${requested}^{commit}`]).toString().trim();
   const declaration = declarationSchema.parse(JSON.parse(git(root, ["show", `${commit}:${declarationPath}`]).toString()));
   const refCommit = git(root, ["rev-parse", "--verify", `${declaration.ref}^{commit}`]).toString().trim();
   if (refCommit !== commit) throw new Error("Refresh commit does not match the configured tracked ref; fetch/update before refreshing");
-  const origin = git(root, ["remote", "get-url", "origin"]).toString().trim().replace(/^git@([^:]+):/, "https://").replace(/\.git$|\/$/g, "");
-  if (origin !== declaration.repository.replace(/\.git$|\/$/g, "")) throw new Error("Repository identity differs from configured source");
+  const origin = repositoryIdentity(git(root, ["remote", "get-url", "origin"]).toString().trim());
+  if (origin !== repositoryIdentity(declaration.repository)) throw new Error("Repository identity differs from configured source");
   const read = await readProse(client, projectId);
   if (!read.available) throw new Error("Prose indexing capability is unavailable; no refresh attempted");
   const output = [];
