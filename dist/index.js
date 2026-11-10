@@ -53275,6 +53275,58 @@ async function resolveAssignee(client, projectId, assignee) {
   throw new Error(`No member found matching "${assignee}". Use list_members to see available members.`);
 }
 
+// src/tools/known-arguments.ts
+function isPlainObject6(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function assertKnownArguments(tool, args, hints) {
+  const input = isPlainObject6(args) ? args : {};
+  const properties2 = tool.inputSchema.properties ?? {};
+  const allowed = Object.keys(properties2);
+  const unknown2 = [];
+  for (const key of Object.keys(input)) {
+    if (!Object.prototype.hasOwnProperty.call(properties2, key)) {
+      unknown2.push(key);
+      continue;
+    }
+    const schema = properties2[key];
+    const value = input[key];
+    const itemProps = schema?.items?.properties;
+    if (schema?.type === "array" && schema.items?.type === "object" && itemProps && Array.isArray(value)) {
+      value.forEach((element, index) => {
+        if (!isPlainObject6(element)) return;
+        for (const itemKey of Object.keys(element)) {
+          if (!Object.prototype.hasOwnProperty.call(itemProps, itemKey)) {
+            unknown2.push(`${key}[${index}].${itemKey}`);
+          }
+        }
+      });
+    }
+  }
+  if (unknown2.length === 0) return;
+  const lines = [`${tool.name} does not accept: ${unknown2.join(", ")}. Accepted arguments: ${allowed.join(", ")}.`];
+  const nested = /* @__PURE__ */ new Set();
+  for (const key of unknown2) {
+    const match = /^([^[]+)\[\d+\]\./.exec(key);
+    if (match && !nested.has(match[1])) {
+      nested.add(match[1]);
+      const itemKeys = Object.keys(properties2[match[1]].items?.properties ?? {});
+      lines.push(`Each ${match[1]} entry accepts: ${itemKeys.join(", ")}.`);
+    }
+  }
+  if (hints) {
+    const seen = /* @__PURE__ */ new Set();
+    for (const key of unknown2) {
+      const hint = hints[key];
+      if (hint && !seen.has(hint)) {
+        seen.add(hint);
+        lines.push(hint);
+      }
+    }
+  }
+  throw new Error(lines.join("\n"));
+}
+
 // src/tools/tasks.ts
 async function fetchActiveBriefIteration(client, taskId) {
   try {
@@ -53553,7 +53605,11 @@ var createTaskTool = {
     required: ["title"]
   }
 };
+var CREATE_TASK_ARGUMENT_HINTS = {
+  acceptance_criteria: "To add acceptance criteria, create the task, then call manage_acceptance_criteria with add: [{ content }]."
+};
 async function createTask(client, projectId, userId, args) {
+  assertKnownArguments(createTaskTool, args, CREATE_TASK_ARGUMENT_HINTS);
   const assigneeId = args.assignee_id ? await resolveAssignee(client, projectId, args.assignee_id) : null;
   const parentTaskId = args.parent_task_id ? await resolveTaskId2(client, projectId, args.parent_task_id) : null;
   let epicId = args.epic_id ?? null;
@@ -54925,6 +54981,7 @@ var manageAcceptanceCriteriaTool = {
   }
 };
 async function manageAcceptanceCriteria(client, projectId, userId, args) {
+  assertKnownArguments(manageAcceptanceCriteriaTool, args);
   const resolvedTaskId = await resolveTaskId2(client, projectId, args.task_id);
   const results = {
     added: [],
@@ -56827,13 +56884,13 @@ async function assertRunConfigPolicy(client, projectId, runConfig) {
 
 // src/tools/unpark-inheritance.ts
 var INHERITED_FROM_KEY = "inherited_from";
-var isPlainObject6 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var isPlainObject7 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 function mergeRunConfig(base2, override) {
   const merge2 = (a, b, root = false) => {
     const out = { ...a };
     for (const [key, value] of Object.entries(b)) {
       if (value === void 0) continue;
-      out[key] = !(root && key === "model") && isPlainObject6(value) && isPlainObject6(out[key]) ? merge2(out[key], value) : value;
+      out[key] = !(root && key === "model") && isPlainObject7(value) && isPlainObject7(out[key]) ? merge2(out[key], value) : value;
     }
     return out;
   };

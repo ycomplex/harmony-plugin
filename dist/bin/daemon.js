@@ -24814,6 +24814,58 @@ async function resolveAssignee(client, projectId, assignee) {
   throw new Error(`No member found matching "${assignee}". Use list_members to see available members.`);
 }
 
+// src/tools/known-arguments.ts
+function isPlainObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function assertKnownArguments(tool, args, hints) {
+  const input = isPlainObject(args) ? args : {};
+  const properties = tool.inputSchema.properties ?? {};
+  const allowed = Object.keys(properties);
+  const unknown = [];
+  for (const key of Object.keys(input)) {
+    if (!Object.prototype.hasOwnProperty.call(properties, key)) {
+      unknown.push(key);
+      continue;
+    }
+    const schema = properties[key];
+    const value = input[key];
+    const itemProps = schema?.items?.properties;
+    if (schema?.type === "array" && schema.items?.type === "object" && itemProps && Array.isArray(value)) {
+      value.forEach((element, index) => {
+        if (!isPlainObject(element)) return;
+        for (const itemKey of Object.keys(element)) {
+          if (!Object.prototype.hasOwnProperty.call(itemProps, itemKey)) {
+            unknown.push(`${key}[${index}].${itemKey}`);
+          }
+        }
+      });
+    }
+  }
+  if (unknown.length === 0) return;
+  const lines = [`${tool.name} does not accept: ${unknown.join(", ")}. Accepted arguments: ${allowed.join(", ")}.`];
+  const nested = /* @__PURE__ */ new Set();
+  for (const key of unknown) {
+    const match = /^([^[]+)\[\d+\]\./.exec(key);
+    if (match && !nested.has(match[1])) {
+      nested.add(match[1]);
+      const itemKeys = Object.keys(properties[match[1]].items?.properties ?? {});
+      lines.push(`Each ${match[1]} entry accepts: ${itemKeys.join(", ")}.`);
+    }
+  }
+  if (hints) {
+    const seen = /* @__PURE__ */ new Set();
+    for (const key of unknown) {
+      const hint = hints[key];
+      if (hint && !seen.has(hint)) {
+        seen.add(hint);
+        lines.push(hint);
+      }
+    }
+  }
+  throw new Error(lines.join("\n"));
+}
+
 // src/tools/design-artefact.ts
 var uuid = external_exports.string().uuid();
 var NodeSchema = external_exports.object({ id: external_exports.string().min(1), name: external_exports.string().min(1), caption: external_exports.string(), preview_attachment_id: uuid, preview_filename: external_exports.string().min(1) }).strict();
@@ -25709,7 +25761,7 @@ function parseGateSlotContent(gate, content) {
   }
   return parsed.data;
 }
-var isPlainObject = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+var isPlainObject2 = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
 function isMissingGateSlotRpc(err) {
   if (!err) return false;
   const code = err.code ?? "";
@@ -25723,7 +25775,7 @@ function ratifiedAtStamp(now) {
 async function writeGateSlot(client, args) {
   const gate = (args.gate ?? "").trim();
   if (!gate) throw new Error("gate_slot write names no gate \u2014 the slot is keyed by the gate that ratified it");
-  if (!isPlainObject(args.content)) {
+  if (!isPlainObject2(args.content)) {
     throw new Error(
       `gate_slot write for gate '${gate}' must carry a content OBJECT (an EMPTY object is valid \u2014 it means the gate ratified an empty answer)`
     );
@@ -25753,8 +25805,8 @@ async function writeGateSlot(client, args) {
   const { data: taskRow, error: readErr } = await client.from("tasks").select("field_values").eq("id", taskId).maybeSingle();
   if (readErr) throw new Error(readErr.message);
   if (!taskRow) throw new Error(`gate_slot write for gate '${gate}' targets task ${taskId}, which does not exist`);
-  const fieldValues = isPlainObject(taskRow.field_values) ? taskRow.field_values : {};
-  const existingSlots = isPlainObject(fieldValues[GATE_SLOT_FIELD_KEY]) ? fieldValues[GATE_SLOT_FIELD_KEY] : {};
+  const fieldValues = isPlainObject2(taskRow.field_values) ? taskRow.field_values : {};
+  const existingSlots = isPlainObject2(fieldValues[GATE_SLOT_FIELD_KEY]) ? fieldValues[GATE_SLOT_FIELD_KEY] : {};
   const ratified_at = ratifiedAtStamp(/* @__PURE__ */ new Date());
   const nextFieldValues = {
     ...fieldValues,
@@ -26570,7 +26622,7 @@ var ProjectManifestBodySchema = external_exports.object({
   fasttrack: FasttrackSchema.optional()
 }).strict();
 var KNOWN_TOP_LEVEL_KEYS = ["version", "preconditions", "build", "release", "verify", "notify", "fasttrack"];
-function isPlainObject2(value) {
+function isPlainObject3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function firstToken(command) {
@@ -26623,7 +26675,7 @@ function loadProjectManifest(projectRoot, deps = {}) {
     };
   }
   if (parsed === void 0 || parsed === null) parsed = {};
-  if (!isPlainObject2(parsed)) {
+  if (!isPlainObject3(parsed)) {
     return {
       kind: "malformed",
       problem: {
@@ -34589,7 +34641,7 @@ var resolveFetch = (customFetch) => {
   if (customFetch) return (...args) => customFetch(...args);
   return (...args) => fetch(...args);
 };
-var isPlainObject3 = (value) => {
+var isPlainObject4 = (value) => {
   if (typeof value !== "object" || value === null) return false;
   const prototype = Object.getPrototypeOf(value);
   return (prototype === null || prototype === Object.prototype || Object.getPrototypeOf(prototype) === null) && !(Symbol.toStringTag in value) && !(Symbol.iterator in value);
@@ -34686,7 +34738,7 @@ var _getRequestParams = (method, options, parameters, body) => {
     headers: (options === null || options === void 0 ? void 0 : options.headers) || {}
   };
   if (method === "GET" || method === "HEAD" || !body) return _objectSpread22(_objectSpread22({}, params), parameters);
-  if (isPlainObject3(body)) {
+  if (isPlainObject4(body)) {
     params.headers = _objectSpread22({ "Content-Type": "application/json" }, options === null || options === void 0 ? void 0 : options.headers);
     params.body = JSON.stringify(body);
   } else params.body = body;
@@ -37562,7 +37614,52 @@ async function listAcceptanceCriteria(client, projectId, args) {
   if (error) throw error;
   return data;
 }
+var manageAcceptanceCriteriaTool = {
+  name: "manage_acceptance_criteria",
+  description: "Add, update, or delete acceptance criteria on a task. Supports batch operations.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: {
+        type: "string",
+        description: "Task identifier \u2014 UUID, task number (e.g., 43), or visual ID (e.g., B-43)"
+      },
+      add: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            content: { type: "string", description: "Acceptance criterion content" },
+            checked: { type: "boolean", description: "Whether the criterion is met. Default false." }
+          },
+          required: ["content"]
+        },
+        description: "Acceptance criteria to add (appended in order)"
+      },
+      update: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            id: { type: "string", description: "Acceptance criterion UUID" },
+            content: { type: "string", description: "New content" },
+            checked: { type: "boolean", description: "New checked state" }
+          },
+          required: ["id"]
+        },
+        description: "Acceptance criteria to update"
+      },
+      delete: {
+        type: "array",
+        items: { type: "string" },
+        description: "Acceptance criterion UUIDs to delete"
+      }
+    },
+    required: ["task_id"]
+  }
+};
 async function manageAcceptanceCriteria(client, projectId, userId, args) {
+  assertKnownArguments(manageAcceptanceCriteriaTool, args);
   const resolvedTaskId = await resolveTaskId(client, projectId, args.task_id);
   const results = {
     added: [],

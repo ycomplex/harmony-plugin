@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveTaskId } from './resolve-task-id.js';
 import { normalizeHtmlEntities } from './text-normalize.js';
+import { assertKnownArguments } from './known-arguments.js';
 
 export const listAcceptanceCriteriaTool = {
   name: 'list_acceptance_criteria',
@@ -88,6 +89,9 @@ export async function manageAcceptanceCriteria(
     delete?: string[];
   },
 ) {
+  // B-1400: refuse undocumented arguments (top-level and add[i] / update[i] keys) before any
+  // client call, so `items: [...]` is an error instead of a silent `{ added: [] }` success.
+  assertKnownArguments(manageAcceptanceCriteriaTool, args);
   const resolvedTaskId = await resolveTaskId(client, projectId, args.task_id);
   const results: { added: any[]; updated: any[]; deleted: string[] } = {
     added: [],

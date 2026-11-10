@@ -37184,6 +37184,58 @@ async function resolveAssignee(client, projectId, assignee) {
   throw new Error(`No member found matching "${assignee}". Use list_members to see available members.`);
 }
 
+// src/tools/known-arguments.ts
+function isPlainObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function assertKnownArguments(tool, args, hints) {
+  const input = isPlainObject(args) ? args : {};
+  const properties2 = tool.inputSchema.properties ?? {};
+  const allowed = Object.keys(properties2);
+  const unknown2 = [];
+  for (const key of Object.keys(input)) {
+    if (!Object.prototype.hasOwnProperty.call(properties2, key)) {
+      unknown2.push(key);
+      continue;
+    }
+    const schema = properties2[key];
+    const value = input[key];
+    const itemProps = schema?.items?.properties;
+    if (schema?.type === "array" && schema.items?.type === "object" && itemProps && Array.isArray(value)) {
+      value.forEach((element, index) => {
+        if (!isPlainObject(element)) return;
+        for (const itemKey of Object.keys(element)) {
+          if (!Object.prototype.hasOwnProperty.call(itemProps, itemKey)) {
+            unknown2.push(`${key}[${index}].${itemKey}`);
+          }
+        }
+      });
+    }
+  }
+  if (unknown2.length === 0) return;
+  const lines = [`${tool.name} does not accept: ${unknown2.join(", ")}. Accepted arguments: ${allowed.join(", ")}.`];
+  const nested = /* @__PURE__ */ new Set();
+  for (const key of unknown2) {
+    const match2 = /^([^[]+)\[\d+\]\./.exec(key);
+    if (match2 && !nested.has(match2[1])) {
+      nested.add(match2[1]);
+      const itemKeys = Object.keys(properties2[match2[1]].items?.properties ?? {});
+      lines.push(`Each ${match2[1]} entry accepts: ${itemKeys.join(", ")}.`);
+    }
+  }
+  if (hints) {
+    const seen = /* @__PURE__ */ new Set();
+    for (const key of unknown2) {
+      const hint = hints[key];
+      if (hint && !seen.has(hint)) {
+        seen.add(hint);
+        lines.push(hint);
+      }
+    }
+  }
+  throw new Error(lines.join("\n"));
+}
+
 // src/tools/design-artefact.ts
 var uuid = external_exports.string().uuid();
 var NodeSchema = external_exports.object({ id: external_exports.string().min(1), name: external_exports.string().min(1), caption: external_exports.string(), preview_attachment_id: uuid, preview_filename: external_exports.string().min(1) }).strict();
@@ -38079,7 +38131,7 @@ function parseGateSlotContent(gate, content) {
   }
   return parsed.data;
 }
-var isPlainObject = (v2) => typeof v2 === "object" && v2 !== null && !Array.isArray(v2);
+var isPlainObject2 = (v2) => typeof v2 === "object" && v2 !== null && !Array.isArray(v2);
 function isMissingGateSlotRpc(err) {
   if (!err) return false;
   const code = err.code ?? "";
@@ -38093,7 +38145,7 @@ function ratifiedAtStamp(now) {
 async function writeGateSlot(client, args) {
   const gate = (args.gate ?? "").trim();
   if (!gate) throw new Error("gate_slot write names no gate \u2014 the slot is keyed by the gate that ratified it");
-  if (!isPlainObject(args.content)) {
+  if (!isPlainObject2(args.content)) {
     throw new Error(
       `gate_slot write for gate '${gate}' must carry a content OBJECT (an EMPTY object is valid \u2014 it means the gate ratified an empty answer)`
     );
@@ -38123,8 +38175,8 @@ async function writeGateSlot(client, args) {
   const { data: taskRow, error: readErr } = await client.from("tasks").select("field_values").eq("id", taskId).maybeSingle();
   if (readErr) throw new Error(readErr.message);
   if (!taskRow) throw new Error(`gate_slot write for gate '${gate}' targets task ${taskId}, which does not exist`);
-  const fieldValues = isPlainObject(taskRow.field_values) ? taskRow.field_values : {};
-  const existingSlots = isPlainObject(fieldValues[GATE_SLOT_FIELD_KEY]) ? fieldValues[GATE_SLOT_FIELD_KEY] : {};
+  const fieldValues = isPlainObject2(taskRow.field_values) ? taskRow.field_values : {};
+  const existingSlots = isPlainObject2(fieldValues[GATE_SLOT_FIELD_KEY]) ? fieldValues[GATE_SLOT_FIELD_KEY] : {};
   const ratified_at = ratifiedAtStamp(/* @__PURE__ */ new Date());
   const nextFieldValues = {
     ...fieldValues,
@@ -38885,7 +38937,7 @@ var ProjectManifestBodySchema = external_exports.object({
   fasttrack: FasttrackSchema.optional()
 }).strict();
 var KNOWN_TOP_LEVEL_KEYS = ["version", "preconditions", "build", "release", "verify", "notify", "fasttrack"];
-function isPlainObject2(value) {
+function isPlainObject3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function firstToken(command) {
@@ -38938,7 +38990,7 @@ function loadProjectManifest(projectRoot, deps = {}) {
     };
   }
   if (parsed === void 0 || parsed === null) parsed = {};
-  if (!isPlainObject2(parsed)) {
+  if (!isPlainObject3(parsed)) {
     return {
       kind: "malformed",
       problem: {
@@ -41412,7 +41464,32 @@ async function getTask(client, projectId, args) {
     implements_entities
   };
 }
+var createTaskTool = {
+  name: "create_task",
+  description: 'Create a task, written for TWO audiences (a product reader AND an engineer). Title = the product-visible OUTCOME, not the mechanism. First `description` paragraph = what changes for the user or product, in plain language; put mechanism and searchable technical keywords under a `## Technical` heading (so the ticket stays grep-able). \u2705 "Stop one runaway query from hanging the app for every user"  \u274C "Set statement_timeout on authenticated role".',
+  inputSchema: {
+    type: "object",
+    properties: {
+      title: { type: "string", description: "Task title" },
+      status: { type: "string", description: 'Status (e.g. "Backlog", "To Do"). Defaults to first status.' },
+      priority: { type: "string", enum: ["high", "medium", "low"], description: "Priority. Default medium." },
+      assignee_id: { type: "string", description: "Assignee \u2014 UUID, display name, or email. Use list_members to find users." },
+      epic_id: { type: "string", description: "Epic ID to assign to" },
+      description: { type: "string", description: "Task description (markdown)" },
+      due_date: { type: "string", description: "Due date in YYYY-MM-DD format" },
+      field_values: { type: "object", description: "Custom field values keyed by field definition ID" },
+      cycle_id: { type: "string", description: "Assign to a cycle. Optional." },
+      milestone_id: { type: "string", description: "Assign to a milestone. Optional." },
+      parent_task_id: { type: "string", description: "Parent task to nest this task under (UUID, task number, or visual ID e.g. B-43). Optional." }
+    },
+    required: ["title"]
+  }
+};
+var CREATE_TASK_ARGUMENT_HINTS = {
+  acceptance_criteria: "To add acceptance criteria, create the task, then call manage_acceptance_criteria with add: [{ content }]."
+};
 async function createTask(client, projectId, userId, args) {
+  assertKnownArguments(createTaskTool, args, CREATE_TASK_ARGUMENT_HINTS);
   const assigneeId = args.assignee_id ? await resolveAssignee(client, projectId, args.assignee_id) : null;
   const parentTaskId = args.parent_task_id ? await resolveTaskId(client, projectId, args.parent_task_id) : null;
   let epicId = args.epic_id ?? null;
@@ -47656,7 +47733,7 @@ var resolveFetch = (customFetch) => {
   if (customFetch) return (...args) => customFetch(...args);
   return (...args) => fetch(...args);
 };
-var isPlainObject3 = (value) => {
+var isPlainObject4 = (value) => {
   if (typeof value !== "object" || value === null) return false;
   const prototype = Object.getPrototypeOf(value);
   return (prototype === null || prototype === Object.prototype || Object.getPrototypeOf(prototype) === null) && !(Symbol.toStringTag in value) && !(Symbol.iterator in value);
@@ -47753,7 +47830,7 @@ var _getRequestParams = (method, options, parameters, body) => {
     headers: (options === null || options === void 0 ? void 0 : options.headers) || {}
   };
   if (method === "GET" || method === "HEAD" || !body) return _objectSpread22(_objectSpread22({}, params), parameters);
-  if (isPlainObject3(body)) {
+  if (isPlainObject4(body)) {
     params.headers = _objectSpread22({ "Content-Type": "application/json" }, options === null || options === void 0 ? void 0 : options.headers);
     params.body = JSON.stringify(body);
   } else params.body = body;
@@ -51652,7 +51729,7 @@ __export(util_exports, {
   getParsedType: () => getParsedType2,
   getSizableOrigin: () => getSizableOrigin,
   isObject: () => isObject,
-  isPlainObject: () => isPlainObject4,
+  isPlainObject: () => isPlainObject5,
   issue: () => issue,
   joinValues: () => joinValues,
   jsonStringifyReplacer: () => jsonStringifyReplacer,
@@ -51800,7 +51877,7 @@ var allowsEval = cached(() => {
     return false;
   }
 });
-function isPlainObject4(o) {
+function isPlainObject5(o) {
   if (isObject(o) === false)
     return false;
   const ctor = o.constructor;
@@ -51985,7 +52062,7 @@ function omit(schema, mask) {
   });
 }
 function extend(schema, shape) {
-  if (!isPlainObject4(shape)) {
+  if (!isPlainObject5(shape)) {
     throw new Error("Invalid input to extend: expected a plain object");
   }
   const def = {
@@ -53634,7 +53711,7 @@ function mergeValues2(a3, b) {
   if (a3 instanceof Date && b instanceof Date && +a3 === +b) {
     return { valid: true, data: a3 };
   }
-  if (isPlainObject4(a3) && isPlainObject4(b)) {
+  if (isPlainObject5(a3) && isPlainObject5(b)) {
     const bKeys = Object.keys(b);
     const sharedKeys = Object.keys(a3).filter((key) => bKeys.indexOf(key) !== -1);
     const newObj = { ...a3, ...b };
@@ -53691,7 +53768,7 @@ var $ZodRecord = /* @__PURE__ */ $constructor("$ZodRecord", (inst, def) => {
   $ZodType.init(inst, def);
   inst._zod.parse = (payload2, ctx) => {
     const input = payload2.value;
-    if (!isPlainObject4(input)) {
+    if (!isPlainObject5(input)) {
       payload2.issues.push({
         expected: "record",
         code: "invalid_type",
@@ -59746,7 +59823,7 @@ var Protocol = class {
     };
   }
 };
-function isPlainObject5(value) {
+function isPlainObject6(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 function mergeCapabilities(base2, additional) {
@@ -59757,7 +59834,7 @@ function mergeCapabilities(base2, additional) {
     if (addValue === void 0)
       continue;
     const baseValue = result[k];
-    if (isPlainObject5(baseValue) && isPlainObject5(addValue)) {
+    if (isPlainObject6(baseValue) && isPlainObject6(addValue)) {
       result[k] = { ...baseValue, ...addValue };
     } else {
       result[k] = addValue;
@@ -63127,7 +63204,52 @@ async function listAcceptanceCriteria(client, projectId, args) {
   if (error2) throw error2;
   return data;
 }
+var manageAcceptanceCriteriaTool = {
+  name: "manage_acceptance_criteria",
+  description: "Add, update, or delete acceptance criteria on a task. Supports batch operations.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: {
+        type: "string",
+        description: "Task identifier \u2014 UUID, task number (e.g., 43), or visual ID (e.g., B-43)"
+      },
+      add: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            content: { type: "string", description: "Acceptance criterion content" },
+            checked: { type: "boolean", description: "Whether the criterion is met. Default false." }
+          },
+          required: ["content"]
+        },
+        description: "Acceptance criteria to add (appended in order)"
+      },
+      update: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            id: { type: "string", description: "Acceptance criterion UUID" },
+            content: { type: "string", description: "New content" },
+            checked: { type: "boolean", description: "New checked state" }
+          },
+          required: ["id"]
+        },
+        description: "Acceptance criteria to update"
+      },
+      delete: {
+        type: "array",
+        items: { type: "string" },
+        description: "Acceptance criterion UUIDs to delete"
+      }
+    },
+    required: ["task_id"]
+  }
+};
 async function manageAcceptanceCriteria(client, projectId, userId, args) {
+  assertKnownArguments(manageAcceptanceCriteriaTool, args);
   const resolvedTaskId = await resolveTaskId(client, projectId, args.task_id);
   const results = {
     added: [],
@@ -69882,13 +70004,13 @@ async function assertRunConfigPolicy(client, projectId, runConfig) {
 
 // src/tools/unpark-inheritance.ts
 var INHERITED_FROM_KEY = "inherited_from";
-var isPlainObject6 = (v2) => typeof v2 === "object" && v2 !== null && !Array.isArray(v2);
+var isPlainObject7 = (v2) => typeof v2 === "object" && v2 !== null && !Array.isArray(v2);
 function mergeRunConfig(base2, override) {
   const merge2 = (a3, b, root = false) => {
     const out = { ...a3 };
     for (const [key, value] of Object.entries(b)) {
       if (value === void 0) continue;
-      out[key] = !(root && key === "model") && isPlainObject6(value) && isPlainObject6(out[key]) ? merge2(out[key], value) : value;
+      out[key] = !(root && key === "model") && isPlainObject7(value) && isPlainObject7(out[key]) ? merge2(out[key], value) : value;
     }
     return out;
   };
