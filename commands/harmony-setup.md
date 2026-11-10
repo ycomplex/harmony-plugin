@@ -1,7 +1,7 @@
 ---
 name: harmony-setup
-description: Configure the Harmony plugin for this project — sets the API token (and, for a non-prod target, the Supabase URL/anon key) and verifies the connection.
-allowed-tools: ["Read", "Write", "Edit", "Bash", "mcp__harmony__list_tasks"]
+description: Configure the Harmony plugin for this project — save the API token and target, then verify the connection after restarting.
+allowed-tools: ["Read", "Write", "Edit", "Bash", "mcp__harmony__get_project"]
 ---
 
 # Harmony Plugin Setup
@@ -21,7 +21,7 @@ write that file, it only documents that the same triple applies here too.
 
 ### 1. Check for existing configuration
 
-Read `.claude/settings.local.json` if it exists. If `HARMONY_API_TOKEN` is already set under `env`, tell the user it's already configured and ask if they want to update it. If they say no, skip to step 4 (verify).
+Read `.claude/settings.local.json` if it exists. If `HARMONY_API_TOKEN` is already set under `env`, tell the user it's already configured and ask if they want to update it. If they say no, confirm that this session was started in this directory after the latest configuration edit. Only then skip to step 5 (verify). If that restart has not happened or is uncertain, go to step 4. Declining an update does not make an old session's connection proof of the saved configuration.
 
 ### 2. Ask for the target
 
@@ -46,10 +46,16 @@ Once the user provides the token (and, for a non-prod target, the Supabase URL +
 - Write the updated JSON back to `.claude/settings.local.json`
 - Ensure `.claude/settings.local.json` is in `.gitignore` (check and add if missing)
 
-### 4. Verify the connection
+### 4. Save now, verify after restart
 
-Call `mcp__harmony__list_tasks` with a `limit` of 1 to verify the token works. If it succeeds, report success and show which workspace/project the token is connected to. If it fails, report the error and ask the user to check their token (and, for a non-prod target, the Supabase URL/anon key).
+After any configuration edit, tell the user: "Configuration saved. Connection verification is pending. Restart Claude Code (`/exit` then `claude`) in this directory, then run `/harmony-setup` again and choose not to update the configuration so we can verify it."
 
-### 5. Remind about restart
+Stop here in this session. The MCP server loads configuration at startup; a call now could use the previous token or target. Do not call a verification tool, report connection success, or blame the new token before the restart. If the configuration was already present but restart is unconfirmed, say verification is pending and give the same restart instructions without claiming a new save.
 
-Tell the user: "Configuration saved. Restart Claude Code (`/exit` then `claude`) for the MCP server to pick up the new token."
+### 5. Verify the restarted connection
+
+Only after confirming that this session started after the latest configuration edit, call `mcp__harmony__get_project`. Do not substitute a CLI call or task-list result: the CLI can select a credential stored for another project, and neither proves which configuration the restarted MCP server loaded.
+
+Show the project name and key, and the Supabase target from the returned `environment` block. Show the workspace name/identity if the response includes it; otherwise explicitly say: "Workspace identity is not returned by this check and remains unconfirmed." Never infer a workspace from an old session, task, or project name.
+
+Ask the user to compare the returned project and target with the board they intended. If they match, report that the restarted project connection was verified, keeping any workspace limitation visible; do not claim full workspace verification when its identity is unavailable. If they differ, report the mismatch without a success verdict. If the call fails or required project/target identity is missing, report the error or incomplete verification and ask the user to check the saved configuration. If the MCP tool is unavailable, verification remains pending. Any subsequent edit returns to step 4 and requires another restart.
