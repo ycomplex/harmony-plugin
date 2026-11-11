@@ -979,7 +979,7 @@ bootstrapped with `container/docker-host/bootstrap.sh`, driven from a Mac over p
 | What | Result |
 |---|---|
 | `bootstrap.sh` on a fresh host | 17 seconds; timer enabled and active |
-| A second project's stack inside a leg (Arcwood Customer Portal: Postgres, Keycloak, a mock backend, a .NET BFF, nginx) | Engine up in 1 s. `docker compose up -d --build --wait` cold: 164 s, all five services healthy, ports answering on the worker's own `127.0.0.1`. Integration suites 49 of 49 and 91 of 91. Playwright end-to-end suite 43 of 43 |
+| A second project's stack inside a leg (a customer-portal application: Postgres, Keycloak, a mock backend, a .NET BFF, nginx) | Engine up in 1 s. `docker compose up -d --build --wait` cold: 164 s, all five services healthy, ports answering on the worker's own `127.0.0.1`. Integration suites 49 of 49 and 91 of 91. Playwright end-to-end suite 43 of 43 |
 | harmony-web inside a leg | `supabase start` cold: 136 s (ten containers), 49 s warm from the engine volume. `db reset`: 38 s. Playwright suite: 131 of 132. One spec (`task-decomposition.spec.ts:109`) fails every time in this image and passes in CI: a dialog whose `data-state` is `closed` stays visible. Cause not established |
 | Launch wrapper, real worker image, no credentials | Woke the host, shipped the per-run files, ran the real entrypoint, which refused the placeholder token; the wrapper returned 1, removed the host's `run.env` and the container |
 | Launch wrapper, exit-0 path | A privileged worker started its engine, ran a container, wrote into the mounted transcript directory and exited 0 |
@@ -987,7 +987,7 @@ bootstrapped with `container/docker-host/bootstrap.sh`, driven from a Mac over p
 | Idle power-off | With `IDLE_MINUTES=6` the host powered itself off at the first timer tick past six idle minutes |
 | Wake | A launch against the powered-off host started it and ran a worker to exit 0 in 62 seconds, VM start included |
 
-Peak memory of one leg, worker and stack together: about 11 GB for the Arcwood run and about
+Peak memory of one leg, worker and stack together: about 11 GB for that run and about
 12 GB for the harmony-web run (cgroup peak, page cache included). So a 16 GB host carries one
 stack-using leg at a time; size the host, or `maxConcurrentWorkers`, to that.
 
