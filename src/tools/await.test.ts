@@ -241,3 +241,34 @@ describe('formatGhCommand', () => {
     expect(formatGhCommand(['api', 'x?y', '--jq', ".a b"])).toBe("gh api 'x?y' --jq '.a b'");
   });
 });
+
+
+describe('await duration compatibility across all modes', () => {
+  const modes = [
+    { name: 'ci', call: (opts: { interval: string | number; maxWait: string | number }, deps: AwaitDeps) => awaitCi({ repo: 'o/r', sha: 'abc1234', ...opts }, deps) },
+    { name: 'pr', call: (opts: { interval: string | number; maxWait: string | number }, deps: AwaitDeps) => awaitPr('12', { repo: 'o/r', ...opts }, deps) },
+    { name: 'branch', call: (opts: { interval: string | number; maxWait: string | number }, deps: AwaitDeps) => awaitBranch('main', { repo: 'o/r', names: 'abc1234', ...opts }, deps) },
+    { name: 'promote', call: (opts: { interval: string | number; maxWait: string | number }, deps: AwaitDeps) => awaitPromote({ webSha: 'abc1234', pluginSha: 'def5678', ...opts }, deps) },
+  ];
+  const pending = () => harness([['', [ok({ check_runs: [], state: 'OPEN', mergeable: 'UNKNOWN', status: 'behind' })]]]);
+  for (const mode of modes) {
+    it.each([['20m', 1_200_000], ['1h', 3_600_000], ['90s', 90_000], ['1h30m', 5_400_000], [' 1H ', 3_600_000], ['2.5', 2500], [2.5, 2500]] as const)(`${mode.name} accepts %s and caps sleep at the deadline`, async (value, ms) => {
+      const h = pending();
+      expect(await mode.call({ interval: value, maxWait: value }, h.deps)).toBe(3);
+      expect(h.sleeps).toEqual([ms]);
+      const capped = pending();
+      expect(await mode.call({ interval: value, maxWait: 1 }, capped.deps)).toBe(3);
+      expect(capped.sleeps).toEqual([1000]);
+    });
+    it(`${mode.name} preserves zero max-wait and rejects invalid inputs with both forms named`, async () => {
+      const h = pending();
+      expect(await mode.call({ interval: '90s', maxWait: '0' }, h.deps)).toBe(3);
+      expect(h.sleeps).toEqual([]);
+      for (const opts of [{ interval: '0', maxWait: '20m' }, { interval: 'bad', maxWait: '20m' }, { interval: '90s', maxWait: 'bad' }, { interval: '90s', maxWait: '-1' }]) {
+        const bad = pending();
+        expect(await mode.call(opts, bad.deps)).toBe(2);
+        expect(bad.err.join(' ')).toMatch(/number of seconds or a duration/);
+      }
+    });
+  }
+});

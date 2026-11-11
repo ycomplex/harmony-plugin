@@ -9,6 +9,7 @@
  * every failed probe prints one stderr line naming the exact command, its exit code and its stderr.
  */
 import { execFile } from 'node:child_process';
+import { parseDuration } from '../watch/seat-files.js';
 
 export const AWAIT_EXIT = { met: 0, unmeetable: 1, fatal: 2, timedOut: 3 } as const;
 
@@ -113,9 +114,10 @@ function emit(deps: AwaitDeps, event: Record<string, unknown>, text: string): vo
 
 function parseSeconds(raw: string | number | undefined, fallback: number, name: string, allowZero: boolean): number {
   if (raw === undefined) return fallback;
-  const n = typeof raw === 'number' ? raw : Number(raw);
+  const durationMs = typeof raw === 'string' ? parseDuration(raw) : null;
+  const n = durationMs === null ? Number(raw) : durationMs / 1000;
   if (!Number.isFinite(n) || n < 0 || (!allowZero && n === 0)) {
-    throw new AwaitArgError(`${name} must be a ${allowZero ? 'non-negative' : 'positive'} number of seconds (got ${String(raw)})`);
+    throw new AwaitArgError(`${name} must be a ${allowZero ? 'non-negative' : 'positive'} number of seconds or a duration such as 20m, 1h, 90s (got ${String(raw)})`);
   }
   return n;
 }

@@ -533,11 +533,26 @@ describe('scope and board checks (release-gate finding on 7cd36ba)', () => {
       const code = await runWatchCommand(parseWatchArgs(['1'], { seat: 'orch', ...opts }, true), f.deps);
       expect(code).toBe(2);
       const msg = f.err.join('\n');
-      expect(msg).toContain('names project B');
+      expect(msg).toContain('project value "B"');
+      expect(msg).toContain('must name the project KEY');
+      expect(msg).toContain('active key is "BVS"');
       expect(msg).toContain('Backlogs Staging (BVS) on staging');
       expect(f.out.some((l) => l.includes('"event":"start"'))).toBe(false);
       expect(readLock('BVS', 'orch', { kind: 'keys', keys: ['1'] }, { home }).status).toBe('absent');
     }
+  });
+
+  it('a display-name profile shows distinct values even when the names appear identical', async () => {
+    profileFor('Customer Portal');
+    const f = fake();
+    f.board.key = 'CP';
+    f.board.name = 'Customer Portal';
+    f.board.put(ticket(1));
+    expect(await runWatchCommand(parseWatchArgs(['1'], { seat: 'orch', once: true }, false), f.deps)).toBe(2);
+    const msg = f.err.join('\n');
+    expect(msg).toContain('project value "Customer Portal"');
+    expect(msg).toContain('must name the project KEY');
+    expect(msg).toContain('active key is "CP"');
   });
 
   it('a profile naming the active project passes', async () => {
