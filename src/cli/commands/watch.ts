@@ -587,7 +587,7 @@ export async function runWatchCommand(args: WatchArgs, deps: WatchCliDeps): Prom
     // The seat profile names the board the seat drives; the CLI must be pointed at that board.
     if (profile?.project && profile.project.toUpperCase() !== project.key.toUpperCase()) {
       deps.err(
-        `harmony watch: seat profile ${args.seat} names project ${profile.project}, but the CLI's active project is ${boardText}; ` +
+        `harmony watch: seat profile ${args.seat} has project value "${profile.project}", but this must name the project KEY; active key is "${project.key}" (${boardText}); ` +
           'point the CLI at the board the seat drives (`harmony project info`, `harmony project switch <name>`) or fix the profile',
       );
       return 2;
