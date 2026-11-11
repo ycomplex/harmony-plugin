@@ -55,6 +55,8 @@ export interface RunWatchOptions {
   scopeSlug: string;
   profile: SeatProfile | null;
   pid?: number;
+  /** Next sequence after a heartbeat published by the locking caller. */
+  heartbeatSeq?: number;
   pollMs?: number;
   hintDelayMs?: number;
   settleMs?: number;
@@ -122,7 +124,7 @@ export async function runWatch(deps: RunWatchDeps): Promise<RunWatchResult> {
   let failureSince: string | null = null;
   let lastFetchAt: string | null = null;
   let lastOkAt: string | null = null;
-  let hbSeq = 0;
+  let hbSeq = o.heartbeatSeq ?? 0;
   let degradedReported = false;
   let lastMarkerScan = -Infinity;
   const warnedSessions = new Set<string>();

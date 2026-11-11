@@ -77066,7 +77066,7 @@ async function runWatch(deps) {
   let failureSince = null;
   let lastFetchAt = null;
   let lastOkAt = null;
-  let hbSeq = 0;
+  let hbSeq = o.heartbeatSeq ?? 0;
   let degradedReported = false;
   let lastMarkerScan = -Infinity;
   const warnedSessions = /* @__PURE__ */ new Set();
@@ -78094,6 +78094,7 @@ async function runWatchCommand(args, deps) {
       );
       return 2;
     }
+    const pollMs = deps.pollMs ?? 3e4;
     if (args.mode !== "once" && args.seat) {
       const res = acquireLock(projectKey, args.seat, args.scope, args.mode, homeOpts);
       if (res.status === "held") {
@@ -78103,6 +78104,23 @@ async function runWatchCommand(args, deps) {
         return 2;
       }
       lockTaken = true;
+      try {
+        writeHeartbeat(projectKey, args.seat, {
+          schema: 1,
+          pid: process.pid,
+          seat: args.seat,
+          scope: slug2,
+          mode: args.mode,
+          poll_interval_s: pollMs / 1e3,
+          started_at: new Date(deps.now()).toISOString(),
+          last_fetch_at: null,
+          last_ok_at: null,
+          health: "ok",
+          seq: 0
+        }, homeOpts);
+      } catch (e) {
+        deps.err(`harmony watch: heartbeat write failed: ${safeErrorMessage(e)}`);
+      }
     }
     let cursor = null;
     if (args.seat) {
@@ -78114,7 +78132,6 @@ async function runWatchCommand(args, deps) {
     }
     const startScope = args.scope.kind === "milestone" ? { kind: "milestone", id: milestone?.id ?? args.scope.id, name: milestone?.name ?? null } : args.scope.kind === "keys" ? { kind: "keys", keys: [...args.scope.keys] } : { kind: "conductions" };
     print(startEvent(deps.now(), { name: project.name, key: project.key }, target, startScope, boot.value.ids.length, cursor?.seq ?? 0));
-    const pollMs = deps.pollMs ?? 3e4;
     if (args.mode !== "once") {
       try {
         hints = deps.startHints(client, auth2, projectId, pollMs, (l) => deps.err(`harmony watch: ${l}`));
@@ -78152,6 +78169,7 @@ async function runWatchCommand(args, deps) {
         scopeSlug: slug2,
         profile,
         pollMs,
+        heartbeatSeq: lockTaken ? 1 : 0,
         hintDelayMs: deps.hintDelayMs,
         settleMs: deps.settleMs,
         maxWaitMs: args.maxWaitMs,
