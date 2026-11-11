@@ -119,6 +119,22 @@ describe('decideSeatStop', () => {
     if (d.action === 'block') expect(d.reason).toContain('no heartbeat');
   });
 
+  it.each([undefined, 'stale'])('allows stop within 1s of a live lock with %s heartbeat', (kind) => {
+    const d = deps({
+      readHeartbeat: () => kind ? ok(hb({ last_fetch_at: '2026-11-07T09:00:00.000Z' })) : absent(),
+      readLock: () => ok(lock({ started_at: new Date(NOW - 1000).toISOString() })),
+    });
+    expect(decideSeatStop(stopInput(), d).action).toBe('allow');
+    expect(decideSeatStop(stopInput(), { ...d, isPidAlive: () => false }).action).toBe('block');
+  });
+
+  it.each([30_000, 30_001, -1000])('no startup grace for lock age %sms', (age) => {
+    expect(decideSeatStop(stopInput(), deps({
+      readHeartbeat: () => absent(),
+      readLock: () => ok(lock({ started_at: new Date(NOW - age).toISOString() })),
+    })).action).toBe('block');
+  });
+
   it('a --once heartbeat -> block', () => {
     const d = decideSeatStop(stopInput(), deps({ readHeartbeat: () => ok(hb({ mode: 'once' })) }));
     expect(d.action).toBe('block');
@@ -133,7 +149,7 @@ describe('decideSeatStop', () => {
       return ok(lock());
     };
     expect(decideSeatStop(stopInput(), deps({ readHeartbeat: other, readLock: readLockSpy })).action).toBe('allow');
-    expect(lockRead).toBe(false);
+    expect(lockRead).toBe(true); // startup grace checks the profile lock first
     const d = decideSeatStop(stopInput(), deps({ readHeartbeat: other, isPidAlive: () => false }));
     expect(d.action).toBe('block');
     if (d.action === 'block') expect(d.reason).toContain('watch pid 48211 is dead');
