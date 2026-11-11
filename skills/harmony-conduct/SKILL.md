@@ -121,11 +121,15 @@ distinguishes a conducted session from an ordinary one. Write it once, at leg st
 resolved the target ticket in §1 — every subsequent leg of the same conduction rewrites it.
 
 ```bash
-mkdir -p "${HARMONY_HOME:-$HOME/.harmony}/conduct-sessions"
-cat > "${HARMONY_HOME:-$HOME/.harmony}/conduct-sessions/<session_id>.json" <<'JSON'
-{ "session_id": "<session_id>", "task_id": "<ticket uuid>", "ticket": "B-123", "started_at": "<ISO>" }
-JSON
+node "${CLAUDE_PLUGIN_ROOT}/dist/bin/harmony.js" conduct breadcrumb \
+  --task "<resolved ticket uuid>" --ticket "<visual ticket id>" --session-id "<session_id>"
 ```
+
+The command stamps `started_at` from its own clock and atomically writes the complete breadcrumb;
+never type a timestamp or hand-write the JSON. Run it on EVERY leg pickup, including a resumed runtime
+session. It is local-only and never creates a conduction. Use the explicit checkout CLI path above,
+not a potentially older `harmony` on PATH. A write failure is best-effort: continue as below.
+
 
 - **`<session_id>` is this Claude Code session's own id** — the plugin's `SessionStart` hook reports it in
   context at session start ("Harmony conduct-session id: …", with the exact path to write) and also leaves
