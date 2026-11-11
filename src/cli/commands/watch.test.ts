@@ -122,6 +122,30 @@ describe('parseWatchArgs', () => {
 });
 
 describe('runWatchCommand', () => {
+  it('publishes a startup heartbeat before hints or the first fetch, then reports offline', async () => {
+    const f = fake();
+    let startup: Heartbeat | null = null;
+    f.deps.startHints = () => {
+      const beat = readHeartbeat('B', 'orch', { home });
+      expect(beat.status).toBe('ok');
+      if (beat.status === 'ok') startup = beat.value;
+      expect(startup).toMatchObject({ pid: process.pid, mode: 'follow', seq: 0, last_fetch_at: null, last_ok_at: null });
+      expect(readLock('B', 'orch', { kind: 'milestone', id: 'm1' }, { home }).status).toBe('ok');
+      // Bootstrap resolved the board; the loop's first fetch now fails.
+      f.board.failures = [new Error('fetch failed')];
+      return null;
+    };
+    f.clock.onTick(() => {
+      const beat = readHeartbeat('B', 'orch', { home });
+      expect(beat.status === 'ok' && beat.value.health).toBe('offline');
+      expect(beat.status === 'ok' && beat.value.seq).toBe(1);
+      f.stop();
+    });
+    expect(await runWatchCommand(parseWatchArgs([], { milestone: 'm1', seat: 'orch', follow: true }, true), f.deps)).toBe(130);
+    expect(startup).not.toBeNull();
+    expect(readHeartbeat('B', 'orch', { home }).status).toBe('absent');
+  });
+
   it('AC7: a second watch for the same seat+scope exits 2 naming the holder pid', async () => {
     const holderPid = process.ppid; // alive, on this host
     const first = acquireLock('B', 'orch', { kind: 'milestone', id: 'm1' }, 'follow', { home, pid: holderPid });
