@@ -46,4 +46,9 @@ describe('tool registry', () => {
     const names = registerTools().map((t) => t.name);
     expect(names).toContain('submit_elicitation_answers');
   });
+
+  it('registers the B-1452 incident tool', () => {
+    const names = registerTools().map((t) => t.name);
+    expect(names).toContain('raise_incident');
+  });
 });

@@ -101,6 +101,7 @@ import {
 } from './acceptance-events.js';
 import { writeGateSlotTool, writeGateSlotToolHandler } from './gate-slots.js';
 import { recordTool, recordToolHandler } from './record-walk.js';
+import { raiseIncidentTool, raiseIncident } from './incident.js';
 
 // B-692 Phase 2: the conduction record's shared-core accessors + canonical status axis. Deliberately
 // NOT registered as an MCP tool and NOT wired into src/cli/commands/ — the future conductor daemon
@@ -195,6 +196,8 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
     flagReleaseApprovalPendingTool,
     startElicitationTool, fileElicitationRoundTool, getElicitationTool, concludeElicitationTool,
     submitElicitationAnswersTool,
+    // B-1452 — a leg that exposed a credential raises an incident a human sees first.
+    raiseIncidentTool,
     advanceWorkflowTool,
     referenceKnowledgeTool,
     listTicketKnowledgeTool,
@@ -501,6 +504,9 @@ export async function handleToolCall(
         break;
       case 'submit_elicitation_answers':
         result = await submitElicitationAnswers(client, projectId, args as any);
+        break;
+      case 'raise_incident':
+        result = await raiseIncident(client, projectId, userId, args as any);
         break;
       case 'advance_workflow':
         result = await advanceWorkflow(client, projectId, args as any);

@@ -17,6 +17,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { resolveTaskId } from './resolve-task-id.js';
+import { getConductionId } from '../config/run-config.js';
 import {
   validateRound,
   warnRound,
@@ -47,7 +48,39 @@ export const TRIGGER_OWNERS: Record<string, string> = {
   'phase-split-probe': 'clarify',
   'worker-question': 'any-gate',
   'inception-semantics': 'inception',
+  // B-1452: a leg that exposed a credential outside the worker files ONE incident round through
+  // raise_incident (src/tools/incident.ts). Any gate may be running when it happens.
+  'incident': 'any-gate',
 };
+
+/** B-1452: the trigger raise_incident opens. A conduction worker may never answer its rounds. */
+export const INCIDENT_TRIGGER = 'incident';
+
+/** B-1452: the `awaiting_human_ref` extra a round on an incident exchange carries. Only one kind exists. */
+export const INCIDENT_KIND_CREDENTIAL_EXPOSURE = 'credential-exposure';
+
+/** B-1452: process-context guard (the same worker test B-1364 uses in briefs.ts): a conduction worker
+ *  cannot answer, or conclude unanswered, the incident round its own leg raised. Throws before any write. */
+function refuseWorkerOnIncident(
+  exchange: { id: string; trigger?: unknown },
+  operation: string,
+  detail: string,
+): void {
+  const conductionId = getConductionId();
+  if (!conductionId || exchange.trigger !== INCIDENT_TRIGGER) return;
+  throw new Error(
+    `${operation} refused: conduction worker '${conductionId}' cannot ${detail} on incident exchange ${exchange.id}. ` +
+      'Only a human releases an incident, by answering its round ("resume" or "stop") on the web or in the seat. ' +
+      'Make no further change and end your turn. Nothing was written.',
+  );
+}
+
+/** True when the exchange's last filed round carries at least one answer. */
+function latestRoundAnswered(rounds: unknown): boolean {
+  if (!Array.isArray(rounds) || rounds.length === 0) return false;
+  const last = rounds[rounds.length - 1] as { answers?: Record<string, unknown> } | null;
+  return !!last && typeof last.answers === 'object' && last.answers !== null && Object.keys(last.answers).length > 0;
+}
 
 export const VALID_TRIGGERS = Object.keys(TRIGGER_OWNERS);
 
@@ -168,7 +201,7 @@ export const startElicitationTool = {
     type: 'object' as const,
     properties: {
       task_id: { type: 'string', description: 'The task the exchange belongs to — UUID, task number, or visual ID (e.g., B-43)' },
-      trigger: { type: 'string', description: "What started the exchange: 'pre-draft-clarify' (questions before a clarification draft exists) | 'discuss' (attached to an active brief under discussion) | 'phase-split-probe' (probing whether/where to split phases) | 'worker-question' (the running session itself hit a judgment call or capability denial mid-run — B-733; see skills/harmony-shared/elicitation-engine.md §The worker-question trigger)" },
+      trigger: { type: 'string', description: "What started the exchange: 'pre-draft-clarify' (questions before a clarification draft exists) | 'discuss' (attached to an active brief under discussion) | 'phase-split-probe' (probing whether/where to split phases) | 'worker-question' (the running session itself hit a judgment call or capability denial mid-run — B-733; see skills/harmony-shared/elicitation-engine.md §The worker-question trigger) | 'inception-semantics' (the inception walk's semantics questions) | 'incident' (opened by raise_incident only, B-1452 — never open it by hand)" },
       gate: { type: 'string', description: "The workflow activity the exchange serves (e.g. 'clarifying'). Optional." },
       brief_id: { type: 'string', description: "The active brief a 'discuss' exchange attaches to. Omit for pre-draft triggers." },
     },
@@ -189,10 +222,18 @@ export interface FileElicitationRoundArgs {
   prior_answers?: Record<string, ElicitationAnswer>;
 }
 
+/** Internal (not part of the MCP schema): options only in-process callers pass. */
+export interface FileElicitationRoundInternal {
+  /** Extra fields written into `awaiting_human_ref` in the SAME task write as the round's flag
+   *  (B-1452: raise_incident's `incident` marker), so the flag and the marker land together. */
+  refExtra?: Record<string, unknown>;
+}
+
 export async function fileElicitationRound(
   client: SupabaseClient,
   projectId: string,
   args: FileElicitationRoundArgs,
+  internal: FileElicitationRoundInternal = {},
 ): Promise<unknown> {
   if (!args.context_line?.trim()) throw new Error('context_line is required — one plain-prose line framing the round');
 
@@ -213,6 +254,9 @@ export async function fileElicitationRound(
     }
     throw new Error(`exchange ${exchange.id} is '${exchange.status}' — rounds can only be filed on an active exchange`);
   }
+
+  // B-1452: echoing answers onto an incident round is answering it — a worker may not.
+  if (args.prior_answers) refuseWorkerOnIncident(exchange, 'file_elicitation_round', 'echo prior_answers');
 
   let rounds = Array.isArray(exchange.rounds) ? exchange.rounds : [];
 
@@ -278,7 +322,16 @@ export async function fileElicitationRound(
       awaiting_human_reason: 'elicitation-round',
       // `gate` rides along (B-462) so surfaces can group/label the round by the lifecycle gate the
       // exchange serves without re-fetching the exchange (the Queue card's gate pill reads it).
-      awaiting_human_ref: { kind: 'elicitation', exchange_id: exchange.id, round: n, gate: exchange.gate ?? null },
+      // B-1452: every round on an incident exchange carries the `incident` marker (a re-asked release
+      // question included), so the watch and the queue keep surfacing it first.
+      awaiting_human_ref: {
+        kind: 'elicitation',
+        exchange_id: exchange.id,
+        round: n,
+        gate: exchange.gate ?? null,
+        ...(exchange.trigger === INCIDENT_TRIGGER ? { incident: INCIDENT_KIND_CREDENTIAL_EXPOSURE } : {}),
+        ...(internal.refExtra ?? {}),
+      },
     })
     .eq('id', exchange.task_id);
   if (taskErr) throw new Error(taskErr.message);
@@ -408,6 +461,13 @@ export async function concludeElicitation(
     throw new Error(`exchange ${exchange.id} is already '${exchange.status}' — cannot conclude it '${args.outcome}'`);
   }
 
+  // B-1452: a worker may conclude an incident exchange only after a human answered its latest round
+  // (the resume path), and may never supply those answers itself.
+  if (args.prior_answers) refuseWorkerOnIncident(exchange, 'conclude_elicitation', 'echo prior_answers');
+  if (!latestRoundAnswered(exchange.rounds)) {
+    refuseWorkerOnIncident(exchange, 'conclude_elicitation', 'conclude an unanswered round');
+  }
+
   // Terminal answering (B-462): the final round's terminal-given answers are echoed in the same
   // write that concludes — usually a convergence consuming the answers that produced it.
   let roundsUpdate: { rounds: ElicitationRound[] } | Record<string, never> = {};
@@ -439,7 +499,7 @@ export async function concludeElicitation(
 export const concludeElicitationTool = {
   name: 'conclude_elicitation',
   description:
-    "Conclude an elicitation exchange: 'converged' (the agent can now confidently draft a brief that represents the user's intent), 'force-quit' (the human said \"best efforts, proceed\" — draft from what you have; mint any claims with provenance 'force-quit'), or 'abandoned'. Sets the exchange status and clears both consumable markers. Writes NOTHING else: it does not touch the attached brief and does not re-set the task's awaiting flag — for 'abandoned' on a brief-attached exchange the brief row deliberately stays ACTIVE with the flag down, so the owning gate's \"brief already active\" path re-surfaces it in place on re-entry. If the exchange is already 'abandoned' (a mechanical cancel landed first) and a DIFFERENT outcome is requested, returns the typed no-op { noop: true, cause: 'exchange-cancelled', exchange } instead of throwing (B-461) — the CALLING AGENT must then archive any claims it minted in that same turn (claims are minted before conclude; the mint→conclude window can race a cancel). Re-issuing the SAME outcome stays idempotent and returns the row.",
+    "Conclude an elicitation exchange: 'converged' (the agent can now confidently draft a brief that represents the user's intent), 'force-quit' (the human said \"best efforts, proceed\" — draft from what you have; mint any claims with provenance 'force-quit'), or 'abandoned'. Sets the exchange status and clears both consumable markers. Writes NOTHING else: it does not touch the attached brief and does not re-set the task's awaiting flag — for 'abandoned' on a brief-attached exchange the brief row deliberately stays ACTIVE with the flag down, so the owning gate's \"brief already active\" path re-surfaces it in place on re-entry. If the exchange is already 'abandoned' (a mechanical cancel landed first) and a DIFFERENT outcome is requested, returns the typed no-op { noop: true, cause: 'exchange-cancelled', exchange } instead of throwing (B-461) — the CALLING AGENT must then archive any claims it minted in that same turn (claims are minted before conclude; the mint→conclude window can race a cancel). Re-issuing the SAME outcome stays idempotent and returns the row. B-1452: from a conduction worker (HARMONY_CONDUCTION_ID set), an 'incident' exchange may be concluded only once a human has answered its latest round, and never with prior_answers.",
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -522,6 +582,9 @@ export async function submitElicitationAnswers(
     );
   }
 
+  // B-1452: a conduction worker cannot answer the incident round its own leg raised.
+  refuseWorkerOnIncident(exchange, 'submit_elicitation_answers', 'submit answers');
+
   const nowIso = new Date().toISOString();
 
   // The SAME engine guards the two prior_answers callers run (B-462): only the last filed round may
@@ -570,7 +633,7 @@ export async function submitElicitationAnswers(
 export const submitElicitationAnswersTool = {
   name: 'submit_elicitation_answers',
   description:
-    "Record terminal-given answers to the OPEN round of a task's active elicitation exchange and hand the ball back to the agent — WITHOUT asking another round and WITHOUT concluding the exchange. This is the terminal twin of the web's answer form and the PRODUCER of the answers marker: it stamps answers_submitted_at, leaves the exchange 'active' (a follow-up round can still be filed), and clears the task's awaiting_human_input (reason/ref nulled) so the conductor watch classifies 'answers-landed'. Never touches workflow_state. Use it when an out-of-band caller holds answers the human gave in the terminal and the next move hasn't been decided yet; use file_elicitation_round's or conclude_elicitation's prior_answers instead when you are filing the next round or concluding in the same turn (those CONSUME the marker). Same guards as prior_answers: only the last filed round's unanswered questions may be answered, a submitted answer is never overwritten, and verbs must fit the question kind — any violation refuses the whole call with no partial write. Each answer is stamped via:'terminal'. Refuses (writing nothing) when the task has no open exchange, or when its exchange is already concluded — an 'abandoned' exchange means the human cancelled the discussion, so do not retry.",
+    "Record terminal-given answers to the OPEN round of a task's active elicitation exchange and hand the ball back to the agent — WITHOUT asking another round and WITHOUT concluding the exchange. This is the terminal twin of the web's answer form and the PRODUCER of the answers marker: it stamps answers_submitted_at, leaves the exchange 'active' (a follow-up round can still be filed), and clears the task's awaiting_human_input (reason/ref nulled) so the conductor watch classifies 'answers-landed'. Never touches workflow_state. Use it when an out-of-band caller holds answers the human gave in the terminal and the next move hasn't been decided yet; use file_elicitation_round's or conclude_elicitation's prior_answers instead when you are filing the next round or concluding in the same turn (those CONSUME the marker). Same guards as prior_answers: only the last filed round's unanswered questions may be answered, a submitted answer is never overwritten, and verbs must fit the question kind — any violation refuses the whole call with no partial write. Each answer is stamped via:'terminal'. Refuses (writing nothing) when the task has no open exchange, or when its exchange is already concluded — an 'abandoned' exchange means the human cancelled the discussion, so do not retry. Also refuses (writing nothing) when called from a conduction worker (HARMONY_CONDUCTION_ID set) on an 'incident' exchange (B-1452): only a human releases an incident.",
   inputSchema: {
     type: 'object' as const,
     properties: {

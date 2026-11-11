@@ -28,6 +28,7 @@
 // node is ever spawned. Nothing in this file runs for a non-conducting session.
 
 import { isCleanRowShape, type CleanRowShape } from '../daemon/classify.js';
+import { containsTokenShape } from '../tools/token-shapes.js';
 import { liveWaitingOn, parseWaitingOn, WAIT_CEILING_MS, waitingOnFieldValues } from '../daemon/waiting-on.js';
 
 /** The operator's escape switch. A HUMAN-ONLY control: set it in your own shell profile to run a
@@ -99,8 +100,8 @@ function effectiveLegStart(start: number | undefined, now: number): number | und
 /** Bounded single-token refs are printable; secret-like values are always redacted. */
 function safeRef(value: unknown): string {
   if (typeof value !== 'string') return '[redacted]';
-  if (/(?:^|[/:#._-])(?:gh[pousr]_|github_pat_|sk-|eyJ)/.test(value) ||
-      /[A-Za-z0-9+/]{32,}/.test(value)) return '[redacted]';
+  // B-1452: the shapes live in src/tools/token-shapes.ts (one list, shared with raise_incident).
+  if (containsTokenShape(value)) return '[redacted]';
   // Includes CLI examples (pr#42-checks), branches and runtime-qualified models.
   if (/^[A-Za-z0-9#:._/-]{1,80}$/.test(value) ||
       /^https:\/\/github\.com\/[a-zA-Z0-9_.-]{1,50}\/[a-zA-Z0-9_.-]{1,100}\/(actions\/runs|pull)\/[0-9]{1,20}$/.test(value)) return value;
