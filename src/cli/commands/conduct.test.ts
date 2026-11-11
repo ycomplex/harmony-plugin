@@ -478,3 +478,20 @@ describe('B-1374 CLI runtime-prefix creation boundary', () => {
     expect(mocks.createConduction.mock.calls[0][1].run_config).toMatchObject({ model, note: 'saved', session_resume: { enabled: false }, inherited_from: 'cond-old' });
   });
 });
+
+describe('harmony conduct breadcrumb', () => {
+  it('dispatches locally without authentication or conduction creation', async () => {
+    const { mkdtempSync, readFileSync, rmSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const home = mkdtempSync(join(tmpdir(), 'conduct-cli-'));
+    vi.stubEnv('HARMONY_HOME', home);
+    vi.useFakeTimers(); vi.setSystemTime('2026-11-10T15:18:35Z');
+    try {
+      await run(['conduct', 'breadcrumb', '--task', 'a8193a21-b2ad-42b5-b464-59579691931d', '--ticket', 'B-1440', '--session-id', 'cli-session']);
+      expect(JSON.parse(readFileSync(join(home, 'conduct-sessions/cli-session.json'), 'utf8')).started_at).toBe('2026-11-10T15:18:35.000Z');
+      expect(mocks.getAuthenticatedContext).not.toHaveBeenCalled();
+      expect(mocks.createConduction).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); vi.unstubAllEnvs(); rmSync(home, { recursive: true, force: true }); }
+  });
+});
