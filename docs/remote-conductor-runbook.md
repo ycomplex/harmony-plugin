@@ -216,7 +216,7 @@ gcloud compute regions describe <region> --project <project> --format=json \
            | "\(.metric) \(.usage)/\(.limit)"'
 ```
 
-Check the actual machine-family CPU pool as well as `CPUS_ALL_REGIONS`: metric names and E2/N1 sharing vary by project. Include only system nodes in that pool in the family formula. In the Arcwood walk, the regional `E2_CPUS` limit was 24 while the global limit was 32. Two e2-medium system nodes and two e2-standard-8 legs consumed 20 vCPU; a third leg needed 28 and could not fit the family limit. Request that pool's increase too, retaining the extra-node rollout allowance. See [Compute Engine allocation quotas](https://docs.cloud.google.com/compute/resource-usage).
+Check the actual machine-family CPU pool as well as `CPUS_ALL_REGIONS`: metric names and E2/N1 sharing vary by project. Include only system nodes in that pool in the family formula. In one observed deployment, the regional `E2_CPUS` limit was 24 while the global limit was 32. Two e2-medium system nodes and two e2-standard-8 legs consumed 20 vCPU; a third leg needed 28 and could not fit the family limit. Request that pool's increase too, retaining the extra-node rollout allowance. See [Compute Engine allocation quotas](https://docs.cloud.google.com/compute/resource-usage).
 
 **Requesting an increase**, once per quota that is short:
 
