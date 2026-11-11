@@ -178,9 +178,10 @@ export async function readProjectContext(client: SupabaseClient, projectId: stri
     }
     references.set(task.id, ids);
   }
-  const definitions = [['proposition', 'What this project is', `Founding proposition — ${project.name}`], ...CONTEXT_CATEGORIES];
+  const definitions = [['proposition', 'What this project is', 'Founding proposition — '], ...CONTEXT_CATEGORIES];
   const blocks = definitions.map(([key, title, ticketTitle]) => {
-    const matching = tasks.filter(task => task.title === ticketTitle);
+    const matching = tasks.filter(task => key === 'proposition'
+      ? task.title.startsWith(ticketTitle) : task.title === ticketTitle);
     return resolveContextBlock(projectId, key, title, matching, sources, references, project.key,
       matching.flatMap(task => authority.get(task.id)?.completions ?? []), ruleIds,
       matching.flatMap(task => authority.get(task.id)?.last_design_ids ?? []));

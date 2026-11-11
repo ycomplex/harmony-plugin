@@ -107,3 +107,52 @@ it.each(['human-in-browser', 'agent-synthesized:override'])('retains deliverable
   expect(result.applicability).toBe('applicable');
   expect(result.diagnostics).toContain('What this project is: Scaffold ticket not found.');
 });
+
+describe('scaffold ticket matching', () => {
+  const labelled = (id: string, title: string): ContextTask => ({
+    ...task, id, title, task_labels: [{ labels: { name: 'inception-scaffold' } }],
+  });
+  async function read(tasks: ContextTask[]) {
+    const client = { from: (table: string) => {
+      const filters: unknown[][] = [];
+      const q = {
+        select: () => q,
+        eq: (...args: unknown[]) => { filters.push(args); return q; },
+        is: () => q, order: () => q, range: () => q,
+        single: async () => ({ data: { id: 'project', name: 'Customer Portal', key: 'CP' }, error: null }),
+        then: (done: (value: unknown) => unknown) => {
+          if (table === 'tasks') {
+            // Model the real inner-join label restriction; a missing filter must fail this test.
+            expect(filters).toContainEqual(['task_labels.labels.name', 'inception-scaffold']);
+          }
+          return Promise.resolve(done({ error: null, data: table === 'tasks'
+            ? tasks.filter(t => t.task_labels?.some(l => !Array.isArray(l.labels) && l.labels.name === 'inception-scaffold'))
+            : table === 'knowledge_decisions' ? [source({ source_task_id: 'proposition', type: 'specification',
+              madr: { project_context: { purpose: 'Serve customers.', personas: 'Customers.', features: 'Portal.' } } })] : [] }));
+        },
+      }; return q;
+    } } as unknown as SupabaseClient;
+    return readProjectContext(client, 'project');
+  }
+  it('resolves a labelled proposition whose suffix differs from the current project name', async () => {
+    const result = await read([labelled('proposition', 'Founding proposition — Arcwood Customer Portal')]);
+    expect(result.blocks[0]).toMatchObject({ state: 'accepted', source_ids: ['decision'],
+      summary: 'Purpose: Serve customers. Personas: Customers. Features: Portal.' });
+  });
+  it('reports multiple labelled prefixed propositions instead of choosing the current name', async () => {
+    const result = await read([labelled('proposition', 'Founding proposition — Arcwood Customer Portal'),
+      labelled('other', 'Founding proposition — Customer Portal')]);
+    expect(result.blocks[0]).toMatchObject({ state: 'unresolved', diagnostics: ['Multiple matching scaffold tickets.'] });
+  });
+  it('ignores an unlabelled prefixed ticket and preserves exact S2 title matching', async () => {
+    const result = await read([{ ...task, id: 'unlabelled', title: 'Founding proposition — Customer Portal' },
+      labelled('proposition', 'Founding proposition — Arcwood Customer Portal'),
+      labelled('near-architecture', 'Decide the architecture — extra')]);
+    expect(result.blocks[0].state).toBe('accepted');
+    expect(result.blocks.find(b => b.key === 'architecture')?.diagnostics).toEqual(['Scaffold ticket not found.']);
+  });
+  it('does not apply project context when only an unlabelled proposition exists', async () => {
+    expect(await read([{ ...task, title: 'Founding proposition — Customer Portal' }]))
+      .toMatchObject({ applicability: 'not_applicable', blocks: [] });
+  });
+});
