@@ -39007,7 +39007,7 @@ function firstToken(command) {
 function looksLikeScriptPath(token) {
   return token.includes("/");
 }
-function validateSteps(file, extensionPoint, steps, projectRoot, existsSync8) {
+function validateSteps(file, extensionPoint, steps, projectRoot, existsSync9) {
   if (!steps) return void 0;
   for (const step of steps) {
     if (isAgentTaskStep(step)) {
@@ -39020,7 +39020,7 @@ function validateSteps(file, extensionPoint, steps, projectRoot, existsSync8) {
     const token = firstToken(step.run);
     if (looksLikeScriptPath(token)) {
       const resolved = nodeResolve(projectRoot, token);
-      if (!existsSync8(resolved)) {
+      if (!existsSync9(resolved)) {
         return {
           file,
           reason: "missing-script",
@@ -39032,11 +39032,11 @@ function validateSteps(file, extensionPoint, steps, projectRoot, existsSync8) {
   return void 0;
 }
 function loadProjectManifest(projectRoot, deps = {}) {
-  const existsSync8 = deps.existsSync ?? nodeExistsSync2;
-  const readFileSync22 = deps.readFileSync ?? ((p) => nodeReadFileSync2(p, "utf8"));
+  const existsSync9 = deps.existsSync ?? nodeExistsSync2;
+  const readFileSync23 = deps.readFileSync ?? ((p) => nodeReadFileSync2(p, "utf8"));
   const file = nodeJoin2(projectRoot, PROJECT_MANIFEST_RELATIVE_PATH);
-  if (!existsSync8(file)) return { kind: "absent" };
-  const raw = readFileSync22(file);
+  if (!existsSync9(file)) return { kind: "absent" };
+  const raw = readFileSync23(file);
   let parsed;
   try {
     parsed = (0, import_yaml.parse)(raw);
@@ -39131,17 +39131,17 @@ function loadProjectManifest(projectRoot, deps = {}) {
     };
   }
   const stepErrors = {};
-  const buildErr = validateSteps(file, "build.before_pr", manifest.build?.before_pr, projectRoot, existsSync8);
+  const buildErr = validateSteps(file, "build.before_pr", manifest.build?.before_pr, projectRoot, existsSync9);
   if (buildErr) stepErrors["build.before_pr"] = buildErr;
   const releaseErr = validateSteps(
     file,
     "release.before_merge",
     manifest.release?.before_merge,
     projectRoot,
-    existsSync8
+    existsSync9
   );
   if (releaseErr) stepErrors["release.before_merge"] = releaseErr;
-  const verifyErr = validateSteps(file, "verify.before_ack", manifest.verify?.before_ack, projectRoot, existsSync8);
+  const verifyErr = validateSteps(file, "verify.before_ack", manifest.verify?.before_ack, projectRoot, existsSync9);
   if (verifyErr) stepErrors["verify.before_ack"] = verifyErr;
   return { kind: "ok", file, manifest, stepErrors };
 }
@@ -51899,28 +51899,47 @@ function readClaudeFigmaGrant(path4, now = Date.now()) {
 
 // src/cli/figma-claude-sign-in.ts
 import { spawn } from "node:child_process";
-import { chmodSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync as existsSync3, readFileSync as readFileSync5, chmodSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join as join6 } from "node:path";
 import { randomUUID } from "node:crypto";
 var DEFAULT_NAMESPACE = "harmony-legs";
 var NAMESPACE_NAME = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
-function resolveSignInNamespace(env2 = process.env, load = loadConductorConfigSync) {
-  let ns;
-  try {
-    ns = load({ env: env2, warn: () => {
-    } })?.merged.gke?.namespace;
-  } catch (error2) {
-    if (error2 instanceof ConductorConfigError) {
-      throw new FigmaSetupError(`The conductor configuration is invalid, so the sign-in namespace cannot be resolved:
-${error2.message}
-No pod was created.`);
+function resolveSignInNamespace(env2 = process.env, io = {}) {
+  const exists = io.exists ?? existsSync3;
+  const read = io.read ?? ((path4) => readFileSync5(path4, "utf8"));
+  const paths = resolveConductorPaths(env2);
+  const namespace = (text4) => {
+    try {
+      const config2 = JSON.parse(text4);
+      const value = config2?.gke?.namespace;
+      if (value === null) throw new FigmaSetupError("gke.namespace is not a valid Kubernetes namespace name. No pod was created.");
+      return value;
+    } catch (error2) {
+      if (error2 instanceof FigmaSetupError) throw error2;
+      throw new FigmaSetupError("Cannot read sign-in namespace from invalid conductor JSON. No pod was created.");
     }
-    throw error2;
+  };
+  const readConfig = (path4) => {
+    try {
+      return read(path4);
+    } catch {
+      throw new FigmaSetupError("Cannot read the conductor file for the sign-in namespace. No pod was created.");
+    }
+  };
+  let project;
+  if (paths.projectFile) {
+    project = namespace(readConfig(paths.projectFile));
+  } else {
+    const snapshot = exists(paths.snapshotFile) ? parseSnapshotText(readConfig(paths.snapshotFile)) : null;
+    const local = join6(io.cwd ?? process.cwd(), CONDUCTOR_PROJECT_PATH);
+    if (snapshot) project = namespace(snapshot.content);
+    else if (exists(local)) project = namespace(readConfig(local));
   }
-  ns = ns || env2.HARMONY_GKE_NAMESPACE || DEFAULT_NAMESPACE;
-  if (!NAMESPACE_NAME.test(ns) || ns.length > 63) {
-    throw new FigmaSetupError(`"${ns}" is not a valid Kubernetes namespace name. Fix gke.namespace in the conductor configuration, then retry. No pod was created.`);
+  const host = exists(paths.hostFile) ? namespace(readConfig(paths.hostFile)) : void 0;
+  const ns = env2.HARMONY_CONDUCTOR_GKE_NAMESPACE ?? host ?? project ?? env2.HARMONY_GKE_NAMESPACE ?? DEFAULT_NAMESPACE;
+  if (typeof ns !== "string" || !NAMESPACE_NAME.test(ns) || ns.length > 63) {
+    throw new FigmaSetupError("gke.namespace is not a valid Kubernetes namespace name. Fix it in the conductor configuration, then retry. No pod was created.");
   }
   return ns;
 }
@@ -52028,9 +52047,9 @@ import { Writable } from "node:stream";
 import { randomUUID as randomUUID2 } from "node:crypto";
 import {
   chmodSync as chmodSync2,
-  existsSync as existsSync3,
+  existsSync as existsSync4,
   mkdirSync as mkdirSync2,
-  readFileSync as readFileSync7,
+  readFileSync as readFileSync8,
   renameSync as renameSync2,
   rmSync as rmSync2,
   writeFileSync
@@ -52039,7 +52058,7 @@ import { dirname as dirname4, join as join7, resolve } from "node:path";
 import { homedir as homedir4 } from "node:os";
 
 // src/agents/design-tools/figma.ts
-import { readFileSync as readFileSync5 } from "node:fs";
+import { readFileSync as readFileSync6 } from "node:fs";
 var FIGMA_MCP_URL = "https://mcp.figma.com/mcp";
 var FIGMA_ACCESS_ENV = "FIGMA_MCP_ACCESS_TOKEN";
 var FIGMA_MOUNT = "/secrets/figma";
@@ -52053,7 +52072,7 @@ function assertFigmaReady(meta, now) {
   }
 }
 function readMountedFigmaToken(path4 = `${FIGMA_MOUNT}/access-token`) {
-  const token = readFileSync5(path4, "utf8").trim();
+  const token = readFileSync6(path4, "utf8").trim();
   if (!token || !/^[A-Za-z0-9._~+/-]+=*$/.test(token))
     throw new Error("Invalid Figma access-token mount; reconnect Figma.");
   return token;
@@ -58330,7 +58349,7 @@ async function registerClient(authorizationServerUrl, { metadata, clientMetadata
 }
 
 // src/cli/commands/design.ts
-import { readFileSync as readFileSync6 } from "node:fs";
+import { readFileSync as readFileSync7 } from "node:fs";
 
 // src/tools/design-read.ts
 var isObj = (v2) => typeof v2 === "object" && v2 !== null && !Array.isArray(v2);
@@ -58942,7 +58961,7 @@ async function classifyFrames(opts) {
 // src/cli/commands/design.ts
 var isObj3 = (v2) => typeof v2 === "object" && v2 !== null && !Array.isArray(v2);
 var FIGMA_PAT_FILE = "/secrets/figma/pat";
-function readFigmaToken(env2 = process.env, readFile3 = (p) => readFileSync6(p, "utf8")) {
+function readFigmaToken(env2 = process.env, readFile3 = (p) => readFileSync7(p, "utf8")) {
   const fromEnv = env2.HARMONY_FIGMA_TOKEN?.trim();
   if (fromEnv) return fromEnv;
   try {
@@ -61858,7 +61877,7 @@ function registerFigmaCommands(program3, ports = {
       const active = join7(dir, "active"), lock = join7(dir, "lock");
       mkdirSync2(lock, { mode: 448 });
       try {
-        const sourceLeg = existsSync3(active) ? readFileSync7(active, "utf8") : leg;
+        const sourceLeg = existsSync4(active) ? readFileSync8(active, "utf8") : leg;
         if (!/^\d+$/.test(sourceLeg)) {
           throw new Error("Invalid persisted Figma budget identity");
         }
@@ -61869,7 +61888,7 @@ function registerFigmaCommands(program3, ports = {
           return;
         }
         writeFileSync(active, sourceLeg, { mode: 384 });
-        let state = existsSync3(file) ? JSON.parse(readFileSync7(file, "utf8")) : emptyBudget();
+        let state = existsSync4(file) ? JSON.parse(readFileSync8(file, "utf8")) : emptyBudget();
         const now = Date.now();
         let outcome = {};
         if (opts.throttled) {
@@ -62013,7 +62032,7 @@ function registerFigmaCommands(program3, ports = {
         );
         writeFileSync(
           path4,
-          replaceCodexFigmaSection(readFileSync7(path4, "utf8")),
+          replaceCodexFigmaSection(readFileSync8(path4, "utf8")),
           { mode: 384 }
         );
         chmodSync2(path4, 384);
@@ -62256,7 +62275,7 @@ Library: ${fileKey}; seat: ${candidate.metadata.seat}; tier: ${candidate.metadat
 function insideGitWorkTree(dir) {
   let cur = resolve(dir);
   for (; ; ) {
-    if (existsSync3(join7(cur, ".git"))) return true;
+    if (existsSync4(join7(cur, ".git"))) return true;
     const up = dirname4(cur);
     if (up === cur) return false;
     cur = up;
@@ -68122,7 +68141,7 @@ async function syncProse(client, projectId, root, declarationPath = ".harmony/pr
 
 // src/cli/prose-init.ts
 var import_yaml3 = __toESM(require_dist(), 1);
-import { existsSync as existsSync4, lstatSync, mkdirSync as mkdirSync3, unlinkSync as unlinkSync2, writeFileSync as writeFileSync2 } from "node:fs";
+import { existsSync as existsSync5, lstatSync, mkdirSync as mkdirSync3, unlinkSync as unlinkSync2, writeFileSync as writeFileSync2 } from "node:fs";
 import { dirname as dirname5, join as join9, resolve as resolve2 } from "node:path";
 var RELEASED_PROSE_CLI = "c72d5d36b876e684ca07f4f36e90418167843653";
 var optionsSchema = external_exports.object({
@@ -68186,7 +68205,7 @@ function initProseSources(root, input) {
       }
     }
   }
-  if (!existsSync4(base2)) throw new Error(`Repository directory does not exist: ${base2}`);
+  if (!existsSync5(base2)) throw new Error(`Repository directory does not exist: ${base2}`);
   const written = [];
   try {
     for (const file of files) {
@@ -68590,12 +68609,12 @@ var featureAccountTools = [
 ];
 
 // src/cli/commands/knowledge-sources.ts
-import { readFileSync as readFileSync9, writeFileSync as writeFileSync3 } from "node:fs";
+import { readFileSync as readFileSync10, writeFileSync as writeFileSync3 } from "node:fs";
 import { resolve as resolve4 } from "node:path";
 
 // src/cli/source-publishers.ts
 import { execFileSync as execFileSync2 } from "node:child_process";
-import { readFileSync as readFileSync8, realpathSync } from "node:fs";
+import { readFileSync as readFileSync9, realpathSync } from "node:fs";
 import { resolve as resolve3, relative, isAbsolute } from "node:path";
 var publisherDeclarationSchema = external_exports.object({ version: external_exports.literal(1), repository: external_exports.string().min(1), publishers: external_exports.array(external_exports.object({
   surface: external_exports.string().min(1),
@@ -68605,7 +68624,7 @@ var publisherDeclarationSchema = external_exports.object({ version: external_exp
 })).min(1) });
 var git2 = (root, args) => execFileSync2("git", ["-C", root, ...args], { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 });
 function loadPublisherDeclaration(root, file = ".harmony/source-publishers.json") {
-  return publisherDeclarationSchema.parse(JSON.parse(readFileSync8(resolve3(root, file), "utf8")));
+  return publisherDeclarationSchema.parse(JSON.parse(readFileSync9(resolve3(root, file), "utf8")));
 }
 function runSourcePublisher(root, declaration, surface, expectedRevision, runId, runUrl, previousSha) {
   root = realpathSync(root);
@@ -68629,7 +68648,7 @@ function runSourcePublisher(root, declaration, surface, expectedRevision, runId,
   }
   if (!paths.size) throw new Error("Publisher inputs match no tracked sources");
   for (const path4 of paths) {
-    const actual = readFileSync8(resolve3(root, path4));
+    const actual = readFileSync9(resolve3(root, path4));
     const committed = execFileSync2("git", ["-C", root, "show", `${sha}:${path4}`], { maxBuffer: 10 * 1024 * 1024 });
     if (!actual.equals(committed)) throw new Error(`Uncommitted publisher input: ${path4}`);
   }
@@ -68645,14 +68664,14 @@ function runSourcePublisher(root, declaration, surface, expectedRevision, runId,
     values: values.map((v2) => ({ ...v2, source: { ...v2.source, repository: declaration.repository, sha, publisher: surface, publisher_version: publisher.publisher_version, run_url: runUrl } }))
   });
   for (const path4 of paths) {
-    if (!readFileSync8(resolve3(root, path4)).equals(execFileSync2("git", ["-C", root, "show", `${sha}:${path4}`], { maxBuffer: 10 * 1024 * 1024 }))) throw new Error(`Publisher mutated input: ${path4}`);
+    if (!readFileSync9(resolve3(root, path4)).equals(execFileSync2("git", ["-C", root, "show", `${sha}:${path4}`], { maxBuffer: 10 * 1024 * 1024 }))) throw new Error(`Publisher mutated input: ${path4}`);
   }
   for (const value of inventory.values) {
     const path4 = value.source.path;
     const local = relative(root, realpathSync(resolve3(root, path4)));
     if (isAbsolute(local) || local.startsWith("..") || !paths.has(path4)) throw new Error(`Source is outside declared inputs: ${path4}`);
-    if (!readFileSync8(resolve3(root, path4)).equals(execFileSync2("git", ["-C", root, "show", `${sha}:${path4}`], { maxBuffer: 10 * 1024 * 1024 }))) throw new Error(`Publisher mutated source: ${path4}`);
-    const lines = readFileSync8(resolve3(root, path4), "utf8").split("\n").length;
+    if (!readFileSync9(resolve3(root, path4)).equals(execFileSync2("git", ["-C", root, "show", `${sha}:${path4}`], { maxBuffer: 10 * 1024 * 1024 }))) throw new Error(`Publisher mutated source: ${path4}`);
+    const lines = readFileSync9(resolve3(root, path4), "utf8").split("\n").length;
     if (value.source.line_start && value.source.line_start > lines || value.source.line_end && value.source.line_end > lines) throw new Error(`Source span outside file: ${path4}`);
   }
   return inventory;
@@ -68665,7 +68684,7 @@ function registerSourceCommands(knowledge, program3) {
     await runCommand(program3.opts(), (ctx) => readSourceInventory(ctx.client, ctx.projectId, opts), render);
   });
   knowledge.command("source-publish <file>").description("Publish a complete extracted JSON inventory; no legacy fallback").action(async (file) => {
-    await runCommand(program3.opts(), (ctx) => publishSourceInventory(ctx.client, ctx.projectId, JSON.parse(readFileSync9(file, "utf8"))), render);
+    await runCommand(program3.opts(), (ctx) => publishSourceInventory(ctx.client, ctx.projectId, JSON.parse(readFileSync10(file, "utf8"))), render);
   });
   knowledge.command("publish-values").description("Run a declared trusted publisher and publish its complete deployment inventory").requiredOption("--surface <surface>").requiredOption("--run-id <id>").requiredOption("--run-url <url>").option("--root <directory>", "Repository checkout", process.cwd()).option("--declaration <file>", "Publisher declaration", ".harmony/source-publishers.json").option("--output <file>", "Also save extracted inventory for auditing").action(async (opts) => {
     await runCommand(program3.opts(), async (ctx) => {
@@ -68677,13 +68696,13 @@ function registerSourceCommands(knowledge, program3) {
     }, render);
   });
   knowledge.command("compare-coverage <current>").description("Exact option mentions, missing options and coverage lost since --previous").requiredOption("--repository <repository>").requiredOption("--surface <surface>").option("--previous <file>").action(async (current, opts) => {
-    await runCommand(program3.opts(), (ctx) => comparePublishedCoverage(ctx.client, ctx.projectId, { repository: opts.repository, surface: opts.surface, current: readFileSync9(current, "utf8"), previous: opts.previous ? readFileSync9(opts.previous, "utf8") : void 0 }), render);
+    await runCommand(program3.opts(), (ctx) => comparePublishedCoverage(ctx.client, ctx.projectId, { repository: opts.repository, surface: opts.surface, current: readFileSync10(current, "utf8"), previous: opts.previous ? readFileSync10(opts.previous, "utf8") : void 0 }), render);
   });
 }
 
 // src/cli/commands/knowledge.ts
 import { readFile as readFile2 } from "node:fs/promises";
-import { readFileSync as readFileSync10 } from "node:fs";
+import { readFileSync as readFileSync11 } from "node:fs";
 
 // src/tools/knowledge-repair.ts
 import { execFileSync as execFileSync3 } from "node:child_process";
@@ -68994,7 +69013,7 @@ function registerKnowledgeCommands(program3) {
     "--file <path>",
     "JSON capture: owner_surface, component_ref, labels/buttons/headings, source_kind/locator/fingerprint"
   ).action(async (opts) => {
-    const args = JSON.parse(readFileSync10(opts.file, "utf8"));
+    const args = JSON.parse(readFileSync11(opts.file, "utf8"));
     await runCommand(
       program3.opts(),
       (ctx) => captureSurfaceRecord(ctx.client, ctx.projectId, args),
@@ -69013,7 +69032,7 @@ function registerKnowledgeCommands(program3) {
   });
   for (const [name, handler] of [["preview", previewFeatureAmendment], ["propose", proposeFeatureAmendment]]) {
     accounts.command(name).requiredOption("--file <path>", "JSON argument file; same fields as MCP").action(async (opts) => {
-      const args = JSON.parse(readFileSync10(opts.file, "utf8"));
+      const args = JSON.parse(readFileSync11(opts.file, "utf8"));
       await runCommand(program3.opts(), (ctx) => handler(ctx.client, ctx.projectId, args), (data) => JSON.stringify(data, null, 2));
     });
   }
@@ -69125,7 +69144,7 @@ ${result.instructions.join("\n")}`);
     }), (data) => JSON.stringify(data, null, 2));
   });
   knowledge.command("apply-metadata-repair").argument("<reviewed-file>").action(async (file) => {
-    await runCommand(program3.opts(), (ctx) => applyMetadataRepair(ctx.client, ctx.projectId, JSON.parse(readFileSync10(file, "utf8"))), (data) => JSON.stringify(data, null, 2));
+    await runCommand(program3.opts(), (ctx) => applyMetadataRepair(ctx.client, ctx.projectId, JSON.parse(readFileSync11(file, "utf8"))), (data) => JSON.stringify(data, null, 2));
   });
   knowledge.command("tag-release").requiredOption("--task <uuid>", "Ticket UUID").requiredOption("--repo <owner/name>", "PR repository").requiredOption("--pr <number>", "Merged PR number").action(async (opts) => {
     await runCommand(program3.opts(), (ctx) => tagReleasedKnowledge(ctx.client, ctx.projectId, opts.task, opts.repo, Number(opts.pr)), (data) => JSON.stringify(data, null, 2));
@@ -69161,7 +69180,7 @@ ${result.instructions.join("\n")}`);
     const limit = Number(opts.limit);
     if (!/^\d+$/.test(opts.limit) || !Number.isSafeInteger(limit) || limit < 1) throw new Error("--limit must be a positive integer");
     if (opts.apply && !opts.entries) throw new Error("--apply requires --entries with explicitly reviewed proposal rows");
-    const entries = opts.entries ? JSON.parse(readFileSync10(opts.entries, "utf8")) : void 0;
+    const entries = opts.entries ? JSON.parse(readFileSync11(opts.entries, "utf8")) : void 0;
     await runCommand(program3.opts(), (ctx) => proposeLegacyClaims(ctx.client, ctx.projectId, { apply: opts.apply, entries, limit }), (data) => JSON.stringify(data, null, 2));
   });
   knowledge.command("get").description("Get full details of a knowledge entry").argument("<id-or-title>", "Entry UUID or title").action(async (idOrTitle) => {
@@ -70977,11 +70996,11 @@ function registerConfigCommands(program3) {
 }
 
 // src/config/plugin-source.ts
-import { readFileSync as readFileSync11, realpathSync as realpathSync2 } from "node:fs";
+import { readFileSync as readFileSync12, realpathSync as realpathSync2 } from "node:fs";
 import { dirname as dirname6, join as join11, resolve as resolve5 } from "node:path";
 import { homedir as homedir6 } from "node:os";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
-function runningPluginRoot(moduleUrl = import.meta.url, read = (p) => readFileSync11(p, "utf8")) {
+function runningPluginRoot(moduleUrl = import.meta.url, read = (p) => readFileSync12(p, "utf8")) {
   let dir = dirname6(fileURLToPath2(moduleUrl));
   for (let i = 0; i < 8; i++) {
     try {
@@ -70995,7 +71014,7 @@ function runningPluginRoot(moduleUrl = import.meta.url, read = (p) => readFileSy
   return null;
 }
 function resolvePluginSource(opts = {}) {
-  const read = opts.read ?? ((p) => readFileSync11(p, "utf8"));
+  const read = opts.read ?? ((p) => readFileSync12(p, "utf8"));
   const canonical2 = opts.canonical ?? realpathSync2;
   const root = opts.root === void 0 ? runningPluginRoot(import.meta.url, read) : opts.root;
   const result = { repository: null, clone_url: null, channel: "unknown", evidence: "no installation evidence" };
@@ -71260,12 +71279,12 @@ function buildMigration(input) {
 
 // src/config/conductor-project-source.ts
 import { createHash as createHash8 } from "node:crypto";
-import { chmodSync as chmodSync3, mkdirSync as mkdirSync5, readFileSync as readFileSync13, renameSync as renameSync5, rmSync as rmSync5, writeFileSync as writeFileSync7 } from "node:fs";
+import { chmodSync as chmodSync3, mkdirSync as mkdirSync5, readFileSync as readFileSync14, renameSync as renameSync5, rmSync as rmSync5, writeFileSync as writeFileSync7 } from "node:fs";
 import { dirname as dirname7 } from "node:path";
 
 // src/config/github-app-token.ts
 import { createSign } from "node:crypto";
-import { readFileSync as readFileSync12 } from "node:fs";
+import { readFileSync as readFileSync13 } from "node:fs";
 var GITHUB_API_DEFAULT = "https://api.github.com";
 var REQUEST_TIMEOUT_MS = 1e4;
 var TOKEN_REFRESH_MARGIN_MS = 5 * 6e4;
@@ -71281,7 +71300,7 @@ function buildAppJwt(appId, privateKey, nowSeconds) {
 function createGithubTokenProvider(deps) {
   const { env: env2 } = deps;
   const fetchImpl = deps.fetchImpl ?? fetch;
-  const readFile3 = deps.readFile ?? ((p) => readFileSync12(p, "utf8"));
+  const readFile3 = deps.readFile ?? ((p) => readFileSync13(p, "utf8"));
   const now = deps.now ?? Date.now;
   const api = env2.GITHUB_API_URL || GITHUB_API_DEFAULT;
   const appId = env2.HARMONY_APP_ID || deps.appOverride?.app_id;
@@ -71373,7 +71392,7 @@ async function fetchProjectFile(input) {
 }
 function readSnapshot(path4) {
   try {
-    return parseSnapshotText(readFileSync13(path4, "utf8"));
+    return parseSnapshotText(readFileSync14(path4, "utf8"));
   } catch {
     return null;
   }
@@ -71698,7 +71717,7 @@ import { join as join17 } from "node:path";
 import { basename as basename4, join as join16 } from "node:path";
 
 // src/config/conductor-secrets.ts
-import { readFileSync as readFileSync14 } from "node:fs";
+import { readFileSync as readFileSync15 } from "node:fs";
 
 // src/daemon/conductor-remote.ts
 var REMOTE_ENV = "HARMONY_CONDUCTOR_REMOTE";
@@ -71726,7 +71745,7 @@ async function resolveConductorSecrets(deps) {
   const result = { resolved: [], skipped: [] };
   const remote = isRemoteConductor(deps.env);
   const hostPath = resolveConductorPaths(deps.env).hostFile;
-  const read = deps.readFile ?? ((p) => readFileSync14(p, "utf8"));
+  const read = deps.readFile ?? ((p) => readFileSync15(p, "utf8"));
   let text4;
   try {
     text4 = read(hostPath);
@@ -72268,7 +72287,7 @@ async function runStopRemote(deps, opts = {}, onLine) {
 
 // src/cli/commands/conductor-lifecycle-deps.ts
 import { spawn as spawn2 } from "node:child_process";
-import { chmodSync as chmodSync4, closeSync as closeSync3, existsSync as existsSync5, mkdirSync as mkdirSync6, openSync as openSync3, readFileSync as readFileSync15, readlinkSync, rmSync as rmSync6, writeFileSync as writeFileSync8 } from "node:fs";
+import { chmodSync as chmodSync4, closeSync as closeSync3, existsSync as existsSync6, mkdirSync as mkdirSync6, openSync as openSync3, readFileSync as readFileSync16, readlinkSync, rmSync as rmSync6, writeFileSync as writeFileSync8 } from "node:fs";
 import { homedir as homedir7, hostname as hostname2, userInfo } from "node:os";
 import { dirname as dirname8, resolve as resolve7 } from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
@@ -72765,8 +72784,8 @@ function defaultLifecycleDeps() {
         closeSync3(fd);
       }
     },
-    existsSync: existsSync5,
-    readFileSync: (p) => readFileSync15(p, "utf8"),
+    existsSync: existsSync6,
+    readFileSync: (p) => readFileSync16(p, "utf8"),
     writeFileSync: (p, text4, mode) => {
       writeFileSync8(p, text4, { mode });
       chmodSync4(p, mode);
@@ -74289,7 +74308,7 @@ function encodeNulArgv(argv) {
 }
 
 // src/cli/commands/agent.ts
-import { existsSync as existsSync7, mkdirSync as mkdirSync9, readFileSync as readFileSync17, renameSync as renameSync6, writeFileSync as writeFileSync11 } from "node:fs";
+import { existsSync as existsSync8, mkdirSync as mkdirSync9, readFileSync as readFileSync18, renameSync as renameSync6, writeFileSync as writeFileSync11 } from "node:fs";
 
 // src/agents/codex-provision.ts
 import {
@@ -74297,10 +74316,10 @@ import {
   constants as fsConstants,
   chmodSync as chmodSync6,
   copyFileSync,
-  existsSync as existsSync6,
+  existsSync as existsSync7,
   lstatSync as lstatSync2,
   mkdirSync as mkdirSync8,
-  readFileSync as readFileSync16,
+  readFileSync as readFileSync17,
   readdirSync as readdirSync2,
   readlinkSync as readlinkSync2,
   statSync,
@@ -74454,18 +74473,18 @@ function collectInstructionSources(input) {
   for (const c of candidates) {
     if (seen.has(c.path) || !isFile(c.path)) continue;
     seen.add(c.path);
-    out.push({ label: c.label, content: readFileSync16(c.path, "utf8") });
+    out.push({ label: c.label, content: readFileSync17(c.path, "utf8") });
   }
   return out;
 }
 function collectSkillCapabilities(pluginDir) {
   const root = join20(resolve9(pluginDir), "skills");
-  if (!existsSync6(root)) return [];
+  if (!existsSync7(root)) return [];
   const out = [];
   for (const name of readdirSync2(root).sort()) {
     const file = join20(root, name, "SKILL.md");
     if (!isFile(file)) continue;
-    const value = capabilitiesFromSkillMd(readFileSync16(file, "utf8"));
+    const value = capabilitiesFromSkillMd(readFileSync17(file, "utf8"));
     if (value === void 0) continue;
     const parsed = parseCapabilities(value);
     if (!parsed.ok) throw new Error(`skills/${name}/SKILL.md capabilities: ${parsed.problems.join("; ")}`);
@@ -74481,11 +74500,11 @@ ${rules}` : CODEX_WORKER_OVERLAY;
 }
 function excludeFromGit(workspaceDir, entries) {
   const gitDir = join20(workspaceDir, ".git");
-  if (!existsSync6(gitDir)) return;
+  if (!existsSync7(gitDir)) return;
   const infoDir = join20(gitDir, "info");
   mkdirSync8(infoDir, { recursive: true });
   const excludePath = join20(infoDir, "exclude");
-  const current = existsSync6(excludePath) ? readFileSync16(excludePath, "utf8") : "";
+  const current = existsSync7(excludePath) ? readFileSync17(excludePath, "utf8") : "";
   const have = new Set(current.split("\n"));
   const missing3 = entries.filter((e) => !have.has(e));
   if (missing3.length) appendFileSync(excludePath, (current === "" || current.endsWith("\n") ? "" : "\n") + missing3.join("\n") + "\n");
@@ -74493,7 +74512,7 @@ function excludeFromGit(workspaceDir, entries) {
 function linkSkills(workspaceDir, pluginDir) {
   const link = join20(workspaceDir, CODEX_SKILLS_LINK);
   const target = join20(resolve9(pluginDir), "skills");
-  if (!existsSync6(target)) throw new Error(`skills directory not found at ${target}`);
+  if (!existsSync7(target)) throw new Error(`skills directory not found at ${target}`);
   mkdirSync8(join20(workspaceDir, ".agents"), { recursive: true });
   let st2;
   try {
@@ -74553,7 +74572,7 @@ function provisionCodex(input) {
   const problems = verifyCodexAgentsMd(agentsMd, sources);
   if (problems.length) throw new Error(`AGENTS.md preflight failed: ${problems.join("; ")}`);
   const agentsMdPath = join20(workspaceDir, "AGENTS.md");
-  if (existsSync6(agentsMdPath) && !readFileSync16(agentsMdPath, "utf8").startsWith(GENERATED_AGENTS_HEADER)) {
+  if (existsSync7(agentsMdPath) && !readFileSync17(agentsMdPath, "utf8").startsWith(GENERATED_AGENTS_HEADER)) {
     throw new Error(`${agentsMdPath} exists and is not a generated file \u2014 refusing to overwrite a repository's own AGENTS.md`);
   }
   preflightHookScripts(resolve9(input.pluginDir));
@@ -74747,7 +74766,7 @@ function registerAgentCommands(program3) {
       model: opts.model || void 0,
       ...provider2 ? { modelProvider: provider2.name } : {},
       extraFlags: extra ?? [],
-      ...figmaMcpConfigArg(process.env, existsSync7)
+      ...figmaMcpConfigArg(process.env, existsSync8)
     });
     process.stdout.write(encodeNulArgv(argv));
   });
@@ -74810,7 +74829,7 @@ function registerAgentCommands(program3) {
   ).argument("<stdout-file>").action((file) => {
     let text4 = "";
     try {
-      text4 = readFileSync17(file, "utf8");
+      text4 = readFileSync18(file, "utf8");
     } catch {
       process.exit(1);
     }
@@ -74824,7 +74843,7 @@ function registerAgentCommands(program3) {
   ).requiredOption("--dir <dir>", "The conduction's Codex sessions folder").requiredOption("--stdout-file <file>", "The codex invocation's stdout capture").option("--model <model>", "The model the invocation ran on").action((opts) => {
     let text4 = "";
     try {
-      text4 = readFileSync17(opts.stdoutFile, "utf8");
+      text4 = readFileSync18(opts.stdoutFile, "utf8");
     } catch {
       process.exit(1);
     }
@@ -74847,10 +74866,10 @@ function registerAgentCommands(program3) {
   agent.command("read-thread").description(
     `Print the thread id from a ${CODEX_THREAD_FILE_NAME} file and exit 0 \u2014 ONLY when the file names agent "codex" and a well-formed id; otherwise print nothing and exit 1.`
   ).argument("<thread-file>").action((file) => {
-    if (!existsSync7(file)) process.exit(1);
+    if (!existsSync8(file)) process.exit(1);
     let text4 = "";
     try {
-      text4 = readFileSync17(file, "utf8");
+      text4 = readFileSync18(file, "utf8");
     } catch {
       process.exit(1);
     }
@@ -74862,7 +74881,7 @@ function registerAgentCommands(program3) {
 }
 
 // src/cli/commands/leg-cost.ts
-import { readFileSync as readFileSync18, writeFileSync as writeFileSync12 } from "node:fs";
+import { readFileSync as readFileSync19, writeFileSync as writeFileSync12 } from "node:fs";
 import { createHash as createHash9 } from "node:crypto";
 
 // src/tools/leg-cost-record.ts
@@ -75092,7 +75111,7 @@ function registerLegCostCommands(program3) {
       }
       let captured;
       try {
-        captured = readFileSync18(opts.file, "utf8");
+        captured = readFileSync19(opts.file, "utf8");
       } catch (err) {
         console.error(
           `harmony leg-cost record: WARNING \u2014 could not read the capture file ${opts.file} (${err?.message ?? String(err)}); nothing recorded`
@@ -75115,7 +75134,7 @@ function registerLegCostCommands(program3) {
         let requestSlice = null;
         if (opts.requestUsageFile) {
           try {
-            const bytes = readFileSync18(opts.requestUsageFile);
+            const bytes = readFileSync19(opts.requestUsageFile);
             const offset = Number(opts.requestUsageOffset ?? "0");
             if (Number.isSafeInteger(offset) && offset >= 0 && offset <= bytes.length) {
               requestSlice = bytes.subarray(offset).toString("utf8");
@@ -75183,7 +75202,7 @@ function stableInvocationUuid(key) {
 }
 
 // src/cli/commands/leg-output.ts
-import { readFileSync as readFileSync19 } from "node:fs";
+import { readFileSync as readFileSync20 } from "node:fs";
 
 // src/tools/leg-output-record.ts
 var LEG_OUTPUT_TAIL_BYTES = 64 * 1024;
@@ -75270,7 +75289,7 @@ async function getClient2() {
 var SOURCES = ["worker", "launcher"];
 function readCapture(path4) {
   try {
-    return readFileSync19(path4, "utf8");
+    return readFileSync20(path4, "utf8");
   } catch (err) {
     console.error(
       `harmony leg-output record: WARNING \u2014 could not read the capture file ${path4} (${err?.message ?? String(err)}); it contributes nothing to this row`
@@ -75346,7 +75365,7 @@ function registerLegOutputCommands(program3) {
 
 // src/cli/commands/gates.ts
 import { execFileSync as execFileSync4, spawnSync } from "node:child_process";
-import { mkdirSync as mkdirSync10, readFileSync as readFileSync20, renameSync as renameSync7, writeFileSync as writeFileSync13 } from "node:fs";
+import { mkdirSync as mkdirSync10, readFileSync as readFileSync21, renameSync as renameSync7, writeFileSync as writeFileSync13 } from "node:fs";
 import { dirname as dirname12 } from "node:path";
 
 // src/config/notify-sync.ts
@@ -75660,7 +75679,7 @@ function productionNotifySyncIO() {
     },
     readCache: (path4) => {
       try {
-        return readFileSync20(path4, "utf8");
+        return readFileSync21(path4, "utf8");
       } catch {
         return null;
       }
@@ -75675,7 +75694,7 @@ function productionNotifySyncIO() {
 }
 
 // src/cli/commands/notify.ts
-import { readFileSync as readFileSync21 } from "node:fs";
+import { readFileSync as readFileSync22 } from "node:fs";
 function errorMessage(err) {
   const message = err?.message;
   return message && message.trim() ? message.trim() : String(err);
@@ -75766,7 +75785,7 @@ function productionDeps() {
 }
 function readSecretFromStdin() {
   try {
-    return readFileSync21(0, "utf8");
+    return readFileSync22(0, "utf8");
   } catch {
     return "";
   }

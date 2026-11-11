@@ -23,6 +23,13 @@ Run the CLI from the target project's authenticated Harmony directory in an inte
 It checks workspace ownership and the environment's connection switch before minting or reading
 credentials. The operator needs `kubectl` access to namespace `harmony-legs`, permission to create,
 exec, copy from and delete pods there, and a browser. No local Docker daemon is required.
+A machine that only drives a remote conductor needs no local conductor project snapshot or launch
+configuration; a host file containing only `gcp`, `gcloud` and secret names is sufficient, as
+`harmony conductor config doctor` reports. Sign-in reads only `gke.namespace`: an explicit project
+file takes priority over a last-good snapshot, then the current directory's `.harmony/conductor.json`.
+Host and `HARMONY_CONDUCTOR_GKE_NAMESPACE` overrides still apply; otherwise it falls back to
+`HARMONY_GKE_NAMESPACE`, then `harmony-legs`. Invalid namespace values stop before pod creation.
+
 The command creates a fresh `node:22-bookworm-slim` pod and installs Claude Code; the one version
 setting is `HARMONY_FIGMA_CLAUDE_VERSION` (default `2.1.312`, the disposable-probe version).
 It runs real `claude mcp add` and `claude mcp login figma --no-browser`; approve the fresh Figma login.
