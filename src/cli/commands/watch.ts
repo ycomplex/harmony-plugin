@@ -593,6 +593,8 @@ export async function runWatchCommand(args: WatchArgs, deps: WatchCliDeps): Prom
       return 2;
     }
 
+    const pollMs = deps.pollMs ?? 30_000;
+
     // Lock.
     if (args.mode !== 'once' && args.seat) {
       const res = acquireLock(projectKey, args.seat, args.scope, args.mode, homeOpts);
@@ -603,6 +605,17 @@ export async function runWatchCommand(args: WatchArgs, deps: WatchCliDeps): Prom
         return 2;
       }
       lockTaken = true;
+      // Publish liveness synchronously with taking the lock, before hints or a board fetch
+      // can wait on the network. A failed first fetch replaces this with offline health.
+      try {
+        writeHeartbeat(projectKey, args.seat, {
+          schema: 1, pid: process.pid, seat: args.seat, scope: slug, mode: args.mode,
+          poll_interval_s: pollMs / 1000, started_at: new Date(deps.now()).toISOString(),
+          last_fetch_at: null, last_ok_at: null, health: 'ok', seq: 0,
+        }, homeOpts);
+      } catch (e) {
+        deps.err(`harmony watch: heartbeat write failed: ${safeErrorMessage(e)}`);
+      }
     }
 
     // Cursor.
@@ -624,7 +637,6 @@ export async function runWatchCommand(args: WatchArgs, deps: WatchCliDeps): Prom
           : { kind: 'conductions' };
     print(startEvent(deps.now(), { name: project.name, key: project.key }, target, startScope, boot.value.ids.length, cursor?.seq ?? 0));
 
-    const pollMs = deps.pollMs ?? 30_000;
     if (args.mode !== 'once') {
       try {
         hints = deps.startHints(client, auth, projectId, pollMs, (l) => deps.err(`harmony watch: ${l}`));
@@ -666,6 +678,7 @@ export async function runWatchCommand(args: WatchArgs, deps: WatchCliDeps): Prom
         scopeSlug: slug,
         profile,
         pollMs,
+        heartbeatSeq: lockTaken ? 1 : 0,
         hintDelayMs: deps.hintDelayMs,
         settleMs: deps.settleMs,
         maxWaitMs: args.maxWaitMs,
