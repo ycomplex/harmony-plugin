@@ -11310,8 +11310,8 @@ var require_RealtimeChannel = __commonJS({
       }
       /** @internal */
       _notThisChannelEvent(event, ref) {
-        const { close, error: error2, leave, join: join21 } = constants_1.CHANNEL_EVENTS;
-        const events2 = [close, error2, leave, join21];
+        const { close, error: error2, leave, join: join22 } = constants_1.CHANNEL_EVENTS;
+        const events2 = [close, error2, leave, join22];
         return ref && events2.includes(event) && ref !== this.joinPush.ref;
       }
       /** @internal */
@@ -70033,9 +70033,37 @@ async function resolveUnparkRunConfig(client, taskId, args) {
   return { ...merged, [INHERITED_FROM_KEY]: previous.id };
 }
 
+// src/hooks/conduct-breadcrumb.ts
+import { mkdirSync as mkdirSync3, writeFileSync as writeFileSync6, renameSync as renameSync3, rmSync as rmSync4 } from "node:fs";
+import { homedir as homedir4 } from "node:os";
+import { join as join9 } from "node:path";
+import { randomUUID as randomUUID6 } from "node:crypto";
+function writeConductBreadcrumb(input, options = {}) {
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/.test(input.sessionId) || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(input.task) || !/^[a-zA-Z][a-zA-Z0-9]*-[0-9]+$/.test(input.ticket)) {
+    throw new Error("Invalid conduct identity");
+  }
+  const dir = join9(options.home ?? process.env.HARMONY_HOME ?? join9(homedir4(), ".harmony"), "conduct-sessions");
+  const path4 = join9(dir, `${input.sessionId}.json`);
+  const startedAt = (options.now ?? (() => /* @__PURE__ */ new Date()))().toISOString();
+  mkdirSync3(dir, { recursive: true });
+  const temporary = join9(dir, `${input.sessionId}.${randomUUID6()}.tmp`);
+  try {
+    writeFileSync6(temporary, JSON.stringify({
+      session_id: input.sessionId,
+      task_id: input.task,
+      ticket: input.ticket,
+      started_at: startedAt
+    }) + "\n", { mode: 384, flag: "wx" });
+    renameSync3(temporary, path4);
+  } finally {
+    rmSync4(temporary, { force: true });
+  }
+  return path4;
+}
+
 // src/cli/commands/conduct.ts
 function registerConductCommand(program3) {
-  program3.command("conduct").description("Create a conduction for a ticket \u2014 the conductor picks it up and drives the run").argument("<ticket>", "Task ID (UUID, number, or B-123)").option("--unpark", "Revive a Parked ticket and hand it to the conductor in this same call (B-964)", false).option("--resume-to <state>", "Target workflow_state override when reviving a Parked ticket (defaults to the ticket's own parked_from, else Proposed)").option("--model <alias>", "B-925: explicit model alias for this run (fills run_config.model.default)").option("--session-resume", "B-925: explicitly enable session-resume for this run").option("--no-session-resume", "B-925: explicitly disable session-resume for this run").option("--auto-approve-gates <gates>", "B-925: comma-separated forward gates to auto-approve for this run").option("--no-auto-approve-gates", "B-925: explicitly auto-approve no gates for this run").option("--fast-track", "B-1073: run this conduction in fast-track mode (sets run_config.fast_track)").option("--agent <id>", "B-1147: agent runtime for this run (sets run_config.agent.adapter), e.g. claude-code, codex").action(async (ticket, opts) => {
+  const conduct = program3.command("conduct").description("Create a conduction for a ticket \u2014 the conductor picks it up and drives the run").argument("<ticket>", "Task ID (UUID, number, or B-123)").option("--unpark", "Revive a Parked ticket and hand it to the conductor in this same call (B-964)", false).option("--resume-to <state>", "Target workflow_state override when reviving a Parked ticket (defaults to the ticket's own parked_from, else Proposed)").option("--model <alias>", "B-925: explicit model alias for this run (fills run_config.model.default)").option("--session-resume", "B-925: explicitly enable session-resume for this run").option("--no-session-resume", "B-925: explicitly disable session-resume for this run").option("--auto-approve-gates <gates>", "B-925: comma-separated forward gates to auto-approve for this run").option("--no-auto-approve-gates", "B-925: explicitly auto-approve no gates for this run").option("--fast-track", "B-1073: run this conduction in fast-track mode (sets run_config.fast_track)").option("--agent <id>", "B-1147: agent runtime for this run (sets run_config.agent.adapter), e.g. claude-code, codex").action(async (ticket, opts) => {
     if (opts.agent !== void 0 && !hasAdapter(opts.agent)) {
       console.error(
         `Error: Unknown agent runtime '${opts.agent}' \u2014 available runtimes: ${listAdapterIds().join(", ")}`
@@ -70107,6 +70135,15 @@ The conductor will pick it up on its next pass.
 Note: the duplicate-guard can only detect an active conduction record \u2014 it can't see an in-progress terminal session, so make sure any in-session work on this ticket has stopped before handing it off.`
     );
   });
+  conduct.command("breadcrumb").description("Stamp this leg locally; never creates a conduction or contacts the board").requiredOption("--task <uuid>", "Resolved task UUID").requiredOption("--ticket <id>", "Visual ticket ID").requiredOption("--session-id <id>", "Runtime session ID").action((opts) => {
+    try {
+      const path4 = writeConductBreadcrumb(opts);
+      console.log(path4);
+    } catch {
+      console.error("Could not write conduct breadcrumb: check identity and writable Harmony home.");
+      process.exitCode = 1;
+    }
+  });
 }
 
 // src/cli/commands/config.ts
@@ -70145,14 +70182,14 @@ function registerConfigCommands(program3) {
 
 // src/config/plugin-source.ts
 import { readFileSync as readFileSync10, realpathSync as realpathSync2 } from "node:fs";
-import { dirname as dirname4, join as join9, resolve as resolve4 } from "node:path";
-import { homedir as homedir4 } from "node:os";
+import { dirname as dirname4, join as join10, resolve as resolve4 } from "node:path";
+import { homedir as homedir5 } from "node:os";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 function runningPluginRoot(moduleUrl = import.meta.url, read = (p) => readFileSync10(p, "utf8")) {
   let dir = dirname4(fileURLToPath2(moduleUrl));
   for (let i = 0; i < 8; i++) {
     try {
-      if (JSON.parse(read(join9(dir, ".claude-plugin/plugin.json"))).name === "harmony-plugin") return dir;
+      if (JSON.parse(read(join10(dir, ".claude-plugin/plugin.json"))).name === "harmony-plugin") return dir;
     } catch {
     }
     const parent = dirname4(dir);
@@ -70174,7 +70211,7 @@ function resolvePluginSource(opts = {}) {
       return null;
     }
   };
-  const manifest = json(join9(root, ".claude-plugin/plugin.json"));
+  const manifest = json(join10(root, ".claude-plugin/plugin.json"));
   if (manifest?.name !== "harmony-plugin") return result;
   const match2 = typeof manifest.repository === "string" && /^https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/.exec(manifest.repository);
   if (match2) {
@@ -70183,9 +70220,9 @@ function resolvePluginSource(opts = {}) {
   }
   const channels = /* @__PURE__ */ new Set();
   const evidence = /* @__PURE__ */ new Set();
-  const pluginsDir = join9(opts.home ?? homedir4(), ".claude/plugins");
-  const installed = json(join9(pluginsDir, "installed_plugins.json"));
-  const marketplaces = json(join9(pluginsDir, "known_marketplaces.json"));
+  const pluginsDir = join10(opts.home ?? homedir5(), ".claude/plugins");
+  const installed = json(join10(pluginsDir, "installed_plugins.json"));
+  const marketplaces = json(join10(pluginsDir, "known_marketplaces.json"));
   if (installed?.plugins && typeof installed.plugins === "object") {
     for (const [key, registrations] of Object.entries(installed.plugins)) {
       if (!key.startsWith("harmony-plugin@") || !Array.isArray(registrations)) continue;
@@ -70198,7 +70235,7 @@ function resolvePluginSource(opts = {}) {
         }
         const market = marketplaces?.[key.slice("harmony-plugin@".length)];
         if (typeof market?.installLocation !== "string") continue;
-        const catalog = json(join9(market.installLocation, ".claude-plugin/marketplace.json"));
+        const catalog = json(join10(market.installLocation, ".claude-plugin/marketplace.json"));
         const sources = Array.isArray(catalog?.plugins) ? catalog.plugins.filter((p) => p?.name === "harmony-plugin") : [];
         for (const plugin of sources) {
           if (plugin.source?.source !== "github" || plugin.source.repo !== result.repository) continue;
@@ -70214,13 +70251,13 @@ function resolvePluginSource(opts = {}) {
     }
   }
   try {
-    let gitDir = join9(root, ".git");
+    let gitDir = join10(root, ".git");
     try {
       const pointer = read(gitDir).trim();
       if (pointer.startsWith("gitdir: ")) gitDir = resolve4(root, pointer.slice(8));
     } catch {
     }
-    const head2 = read(join9(gitDir, "HEAD")).trim();
+    const head2 = read(join10(gitDir, "HEAD")).trim();
     if (head2 === "ref: refs/heads/prod" || head2 === "ref: refs/heads/staging") {
       channels.add(head2.endsWith("/prod") ? "prod" : "staging");
       evidence.add("running checkout branch");
@@ -70239,7 +70276,7 @@ function resolvePluginSource(opts = {}) {
 
 // src/cli/commands/conductor-check-app.ts
 import { execFile as execFile2 } from "node:child_process";
-import { join as join10 } from "node:path";
+import { join as join11 } from "node:path";
 var safeId = external_exports.string().regex(/^[1-9][0-9]{0,15}$/).refine((v2) => Number.isSafeInteger(Number(v2)));
 var permissions = { actions: "read", checks: "read", contents: "write", metadata: "read", pull_requests: "write", statuses: "read", workflows: "write" };
 var optionalPermissions = { deployments: "read" };
@@ -70275,7 +70312,7 @@ async function runAppCheck(opts, deps = {}) {
   try {
     const root = deps.root === void 0 ? runningPluginRoot() : deps.root;
     if (!root) return failure;
-    const child = await (deps.run ?? runChild)(join10(root, "scripts/check-app-installation.mjs"), ["--app-id", opts.appId, "--installation-id", opts.installationId, "--private-key-path", opts.privateKeyPath]);
+    const child = await (deps.run ?? runChild)(join11(root, "scripts/check-app-installation.mjs"), ["--app-id", opts.appId, "--installation-id", opts.installationId, "--private-key-path", opts.privateKeyPath]);
     if (child.stdout.length > 24 * 1024 * 1024 || ![0, 1].includes(child.exitCode)) return failure;
     const data = resultSchema.parse(JSON.parse(child.stdout));
     if (data.app_id !== opts.appId || data.installation_id !== opts.installationId) return failure;
@@ -70306,7 +70343,7 @@ function registerAppCheck(program3, conductor) {
 // src/cli/commands/conductor-config.ts
 var import_yaml3 = __toESM(require_dist(), 1);
 import { execFile as execFile3 } from "node:child_process";
-import { chmodSync as chmodSync5, existsSync as fsExistsSync3, mkdirSync as mkdirSync5, readFileSync as fsReadFileSync3, writeFileSync as writeFileSync8 } from "node:fs";
+import { chmodSync as chmodSync5, existsSync as fsExistsSync3, mkdirSync as mkdirSync6, readFileSync as fsReadFileSync3, writeFileSync as writeFileSync9 } from "node:fs";
 import { dirname as dirname8, resolve as resolve7 } from "node:path";
 
 // src/config/conductor-migrate.ts
@@ -70427,7 +70464,7 @@ function buildMigration(input) {
 
 // src/config/conductor-project-source.ts
 import { createHash as createHash7 } from "node:crypto";
-import { chmodSync as chmodSync3, mkdirSync as mkdirSync3, readFileSync as readFileSync12, renameSync as renameSync3, rmSync as rmSync4, writeFileSync as writeFileSync6 } from "node:fs";
+import { chmodSync as chmodSync3, mkdirSync as mkdirSync4, readFileSync as readFileSync12, renameSync as renameSync4, rmSync as rmSync5, writeFileSync as writeFileSync7 } from "node:fs";
 import { dirname as dirname5 } from "node:path";
 
 // src/config/github-app-token.ts
@@ -70546,15 +70583,15 @@ function readSnapshot(path4) {
   }
 }
 function writeSnapshot(path4, snap) {
-  mkdirSync3(dirname5(path4), { recursive: true });
+  mkdirSync4(dirname5(path4), { recursive: true });
   const tmp = `${path4}.${process.pid}.${Date.now().toString(36)}.tmp`;
   try {
-    writeFileSync6(tmp, `${JSON.stringify(snap, null, 2)}
+    writeFileSync7(tmp, `${JSON.stringify(snap, null, 2)}
 `, { mode: 384 });
     chmodSync3(tmp, 384);
-    renameSync3(tmp, path4);
+    renameSync4(tmp, path4);
   } catch (err) {
-    rmSync4(tmp, { force: true });
+    rmSync5(tmp, { force: true });
     throw err;
   }
 }
@@ -70611,7 +70648,7 @@ ${new ConductorConfigError(v2.issues).message}`);
 }
 
 // src/cli/commands/conductor-lifecycle.ts
-import { dirname as dirname7, join as join16 } from "node:path";
+import { dirname as dirname7, join as join17 } from "node:path";
 
 // src/daemon/conductor-board.ts
 var holderPrefix = (host, pid) => `${host}:${pid}:`;
@@ -70653,7 +70690,7 @@ function classifyLeases(rows, host, runningPid, freshMs, nowMs) {
 }
 
 // src/daemon/conductor-process.ts
-import { basename as basename3, isAbsolute as isAbsolute2, join as join11, resolve as resolve5 } from "node:path";
+import { basename as basename3, isAbsolute as isAbsolute2, join as join12, resolve as resolve5 } from "node:path";
 function parsePsOutput(text4) {
   const out = [];
   for (const line2 of text4.split("\n")) {
@@ -70721,7 +70758,7 @@ function daemonCandidates(procs) {
   return out;
 }
 function matchConductors(procs, opts) {
-  const want = resolve5(join11(opts.pluginDir, "dist", "bin", "daemon.js"));
+  const want = resolve5(join12(opts.pluginDir, "dist", "bin", "daemon.js"));
   const out = [];
   for (const c of daemonCandidates(procs)) {
     let script;
@@ -70742,7 +70779,7 @@ function needsCwd(procs) {
 }
 
 // src/daemon/supervisor-control.ts
-import { join as join12 } from "node:path";
+import { join as join13 } from "node:path";
 
 // src/daemon/supervisor.ts
 var LAUNCHD_SERVICE_NAME = "com.ycomplex.harmony-daemon";
@@ -70750,9 +70787,9 @@ var LAUNCHD_SERVICE_NAME = "com.ycomplex.harmony-daemon";
 // src/daemon/supervisor-control.ts
 var LAUNCHD_LABEL = LAUNCHD_SERVICE_NAME;
 var SYSTEMD_UNIT = "harmony-conductor.service";
-var agentPlistPath = (home) => join12(home, "Library", "LaunchAgents", `${LAUNCHD_LABEL}.plist`);
+var agentPlistPath = (home) => join13(home, "Library", "LaunchAgents", `${LAUNCHD_LABEL}.plist`);
 var daemonPlistPath = () => `/Library/LaunchDaemons/${LAUNCHD_LABEL}.plist`;
-var systemdUnitPath = (home) => join12(home, ".config", "systemd", "user", SYSTEMD_UNIT);
+var systemdUnitPath = (home) => join13(home, ".config", "systemd", "user", SYSTEMD_UNIT);
 var launchdTarget = (kind, uid) => kind === "launchd-agent" ? `gui/${uid}/${LAUNCHD_LABEL}` : `system/${LAUNCHD_LABEL}`;
 async function detectSupervisorState(deps) {
   if (deps.platform === "darwin") {
@@ -70804,7 +70841,7 @@ function fillTemplate(template, values) {
   });
 }
 var xmlEscape = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
-var launcherPath = (pluginDir) => join12(pluginDir, "container", "conductor-launch.sh");
+var launcherPath = (pluginDir) => join13(pluginDir, "container", "conductor-launch.sh");
 function renderLaunchdPlist(template, o) {
   const args = ["/bin/bash", launcherPath(o.pluginDir), ...o.launcherArgs];
   return fillTemplate(template, {
@@ -70859,10 +70896,10 @@ var Out = class {
 var EXIT = { ok: 0, failure: 1, usage: 2, inFlight: 3, notAdopted: 4 };
 
 // src/cli/commands/conductor-registry-cli.ts
-import { join as join15 } from "node:path";
+import { join as join16 } from "node:path";
 
 // src/cli/commands/conductor-preflight.ts
-import { basename as basename4, join as join14 } from "node:path";
+import { basename as basename4, join as join15 } from "node:path";
 
 // src/config/conductor-secrets.ts
 import { readFileSync as readFileSync13 } from "node:fs";
@@ -70944,7 +70981,7 @@ async function resolveConductorSecrets(deps) {
 
 // src/config/gcp-project.ts
 import { existsSync as fsExistsSync2, readFileSync as fsReadFileSync2 } from "node:fs";
-import { join as join13 } from "node:path";
+import { join as join14 } from "node:path";
 var GCP_PROJECT_UNSET = 'no GCP project is configured: set "gcp": { "project": "<gcp-project-id>" } in .harmony/conductor.json (or in ~/.harmony/conductor-host.json)';
 function resolveGcpProject(deps) {
   const exported = deps.env.CLOUDSDK_CORE_PROJECT;
@@ -70968,7 +71005,7 @@ function resolveGcpProject(deps) {
   }
   if (merged?.gcp?.project) return merged.gcp.project;
   try {
-    const local = join13(deps.cwd ?? process.cwd(), CONDUCTOR_PROJECT_PATH);
+    const local = join14(deps.cwd ?? process.cwd(), CONDUCTOR_PROJECT_PATH);
     if (exists(local)) {
       const v2 = validateProjectFileText(CONDUCTOR_PROJECT_PATH, read(local));
       if (v2.ok) return v2.value.gcp?.project;
@@ -70992,8 +71029,8 @@ async function sourceEnvFile(deps, file) {
 }
 async function loadSettings(deps, opts = {}) {
   const paths = resolveConductorPaths(deps.env);
-  const envPath = join14(paths.home, "conductor.env");
-  const legacyPath = join14(paths.home, "daemon.env");
+  const envPath = join15(paths.home, "conductor.env");
+  const legacyPath = join15(paths.home, "daemon.env");
   let envFile = null;
   const fileEnv = {};
   let envFileError;
@@ -71067,9 +71104,9 @@ async function authPluginFix(deps, env2) {
     if (r.code === 0) root = r.stdout.trim();
   } catch {
   }
-  if (!root || !deps.existsSync(join14(root, "bin", AUTH_PLUGIN))) return install;
+  if (!root || !deps.existsSync(join15(root, "bin", AUTH_PLUGIN))) return install;
   const ext2 = basename4(env2.SHELL ?? "") === "zsh" ? "zsh" : "bash";
-  return `${AUTH_PLUGIN} is installed at ${join14(root, "bin")} but is not on PATH (\`gcloud components install\` reports up to date and does not add it): run \`source ${join14(root, `path.${ext2}.inc`)}\` and add that line to your shell profile`;
+  return `${AUTH_PLUGIN} is installed at ${join15(root, "bin")} but is not on PATH (\`gcloud components install\` reports up to date and does not add it): run \`source ${join15(root, `path.${ext2}.inc`)}\` and add that line to your shell profile`;
 }
 function missingTokenReason(deps, s) {
   const hostFile = s.paths.hostFile;
@@ -71177,7 +71214,7 @@ var failedNames = (checks) => checks.filter((c) => !c.ok).map((c) => c.name);
 var REGISTRY_ABSENT = "registry not deployed on this project";
 function pluginVersion(deps, pluginDir) {
   try {
-    const v2 = JSON.parse(deps.readFileSync(join15(pluginDir, ".claude-plugin", "plugin.json"))).version;
+    const v2 = JSON.parse(deps.readFileSync(join16(pluginDir, ".claude-plugin", "plugin.json"))).version;
     return v2 || "unknown";
   } catch {
     return "unknown";
@@ -71435,8 +71472,8 @@ async function runStopRemote(deps, opts = {}, onLine) {
 
 // src/cli/commands/conductor-lifecycle-deps.ts
 import { spawn as spawn2 } from "node:child_process";
-import { chmodSync as chmodSync4, closeSync as closeSync2, existsSync as existsSync5, mkdirSync as mkdirSync4, openSync as openSync2, readFileSync as readFileSync14, readlinkSync, rmSync as rmSync5, writeFileSync as writeFileSync7 } from "node:fs";
-import { homedir as homedir5, hostname as hostname2, userInfo } from "node:os";
+import { chmodSync as chmodSync4, closeSync as closeSync2, existsSync as existsSync5, mkdirSync as mkdirSync5, openSync as openSync2, readFileSync as readFileSync14, readlinkSync, rmSync as rmSync6, writeFileSync as writeFileSync8 } from "node:fs";
+import { homedir as homedir6, hostname as hostname2, userInfo } from "node:os";
 import { dirname as dirname6, resolve as resolve6 } from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 
@@ -71888,7 +71925,7 @@ function defaultLifecycleDeps() {
         return process.env.USER ?? "";
       }
     })(),
-    home: homedir5(),
+    home: homedir6(),
     cliPluginDir: resolve6(dirname6(fileURLToPath3(import.meta.url)), "..", ".."),
     hostname: () => hostname2(),
     now: () => Date.now(),
@@ -71916,7 +71953,7 @@ function defaultLifecycleDeps() {
       }
     },
     spawnDetached: (file, args, o) => {
-      mkdirSync4(dirname6(o.logPath), { recursive: true });
+      mkdirSync5(dirname6(o.logPath), { recursive: true });
       const fd = openSync2(o.logPath, "a");
       try {
         const child = spawn2(file, args, {
@@ -71935,13 +71972,13 @@ function defaultLifecycleDeps() {
     existsSync: existsSync5,
     readFileSync: (p) => readFileSync14(p, "utf8"),
     writeFileSync: (p, text4, mode) => {
-      writeFileSync7(p, text4, { mode });
+      writeFileSync8(p, text4, { mode });
       chmodSync4(p, mode);
     },
     mkdirSync: (p) => {
-      mkdirSync4(p, { recursive: true });
+      mkdirSync5(p, { recursive: true });
     },
-    rmSync: (p) => rmSync5(p, { force: true }),
+    rmSync: (p) => rmSync6(p, { force: true }),
     readBoard: async (env2) => {
       const token = env2.HARMONY_API_TOKEN;
       if (!token) throw new Error("HARMONY_API_TOKEN is not set");
@@ -71985,7 +72022,7 @@ function timingFromEnv(env2) {
     freshMs: n("HARMONY_SWITCH_FRESH_S", 120) * 1e3
   };
 }
-var logPathOf = (s) => join16(s.paths.home, "conductor.out.log");
+var logPathOf = (s) => join17(s.paths.home, "conductor.out.log");
 async function findConductors(deps, s) {
   const procs = await deps.listProcesses();
   const cwdByPid = /* @__PURE__ */ new Map();
@@ -72233,11 +72270,11 @@ async function runStart(deps, opts = {}, onLine) {
   try {
     deps.mkdirSync(dirname7(logPath));
     if (deps.platform === "darwin") {
-      const template = deps.readFileSync(join16(s.pluginDir, LAUNCHD_TEMPLATE));
+      const template = deps.readFileSync(join17(s.pluginDir, LAUNCHD_TEMPLATE));
       if (mode === "at-boot") {
         kind = "launchd-daemon";
         unitPath = daemonPlistPath();
-        const staged = join16(s.paths.home, "conductor-launchd.plist.staged");
+        const staged = join17(s.paths.home, "conductor-launchd.plist.staged");
         deps.writeFileSync(staged, renderLaunchdPlist(template, { ...renderOpts, userName: deps.username }), 420);
         cmds = installCommands(kind, deps.uid, { agentPlist: unitPath, staged });
         out.line(`Installing a LaunchDaemon (${unitPath}) that starts at boot as ${deps.username}; sudo will ask for your password once.`);
@@ -72250,7 +72287,7 @@ async function runStart(deps, opts = {}, onLine) {
         out.line(`Installed the LaunchAgent ${unitPath}.`);
       }
     } else {
-      const template = deps.readFileSync(join16(s.pluginDir, SYSTEMD_TEMPLATE));
+      const template = deps.readFileSync(join17(s.pluginDir, SYSTEMD_TEMPLATE));
       kind = "systemd-user";
       unitPath = systemdUnitPath(deps.home);
       deps.mkdirSync(dirname7(unitPath));
@@ -72265,7 +72302,7 @@ async function runStart(deps, opts = {}, onLine) {
   if (!await runSupervisorCommands(deps, cmds, out)) {
     return out.result(EXIT.failure, { error: out.errLines[0], started: false, supervisor: kind });
   }
-  if (mode === "at-boot") deps.rmSync(join16(s.paths.home, "conductor-launchd.plist.staged"));
+  if (mode === "at-boot") deps.rmSync(join17(s.paths.home, "conductor-launchd.plist.staged"));
   const deadline = deps.now() + 3e4;
   let started = [];
   while (deps.now() < deadline) {
@@ -72475,8 +72512,8 @@ async function restartLocal(deps, opts, onLine, ctx) {
       return out.result(EXIT.failure, { error: out.errLines[0], signalled: false, plugin_version_before: versionBefore });
     }
     versionAfter = pluginVersion(deps, s.pluginDir);
-    if (!deps.existsSync(join16(s.pluginDir, "dist", "bin", "daemon.js"))) {
-      out.err(`after the pull ${join16(s.pluginDir, "dist", "bin", "daemon.js")} does not exist \u2014 the channel branch carries no built bundle. The running conductor was left untouched.`);
+    if (!deps.existsSync(join17(s.pluginDir, "dist", "bin", "daemon.js"))) {
+      out.err(`after the pull ${join17(s.pluginDir, "dist", "bin", "daemon.js")} does not exist \u2014 the channel branch carries no built bundle. The running conductor was left untouched.`);
       return out.result(EXIT.failure, { error: out.errLines[0], signalled: false, plugin_version_before: versionBefore });
     }
     out.line(versionAfter === versionBefore ? `  plugin ${versionBefore} (already the channel's latest)` : `  plugin ${versionBefore} -> ${versionAfter}`);
@@ -72746,11 +72783,11 @@ async function runMigrate(deps, opts) {
     if (existing.length && !opts.force) {
       return fail2(`refusing to overwrite ${existing.join(", ")} (pass --force to replace it; nothing was written)`);
     }
-    mkdirSync5(dirname8(outProject), { recursive: true });
-    writeFileSync8(outProject, projectText, { mode: 420 });
+    mkdirSync6(dirname8(outProject), { recursive: true });
+    writeFileSync9(outProject, projectText, { mode: 420 });
     written.push(outProject);
-    mkdirSync5(dirname8(outHost), { recursive: true });
-    writeFileSync8(outHost, hostText, { mode: 384 });
+    mkdirSync6(dirname8(outHost), { recursive: true });
+    writeFileSync9(outHost, hostText, { mode: 384 });
     chmodSync5(outHost, 384);
     written.push(outHost);
   }
@@ -73082,8 +73119,8 @@ import { existsSync as fsExistsSync4, readFileSync as fsReadFileSync4 } from "no
 import { execFile as execFile4 } from "node:child_process";
 
 // src/daemon/conductor-logger.ts
-import { homedir as homedir6 } from "node:os";
-import { dirname as dirname9, join as join17 } from "node:path";
+import { homedir as homedir7 } from "node:os";
+import { dirname as dirname9, join as join18 } from "node:path";
 
 // src/daemon/log-shipper.ts
 var PERMISSION_RETRY_MS = 5 * 6e4;
@@ -73093,7 +73130,7 @@ var TOKEN_TTL_MS = 50 * 6e4;
 var ROTATE_BYTES = 10 * 1024 * 1024;
 var ROTATE_KEEP = 5;
 function resolveConductorLogPath(env2) {
-  return env2.HARMONY_CONDUCTOR_LOG || join17(env2.HARMONY_HOME || join17(homedir6(), ".harmony"), "logs", "conductor.log");
+  return env2.HARMONY_CONDUCTOR_LOG || join18(env2.HARMONY_HOME || join18(homedir7(), ".harmony"), "logs", "conductor.log");
 }
 
 // src/cli/commands/conductor-logs.ts
@@ -73463,7 +73500,7 @@ function encodeNulArgv(argv) {
 }
 
 // src/cli/commands/agent.ts
-import { existsSync as existsSync7, mkdirSync as mkdirSync7, readFileSync as readFileSync16, renameSync as renameSync4, writeFileSync as writeFileSync10 } from "node:fs";
+import { existsSync as existsSync7, mkdirSync as mkdirSync8, readFileSync as readFileSync16, renameSync as renameSync5, writeFileSync as writeFileSync11 } from "node:fs";
 
 // src/agents/codex-provision.ts
 import {
@@ -73473,17 +73510,17 @@ import {
   copyFileSync,
   existsSync as existsSync6,
   lstatSync as lstatSync2,
-  mkdirSync as mkdirSync6,
+  mkdirSync as mkdirSync7,
   readFileSync as readFileSync15,
   readdirSync,
   readlinkSync as readlinkSync2,
   statSync,
   symlinkSync,
   unlinkSync as unlinkSync2,
-  writeFileSync as writeFileSync9,
+  writeFileSync as writeFileSync10,
   appendFileSync
 } from "node:fs";
-import { join as join18, resolve as resolve8 } from "node:path";
+import { join as join19, resolve as resolve8 } from "node:path";
 
 // src/agents/hooks.ts
 var HARMONY_HOOKS = {
@@ -73615,13 +73652,13 @@ function collectInstructionSources(input) {
   const ws = resolve8(input.workspaceDir);
   const plugin = resolve8(input.pluginDir);
   const candidates = [
-    { label: "workspace/CLAUDE.md", path: join18(ws, "CLAUDE.md") },
-    { label: "plugin/CLAUDE.md", path: join18(plugin, "CLAUDE.md") },
-    { label: "web/CLAUDE.md", path: join18(ws, "web", "CLAUDE.md") }
+    { label: "workspace/CLAUDE.md", path: join19(ws, "CLAUDE.md") },
+    { label: "plugin/CLAUDE.md", path: join19(plugin, "CLAUDE.md") },
+    { label: "web/CLAUDE.md", path: join19(ws, "web", "CLAUDE.md") }
   ];
   for (const p of input.extraRepoPaths ?? []) {
     const abs = resolve8(p);
-    candidates.push({ label: `${abs.replace(/^\/+/, "")}/CLAUDE.md`, path: join18(abs, "CLAUDE.md") });
+    candidates.push({ label: `${abs.replace(/^\/+/, "")}/CLAUDE.md`, path: join19(abs, "CLAUDE.md") });
   }
   const seen = /* @__PURE__ */ new Set();
   const out = [];
@@ -73633,11 +73670,11 @@ function collectInstructionSources(input) {
   return out;
 }
 function collectSkillCapabilities(pluginDir) {
-  const root = join18(resolve8(pluginDir), "skills");
+  const root = join19(resolve8(pluginDir), "skills");
   if (!existsSync6(root)) return [];
   const out = [];
   for (const name of readdirSync(root).sort()) {
-    const file = join18(root, name, "SKILL.md");
+    const file = join19(root, name, "SKILL.md");
     if (!isFile(file)) continue;
     const value = capabilitiesFromSkillMd(readFileSync15(file, "utf8"));
     if (value === void 0) continue;
@@ -73654,21 +73691,21 @@ function codexOverlayFor(pluginDir) {
 ${rules}` : CODEX_WORKER_OVERLAY;
 }
 function excludeFromGit(workspaceDir, entries) {
-  const gitDir = join18(workspaceDir, ".git");
+  const gitDir = join19(workspaceDir, ".git");
   if (!existsSync6(gitDir)) return;
-  const infoDir = join18(gitDir, "info");
-  mkdirSync6(infoDir, { recursive: true });
-  const excludePath = join18(infoDir, "exclude");
+  const infoDir = join19(gitDir, "info");
+  mkdirSync7(infoDir, { recursive: true });
+  const excludePath = join19(infoDir, "exclude");
   const current = existsSync6(excludePath) ? readFileSync15(excludePath, "utf8") : "";
   const have = new Set(current.split("\n"));
   const missing3 = entries.filter((e) => !have.has(e));
   if (missing3.length) appendFileSync(excludePath, (current === "" || current.endsWith("\n") ? "" : "\n") + missing3.join("\n") + "\n");
 }
 function linkSkills(workspaceDir, pluginDir) {
-  const link = join18(workspaceDir, CODEX_SKILLS_LINK);
-  const target = join18(resolve8(pluginDir), "skills");
+  const link = join19(workspaceDir, CODEX_SKILLS_LINK);
+  const target = join19(resolve8(pluginDir), "skills");
   if (!existsSync6(target)) throw new Error(`skills directory not found at ${target}`);
-  mkdirSync6(join18(workspaceDir, ".agents"), { recursive: true });
+  mkdirSync7(join19(workspaceDir, ".agents"), { recursive: true });
   let st2;
   try {
     st2 = lstatSync2(link);
@@ -73687,7 +73724,7 @@ function installAuth(authFile, codexHome) {
   if (!isFile(authFile)) {
     throw new Error(`the Codex login-cache file is missing at ${authFile} (HARMONY_CODEX_AUTH_FILE) \u2014 mount it, see container/README.md "Codex credential runbook"`);
   }
-  const dest = join18(codexHome, CODEX_AUTH_FILE_NAME);
+  const dest = join19(codexHome, CODEX_AUTH_FILE_NAME);
   if (resolve8(authFile) !== resolve8(dest)) {
     copyFileSync(authFile, dest);
   }
@@ -73726,19 +73763,19 @@ function provisionCodex(input) {
   const agentsMd = renderCodexAgentsMd(sources, codexOverlayFor(input.pluginDir));
   const problems = verifyCodexAgentsMd(agentsMd, sources);
   if (problems.length) throw new Error(`AGENTS.md preflight failed: ${problems.join("; ")}`);
-  const agentsMdPath = join18(workspaceDir, "AGENTS.md");
+  const agentsMdPath = join19(workspaceDir, "AGENTS.md");
   if (existsSync6(agentsMdPath) && !readFileSync15(agentsMdPath, "utf8").startsWith(GENERATED_AGENTS_HEADER)) {
     throw new Error(`${agentsMdPath} exists and is not a generated file \u2014 refusing to overwrite a repository's own AGENTS.md`);
   }
   preflightHookScripts(resolve8(input.pluginDir));
-  mkdirSync6(codexHome, { recursive: true });
+  mkdirSync7(codexHome, { recursive: true });
   const config2 = renderCodexConfig(HARMONY_MCP_CONNECTION, { pluginRoot: resolve8(input.pluginDir) });
-  const configPath = join18(codexHome, config2.fileName);
-  writeFileSync9(configPath, config2.content, { mode: 420 });
+  const configPath = join19(codexHome, config2.fileName);
+  writeFileSync10(configPath, config2.content, { mode: 420 });
   const hooks = renderCodexHooks(resolve8(input.pluginDir));
-  const hooksPath = join18(codexHome, hooks.fileName);
-  writeFileSync9(hooksPath, hooks.content, { mode: 420 });
-  writeFileSync9(agentsMdPath, agentsMd);
+  const hooksPath = join19(codexHome, hooks.fileName);
+  writeFileSync10(hooksPath, hooks.content, { mode: 420 });
+  writeFileSync10(agentsMdPath, agentsMd);
   const skillsLink = linkSkills(workspaceDir, input.pluginDir);
   excludeFromGit(workspaceDir, ["AGENTS.md", ".agents/"]);
   const authInstalledAt = input.authFile === void 0 ? null : installAuth(input.authFile, codexHome);
@@ -73754,20 +73791,20 @@ function provisionCodex(input) {
 }
 function renderCodexProviderConfig(input) {
   const codexHome = resolve8(input.codexHome);
-  mkdirSync6(codexHome, { recursive: true });
+  mkdirSync7(codexHome, { recursive: true });
   const config2 = renderCodexConfig(HARMONY_MCP_CONNECTION, {
     pluginRoot: resolve8(input.pluginDir),
     provider: input.provider,
     contextWindowTokens: input.contextWindowTokens ?? null
   });
-  const configPath = join18(codexHome, config2.fileName);
-  writeFileSync9(configPath, config2.content, { mode: 420 });
+  const configPath = join19(codexHome, config2.fileName);
+  writeFileSync10(configPath, config2.content, { mode: 420 });
   return configPath;
 }
 
 // src/cli/commands/agent.ts
-import { homedir as homedir7 } from "node:os";
-import { join as join19 } from "node:path";
+import { homedir as homedir8 } from "node:os";
+import { join as join20 } from "node:path";
 function launchRunConfig() {
   try {
     return getRunConfig();
@@ -73882,8 +73919,8 @@ function registerAgentCommands(program3) {
       console.error(`harmony agent render: ${adapter.displayName} needs no rendered runtime config.`);
       return;
     }
-    const codexHome = opts.codexHome || process.env.CODEX_HOME || join19(homedir7(), ".codex");
-    const authFile = process.env.HARMONY_CODEX_TOKEN_ONLY === "1" && (process.env.HARMONY_CODEX_PROVIDER ?? "openai") === "openai" ? join19(codexHome, "auth.json") : process.env[CODEX_AUTH_FILE_ENV];
+    const codexHome = opts.codexHome || process.env.CODEX_HOME || join20(homedir8(), ".codex");
+    const authFile = process.env.HARMONY_CODEX_TOKEN_ONLY === "1" && (process.env.HARMONY_CODEX_PROVIDER ?? "openai") === "openai" ? join20(codexHome, "auth.json") : process.env[CODEX_AUTH_FILE_ENV];
     const providerKeyLeg = !authFile && (() => {
       const v2 = resolveCodexCredential(process.env);
       return v2.ok && v2.credential === "api-key";
@@ -73963,7 +74000,7 @@ function registerAgentCommands(program3) {
     try {
       const path4 = renderCodexProviderConfig({
         pluginDir: opts.pluginDir,
-        codexHome: opts.codexHome || process.env.CODEX_HOME || join19(homedir7(), ".codex"),
+        codexHome: opts.codexHome || process.env.CODEX_HOME || join20(homedir8(), ".codex"),
         provider: provider2,
         contextWindowTokens: window2
       });
@@ -74000,12 +74037,12 @@ function registerAgentCommands(program3) {
     const id = parseCodexThreadId(text4);
     if (!id) process.exit(1);
     try {
-      mkdirSync7(opts.dir, { recursive: true });
-      const target = join19(opts.dir, CODEX_THREAD_FILE_NAME);
+      mkdirSync8(opts.dir, { recursive: true });
+      const target = join20(opts.dir, CODEX_THREAD_FILE_NAME);
       const tmp = `${target}.tmp-${process.pid}`;
-      writeFileSync10(tmp, `${JSON.stringify(buildCodexThreadRecord(id, opts.model))}
+      writeFileSync11(tmp, `${JSON.stringify(buildCodexThreadRecord(id, opts.model))}
 `);
-      renameSync4(tmp, target);
+      renameSync5(tmp, target);
     } catch (err) {
       console.error(`harmony agent write-thread: WARNING \u2014 ${err instanceof Error ? err.message : String(err)}`);
       process.exit(1);
@@ -74031,7 +74068,7 @@ function registerAgentCommands(program3) {
 }
 
 // src/cli/commands/leg-cost.ts
-import { readFileSync as readFileSync17, writeFileSync as writeFileSync11 } from "node:fs";
+import { readFileSync as readFileSync17, writeFileSync as writeFileSync12 } from "node:fs";
 import { createHash as createHash8 } from "node:crypto";
 
 // src/tools/leg-cost-record.ts
@@ -74335,7 +74372,7 @@ function registerLegCostCommands(program3) {
       });
       if (opts.ackFile) {
         try {
-          writeFileSync11(opts.ackFile, recorded ? "recorded\n" : "not-recorded\n", { mode: 384 });
+          writeFileSync12(opts.ackFile, recorded ? "recorded\n" : "not-recorded\n", { mode: 384 });
         } catch (err) {
           console.error(`harmony leg-cost record: WARNING \u2014 could not write acknowledgement (${err instanceof Error ? err.message : String(err)})`);
         }
@@ -74515,7 +74552,7 @@ function registerLegOutputCommands(program3) {
 
 // src/cli/commands/gates.ts
 import { execFileSync as execFileSync4, spawnSync } from "node:child_process";
-import { mkdirSync as mkdirSync8, readFileSync as readFileSync19, renameSync as renameSync5, writeFileSync as writeFileSync12 } from "node:fs";
+import { mkdirSync as mkdirSync9, readFileSync as readFileSync19, renameSync as renameSync6, writeFileSync as writeFileSync13 } from "node:fs";
 import { dirname as dirname10 } from "node:path";
 
 // src/config/notify-sync.ts
@@ -74806,11 +74843,11 @@ function registerGatesCommands(program3) {
 }
 function writeGateEvidenceMarker(projectRoot, marker) {
   const filePath = gateEvidenceMarkerPath(projectRoot, marker.extension_point);
-  mkdirSync8(dirname10(filePath), { recursive: true });
+  mkdirSync9(dirname10(filePath), { recursive: true });
   const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  writeFileSync12(tmpPath, `${JSON.stringify(marker, null, 2)}
+  writeFileSync13(tmpPath, `${JSON.stringify(marker, null, 2)}
 `, "utf8");
-  renameSync5(tmpPath, filePath);
+  renameSync6(tmpPath, filePath);
 }
 function productionNotifySyncIO() {
   return {
@@ -74835,10 +74872,10 @@ function productionNotifySyncIO() {
       }
     },
     writeCache: (path4, contents) => {
-      mkdirSync8(dirname10(path4), { recursive: true });
+      mkdirSync9(dirname10(path4), { recursive: true });
       const tmpPath = `${path4}.tmp-${process.pid}-${Date.now()}`;
-      writeFileSync12(tmpPath, contents, "utf8");
-      renameSync5(tmpPath, path4);
+      writeFileSync13(tmpPath, contents, "utf8");
+      renameSync6(tmpPath, path4);
     }
   };
 }
@@ -76125,7 +76162,7 @@ function registerFasttrackCommands(program3) {
 }
 
 // src/cli/commands/watch.ts
-import { randomUUID as randomUUID6 } from "node:crypto";
+import { randomUUID as randomUUID7 } from "node:crypto";
 import { hostname as hostname3 } from "node:os";
 
 // src/daemon/hints.ts
@@ -77283,21 +77320,21 @@ import {
   closeSync as closeSync3,
   fsyncSync,
   linkSync as linkSync2,
-  mkdirSync as mkdirSync9,
+  mkdirSync as mkdirSync10,
   openSync as openSync3,
   readdirSync as readdirSync2,
   readFileSync as readFileSync21,
-  renameSync as renameSync6,
+  renameSync as renameSync7,
   unlinkSync as unlinkSync3,
   writeSync
 } from "node:fs";
-import { homedir as homedir8, hostname as osHostname } from "node:os";
-import { dirname as dirname11, join as join20 } from "node:path";
+import { homedir as homedir9, hostname as osHostname } from "node:os";
+import { dirname as dirname11, join as join21 } from "node:path";
 function harmonyHome(home) {
   if (home) return home;
   const env2 = process.env.HARMONY_HOME;
   if (env2 && env2.length > 0) return env2;
-  return join20(homedir8(), ".harmony");
+  return join21(homedir9(), ".harmony");
 }
 var SAFE_NAME = /^[A-Za-z0-9._-]+$/;
 function isSafeName(name) {
@@ -77340,23 +77377,23 @@ function scopeSlug(scope) {
 }
 function seatProfilePath(name, opts = {}) {
   assertSafeName("seat name", name);
-  return join20(harmonyHome(opts.home), "seats", `${name}.yml`);
+  return join21(harmonyHome(opts.home), "seats", `${name}.yml`);
 }
 function watchDir(projectKey, opts = {}) {
   assertSafeName("project key", projectKey);
-  return join20(harmonyHome(opts.home), "watch", projectKey);
+  return join21(harmonyHome(opts.home), "watch", projectKey);
 }
 function cursorPath(projectKey, seat, opts = {}) {
   assertSafeName("seat name", seat);
-  return join20(watchDir(projectKey, opts), `${seat}.json`);
+  return join21(watchDir(projectKey, opts), `${seat}.json`);
 }
 function heartbeatPath(projectKey, seat, opts = {}) {
   assertSafeName("seat name", seat);
-  return join20(watchDir(projectKey, opts), `${seat}.heartbeat.json`);
+  return join21(watchDir(projectKey, opts), `${seat}.heartbeat.json`);
 }
 function lockPath(projectKey, seat, scope, opts = {}) {
   assertSafeName("seat name", seat);
-  return join20(watchDir(projectKey, opts), `${seat}.${scopeSlug(scope)}.lock`);
+  return join21(watchDir(projectKey, opts), `${seat}.${scopeSlug(scope)}.lock`);
 }
 var nullableString = external_exports.string().nullable();
 var isoString = external_exports.string().refine((s) => !Number.isNaN(Date.parse(s)), "not an ISO timestamp");
@@ -77574,11 +77611,11 @@ function writeJsonAtomic(path4, value) {
 }
 function writeTextAtomic(path4, text4) {
   const dir = dirname11(path4);
-  mkdirSync9(dir, { recursive: true });
+  mkdirSync10(dir, { recursive: true });
   const tmp = tmpPathFor(path4);
   try {
     writeFileSynced(tmp, text4, "wx");
-    renameSync6(tmp, path4);
+    renameSync7(tmp, path4);
   } catch (err) {
     try {
       unlinkSync3(tmp);
@@ -77608,7 +77645,7 @@ function acquireLock(projectKey, seat, scope, mode, opts = {}) {
     mode,
     started_at: (opts.now ? opts.now() : /* @__PURE__ */ new Date()).toISOString()
   });
-  mkdirSync9(dirname11(path4), { recursive: true });
+  mkdirSync10(dirname11(path4), { recursive: true });
   const tmp = tmpPathFor(path4);
   writeFileSynced(tmp, jsonText(lock), "wx");
   try {
@@ -77667,7 +77704,7 @@ function removeHeartbeat(projectKey, seat, pid, opts = {}) {
 }
 function listWatchProjects(opts = {}) {
   try {
-    return readdirSync2(join20(harmonyHome(opts.home), "watch"), { withFileTypes: true }).filter((d) => d.isDirectory() && isSafeName(d.name)).map((d) => d.name).sort();
+    return readdirSync2(join21(harmonyHome(opts.home), "watch"), { withFileTypes: true }).filter((d) => d.isDirectory() && isSafeName(d.name)).map((d) => d.name).sort();
   } catch {
     return [];
   }
@@ -77682,7 +77719,7 @@ function listLocks(projectKey, seat, opts = {}) {
     return [];
   }
   const prefix = `${seat}.`;
-  return names.filter((n) => n.startsWith(prefix) && n.endsWith(".lock") && !n.includes(".tmp-")).filter((n) => /^[a-z0-9-]+$/.test(n.slice(prefix.length, -".lock".length))).sort().map((n) => readJsonFile(join20(dir, n), WatchLockSchema));
+  return names.filter((n) => n.startsWith(prefix) && n.endsWith(".lock") && !n.includes(".tmp-")).filter((n) => /^[a-z0-9-]+$/.test(n.slice(prefix.length, -".lock".length))).sort().map((n) => readJsonFile(join21(dir, n), WatchLockSchema));
 }
 
 // src/cli/commands/watch.ts
@@ -77816,7 +77853,7 @@ function defaultDeps() {
         removeChannel: () => realChannel ? client.removeChannel(realChannel) : Promise.resolve(),
         projectId,
         // Not a lease holder: a unique value so no hint is dropped as "our own write".
-        leaseHolder: `watch:${hostname3()}:${process.pid}:${randomUUID6().slice(0, 8)}`,
+        leaseHolder: `watch:${hostname3()}:${process.pid}:${randomUUID7().slice(0, 8)}`,
         debounceMs: 1e3,
         startTimeout: (ms, fn) => {
           const t = setTimeout(fn, ms);

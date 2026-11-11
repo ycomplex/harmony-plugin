@@ -68,13 +68,39 @@ function liveWaitingOn(fieldValues, opts) {
 var STOP_GATE_ESCAPE_ENV = "HARMONY_STOP_GATE_OFF";
 var MAX_BLOCKS_PER_TURN_END = 2;
 function hasLiveDeclaredWait(row, opts) {
-  return liveWaitingOn(waitingOnFieldValues(row), { firedAtMs: opts.legStartedAtMs, nowMs: opts.nowMs }) !== null;
+  return liveWaitingOn(waitingOnFieldValues(row), { firedAtMs: effectiveLegStart(opts.legStartedAtMs, opts.nowMs), nowMs: opts.nowMs }) !== null;
+}
+function effectiveLegStart(start, now) {
+  return start !== void 0 && Number.isFinite(start) && start <= now ? start : void 0;
+}
+function safeRef(value) {
+  if (typeof value !== "string") return "[redacted]";
+  if (/(?:^|[/:#._-])(?:gh[pousr]_|github_pat_|sk-|eyJ)/.test(value) || /[A-Za-z0-9+/]{32,}/.test(value)) return "[redacted]";
+  if (/^[A-Za-z0-9#:._/-]{1,80}$/.test(value) || /^https:\/\/github\.com\/[a-zA-Z0-9_.-]{1,50}\/[a-zA-Z0-9_.-]{1,100}\/(actions\/runs|pull)\/[0-9]{1,20}$/.test(value)) return value;
+  return "[redacted]";
+}
+function describeWait(row, now, start) {
+  const fields = waitingOnFieldValues(row);
+  const raw = fields?.waiting_on;
+  const marker = raw !== null && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  const parsed = parseWaitingOn(fields);
+  const boundary = effectiveLegStart(start, now);
+  let reason = "live";
+  if (raw === void 0 || raw === null) reason = "no marker";
+  else if (!parsed) reason = "malformed/unparseable";
+  else if (boundary !== void 0 && Date.parse(parsed.since) < boundary) reason = "older than leg start";
+  else if (now >= Date.parse(parsed.first_since) + WAIT_CEILING_MS) reason = "past 24 h ceiling";
+  const kind = ["ci", "pr-state", "human-step", "model-handoff"].includes(marker.kind) ? marker.kind : "[redacted]";
+  const since = typeof marker.since === "string" && /^\d{4}-\d{2}-\d{2}T[0-9:.+-]+Z?$/.test(marker.since) && marker.since.length <= 40 && Number.isFinite(Date.parse(marker.since)) ? marker.since : "[redacted]";
+  return `waiting_on: kind=${kind}, ref=${safeRef(marker.ref)}, since=${since}; reason=${reason}` + (start !== void 0 && start > now ? "; future leg start ignored" : "");
 }
 function describeRow(ticket, row) {
   return `${ticket}: workflow_state=${row.workflow_state ?? "null"}, awaiting_human_input=${row.awaiting_human_input ?? "null"}, non_archived_children=${row.non_archived_child_count ?? 0}, pending_acceptance_event=${row.pending_acceptance_event_id ?? "none"}`;
 }
 function decideStop(args) {
   const { ticket, row, stopHookActive } = args;
+  const nowMs = args.nowMs ?? Date.now();
+  const waitDescription = describeWait(row, nowMs, args.legStartedAtMs);
   const blocksSoFar = stopHookActive ? args.blocksSoFar : 0;
   if (isCleanRowShape(row, row.non_archived_child_count ?? 0)) {
     return {
@@ -82,7 +108,7 @@ function decideStop(args) {
       reason: `[harmony stop-gate] clean \u2014 ${describeRow(ticket, row)}`
     };
   }
-  if (hasLiveDeclaredWait(row, { nowMs: args.nowMs ?? Date.now(), legStartedAtMs: args.legStartedAtMs })) {
+  if (hasLiveDeclaredWait(row, { nowMs, legStartedAtMs: args.legStartedAtMs })) {
     return {
       action: "allow",
       reason: `[harmony stop-gate] declared external wait (waiting_on) \u2014 ${describeRow(ticket, row)}`
@@ -91,12 +117,12 @@ function decideStop(args) {
   if (blocksSoFar >= MAX_BLOCKS_PER_TURN_END) {
     return {
       action: "fail-open",
-      message: `[harmony stop-gate] DEGRADED \u2014 blocked this turn-end ${blocksSoFar}x and the ticket row still does not read as a clean stop. Allowing the turn to end so the terminal is never wedged. Unclassifiable row state \u2014 ${describeRow(ticket, row)}. Nothing on the board records this leg; a human should look at ${ticket}.`
+      message: `[harmony stop-gate] DEGRADED \u2014 blocked this turn-end ${blocksSoFar}x and the ticket row still does not read as a clean stop. Allowing the turn to end so the terminal is never wedged. Unclassifiable row state \u2014 ${describeRow(ticket, row)}. ${waitDescription}. Nothing on the board records this leg; a human should look at ${ticket}.`
     };
   }
   return {
     action: "block",
-    message: `[harmony stop-gate] You are driving ${ticket} and this turn would end with nothing on the board. Row state \u2014 ${describeRow(ticket, row)}.
+    message: `[harmony stop-gate] You are driving ${ticket} and this turn would end with nothing on the board. Row state \u2014 ${describeRow(ticket, row)}. ${waitDescription}.
 Leave the ticket in exactly one of the sanctioned shapes before you stop:
   * COMPOSE THE BRIEF for the gate you are at and pause on it (compose_brief \u2014 the pause happens ON the brief, never in the gap before it);
   * FILE AN ELICITATION ROUND (file_elicitation_round, trigger 'worker-question') if you hit a judgment call or a capability denial you cannot decide alone;

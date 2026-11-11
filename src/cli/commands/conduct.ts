@@ -50,9 +50,10 @@ import { assertRunConfigPolicy, assertRunConfigRuntime, normalizeExplicitModelRu
 import { resolveUnparkRunConfig, mergeRunConfig } from '../../tools/unpark-inheritance.js';
 import { hasAdapter, listAdapterIds } from '../../agents/registry.js';
 import { runCommand } from '../run-command.js';
+import { writeConductBreadcrumb } from '../../hooks/conduct-breadcrumb.js';
 
 export function registerConductCommand(program: Command): void {
-  program
+  const conduct = program
     .command('conduct')
     .description('Create a conduction for a ticket — the conductor picks it up and drives the run')
     .argument('<ticket>', 'Task ID (UUID, number, or B-123)')
@@ -182,5 +183,20 @@ export function registerConductCommand(program: Command): void {
           `in-progress terminal session, so make sure any in-session work on this ticket has stopped ` +
           `before handing it off.`,
       );
+    });
+  conduct.command('breadcrumb')
+    .description('Stamp this leg locally; never creates a conduction or contacts the board')
+    .requiredOption('--task <uuid>', 'Resolved task UUID')
+    .requiredOption('--ticket <id>', 'Visual ticket ID')
+    .requiredOption('--session-id <id>', 'Runtime session ID')
+    .action((opts: { task: string; ticket: string; sessionId: string }) => {
+      try {
+        const path = writeConductBreadcrumb(opts);
+        console.log(path);
+      } catch {
+        // Never echo arbitrary input or filesystem error text into a worker transcript.
+        console.error('Could not write conduct breadcrumb: check identity and writable Harmony home.');
+        process.exitCode = 1;
+      }
     });
 }
