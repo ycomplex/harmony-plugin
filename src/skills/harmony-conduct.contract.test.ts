@@ -586,10 +586,11 @@ describe('harmony-conduct: the turn-end gate and its sanctioned alternatives (B-
     const body = skill.body;
     expect(body).toMatch(/conduct-sessions/);
     expect(body).toMatch(/\$\{HARMONY_HOME:-\$HOME\/\.harmony\}/);
-    expect(body).toMatch(/<session_id>\.json/);
-    // It carries the ticket — that is the whole point of the file.
-    expect(body).toMatch(/"task_id"/);
-    expect(body).toMatch(/"ticket"/);
+    expect(body).toContain('conduct breadcrumb');
+    expect(body).toContain('--session-id "<session_id>"');
+    expect(body).toContain('--task "<resolved ticket uuid>"');
+    expect(body).toContain('--ticket "<visual ticket id>"');
+    expect(body).toContain('from its own clock');
   });
 
   it('the breadcrumb is explicitly NOT .harmony-task.json, and says why', () => {
