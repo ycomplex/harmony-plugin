@@ -43975,9 +43975,9 @@ async function readProjectContext(client, projectId) {
     }
     references.set(task.id, ids2);
   }
-  const definitions = [["proposition", "What this project is", `Founding proposition \u2014 ${project.name}`], ...CONTEXT_CATEGORIES];
+  const definitions = [["proposition", "What this project is", "Founding proposition \u2014 "], ...CONTEXT_CATEGORIES];
   const blocks = definitions.map(([key, title, ticketTitle]) => {
-    const matching = tasks.filter((task) => task.title === ticketTitle);
+    const matching = tasks.filter((task) => key === "proposition" ? task.title.startsWith(ticketTitle) : task.title === ticketTitle);
     return resolveContextBlock(
       projectId,
       key,
