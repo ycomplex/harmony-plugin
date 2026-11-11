@@ -14,12 +14,14 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import {
   assertFigmaReady,
   type FigmaMetadata,
   readMountedFigmaToken,
+  FIGMA_MCP_URL,
+  renderClaudeFigmaMcpConfig,
   renderFigmaMcp,
 } from "../../agents/design-tools/figma.js";
 import {
@@ -453,6 +455,18 @@ export function registerFigmaCommands(program: Command, ports = {
           );
         }
         const token = readMountedFigmaToken();
+        if (opts.adapter !== "codex" && opts.adapter !== "claude-code") {
+          throw new Error("Unknown Figma runtime adapter");
+        }
+        // B-1451: check the token once before configuring anything.
+        const check = await checkFigmaToken(token);
+        if (check.kind === "rejected") {
+          process.stderr.write(
+            `Figma: the connection token failed to authenticate (HTTP ${check.status}); this leg runs without Figma.\n`,
+          );
+          omitFigma({ state: "reconnect", connections_enabled: meta.connections_enabled });
+          return;
+        }
         if (opts.adapter === "codex") {
           const path = join(
             process.env.CODEX_HOME ?? join(homedir(), ".codex"),
@@ -464,19 +478,47 @@ export function registerFigmaCommands(program: Command, ports = {
             { mode: 0o600 },
           );
           chmodSync(path, 0o600);
-        } else if (opts.adapter === "claude-code") {
-          const path = join(opts.pluginDir, ".mcp.json");
-          const config = JSON.parse(readFileSync(path, "utf8"));
-          config.figma = JSON.parse(renderFigmaMcp("claude-code", token));
-          writeFileSync(path, JSON.stringify(config), { mode: 0o600 });
+          process.stdout.write(`Figma: configured for this leg in ${path}.\n`);
+        } else {
+          // B-1451: never under --plugin-dir (kept only for compatibility); a private file in $HOME.
+          const path = process.env.HARMONY_FIGMA_MCP_CONFIG ||
+            join(homedir(), ".harmony", "figma-mcp.json");
+          const dir = dirname(path);
+          if (insideGitWorkTree(dir)) {
+            process.stderr.write(
+              `Figma: refusing to write the Figma server config inside a git work tree (${dir}); this leg runs without Figma.\n`,
+            );
+            omitFigma({ state: "disconnected" });
+            return;
+          }
+          mkdirSync(dir, { recursive: true, mode: 0o700 });
+          chmodSync(dir, 0o700);
+          writeFileSync(path, renderClaudeFigmaMcpConfig(), { mode: 0o600 });
           chmodSync(path, 0o600);
-        } else throw new Error("Unknown Figma runtime adapter");
-        process.stdout.write("Figma access-token-only runtime configured.\n");
+          process.stdout.write(`Figma: configured for this leg in ${path}.\n`);
+        }
+        if (check.kind === "unverified") {
+          process.stderr.write(
+            `Figma: could not verify the connection token (${check.reason}); Figma is configured as optional for this leg.\n`,
+          );
+        }
       } catch {
         process.stderr.write(
-          "Figma preflight/configuration failed. Reconnect or relaunch; no fallback.\n",
+          "Figma: configuration failed; this leg runs without Figma.\n",
         );
-        process.exitCode = 1;
+        try {
+          const path = process.env.HARMONY_FIGMA_WORKER_CONTEXT_FILE;
+          if (path) {
+            writeFileSync(
+              path,
+              Buffer.from(JSON.stringify({ state: "reconnect" })).toString("base64"),
+              { mode: 0o600 },
+            );
+          }
+        } catch {
+          // the one line above is the report
+        }
+        process.exitCode = 0;
       }
     });
   figma
@@ -696,4 +738,59 @@ export function registerFigmaCommands(program: Command, ports = {
         process.exitCode = 1;
       }
     });
+}
+
+/** B-1451: true when `dir` (or its nearest existing ancestor) sits inside a git work tree. */
+export function insideGitWorkTree(dir: string): boolean {
+  let cur = resolve(dir);
+  for (;;) {
+    if (existsSync(join(cur, ".git"))) return true;
+    const up = dirname(cur);
+    if (up === cur) return false;
+    cur = up;
+  }
+}
+
+export type FigmaTokenCheck =
+  | { kind: "ok" }
+  | { kind: "rejected"; status: number }
+  | { kind: "unverified"; reason: string };
+
+/** B-1451: one `initialize` POST to the Figma MCP server, 5-second timeout. Never prints the token. */
+export async function checkFigmaToken(
+  token: string,
+  fetchImpl: typeof fetch = globalThis.fetch,
+  timeoutMs = 5000,
+): Promise<FigmaTokenCheck> {
+  try {
+    const res = await fetchImpl(FIGMA_MCP_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-06-18",
+          capabilities: {},
+          clientInfo: { name: "harmony-install-worker", version: "1" },
+        },
+      }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    try { await res.body?.cancel(); } catch { /* ignore */ }
+    if (res.status === 401 || res.status === 403) return { kind: "rejected", status: res.status };
+    if (res.status >= 500) return { kind: "unverified", reason: `HTTP ${res.status}` };
+    return { kind: "ok" };
+  } catch (err) {
+    const name = err instanceof Error ? err.name : "";
+    return {
+      kind: "unverified",
+      reason: name === "TimeoutError" || name === "AbortError" ? "timed out" : "network error",
+    };
+  }
 }

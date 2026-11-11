@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# B-1451 pre-push guard, installed by container/git-guard/install.sh and reached only through the
+# push-only git wrapper (`git -c core.hooksPath=<guard-home>/hooks push`). It refuses:
+#   1. any update or delete of refs/heads/staging, refs/heads/prod or refs/heads/main;
+#   2. a push from the plugin code checkout's main worktree (linked worktrees pass);
+#   3. an added line, in the commits being pushed, that has the shape of a credential.
+# Then it runs the repository's own pre-push hook, if any, with the same arguments and input.
+# Refusals name the file, line and pattern, never the matched text.
+set -u
+remote_name="${1:-}"
+remote_url="${2:-}"
+HOOK_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+GUARD_HOME="$(dirname "$HOOK_DIR")"
+GIT=git
+if [ -s "$GUARD_HOME/real-git" ]; then GIT="$(cat "$GUARD_HOME/real-git")"; fi
+ZERO="0000000000000000000000000000000000000000"
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+cat >"$work/stdin"
+refused=0
+refuse() { echo "B-1451 push guard: $*" >&2; refused=1; }
+
+# 2. the plugin code checkout's main worktree.
+if [ -s "$GUARD_HOME/plugin-dir" ]; then
+  plugin_dir="$(cat "$GUARD_HOME/plugin-dir")"
+  top="$("$GIT" rev-parse --show-toplevel 2>/dev/null)" && top="$(cd "$top" && pwd -P)"
+  gd="$("$GIT" rev-parse --git-dir 2>/dev/null)" && gd="$(cd "$gd" && pwd -P)"
+  cd_="$("$GIT" rev-parse --git-common-dir 2>/dev/null)" && cd_="$(cd "$cd_" && pwd -P)"
+  if [ -n "${top:-}" ] && [ "$top" = "$plugin_dir" ] && [ "${gd:-x}" = "${cd_:-y}" ]; then
+    refuse "refusing a push from the plugin code checkout ($plugin_dir); push from a linked worktree."
+  fi
+fi
+
+pattern_names=(figma-token figma-token github-token github-token openai-style-key jwt)
+patterns=(
+  'figu_[A-Za-z0-9_-]{20,}'
+  'figd_[A-Za-z0-9_-]{20,}'
+  'gh[pousr]_[A-Za-z0-9]{30,}'
+  'github_pat_[A-Za-z0-9_]{30,}'
+  '(^|[^A-Za-z0-9_-])sk-[A-Za-z0-9_-]{20,}'
+  'eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'
+)
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ -n "${remote_ref:-}" ] || continue
+  # 1. protected branches, update or delete.
+  case "$remote_ref" in
+    refs/heads/staging|refs/heads/prod|refs/heads/main)
+      if [ "$local_sha" = "$ZERO" ]; then
+        refuse "refusing to delete $remote_ref."
+      else
+        refuse "refusing to push to $remote_ref."
+      fi
+      continue ;;
+  esac
+  [ "$local_sha" = "$ZERO" ] && continue
+  # 3. credential shapes in added lines.
+  if [ "$remote_sha" != "$ZERO" ] && "$GIT" cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
+    range=("$remote_sha..$local_sha")
+  else
+    range=("$local_sha" --not --remotes)
+  fi
+  "$GIT" log -p -U0 --no-color --no-ext-diff --format='@@B1451COMMIT %h' "${range[@]}" -- 2>/dev/null |
+    awk -v content="$work/content" -v meta="$work/meta" '
+      /^@@B1451COMMIT / { commit = $2; next }
+      /^\+\+\+ / { file = substr($0, 5); sub(/^b\//, "", file); next }
+      /^--- / { next }
+      /^@@ / { n = $3; sub(/^\+/, "", n); split(n, p, ","); line = p[1] + 0; next }
+      /^\+/ { print substr($0, 2) > content; print file "\t" line "\t" commit > meta; line++; next }
+    '
+  [ -s "$work/content" ] || continue
+  i=0
+  while [ "$i" -lt "${#patterns[@]}" ]; do
+    for n in $(LC_ALL=C grep -nE -- "${patterns[$i]}" "$work/content" | cut -d: -f1); do
+      IFS=$'\t' read -r f l c <<<"$(sed -n "${n}p" "$work/meta")"
+      refuse "refusing $remote_ref: $f line $l (commit $c) matches the ${pattern_names[$i]} pattern."
+    done
+    i=$((i + 1))
+  done
+  rm -f "$work/content" "$work/meta"
+done <"$work/stdin"
+
+[ "$refused" = 0 ] || exit 1
+
+# Chain to the repository's own pre-push hook.
+own=""
+hp="$("$GIT" config --local --get core.hooksPath 2>/dev/null || true)"
+if [ -n "$hp" ]; then
+  case "$hp" in
+    /*) own="$hp/pre-push" ;;
+    *) own="$("$GIT" rev-parse --show-toplevel)/$hp/pre-push" ;;
+  esac
+else
+  common="$("$GIT" rev-parse --git-common-dir 2>/dev/null)" && own="$common/hooks/pre-push"
+fi
+if [ -n "$own" ] && [ -f "$own" ] && [ -x "$own" ]; then
+  "$own" "$remote_name" "$remote_url" <"$work/stdin"
+  exit $?
+fi
+exit 0

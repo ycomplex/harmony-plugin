@@ -5,6 +5,9 @@ run can execute â€” branch, edit, test, build `dist`, commit, push, open a PR â€
 on any machine with Docker: a conductor worker, a new laptop, or a trusted
 collaborator.
 
+Worker pushes go through a push-only git wrapper and pre-push guard, and the plugin code checkout is
+detached and must be clean before the agent starts (B-1451): [`docs/worker-git-guard.md`](../docs/worker-git-guard.md).
+
 ## Quick start (the one documented command)
 
 ```bash
