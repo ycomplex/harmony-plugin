@@ -236,6 +236,11 @@ CLI's active project key, or a held lock, naming the holder's pid); fix it or as
 - **Re-arm FIRST**, with the same command, then handle each line whose `owner` is `seat`. Other
   lines are context. A `--json` line carries `event`, `key`, `reason`, `ref` (`id`, `iteration`)
   and `reminder`.
+- **`incident` comes first (B-1452):** a leg exposed a credential outside the worker and stopped.
+  Tell the human at once, quoting the round's context line and the human steps it names; never
+  answer the round on your own judgment and never conduct the ticket meanwhile. Only a human releases
+  it, by answering the round `resume` or `stop` (on the web, or relayed verbatim by you with
+  `submit_elicitation_answers`). It is always yours to surface, whatever the profile holds.
 - `ready` means a brief waits and its leg has ended; `question` is an elicitation round. `park`,
   `dirty-exit` and `idle` need you, whoever's queue the brief is in. `state`, `acted`, `waiting`,
   `added` and `removed` are edges; `health` is the watch itself.

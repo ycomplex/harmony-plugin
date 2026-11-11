@@ -310,6 +310,28 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
    re-read, regenerate and render the progress overview from the ticket row** (see *The progress overview*
    below). This happens on **every** iteration so the checklist always reflects the just-read state.
 
+1a. **On EVERY leg pickup and iteration, release an open incident BEFORE anything else (B-1452).** When
+   step 1's row carries an `active_exchange`, read it with `mcp__harmony__get_elicitation({ task_id })`.
+   If its `trigger` is not `'incident'`, do nothing here. If it is `'incident'`, this runs before 1b, 1c,
+   1d and all gate routing, and no gate work happens until it is released:
+   - **Latest round unanswered** (`awaiting_human_input` true): an ordinary elicitation pause, ALWAYS
+     wait — go straight to step 2's `elicitation-round` handling (surface the round, then wait / exit).
+   - **Latest round answered:** read the answer to its `release` question (the round's only question).
+     Compare its `text`, trimmed and case-insensitive:
+     - **`resume`** → `mcp__harmony__conclude_elicitation({ exchange_id, outcome: 'converged' })`, then
+       continue the loop normally at step 1b.
+     - **`stop`** → `mcp__harmony__conclude_elicitation({ exchange_id, outcome: 'converged' })` (so a later
+       unpark does not re-read the same answer and park again), then
+       `mcp__harmony__add_comment({ task_id, content: "Parked: the human answered \"stop\" to the incident (credential exposure) — <the round's context_line>. The incident is the reason." })`,
+       then `mcp__harmony__advance_workflow({ task_id, activity: 'parking' })`, and end the turn.
+     - **anything else** (another word, a skip, an empty answer) → file the release question again:
+       `mcp__harmony__file_elicitation_round({ exchange_id, context_line: <the previous round's
+       context_line>, questions: [<the previous round's release question, verbatim>] })`. A round on an
+       incident exchange keeps the incident marker automatically. Then pause exactly as at step 2.
+   A conduction worker can never answer an incident round itself (`submit_elicitation_answers` and a
+   `prior_answers` echo are refused), and never concludes one before a human answered it. If THIS leg
+   is the one that exposes a credential, follow the **Incident protocol** below.
+
 1b. **On the FIRST pickup of a run, consume any side effect a resolution left outstanding (B-747 — the
    leg-start consume).** §4c's consume branches only exist *inside a live watch's poll-exit*. A conductor leg
    exits at its pause, the human resolves in the browser with nothing watching, and the conductor fires a
@@ -1401,6 +1423,9 @@ resolved (in the browser or terminal); classify which resolution it was:
    `get_elicitation` and consumes them (files the next round, which re-sets the flag and re-arms the
    watch; or concludes and proceeds to its draft). The conduct loop never answers, re-asks, or concludes
    an exchange itself — the gate skill owns the exchange; the conduct loop only routes the wake-up.
+   **Exception — an `'incident'` exchange (B-1452):** it has no owning gate skill. Do not route it;
+   run step 1a's incident release (`resume` → conclude and continue; `stop` → conclude, comment,
+   park; anything else → re-file the release question).
 5. **Flag cleared, state unchanged, no `pending_resolution`, no exchange marker — a non-advancing accept
    (B-611).**
    `awaiting_human_input` went `false` but `workflow_state` did NOT move and there is no reshape marker. This
@@ -1631,6 +1656,27 @@ nothing on the board while still having pushed real, findable work). A ticket th
 finished work with no comment trail is indistinguishable from one where nothing happened — the conductor's
 `repo-active-board-silent` park reason (B-792) is what catches this mechanically for a conductor-driven
 leg; an interactive session has no such backstop and must self-enforce it here.
+
+### 4e-i. Incident protocol (B-1452) — you exposed a credential outside the worker
+
+The one trigger: this leg (or a gate skill or build it delegated to) discovers that it exposed a
+credential outside the worker — pushed, posted or sent it somewhere it can be read. Then:
+
+1. **Stop the ticket's work at once.** Make NO further commit, push, revert, history rewrite, cleanup
+   or any other change.
+2. **Raise it:** `mcp__harmony__raise_incident({ task_id, kind: 'credential-exposure', what, where,
+   human_steps })` (or `harmony incident raise` on the CLI). It files the incident round; the ticket
+   now waits for a human and the conductor launches nothing.
+3. **Name exactly what only a human can do** in `human_steps`: revoke or rotate the credential, rewrite
+   the history that carries it, delete the comment.
+4. **Never repeat the secret** in any argument, comment or output — describe it, never quote it.
+5. **Never report it only in a comment**: the incident round is the report.
+6. **End the turn.** The open round is the clean pause (in `--one-shot`, exit as at any elicitation
+   pause). A delegated `harmony-build` that could not run the CLI ends its report with a
+   `WORKER-INCIDENT:` marker, and `start-work` raises it on its behalf.
+
+Full doctrine: `skills/harmony-shared/clean-exit-contract.md` §Incident protocol. The next leg's
+release handling is step 1a.
 
 ### 4f. The turn-end gate — the backstop is now MECHANICAL, not just discipline (B-870)
 

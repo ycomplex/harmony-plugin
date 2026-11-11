@@ -8,6 +8,9 @@
  * Edge rules (level-triggered reminders live in cursor.ts):
  *   - `ready` / `question`: the ball is with a human AND the leg has ended. Reported once per pause
  *     identity (reason, ref id, iteration). `question` replaces `ready` for `elicitation-round`.
+ *   - `incident` (B-1452): replaces `question` when the elicitation round's `awaiting_human_ref`
+ *     carries `incident` (a leg exposed a credential). Same identity rules; always seat-owned, so it
+ *     wakes `--until-event` and is reminded; cursor.ts orders it before every other event.
  *   - `park`: the conduction became `parked`, or the ticket became `Parked`.
  *   - `dirty-exit`: a leg ended with a dirty exit class (see `isDirtyExitClass`).
  *   - `waiting`, `acted`, `state`: info edges; they need a previous entry, so a first run never
@@ -23,6 +26,7 @@ import type { TicketSnapshot } from './board-read.js';
 import type { CursorTicket, SeatProfile } from './seat-files.js';
 
 export type WatchEventName =
+  | 'incident'
   | 'ready'
   | 'question'
   | 'park'
@@ -37,6 +41,7 @@ export type WatchEventName =
   | 'start';
 
 export const WATCH_EVENT_NAMES: readonly WatchEventName[] = [
+  'incident',
   'ready',
   'question',
   'park',
@@ -169,11 +174,15 @@ function expand(entries: readonly string[]): Set<string> {
  *   - `ready` / `question`: decided by the reason. Listed in `held_for_founder` → `founder`; listed in
  *     `owns` → `seat`; listed nowhere → `seat` (fail toward waking). The event name itself is also
  *     accepted as an entry (`ready`, `question`), after the reason.
+ *   - `incident` (B-1452): always `seat`, whatever the profile says. Only a human can release it, but
+ *     a founder-held item never wakes the seat and is never reminded; an exposed credential must do
+ *     both, so the seat surfaces it to the founder at once.
  *   - every other event: `seat`, unless `held_for_founder` lists the event name.
  *   - no profile → `seat`.
  */
 export function ownerFor(event: WatchEventName, reason: string | null, profile: SeatProfile | null): Owner {
   if (event === 'waiting' || event === 'acted' || event === 'state' || event === 'start') return 'info';
+  if (event === 'incident') return 'seat';
   if (!profile) return 'seat';
   const held = expand(profile.held_for_founder);
   const owns = expand(profile.owns);
@@ -229,9 +238,18 @@ function isTerminal(state: string | null): boolean {
   return state !== null && (TICKET_TERMINAL_STATES as readonly string[]).includes(state);
 }
 
-/** The ticket's open item, if any: a filed pause (ready/question) or a parked conduction. */
+/** B-1452: the pause is an incident round (`awaiting_human_ref.incident` set on an elicitation round). */
+export function isIncidentPause(cur: TicketSnapshot): boolean {
+  if (cur.awaiting_human_reason !== 'elicitation-round') return false;
+  const ref = cur.awaiting_human_ref;
+  if (ref === null || typeof ref !== 'object' || Array.isArray(ref)) return false;
+  const incident = (ref as Record<string, unknown>).incident;
+  return typeof incident === 'string' ? incident.length > 0 : incident !== undefined && incident !== null && incident !== false;
+}
+
+/** The ticket's open item, if any: a filed pause (incident/ready/question) or a parked conduction. */
 export interface OpenItem {
-  event: 'ready' | 'question' | 'park';
+  event: 'incident' | 'ready' | 'question' | 'park';
   reason: string | null;
   ref: WatchRef | null;
 }
@@ -239,7 +257,7 @@ export interface OpenItem {
 export function openItemOf(cur: TicketSnapshot, ctx: Pick<ClassifyCtx, 'now' | 'legEndKnown' | 'quietMs'>): OpenItem | null {
   if (ballWithHuman(cur) && legEnded(cur, ctx)) {
     return {
-      event: cur.awaiting_human_reason === 'elicitation-round' ? 'question' : 'ready',
+      event: isIncidentPause(cur) ? 'incident' : cur.awaiting_human_reason === 'elicitation-round' ? 'question' : 'ready',
       reason: cur.awaiting_human_reason,
       ref: refOf(cur),
     };

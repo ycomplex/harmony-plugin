@@ -303,6 +303,22 @@ export const ackProjections: Record<string, AckProjection> = {
   conclude_elicitation: (result) => elicitationAck(result),
   submit_elicitation_answers: (result) => elicitationAck(result),
 
+  // ——— incident (B-1452) ———
+  // The scrubbed what/where/human_steps are the caller's own text (scrubbed) — dropped; the ack keeps
+  // the server-computed identity of the round and whether scrubbing changed anything.
+  raise_incident: (result) =>
+    pick(result, [
+      'task_id',
+      'kind',
+      'exchange_id',
+      'round',
+      'superseded_exchange_id',
+      'cleared_model_handoff',
+      'scrubbed',
+      'comment_id',
+      'comment_error',
+    ]),
+
   // ——— attachments ———
   attach_file: (result) =>
     // content_type/byte_size/status come from the server-side finalize sniff; `filename` is derived

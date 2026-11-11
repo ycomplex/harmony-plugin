@@ -62,7 +62,8 @@ Each entry is one of:
 
 - an exact `awaiting_human_reason` value, for example `plan-draft`;
 - an event name: `ready`, `question`, `park`, `dirty-exit`, `waiting`, `acted`, `state`, `added`,
-  `removed`, `idle`, `health`;
+  `removed`, `idle`, `health`. `incident` is accepted but has no effect: an incident is always the
+  seat's (see "Incident events" below);
 - a gate alias:
 
 | Alias | Means |
@@ -311,6 +312,15 @@ harmony watch status --seat <name>
 - Before it exits, the watch waits up to 2 seconds for stdout to drain, so a slow reader still gets
   every line. It skips the wait when the reader is gone.
 - `health` and `start` lines are printed as events but never end an `--until-event` wait.
+- **Incident events (B-1452).** When a leg exposes a credential it raises an incident
+  (`raise_incident` / `harmony incident raise`), which files an elicitation round whose
+  `awaiting_human_ref` carries `incident: "credential-exposure"`. The watch reports that pause as an
+  `incident` event instead of `question` (same once-per-pause identity: reason, ref id, round). Its
+  owner is always `seat`, whatever the profile's `owns` or `held_for_founder` say, so it ends an
+  `--until-event` wait and is reminded every `--remind` until a human answers. Within one catch-up
+  every `incident` line is printed before every other line, and `--once` lists incident rows first,
+  so the seat's session-start board check shows it at the top. Only a human releases it, by answering
+  the round `resume` or `stop`: the seat's job is to tell the founder at once.
 - `status` finds the heartbeat through the profile's `project`, else by scanning `<home>/watch/*/`.
 - `status` also lists every ticket the cursor records as waiting on a human, with its reason, who it is
   waiting on (`seat` or `founder`, from the profile) and its age. It reads only local files, so it works offline.

@@ -32,6 +32,7 @@ import { RunConfigSchema, type RunConfig } from '../config/run-config.js';
 import { getProjectConductionDefaults, fillRunConfigDefaults } from '../config/conduction-defaults.js';
 import { assertRunConfigPolicy, assertRunConfigRuntime, normalizeExplicitModelRuntime } from '../config/runtime-validation.js';
 import { resolveUnparkRunConfig } from './unpark-inheritance.js';
+import { assertNoOpenIncident } from './incident.js';
 
 export interface CreateConductionArgs {
   task_id: string;
@@ -95,6 +96,10 @@ export async function createConduction(
   await assertRunConfigRuntime(client, filledRunConfig);
   // B-1346: refuse a model outside a non-empty workspace model policy, before any run exists.
   await assertRunConfigPolicy(client, projectId, filledRunConfig);
+
+  // B-1452: an unanswered incident round means only a human may move this ticket — refuse BEFORE any
+  // write (a revive included). Fails open on a read error; throws a clean message on a finding.
+  await assertNoOpenIncident(client, taskId, args.task_id);
 
   try {
     // B-964: a no-op when the ticket isn't Parked; refuses cleanly (TicketParkedError) when it IS

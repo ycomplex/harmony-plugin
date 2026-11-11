@@ -43,6 +43,7 @@ import { registerFasttrackCommands } from './commands/fasttrack.js';
 import { registerConductionsCommands } from './commands/conductions.js';
 import { registerDesignCommands } from './commands/design.js';
 import { registerWatchCommands } from './commands/watch.js';
+import { registerIncidentCommands } from './commands/incident.js';
 
 const program = new Command();
 
@@ -56,6 +57,7 @@ registerAuthCommands(program);
 registerFigmaCommands(program);
 registerTaskCommands(program);
 registerWaitCommands(program);
+registerIncidentCommands(program);
 registerAwaitCommands(program);
 registerDesignCommands(program);
 registerQueryCommand(program);
