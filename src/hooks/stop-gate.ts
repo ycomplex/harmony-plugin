@@ -96,11 +96,13 @@ function effectiveLegStart(start: number | undefined, now: number): number | und
   return start !== undefined && Number.isFinite(start) && start <= now ? start : undefined;
 }
 
-/** Only a small, recognized reference grammar is printable. Arbitrary/token-like text is redacted. */
+/** Bounded single-token refs are printable; secret-like values are always redacted. */
 function safeRef(value: unknown): string {
   if (typeof value !== 'string') return '[redacted]';
-  // Known wait references: numeric CI/PR ids, issue keys, GitHub run/PR URLs.
-  if (/^[0-9]{1,20}$/.test(value) || /^[A-Z][A-Z0-9]{0,12}-[0-9]{1,12}$/.test(value) ||
+  if (/(?:^|[/:#._-])(?:gh[pousr]_|github_pat_|sk-|eyJ)/.test(value) ||
+      /[A-Za-z0-9+/]{32,}/.test(value)) return '[redacted]';
+  // Includes CLI examples (pr#42-checks), branches and runtime-qualified models.
+  if (/^[A-Za-z0-9#:._/-]{1,80}$/.test(value) ||
       /^https:\/\/github\.com\/[a-zA-Z0-9_.-]{1,50}\/[a-zA-Z0-9_.-]{1,100}\/(actions\/runs|pull)\/[0-9]{1,20}$/.test(value)) return value;
   return '[redacted]';
 }

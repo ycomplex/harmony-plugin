@@ -32,4 +32,17 @@ describe('B-1440 wait boundaries and diagnostics', () => {
       expect(message).not.toContain('extra=');
     }
   });
+  it.each(['pr#42-checks', 'pr#1', 'pr#42', 'main', 'staging', 'codex:gpt-6.1-sol', 'feature/wait_fix-1', 'https://github.com/ycomplex/harmony-plugin/actions/runs/12345'])('prints legitimate ref %s verbatim', ref => {
+    for (const blocks of [0, 2]) {
+      const d = decide({ ...row, waiting_on: { ...marker, ref } }, '2026-11-10T15:41:53Z', blocks);
+      expect('message' in d && d.message).toContain(`ref=${ref}, since=`);
+    }
+  });
+  it.each(['ghp_synthetic-token', 'gho_synthetic-token', 'github_pat_synthetic-token', 'sk-synthetic-token', 'eyJsynthetic-token', 'a'.repeat(40), 'AbCd0123+/'.repeat(4), 'with space', 'with\nnewline', 'with\u001bcontrol', 'pr#' + 'x-'.repeat(40)])('redacts unsafe ref %j', ref => {
+    for (const blocks of [0, 2]) {
+      const d = decide({ ...row, waiting_on: { ...marker, ref } }, '2026-11-10T15:41:53Z', blocks);
+      expect('message' in d && d.message).toContain('ref=[redacted], since=');
+      expect('message' in d && d.message).not.toContain(ref);
+    }
+  });
 });
