@@ -32,7 +32,10 @@ export const TOKEN_SHAPES: readonly TokenShape[] = [
   { name: 'jwt', pattern: new RegExp(`${B}eyJ[A-Za-z0-9_+/=.-]*`, 'g') },
   { name: 'slack', pattern: new RegExp(`${B}xox[abpr]-[A-Za-z0-9-]+`, 'g') },
   { name: 'aws-access-key', pattern: new RegExp(`${B}AKIA[0-9A-Z]{16}`, 'g') },
-  { name: 'figma', pattern: new RegExp(`${B}figd_[A-Za-z0-9_-]+`, 'g') },
+  // Every Figma token prefix: `figd_` (personal access token), `figu_` (OAuth user token, the shape that
+  // leaked on 2026-11-11), and any other `fig<letter>_` Figma adds. Matches prefix AND body, so a scrub
+  // leaves no prefix behind, including a body with `_` or `-` in short runs the long-run fallback misses.
+  { name: 'figma', pattern: new RegExp(`${B}fig[a-z]_[A-Za-z0-9_-]+`, 'g') },
   { name: 'google-api-key', pattern: new RegExp(`${B}AIza[0-9A-Za-z_-]{35}`, 'g') },
   { name: 'private-key-block', pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----/g },
   // Last: it would otherwise eat part of a longer, more specific match above.

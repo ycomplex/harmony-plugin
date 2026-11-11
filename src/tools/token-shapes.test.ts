@@ -12,6 +12,7 @@ const SAMPLES: Record<string, string> = {
   slack: j('xo', 'xb-', '1234-5678-abcd'),
   aws: j('AK', 'IA', 'ABCDEFGHIJKLMNOP'),
   figma: j('fi', 'gd_', 'abc-DEF_123'),
+  'figma-oauth': j('fi', 'gu_', 'abc-DEF_123'),
   google: j('AI', 'za', 'A'.repeat(35)),
   'private-key': j('-----BEGIN ', 'RSA PRIVATE', ' KEY-----'),
   'long-run': 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7',
@@ -37,6 +38,18 @@ describe('token shapes', () => {
     const t = j('gh', 's_', 'Zz9'.repeat(12));
     expect(scrubTokenShapes(`x=${t};`)).toBe('x=[redacted];');
     expect(scrubTokenShapes(scrubTokenShapes(`x=${t};`))).toBe('x=[redacted];');
+  });
+
+  it('redacts every Figma token prefix whole, body with _ and - included (B-1452: the leak was figu_)', () => {
+    for (const prefix of ['gu_', 'gd_']) {
+      // Short runs separated by _ and - so the long-base64-run fallback cannot be what catches it.
+      const t = j('fi', prefix, 'Ab3_x9-Qr7_kL2-mN8_pZ4-tV6');
+      expect(containsTokenShape(t)).toBe(true);
+      expect(containsTokenShape(`token ${t} leaked`)).toBe(true);
+      const out = scrubTokenShapes(`token ${t} leaked`);
+      expect(out).toBe('token [redacted] leaked');
+      expect(out).not.toContain(j('fi', prefix));
+    }
   });
 
   it('leaves ordinary text alone (low false positives)', () => {
