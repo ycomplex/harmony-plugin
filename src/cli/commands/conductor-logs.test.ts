@@ -22,6 +22,9 @@ describe('conductor logs', () => {
     expect(parseDuration('30m')).toBe(1_800_000);
     expect(parseDuration('2d')).toBe(172_800_000);
     expect(parseDuration('1h')).toBe(3_600_000);
+    expect(parseDuration('1h30m')).toBe(5_400_000);
+    expect(parseDuration(' 1H ')).toBe(3_600_000);
+    expect(parseDuration('999999999999999999999d')).toBeNull();
     expect(parseDuration('x')).toBeNull();
     expect(parseDuration('0m')).toBeNull();
   });

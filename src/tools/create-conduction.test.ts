@@ -449,3 +449,32 @@ describe('B-1374 MCP runtime-prefix creation boundary', () => {
     expect(mocks.reviveParkedTicketIfNeeded).toHaveBeenCalled();
   });
 });
+
+// B-1452: an unanswered incident round blocks a new conduction (the launch-path cheap close).
+describe('createConduction — open incident (B-1452)', () => {
+  it('refuses before any revive or insert while the incident round waits on a human', async () => {
+    const { memorySupabase } = await import('./__fixtures__/memory-supabase.js');
+    const db = memorySupabase({
+      elicitation_exchanges: [
+        { id: 'ex-inc', task_id: 'uuid-1', trigger: 'incident', status: 'active', rounds: [{ n: 1, questions: [], answers: {} }] },
+      ],
+    });
+    await expect(createConduction(db.client, 'proj-1', 'user-7', { task_id: 'B-758' })).rejects.toThrow(
+      /B-758 has an open incident .*answer its incident round/,
+    );
+    expect(mocks.reviveParkedTicketIfNeeded).not.toHaveBeenCalled();
+    expect(mocks.insertConduction).not.toHaveBeenCalled();
+    expect(db.writes).toEqual([]);
+  });
+
+  it('proceeds once a human answered the round', async () => {
+    const { memorySupabase } = await import('./__fixtures__/memory-supabase.js');
+    const db = memorySupabase({
+      elicitation_exchanges: [
+        { id: 'ex-inc', task_id: 'uuid-1', trigger: 'incident', status: 'active', rounds: [{ n: 1, questions: [], answers: { release: { verb: 'answer', text: 'resume' } } }] },
+      ],
+    });
+    await createConduction(db.client, 'proj-1', 'user-7', { task_id: 'B-758' });
+    expect(mocks.insertConduction).toHaveBeenCalled();
+  });
+});

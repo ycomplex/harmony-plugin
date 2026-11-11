@@ -270,6 +270,9 @@ case "$MODE" in
   shell)
     echo "Dogfood shell. For an agent session: cd $WORKDIR && claude --plugin-dir $PLUGIN_DIR"
     cd "$WORKDIR"
+    # B-1451: the push guard covers a dogfood shell too.
+    "$PLUGIN_DIR/container/git-guard/install.sh" "$HOME/.harmony/git-guard" "$HOME/bin" "$PLUGIN_DIR" >&2 ||
+      echo "B-1451: push guard install failed; continuing without it." >&2
     exec bash
     ;;
   headless)
@@ -359,12 +362,33 @@ case "$MODE" in
     fi
     cd "$WORKDIR"
 
+    # --- B-1451: guard pushes, detach the plugin code checkout, refuse a dirty one. ----------------
+    # The push-only git wrapper sends every `git push` through the pre-push guard (protected
+    # branches, the plugin checkout's main worktree, credential shapes). docs/worker-git-guard.md.
+    "$PLUGIN_DIR/container/git-guard/install.sh" "$HOME/.harmony/git-guard" "$HOME/bin" "$PLUGIN_DIR" >&2 ||
+      echo "B-1451: push guard install failed; continuing without it." >&2
+    git -C "$PLUGIN_DIR" checkout -q --detach 2>/dev/null || true
+    for b1451_branch in staging prod main; do
+      git -C "$PLUGIN_DIR" branch -q -D "$b1451_branch" >/dev/null 2>&1 || true
+    done
+    echo "B-1451: plugin checkout detached at $(git -C "$PLUGIN_DIR" rev-parse --short HEAD 2>/dev/null); local staging/prod/main deleted." >&2
+    # Once, before the FIRST agent launch only (never on a relaunch, resume or handoff). Nothing
+    # between here and the launch writes into the checkout (install-worker writes $HOME/.harmony).
+    "$PLUGIN_DIR/container/git-guard/dirty-check.sh" "$PLUGIN_DIR" || exit 1
+
     # --- B-718: same-conduction resume discovery + best-effort --resume wiring (AC5). -----------
     # B-1201: a connected workspace must authenticate from mounted access token only.
     if [ -n "${HARMONY_FIGMA_CONTEXT_B64:-}" ]; then
       HARMONY_FIGMA_WORKER_CONTEXT_FILE="$(mktemp)"
       export HARMONY_FIGMA_WORKER_CONTEXT_FILE
-      node "$PLUGIN_DIR/dist/bin/harmony.js" figma install-worker --adapter "$AGENT_ID" --plugin-dir "$PLUGIN_DIR" || exit 1
+      # B-1451: Figma is never fatal; the Claude config goes to $HOME/.harmony, never the checkout.
+      B1451_FIGMA_MCP_CONFIG="$HOME/.harmony/figma-mcp.json"
+      rm -f "$B1451_FIGMA_MCP_CONFIG"
+      node "$PLUGIN_DIR/dist/bin/harmony.js" figma install-worker --adapter "$AGENT_ID" --plugin-dir "$PLUGIN_DIR" ||
+        echo "B-1451: figma install-worker failed (exit $?); this leg runs without Figma." >&2
+      if [ -s "$B1451_FIGMA_MCP_CONFIG" ]; then
+        export HARMONY_FIGMA_MCP_CONFIG="$B1451_FIGMA_MCP_CONFIG"
+      fi
       if [ -s "$HARMONY_FIGMA_WORKER_CONTEXT_FILE" ]; then
         HARMONY_FIGMA_CONTEXT_B64="$(cat "$HARMONY_FIGMA_WORKER_CONTEXT_FILE")"
         export HARMONY_FIGMA_CONTEXT_B64

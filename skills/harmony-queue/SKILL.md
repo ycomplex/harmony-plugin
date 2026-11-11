@@ -45,6 +45,12 @@ The `awaiting_human_reason` is the grouping key (state-machine §6.5): `clarific
 `decomposition-proposal`, `design-decision-draft`, `plan-draft`, `release-decision-pending`,
 `verification-ack-pending`. Stale tasks carry `stale_ref` (which superseded entry invalidated them).
 
+**Incidents first (B-1452).** An awaiting task whose `awaiting_human_ref.incident` is set (today always
+`'credential-exposure'`) is an **incident**: a leg exposed a credential outside the worker and stopped.
+Pull every such task out of the reason groups. It has no brief — skip step 3 for it and read its round
+instead with `mcp__harmony__get_elicitation({ task_id })`: the last round's `context_line` says what was
+exposed and where, and its one question names what only a human can do.
+
 ### 3. Fetch each awaiting brief's one-line decision
 
 For each **awaiting** task, call `mcp__harmony__get_brief({ task_id })` and read `doc.decide` (the BLUF
@@ -54,10 +60,17 @@ no brief — describe it from `stale_ref` and point at `/harmony-plugin:harmony-
 patch author). A Stale task that already carries a `stale-patch-review` brief has its patch decision in
 `doc.decide` like any other awaiting item.
 
-### 4. Render the queue — awaiting grouped by reason, Stale grouped on its own
+### 4. Render the queue — incidents first, then awaiting grouped by reason, Stale grouped on its own
+
+Incident items always come first, labelled **Incident**, ahead of every other item whatever its
+priority. Each ends with how to release it: answer the round "resume" (continue) or "stop" (park
+with the incident as the reason).
 
 ```
-Awaiting you (3):
+Awaiting you (4):
+
+INCIDENT
+  B-330  Rotate webhook secrets        [Planned]    "Incident — credential exposure: a GitHub token was exposed at commit 1a2b3c4 on feat/x."  → answer the round: resume | stop
 
 CLARIFICATION
   B-316  Saved Filter state            [Proposed]   "Is a saved filter per-user or shared?"   → /harmony-next

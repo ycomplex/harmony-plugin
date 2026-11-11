@@ -53,7 +53,9 @@ never has cause to touch.
   yourself, and never record a fact you have not independently checked.
 - **Elicitations**: answer with `mcp__harmony__submit_elicitation_answers`, never
   `mcp__harmony__conclude_elicitation` (the conclude is the owning leg's). Answer from board
-  evidence. When a question was explicitly reserved for the human (in the ticket text or a
+  evidence. A release leg's worker-question is answered like any other elicitation, from board
+  facts; answering is not accepting the release gate, Deployed stays the leg's transition and
+  Verified the human's. When a question was explicitly reserved for the human (in the ticket text or a
   comment), you may still answer to keep the conduction moving — but FLAG it inside the answer
   text as a derivation with the veto open, so the flag survives into the brief the human can
   iterate.
@@ -222,18 +224,23 @@ subscriber or a tail of the conductor log as the primary signal.
 4. `harmony watch status --seat <name>` exits 0 when the watch is alive, 1 when none or stale.
 - **The watch reads the CLI's active project.** Its first line, `start`, names the project, key,
   board target and ticket count. If that is not the board you drive, stop and
-  `harmony project switch <name>` (check with `harmony project info`). A profile `project:` that
-  differs, or a milestone not on that board, exits 2.
+  `harmony project switch <name>` (check with `harmony project info`). The profile `project:` field is
+  the project key (for example `CP`), not its display name; a key that differs, or a milestone not on that board, exits 2.
 
 **Exit codes.** The harness wakes you when the watch exits. `0`: events you own. `3`: the
 max-wait passed with nothing new; a quiet milestone is the steady state. `2`: fatal configuration
 (a rejected token, bad arguments, a scope that cannot resolve, a profile `project:` that is not the
-CLI's active project, or a held lock, naming the holder's pid); fix it or ask, never re-arm blindly. `130` / `143`: stopped by a signal.
+CLI's active project key, or a held lock, naming the holder's pid); fix it or ask, never re-arm blindly. `130` / `143`: stopped by a signal.
 
 **On every wake.**
 - **Re-arm FIRST**, with the same command, then handle each line whose `owner` is `seat`. Other
   lines are context. A `--json` line carries `event`, `key`, `reason`, `ref` (`id`, `iteration`)
   and `reminder`.
+- **`incident` comes first (B-1452):** a leg exposed a credential outside the worker and stopped.
+  Tell the human at once, quoting the round's context line and the human steps it names; never
+  answer the round on your own judgment and never conduct the ticket meanwhile. Only a human releases
+  it, by answering the round `resume` or `stop` (on the web, or relayed verbatim by you with
+  `submit_elicitation_answers`). It is always yours to surface, whatever the profile holds.
 - `ready` means a brief waits and its leg has ended; `question` is an elicitation round. `park`,
   `dirty-exit` and `idle` need you, whoever's queue the brief is in. `state`, `acted`, `waiting`,
   `added` and `removed` are edges; `health` is the watch itself.

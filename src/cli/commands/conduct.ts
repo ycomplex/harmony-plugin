@@ -51,6 +51,7 @@ import { resolveUnparkRunConfig, mergeRunConfig } from '../../tools/unpark-inher
 import { hasAdapter, listAdapterIds } from '../../agents/registry.js';
 import { runCommand } from '../run-command.js';
 import { writeConductBreadcrumb } from '../../hooks/conduct-breadcrumb.js';
+import { assertNoOpenIncident } from '../../tools/incident.js';
 
 export function registerConductCommand(program: Command): void {
   const conduct = program
@@ -142,6 +143,8 @@ export function registerConductCommand(program: Command): void {
             // B-964: a no-op when the ticket isn't Parked; refuses cleanly (TicketParkedError) when
             // it IS Parked and --unpark was not passed, and revalidates (tasks.stale) + unparks
             // BEFORE any conduction is created when it was.
+            // B-1452: refuse while an incident round waits on a human (fails open on a read error).
+            await assertNoOpenIncident(ctx.client, taskId, ticket);
             await reviveParkedTicketIfNeeded(ctx.client, ctx.projectId, ctx.userId, taskId, {
               unpark: opts.unpark,
               resume_to: opts.resumeTo,

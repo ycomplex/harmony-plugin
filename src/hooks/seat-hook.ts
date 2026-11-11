@@ -198,6 +198,15 @@ export function decideSeatStop(input: string, deps: SeatStopDeps): SeatStopDecis
     if (!project || !isSafeName(project)) return { action: 'allow', why: 'profile has no usable project' };
 
     const isPidAlive = deps.isPidAlive ?? defaultIsPidAlive;
+    // A newly acquired live lock covers startup before the first heartbeat is visible,
+    // including a stale heartbeat left by the previous watch. Never grant grace to a dead pid.
+    const startupLock = deps.readLock(project, seat, profileScope(profile));
+    if (startupLock.status === 'ok') {
+      const age = deps.now() - Date.parse(startupLock.value.started_at);
+      if (age >= 0 && age < 30_000 && isLockHeld(startupLock.value, { isPidAlive, hostname: deps.hostname })) {
+        return { action: 'allow', why: 'watch starting (live lock younger than 30s)' };
+      }
+    }
     const hb = deps.readHeartbeat(project, seat);
     if (hb.status === 'absent') return { action: 'block', reason: seatStopReason(seat, profile, 'no heartbeat') };
     if (hb.status !== 'ok') return { action: 'allow', why: `heartbeat ${hb.status}` };

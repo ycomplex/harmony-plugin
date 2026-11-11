@@ -8,6 +8,7 @@
 import { existsSync as fsExistsSync, readFileSync as fsReadFileSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { Command } from 'commander';
+import { parseDuration } from '../../watch/seat-files.js';
 import { GCP_PROJECT_UNSET, resolveGcpProject } from '../../config/gcp-project.js';
 import { resolveConductorLogPath, ROTATE_KEEP } from '../../daemon/conductor-logger.js';
 
@@ -49,15 +50,8 @@ export function defaultLogsDeps(): ConductorLogsDeps {
   };
 }
 
-const UNIT_MS: Record<string, number> = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 };
-
-/** "30m" | "1h" | "2d" | "45s" -> milliseconds, or null when malformed. */
-export function parseDuration(text: string): number | null {
-  const m = /^(\d+)([smhd])$/.exec(text.trim());
-  if (!m) return null;
-  const ms = Number(m[1]) * UNIT_MS[m[2]];
-  return ms > 0 ? ms : null;
-}
+// Share watch's duration grammar; keep this module's exported interface.
+export { parseDuration } from '../../watch/seat-files.js';
 
 export interface ReadOptions {
   since: string;
