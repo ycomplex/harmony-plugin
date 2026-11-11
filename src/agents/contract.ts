@@ -67,6 +67,9 @@ export interface HeadlessInput {
   modelProvider?: string;
   /** Upstream-supplied flags (provision.sh's CLAUDE_HEADLESS_FLAGS), passed through in order. */
   extraFlags?: readonly string[];
+  /** B-1451: a private MCP server config file (outside every checkout) the agent loads with
+   *  --mcp-config. Only the Claude Code adapter reads it; the caller passes it only when the file exists. */
+  mcpConfigPath?: string;
 }
 
 export interface ExitSemantics {
