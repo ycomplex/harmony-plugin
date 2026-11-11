@@ -483,7 +483,15 @@ NON-OPTIONAL).** A build is not done when its tests pass; it is done when the te
 real, pushed, open PR. A conducted ticket must NEVER reach the release gate without one — B-713 composed
 a "Ship the built artefact" release brief with zero persisted code, and the `--rm` container discarded
 the work. Run these sub-steps in order; on ANY sub-step failure go to the FAILURE PATH below — never
-advance past a failed sub-step:
+advance past a failed sub-step.
+
+**No client names in the artefact (B-1459).** The commit message, PR title and PR body — and any code,
+doc, test or fixture the build wrote — never name a client or adopter, nor their GitHub organisation or
+repository. Use a neutral description ("one observed deployment", "a second project's stack") and an
+invented project name in tests. The founder's own projects are not clients; when unsure whether a name
+is a client's, ask rather than guess. In a delegated build, pass this rule to the build subagent.
+
+The sub-steps:
 
 1. **Commit + push the ticket branch.** In a delegated build, INSTRUCT the build subagent to commit and
    push — the `harmony-build` agent is deliberately "push only when instructed" (B-719), and O3 is the
