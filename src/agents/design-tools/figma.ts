@@ -46,13 +46,28 @@ export function readMountedFigmaToken(
   return token;
 }
 
+/** B-1451: the Claude Code `--mcp-config` file, written only outside every checkout. The header names
+ *  the env var, never the token: Claude Code 2.1.322 expands `${VAR}` in an http server's headers (shown
+ *  against a local listener, B-1451), and provision.sh exports FIGMA_MCP_ACCESS_TOKEN for the agent. */
+export function renderClaudeFigmaMcpConfig(): string {
+  return JSON.stringify({
+    mcpServers: {
+      figma: {
+        type: "http",
+        url: FIGMA_MCP_URL,
+        headers: { Authorization: `Bearer \${${FIGMA_ACCESS_ENV}}` },
+      },
+    },
+  });
+}
+
 /** Called only inside the worker. Token-bearing output must go directly to a private file. */
 export function renderFigmaMcp(
   adapter: "claude-code" | "codex",
   accessToken?: string,
 ): string {
   if (adapter === "codex")
-    return '\n[mcp_servers.figma]\nurl = "https://mcp.figma.com/mcp"\nbearer_token_env_var = "FIGMA_MCP_ACCESS_TOKEN"\nrequired = true\ndefault_tools_approval_mode = "auto"\n';
+    return '\n[mcp_servers.figma]\nurl = "https://mcp.figma.com/mcp"\nbearer_token_env_var = "FIGMA_MCP_ACCESS_TOKEN"\nrequired = false\ndefault_tools_approval_mode = "auto"\n';
   if (!accessToken) throw new Error("Figma access-token mount required");
   return JSON.stringify({
     type: "http",
