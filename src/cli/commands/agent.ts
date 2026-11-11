@@ -56,6 +56,15 @@ import { addComment } from '../../tools/comments.js';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
+/** B-1451: `--mcp-config` only when HARMONY_FIGMA_MCP_CONFIG names a file that exists. */
+export function figmaMcpConfigArg(
+  env: NodeJS.ProcessEnv,
+  exists: (path: string) => boolean,
+): { mcpConfigPath?: string } {
+  const path = env.HARMONY_FIGMA_MCP_CONFIG;
+  return path && exists(path) ? { mcpConfigPath: path } : {};
+}
+
 /** This leg's run_config from its launch env. An UNPARSEABLE payload degrades to `{}` with a loud
  *  warning — the same best-effort treatment provision.sh gives `session_resume` on the identical
  *  bytes (B-718), and the payload the daemon admitted was well-formed by construction (it is
@@ -303,6 +312,7 @@ export function registerAgentCommands(program: Command): void {
         model: opts.model || undefined,
         ...(provider ? { modelProvider: provider.name } : {}),
         extraFlags: extra ?? [],
+        ...figmaMcpConfigArg(process.env, existsSync),
       });
       process.stdout.write(encodeNulArgv(argv));
     });

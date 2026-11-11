@@ -92,6 +92,8 @@ function buildClaudeArgv(input: HeadlessInput): string[] {
   argv.push(...extra);
   if (!extra.includes(CLAUDE_OUTPUT_FORMAT_FLAGS[0])) argv.push(...CLAUDE_OUTPUT_FORMAT_FLAGS);
   if (input.model) argv.push(CLAUDE_MODEL_FLAG, input.model);
+  // B-1451: the Figma server config lives in $HOME/.harmony, never in the plugin checkout.
+  if (input.mcpConfigPath) argv.push('--mcp-config', input.mcpConfigPath);
   return argv;
 }
 

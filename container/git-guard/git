@@ -1,0 +1,23 @@
+#!/bin/sh
+# B-1451: push-only git wrapper. Only `git ... push ...` runs with the guard's hooks directory;
+# every other command reaches the real git unchanged. install.sh fills the two values below.
+REAL_GIT="__REAL_GIT__"
+GUARD_HOOKS="__GUARD_HOOKS__"
+
+sub=""
+skip=0
+for a in "$@"; do
+  if [ "$skip" = 1 ]; then skip=0; continue; fi
+  case "$a" in
+    -C|-c|--git-dir|--work-tree|--namespace|--config-env|--super-prefix) skip=1 ;;
+    --git-dir=*|--work-tree=*|--namespace=*|--exec-path=*|--config-env=*|--super-prefix=*|--list-cmds=*) ;;
+    -p|--paginate|-P|--no-pager|--bare|--no-replace-objects|--literal-pathspecs|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs|--no-optional-locks|--no-advice|--exec-path) ;;
+    -*) break ;;
+    *) sub="$a"; break ;;
+  esac
+done
+
+if [ "$sub" = "push" ]; then
+  exec "$REAL_GIT" -c "core.hooksPath=$GUARD_HOOKS" "$@"
+fi
+exec "$REAL_GIT" "$@"

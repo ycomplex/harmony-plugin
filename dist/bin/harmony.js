@@ -7487,11 +7487,11 @@ function __metadata(metadataKey, metadataValue) {
 }
 function __awaiter(thisArg, _arguments, P, generator) {
   function adopt(value) {
-    return value instanceof P ? value : new P(function(resolve9) {
-      resolve9(value);
+    return value instanceof P ? value : new P(function(resolve10) {
+      resolve10(value);
     });
   }
-  return new (P || (P = Promise))(function(resolve9, reject) {
+  return new (P || (P = Promise))(function(resolve10, reject) {
     function fulfilled(value) {
       try {
         step(generator.next(value));
@@ -7507,7 +7507,7 @@ function __awaiter(thisArg, _arguments, P, generator) {
       }
     }
     function step(result) {
-      result.done ? resolve9(result.value) : adopt(result.value).then(fulfilled, rejected);
+      result.done ? resolve10(result.value) : adopt(result.value).then(fulfilled, rejected);
     }
     step((generator = generator.apply(thisArg, _arguments || [])).next());
   });
@@ -7698,14 +7698,14 @@ function __asyncValues(o) {
   }, i);
   function verb(n) {
     i[n] = o[n] && function(v2) {
-      return new Promise(function(resolve9, reject) {
-        v2 = o[n](v2), settle(resolve9, reject, v2.done, v2.value);
+      return new Promise(function(resolve10, reject) {
+        v2 = o[n](v2), settle(resolve10, reject, v2.done, v2.value);
       });
     };
   }
-  function settle(resolve9, reject, d, v2) {
+  function settle(resolve10, reject, d, v2) {
     Promise.resolve(v2).then(function(v3) {
-      resolve9({ value: v3, done: d });
+      resolve10({ value: v3, done: d });
     }, reject);
   }
 }
@@ -11195,15 +11195,15 @@ var require_RealtimeChannel = __commonJS({
             }
           }
         } else {
-          return new Promise((resolve9) => {
+          return new Promise((resolve10) => {
             var _a3, _b2, _c;
             const push = this.channelAdapter.push(args.type, args, opts.timeout || this.timeout);
             if (args.type === "broadcast" && !((_c = (_b2 = (_a3 = this.params) === null || _a3 === void 0 ? void 0 : _a3.config) === null || _b2 === void 0 ? void 0 : _b2.broadcast) === null || _c === void 0 ? void 0 : _c.ack)) {
-              resolve9("ok");
+              resolve10("ok");
             }
-            push.receive("ok", () => resolve9("ok"));
-            push.receive("error", () => resolve9("error"));
-            push.receive("timeout", () => resolve9("timed out"));
+            push.receive("ok", () => resolve10("ok"));
+            push.receive("error", () => resolve10("error"));
+            push.receive("timeout", () => resolve10("timed out"));
           });
         }
       }
@@ -11228,8 +11228,8 @@ var require_RealtimeChannel = __commonJS({
        * @category Realtime
        */
       async unsubscribe(timeout = this.timeout) {
-        return new Promise((resolve9) => {
-          this.channelAdapter.unsubscribe(timeout).receive("ok", () => resolve9("ok")).receive("timeout", () => resolve9("timed out")).receive("error", () => resolve9("error"));
+        return new Promise((resolve10) => {
+          this.channelAdapter.unsubscribe(timeout).receive("ok", () => resolve10("ok")).receive("timeout", () => resolve10("timed out")).receive("error", () => resolve10("error"));
         });
       }
       /**
@@ -11423,11 +11423,11 @@ var require_socketAdapter = __commonJS({
         this.socket.connect();
       }
       disconnect(callback, code, reason, timeout = 1e4) {
-        return new Promise((resolve9) => {
-          setTimeout(() => resolve9("timeout"), timeout);
+        return new Promise((resolve10) => {
+          setTimeout(() => resolve10("timeout"), timeout);
           this.socket.disconnect(() => {
             callback();
-            resolve9("ok");
+            resolve10("ok");
           }, code, reason);
         });
       }
@@ -25439,7 +25439,7 @@ var require_compile = __commonJS({
       const schOrFunc = root.refs[ref];
       if (schOrFunc)
         return schOrFunc;
-      let _sch = resolve9.call(this, root, ref);
+      let _sch = resolve10.call(this, root, ref);
       if (_sch === void 0) {
         const schema = (_a2 = root.localRefs) === null || _a2 === void 0 ? void 0 : _a2[ref];
         const { schemaId } = this.opts;
@@ -25466,7 +25466,7 @@ var require_compile = __commonJS({
     function sameSchemaEnv(s1, s2) {
       return s1.schema === s2.schema && s1.root === s2.root && s1.baseId === s2.baseId;
     }
-    function resolve9(root, ref) {
+    function resolve10(root, ref) {
       let sch;
       while (typeof (sch = this.refs[ref]) == "string")
         ref = sch;
@@ -26041,7 +26041,7 @@ var require_fast_uri = __commonJS({
       }
       return uri;
     }
-    function resolve9(baseURI, relativeURI, options) {
+    function resolve10(baseURI, relativeURI, options) {
       const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
       const resolved = resolveComponent(parse3(baseURI, schemelessOptions), parse3(relativeURI, schemelessOptions), schemelessOptions, true);
       schemelessOptions.skipEscape = true;
@@ -26268,7 +26268,7 @@ var require_fast_uri = __commonJS({
     var fastUri = {
       SCHEMES,
       normalize: normalize2,
-      resolve: resolve9,
+      resolve: resolve10,
       resolveComponent,
       equal,
       serialize,
@@ -35322,10 +35322,10 @@ async function searchKnowledge(client, projectId, args, started = performance.no
       record2("timeout", "deadline");
       return void 0;
     }
-    const timeout = new Promise((resolve9) => {
+    const timeout = new Promise((resolve10) => {
       timer = setTimeout(() => {
         routeController.abort();
-        resolve9(void 0);
+        resolve10(void 0);
       }, ms);
     });
     try {
@@ -35806,7 +35806,7 @@ async function queryKnowledge(client, projectId, args) {
   const result = await queryKnowledgeUnlogged(client, projectId, queryArgs);
   await Promise.race([
     logKnowledgeRetrieval(client, projectId, { task_id, gate, search: queryArgs.search }, result),
-    new Promise((resolve9) => setTimeout(resolve9, RETRIEVAL_LOG_BUDGET_MS).unref())
+    new Promise((resolve10) => setTimeout(resolve10, RETRIEVAL_LOG_BUDGET_MS).unref())
   ]);
   return result;
 }
@@ -47838,7 +47838,7 @@ var _getRequestParams = (method, options, parameters, body) => {
   return _objectSpread22(_objectSpread22({}, params), parameters);
 };
 async function _handleRequest(fetcher, method, url2, options, parameters, body, namespace) {
-  return new Promise((resolve9, reject) => {
+  return new Promise((resolve10, reject) => {
     fetcher(url2, _getRequestParams(method, options, parameters, body)).then((result) => {
       if (!result.ok) throw result;
       if (options === null || options === void 0 ? void 0 : options.noResolveJson) return result;
@@ -47848,7 +47848,7 @@ async function _handleRequest(fetcher, method, url2, options, parameters, body, 
         if (!contentType || !contentType.includes("application/json")) return {};
       }
       return result.json();
-    }).then((data) => resolve9(data)).catch((error2) => handleError(error2, reject, options, namespace));
+    }).then((data) => resolve10(data)).catch((error2) => handleError(error2, reject, options, namespace));
   });
 }
 function createFetchApi(namespace = "storage") {
@@ -51280,7 +51280,7 @@ var DEFAULT_MAX_WAIT_S = 1800;
 var REPO_RE2 = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 var SHA_RE = /^[0-9a-fA-F]{7,40}$/;
 var AUTH_FAILURE_RE = /not logged in|authentication required|gh auth login|bad credentials|HTTP 401/i;
-var defaultGhRunner = (args) => new Promise((resolve9) => {
+var defaultGhRunner = (args) => new Promise((resolve10) => {
   execFile(
     "gh",
     args,
@@ -51289,15 +51289,15 @@ var defaultGhRunner = (args) => new Promise((resolve9) => {
       const out = String(stdout ?? "");
       const errText3 = String(stderr ?? "");
       if (!error2) {
-        resolve9({ code: 0, stdout: out, stderr: errText3 });
+        resolve10({ code: 0, stdout: out, stderr: errText3 });
         return;
       }
       const e = error2;
       if (e.code === "ENOENT") {
-        resolve9({ code: 127, stdout: out, stderr: errText3 || e.message, notFound: true });
+        resolve10({ code: 127, stdout: out, stderr: errText3 || e.message, notFound: true });
         return;
       }
-      resolve9({ code: typeof e.code === "number" ? e.code : 1, stdout: out, stderr: errText3 || e.message });
+      resolve10({ code: typeof e.code === "number" ? e.code : 1, stdout: out, stderr: errText3 || e.message });
     }
   );
 });
@@ -51864,19 +51864,19 @@ No pod was created.`);
   return ns;
 }
 var defaults = {
-  run: (args, interactive = false, signal) => new Promise((resolve9, reject) => {
+  run: (args, interactive = false, signal) => new Promise((resolve10, reject) => {
     const child = spawn("kubectl", args, { stdio: interactive ? "inherit" : "ignore", signal });
     child.once("error", () => reject(new FigmaSetupError("Figma sign-in pod command failed.")));
-    child.once("exit", (code) => code === 0 ? resolve9() : reject(new FigmaSetupError("Figma sign-in pod command failed.")));
+    child.once("exit", (code) => code === 0 ? resolve10() : reject(new FigmaSetupError("Figma sign-in pod command failed.")));
   }),
-  capture: (args) => new Promise((resolve9) => {
+  capture: (args) => new Promise((resolve10) => {
     const child = spawn("kubectl", args, { stdio: ["ignore", "pipe", "ignore"] });
     let out = "";
     child.stdout.on("data", (chunk) => {
       if (out.length < 4096) out += chunk.toString("utf8");
     });
-    child.once("error", () => resolve9({ code: null, out: "" }));
-    child.once("close", (code) => resolve9({ code, out }));
+    child.once("error", () => resolve10({ code: null, out: "" }));
+    child.once("close", (code) => resolve10({ code, out }));
   }),
   namespace: () => resolveSignInNamespace(),
   temp: () => mkdtempSync(join6(tmpdir(), "harmony-figma-")),
@@ -51974,12 +51974,13 @@ import {
   rmSync as rmSync2,
   writeFileSync
 } from "node:fs";
-import { join as join7 } from "node:path";
+import { dirname as dirname4, join as join7, resolve } from "node:path";
 import { homedir as homedir4 } from "node:os";
 
 // src/agents/design-tools/figma.ts
 import { readFileSync as readFileSync5 } from "node:fs";
 var FIGMA_MCP_URL = "https://mcp.figma.com/mcp";
+var FIGMA_ACCESS_ENV = "FIGMA_MCP_ACCESS_TOKEN";
 var FIGMA_MOUNT = "/secrets/figma";
 function assertFigmaReady(meta, now) {
   if (meta.state === "disconnected") return;
@@ -51996,9 +51997,20 @@ function readMountedFigmaToken(path4 = `${FIGMA_MOUNT}/access-token`) {
     throw new Error("Invalid Figma access-token mount; reconnect Figma.");
   return token;
 }
+function renderClaudeFigmaMcpConfig() {
+  return JSON.stringify({
+    mcpServers: {
+      figma: {
+        type: "http",
+        url: FIGMA_MCP_URL,
+        headers: { Authorization: `Bearer \${${FIGMA_ACCESS_ENV}}` }
+      }
+    }
+  });
+}
 function renderFigmaMcp(adapter, accessToken) {
   if (adapter === "codex")
-    return '\n[mcp_servers.figma]\nurl = "https://mcp.figma.com/mcp"\nbearer_token_env_var = "FIGMA_MCP_ACCESS_TOKEN"\nrequired = true\ndefault_tools_approval_mode = "auto"\n';
+    return '\n[mcp_servers.figma]\nurl = "https://mcp.figma.com/mcp"\nbearer_token_env_var = "FIGMA_MCP_ACCESS_TOKEN"\nrequired = false\ndefault_tools_approval_mode = "auto"\n';
   if (!accessToken) throw new Error("Figma access-token mount required");
   return JSON.stringify({
     type: "http",
@@ -59801,7 +59813,7 @@ var Protocol = class {
           return;
         }
         const pollInterval = task2.pollInterval ?? this._options?.defaultTaskPollInterval ?? 1e3;
-        await new Promise((resolve9) => setTimeout(resolve9, pollInterval));
+        await new Promise((resolve10) => setTimeout(resolve10, pollInterval));
         options?.signal?.throwIfAborted();
       }
     } catch (error2) {
@@ -59818,7 +59830,7 @@ var Protocol = class {
    */
   request(request, resultSchema2, options) {
     const { relatedRequestId, resumptionToken, onresumptiontoken, task, relatedTask } = options ?? {};
-    return new Promise((resolve9, reject) => {
+    return new Promise((resolve10, reject) => {
       const earlyReject = (error2) => {
         reject(error2);
       };
@@ -59896,7 +59908,7 @@ var Protocol = class {
           if (!parseResult.success) {
             reject(parseResult.error);
           } else {
-            resolve9(parseResult.data);
+            resolve10(parseResult.data);
           }
         } catch (error2) {
           reject(error2);
@@ -60157,12 +60169,12 @@ var Protocol = class {
       }
     } catch {
     }
-    return new Promise((resolve9, reject) => {
+    return new Promise((resolve10, reject) => {
       if (signal.aborted) {
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
         return;
       }
-      const timeoutId = setTimeout(resolve9, interval);
+      const timeoutId = setTimeout(resolve10, interval);
       signal.addEventListener("abort", () => {
         clearTimeout(timeoutId);
         reject(new McpError(ErrorCode.InvalidRequest, "Request cancelled"));
@@ -61921,6 +61933,18 @@ function registerFigmaCommands(program3, ports = {
         );
       }
       const token = readMountedFigmaToken();
+      if (opts.adapter !== "codex" && opts.adapter !== "claude-code") {
+        throw new Error("Unknown Figma runtime adapter");
+      }
+      const check2 = await checkFigmaToken(token);
+      if (check2.kind === "rejected") {
+        process.stderr.write(
+          `Figma: the connection token failed to authenticate (HTTP ${check2.status}); this leg runs without Figma.
+`
+        );
+        omitFigma({ state: "reconnect", connections_enabled: meta.connections_enabled });
+        return;
+      }
       if (opts.adapter === "codex") {
         const path4 = join7(
           process.env.CODEX_HOME ?? join7(homedir4(), ".codex"),
@@ -61932,19 +61956,48 @@ function registerFigmaCommands(program3, ports = {
           { mode: 384 }
         );
         chmodSync2(path4, 384);
-      } else if (opts.adapter === "claude-code") {
-        const path4 = join7(opts.pluginDir, ".mcp.json");
-        const config2 = JSON.parse(readFileSync7(path4, "utf8"));
-        config2.figma = JSON.parse(renderFigmaMcp("claude-code", token));
-        writeFileSync(path4, JSON.stringify(config2), { mode: 384 });
+        process.stdout.write(`Figma: configured for this leg in ${path4}.
+`);
+      } else {
+        const path4 = process.env.HARMONY_FIGMA_MCP_CONFIG || join7(homedir4(), ".harmony", "figma-mcp.json");
+        const dir = dirname4(path4);
+        if (insideGitWorkTree(dir)) {
+          process.stderr.write(
+            `Figma: refusing to write the Figma server config inside a git work tree (${dir}); this leg runs without Figma.
+`
+          );
+          omitFigma({ state: "disconnected" });
+          return;
+        }
+        mkdirSync2(dir, { recursive: true, mode: 448 });
+        chmodSync2(dir, 448);
+        writeFileSync(path4, renderClaudeFigmaMcpConfig(), { mode: 384 });
         chmodSync2(path4, 384);
-      } else throw new Error("Unknown Figma runtime adapter");
-      process.stdout.write("Figma access-token-only runtime configured.\n");
+        process.stdout.write(`Figma: configured for this leg in ${path4}.
+`);
+      }
+      if (check2.kind === "unverified") {
+        process.stderr.write(
+          `Figma: could not verify the connection token (${check2.reason}); Figma is configured as optional for this leg.
+`
+        );
+      }
     } catch {
       process.stderr.write(
-        "Figma preflight/configuration failed. Reconnect or relaunch; no fallback.\n"
+        "Figma: configuration failed; this leg runs without Figma.\n"
       );
-      process.exitCode = 1;
+      try {
+        const path4 = process.env.HARMONY_FIGMA_WORKER_CONTEXT_FILE;
+        if (path4) {
+          writeFileSync(
+            path4,
+            Buffer.from(JSON.stringify({ state: "reconnect" })).toString("base64"),
+            { mode: 384 }
+          );
+        }
+      } catch {
+      }
+      process.exitCode = 0;
     }
   });
   figma.command("connect").description(
@@ -62138,6 +62191,51 @@ Library: ${fileKey}; seat: ${candidate.metadata.seat}; tier: ${candidate.metadat
       process.exitCode = 1;
     }
   });
+}
+function insideGitWorkTree(dir) {
+  let cur = resolve(dir);
+  for (; ; ) {
+    if (existsSync3(join7(cur, ".git"))) return true;
+    const up = dirname4(cur);
+    if (up === cur) return false;
+    cur = up;
+  }
+}
+async function checkFigmaToken(token, fetchImpl = globalThis.fetch, timeoutMs = 5e3) {
+  try {
+    const res = await fetchImpl(FIGMA_MCP_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream"
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-06-18",
+          capabilities: {},
+          clientInfo: { name: "harmony-install-worker", version: "1" }
+        }
+      }),
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+    try {
+      await res.body?.cancel();
+    } catch {
+    }
+    if (res.status === 401 || res.status === 403) return { kind: "rejected", status: res.status };
+    if (res.status >= 500) return { kind: "unverified", reason: `HTTP ${res.status}` };
+    return { kind: "ok" };
+  } catch (err) {
+    const name = err instanceof Error ? err.name : "";
+    return {
+      kind: "unverified",
+      reason: name === "TimeoutError" || name === "AbortError" ? "timed out" : "network error"
+    };
+  }
 }
 
 // src/tools/decomposition.ts
@@ -67964,7 +68062,7 @@ async function syncProse(client, projectId, root, declarationPath = ".harmony/pr
 // src/cli/prose-init.ts
 var import_yaml3 = __toESM(require_dist(), 1);
 import { existsSync as existsSync4, lstatSync, mkdirSync as mkdirSync3, unlinkSync as unlinkSync2, writeFileSync as writeFileSync2 } from "node:fs";
-import { dirname as dirname4, join as join9, resolve } from "node:path";
+import { dirname as dirname5, join as join9, resolve as resolve2 } from "node:path";
 var RELEASED_PROSE_CLI = "c72d5d36b876e684ca07f4f36e90418167843653";
 var optionsSchema = external_exports.object({
   repository: external_exports.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/, "Use GitHub owner/repo"),
@@ -68012,7 +68110,7 @@ function initProseSources(root, input) {
     { path: ".harmony/prose-sources.json", content: JSON.stringify(declaration, null, 2) + "\n" },
     { path: ".github/workflows/prose-index.yml", content: proseRefreshWorkflow(opts.branch, opts.cliCommit) }
   ];
-  const base2 = resolve(root);
+  const base2 = resolve2(root);
   for (const file of files) {
     const parts = file.path.split("/");
     for (let i = 1; i <= parts.length; i++) {
@@ -68032,7 +68130,7 @@ function initProseSources(root, input) {
   try {
     for (const file of files) {
       const target = join9(base2, file.path);
-      mkdirSync3(dirname4(target), { recursive: true });
+      mkdirSync3(dirname5(target), { recursive: true });
       writeFileSync2(target, file.content, { flag: "wx" });
       written.push(target);
     }
@@ -68432,12 +68530,12 @@ var featureAccountTools = [
 
 // src/cli/commands/knowledge-sources.ts
 import { readFileSync as readFileSync9, writeFileSync as writeFileSync3 } from "node:fs";
-import { resolve as resolve3 } from "node:path";
+import { resolve as resolve4 } from "node:path";
 
 // src/cli/source-publishers.ts
 import { execFileSync as execFileSync2 } from "node:child_process";
 import { readFileSync as readFileSync8, realpathSync } from "node:fs";
-import { resolve as resolve2, relative, isAbsolute } from "node:path";
+import { resolve as resolve3, relative, isAbsolute } from "node:path";
 var publisherDeclarationSchema = external_exports.object({ version: external_exports.literal(1), repository: external_exports.string().min(1), publishers: external_exports.array(external_exports.object({
   surface: external_exports.string().min(1),
   command: external_exports.array(external_exports.string().min(1)).min(1),
@@ -68446,7 +68544,7 @@ var publisherDeclarationSchema = external_exports.object({ version: external_exp
 })).min(1) });
 var git2 = (root, args) => execFileSync2("git", ["-C", root, ...args], { encoding: "utf8", maxBuffer: 10 * 1024 * 1024 });
 function loadPublisherDeclaration(root, file = ".harmony/source-publishers.json") {
-  return publisherDeclarationSchema.parse(JSON.parse(readFileSync8(resolve2(root, file), "utf8")));
+  return publisherDeclarationSchema.parse(JSON.parse(readFileSync8(resolve3(root, file), "utf8")));
 }
 function runSourcePublisher(root, declaration, surface, expectedRevision, runId, runUrl, previousSha) {
   root = realpathSync(root);
@@ -68470,7 +68568,7 @@ function runSourcePublisher(root, declaration, surface, expectedRevision, runId,
   }
   if (!paths.size) throw new Error("Publisher inputs match no tracked sources");
   for (const path4 of paths) {
-    const actual = readFileSync8(resolve2(root, path4));
+    const actual = readFileSync8(resolve3(root, path4));
     const committed = execFileSync2("git", ["-C", root, "show", `${sha}:${path4}`], { maxBuffer: 10 * 1024 * 1024 });
     if (!actual.equals(committed)) throw new Error(`Uncommitted publisher input: ${path4}`);
   }
@@ -68486,14 +68584,14 @@ function runSourcePublisher(root, declaration, surface, expectedRevision, runId,
     values: values.map((v2) => ({ ...v2, source: { ...v2.source, repository: declaration.repository, sha, publisher: surface, publisher_version: publisher.publisher_version, run_url: runUrl } }))
   });
   for (const path4 of paths) {
-    if (!readFileSync8(resolve2(root, path4)).equals(execFileSync2("git", ["-C", root, "show", `${sha}:${path4}`], { maxBuffer: 10 * 1024 * 1024 }))) throw new Error(`Publisher mutated input: ${path4}`);
+    if (!readFileSync8(resolve3(root, path4)).equals(execFileSync2("git", ["-C", root, "show", `${sha}:${path4}`], { maxBuffer: 10 * 1024 * 1024 }))) throw new Error(`Publisher mutated input: ${path4}`);
   }
   for (const value of inventory.values) {
     const path4 = value.source.path;
-    const local = relative(root, realpathSync(resolve2(root, path4)));
+    const local = relative(root, realpathSync(resolve3(root, path4)));
     if (isAbsolute(local) || local.startsWith("..") || !paths.has(path4)) throw new Error(`Source is outside declared inputs: ${path4}`);
-    if (!readFileSync8(resolve2(root, path4)).equals(execFileSync2("git", ["-C", root, "show", `${sha}:${path4}`], { maxBuffer: 10 * 1024 * 1024 }))) throw new Error(`Publisher mutated source: ${path4}`);
-    const lines = readFileSync8(resolve2(root, path4), "utf8").split("\n").length;
+    if (!readFileSync8(resolve3(root, path4)).equals(execFileSync2("git", ["-C", root, "show", `${sha}:${path4}`], { maxBuffer: 10 * 1024 * 1024 }))) throw new Error(`Publisher mutated source: ${path4}`);
+    const lines = readFileSync8(resolve3(root, path4), "utf8").split("\n").length;
     if (value.source.line_start && value.source.line_start > lines || value.source.line_end && value.source.line_end > lines) throw new Error(`Source span outside file: ${path4}`);
   }
   return inventory;
@@ -68510,7 +68608,7 @@ function registerSourceCommands(knowledge, program3) {
   });
   knowledge.command("publish-values").description("Run a declared trusted publisher and publish its complete deployment inventory").requiredOption("--surface <surface>").requiredOption("--run-id <id>").requiredOption("--run-url <url>").option("--root <directory>", "Repository checkout", process.cwd()).option("--declaration <file>", "Publisher declaration", ".harmony/source-publishers.json").option("--output <file>", "Also save extracted inventory for auditing").action(async (opts) => {
     await runCommand(program3.opts(), async (ctx) => {
-      const root = resolve3(opts.root), declaration = loadPublisherDeclaration(root, opts.declaration);
+      const root = resolve4(opts.root), declaration = loadPublisherDeclaration(root, opts.declaration);
       const snapshot = await readSourceInventory(ctx.client, ctx.projectId, { repository: declaration.repository, surface: opts.surface });
       const inventory = runSourcePublisher(root, declaration, opts.surface, snapshot.revision, opts.runId, opts.runUrl, snapshot.source_sha);
       if (opts.output) writeFileSync3(opts.output, JSON.stringify(inventory, null, 2) + "\n");
@@ -69628,6 +69726,7 @@ function buildClaudeArgv(input) {
   argv.push(...extra);
   if (!extra.includes(CLAUDE_OUTPUT_FORMAT_FLAGS[0])) argv.push(...CLAUDE_OUTPUT_FORMAT_FLAGS);
   if (input.model) argv.push(CLAUDE_MODEL_FLAG, input.model);
+  if (input.mcpConfigPath) argv.push("--mcp-config", input.mcpConfigPath);
   return argv;
 }
 var SESSION_ROOT = "$HOME/.claude/projects";
@@ -70402,11 +70501,11 @@ async function assertRunConfigPolicy(client, projectId, runConfig) {
   if (!selection.ok) throw new Error(selection.error);
   const adapter = selection.adapter;
   const { entries } = await resolveModelCatalog(client, { includeInactive: true });
-  const resolve9 = (model) => findModelEntry(model, entries, adapter, { includeInactive: true });
-  const allowedRows = new Set(allowed.map(resolve9).filter((entry) => entry !== void 0));
+  const resolve10 = (model) => findModelEntry(model, entries, adapter, { includeInactive: true });
+  const allowedRows = new Set(allowed.map(resolve10).filter((entry) => entry !== void 0));
   const allowedRaw = new Set(allowed.map((entry) => stripAgentPrefix(entry, adapter)));
   const isAllowed = (model) => {
-    const row = resolve9(model);
+    const row = resolve10(model);
     if (row && allowedRows.has(row)) return true;
     return allowedRaw.has(stripAgentPrefix(model, adapter));
   };
@@ -70594,17 +70693,17 @@ function registerConfigCommands(program3) {
 
 // src/config/plugin-source.ts
 import { readFileSync as readFileSync11, realpathSync as realpathSync2 } from "node:fs";
-import { dirname as dirname5, join as join11, resolve as resolve4 } from "node:path";
+import { dirname as dirname6, join as join11, resolve as resolve5 } from "node:path";
 import { homedir as homedir6 } from "node:os";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 function runningPluginRoot(moduleUrl = import.meta.url, read = (p) => readFileSync11(p, "utf8")) {
-  let dir = dirname5(fileURLToPath2(moduleUrl));
+  let dir = dirname6(fileURLToPath2(moduleUrl));
   for (let i = 0; i < 8; i++) {
     try {
       if (JSON.parse(read(join11(dir, ".claude-plugin/plugin.json"))).name === "harmony-plugin") return dir;
     } catch {
     }
-    const parent = dirname5(dir);
+    const parent = dirname6(dir);
     if (parent === dir) break;
     dir = parent;
   }
@@ -70666,7 +70765,7 @@ function resolvePluginSource(opts = {}) {
     let gitDir = join11(root, ".git");
     try {
       const pointer = read(gitDir).trim();
-      if (pointer.startsWith("gitdir: ")) gitDir = resolve4(root, pointer.slice(8));
+      if (pointer.startsWith("gitdir: ")) gitDir = resolve5(root, pointer.slice(8));
     } catch {
     }
     const head2 = read(join11(gitDir, "HEAD")).trim();
@@ -70711,9 +70810,9 @@ var resultSchema = external_exports.object({
   ok: external_exports.boolean(),
   error: external_exports.object({ stage: external_exports.enum(["input", "key", "installation", "mint", "repositories", "expectations"]), code: external_exports.enum(["invalid-input", "unsafe-origin", "request-failed", "invalid-response", "identity-mismatch", "suspended-or-unknown", "invalid-permissions", "invalid-events", "invalid-selection", "invalid-token-response", "invalid-page", "inconsistent-total", "invalid-or-repeated-repository", "incomplete-repositories", "page-limit", "check-failed", "unexpected-grants-or-events"]), http_status: external_exports.number().int().min(100).max(599).optional() }).strict().optional()
 }).strict();
-var runChild = (file, args) => new Promise((resolve9) => {
+var runChild = (file, args) => new Promise((resolve10) => {
   execFile2(process.execPath, [file, ...args], { shell: false, env: {}, timeout: 12e4, maxBuffer: 24 * 1024 * 1024 }, (err, stdout) => {
-    resolve9({ stdout, exitCode: err ? typeof err.code === "number" ? err.code : 1 : 0 });
+    resolve10({ stdout, exitCode: err ? typeof err.code === "number" ? err.code : 1 : 0 });
   });
 });
 async function runAppCheck(opts, deps = {}) {
@@ -70756,7 +70855,7 @@ function registerAppCheck(program3, conductor) {
 var import_yaml4 = __toESM(require_dist(), 1);
 import { execFile as execFile3 } from "node:child_process";
 import { chmodSync as chmodSync5, existsSync as fsExistsSync3, mkdirSync as mkdirSync7, readFileSync as fsReadFileSync3, writeFileSync as writeFileSync9 } from "node:fs";
-import { dirname as dirname9, resolve as resolve7 } from "node:path";
+import { dirname as dirname10, resolve as resolve8 } from "node:path";
 
 // src/config/conductor-migrate.ts
 var DEFAULT_SECRET_NAMES = {
@@ -70877,7 +70976,7 @@ function buildMigration(input) {
 // src/config/conductor-project-source.ts
 import { createHash as createHash8 } from "node:crypto";
 import { chmodSync as chmodSync3, mkdirSync as mkdirSync5, readFileSync as readFileSync13, renameSync as renameSync5, rmSync as rmSync5, writeFileSync as writeFileSync7 } from "node:fs";
-import { dirname as dirname6 } from "node:path";
+import { dirname as dirname7 } from "node:path";
 
 // src/config/github-app-token.ts
 import { createSign } from "node:crypto";
@@ -70995,7 +71094,7 @@ function readSnapshot(path4) {
   }
 }
 function writeSnapshot(path4, snap) {
-  mkdirSync5(dirname6(path4), { recursive: true });
+  mkdirSync5(dirname7(path4), { recursive: true });
   const tmp = `${path4}.${process.pid}.${Date.now().toString(36)}.tmp`;
   try {
     writeFileSync7(tmp, `${JSON.stringify(snap, null, 2)}
@@ -71060,7 +71159,7 @@ ${new ConductorConfigError(v2.issues).message}`);
 }
 
 // src/cli/commands/conductor-lifecycle.ts
-import { dirname as dirname8, join as join18 } from "node:path";
+import { dirname as dirname9, join as join18 } from "node:path";
 
 // src/daemon/conductor-board.ts
 var holderPrefix = (host, pid) => `${host}:${pid}:`;
@@ -71102,7 +71201,7 @@ function classifyLeases(rows, host, runningPid, freshMs, nowMs) {
 }
 
 // src/daemon/conductor-process.ts
-import { basename as basename3, isAbsolute as isAbsolute2, join as join13, resolve as resolve5 } from "node:path";
+import { basename as basename3, isAbsolute as isAbsolute2, join as join13, resolve as resolve6 } from "node:path";
 function parsePsOutput(text4) {
   const out = [];
   for (const line2 of text4.split("\n")) {
@@ -71170,18 +71269,18 @@ function daemonCandidates(procs) {
   return out;
 }
 function matchConductors(procs, opts) {
-  const want = resolve5(join13(opts.pluginDir, "dist", "bin", "daemon.js"));
+  const want = resolve6(join13(opts.pluginDir, "dist", "bin", "daemon.js"));
   const out = [];
   for (const c of daemonCandidates(procs)) {
     let script;
-    if (isAbsolute2(c.script)) script = resolve5(c.script);
+    if (isAbsolute2(c.script)) script = resolve6(c.script);
     else {
       const cwd = opts.cwdByPid?.get(c.pid);
       if (!cwd) continue;
-      script = resolve5(cwd, c.script);
+      script = resolve6(cwd, c.script);
     }
     if (script !== want) continue;
-    if (opts.configPath && c.config !== void 0 && resolve5(c.config) !== resolve5(opts.configPath)) continue;
+    if (opts.configPath && c.config !== void 0 && resolve6(c.config) !== resolve6(opts.configPath)) continue;
     out.push({ ...c, script });
   }
   return out;
@@ -71886,7 +71985,7 @@ async function runStopRemote(deps, opts = {}, onLine) {
 import { spawn as spawn2 } from "node:child_process";
 import { chmodSync as chmodSync4, closeSync as closeSync3, existsSync as existsSync5, mkdirSync as mkdirSync6, openSync as openSync3, readFileSync as readFileSync15, readlinkSync, rmSync as rmSync6, writeFileSync as writeFileSync8 } from "node:fs";
 import { homedir as homedir7, hostname as hostname2, userInfo } from "node:os";
-import { dirname as dirname7, resolve as resolve6 } from "node:path";
+import { dirname as dirname8, resolve as resolve7 } from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 
 // src/cli/commands/conductions.ts
@@ -72102,7 +72201,7 @@ function createRegistryClient(deps) {
   const call3 = (name, args, cls, timeoutMs = defaultTimeout) => withWriteRetry(
     deps,
     { class: cls, endpoint: `rpc(${name})` },
-    () => new Promise((resolve9, reject) => {
+    () => new Promise((resolve10, reject) => {
       let done = false;
       const cancel = deps.startTimeout(timeoutMs, () => {
         if (done) return;
@@ -72124,7 +72223,7 @@ function createRegistryClient(deps) {
           done = true;
           cancel();
           if (error2) reject(error2);
-          else resolve9(data);
+          else resolve10(data);
         },
         (err) => {
           if (done) return;
@@ -72338,7 +72437,7 @@ function defaultLifecycleDeps() {
       }
     })(),
     home: homedir7(),
-    cliPluginDir: resolve6(dirname7(fileURLToPath3(import.meta.url)), "..", ".."),
+    cliPluginDir: resolve7(dirname8(fileURLToPath3(import.meta.url)), "..", ".."),
     hostname: () => hostname2(),
     now: () => Date.now(),
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
@@ -72365,7 +72464,7 @@ function defaultLifecycleDeps() {
       }
     },
     spawnDetached: (file, args, o) => {
-      mkdirSync6(dirname7(o.logPath), { recursive: true });
+      mkdirSync6(dirname8(o.logPath), { recursive: true });
       const fd = openSync3(o.logPath, "a");
       try {
         const child = spawn2(file, args, {
@@ -72680,7 +72779,7 @@ async function runStart(deps, opts = {}, onLine) {
   let unitPath;
   let cmds;
   try {
-    deps.mkdirSync(dirname8(logPath));
+    deps.mkdirSync(dirname9(logPath));
     if (deps.platform === "darwin") {
       const template = deps.readFileSync(join18(s.pluginDir, LAUNCHD_TEMPLATE));
       if (mode === "at-boot") {
@@ -72693,7 +72792,7 @@ async function runStart(deps, opts = {}, onLine) {
       } else {
         kind = "launchd-agent";
         unitPath = agentPlistPath(deps.home);
-        deps.mkdirSync(dirname8(unitPath));
+        deps.mkdirSync(dirname9(unitPath));
         deps.writeFileSync(unitPath, renderLaunchdPlist(template, renderOpts), 420);
         cmds = installCommands(kind, deps.uid, { agentPlist: unitPath });
         out.line(`Installed the LaunchAgent ${unitPath}.`);
@@ -72702,7 +72801,7 @@ async function runStart(deps, opts = {}, onLine) {
       const template = deps.readFileSync(join18(s.pluginDir, SYSTEMD_TEMPLATE));
       kind = "systemd-user";
       unitPath = systemdUnitPath(deps.home);
-      deps.mkdirSync(dirname8(unitPath));
+      deps.mkdirSync(dirname9(unitPath));
       deps.writeFileSync(unitPath, renderSystemdUnit(template, renderOpts), 420);
       cmds = installCommands(kind, deps.uid, { agentPlist: unitPath });
       out.line(`Installed the systemd user unit ${unitPath}.`);
@@ -73175,8 +73274,8 @@ async function runMigrate(deps, opts) {
     );
   }
   const paths = resolveConductorPaths(deps.env);
-  const outHost = opts.outHost ? resolve7(opts.outHost) : paths.hostFile;
-  const outProject = opts.outProject ? resolve7(opts.outProject) : void 0;
+  const outHost = opts.outHost ? resolve8(opts.outHost) : paths.hostFile;
+  const outProject = opts.outProject ? resolve8(opts.outProject) : void 0;
   const projectText = pretty(migration.projectFile);
   const hostText = pretty(migration.hostFile);
   const written = [];
@@ -73187,7 +73286,7 @@ async function runMigrate(deps, opts) {
     const targets = [outProject, outHost];
     if (outProject === outHost) return fail2("--out-project and --out-host name the same file");
     for (const t of targets) {
-      if (t === resolve7(legacyPath)) {
+      if (t === resolve8(legacyPath)) {
         return fail2(`refusing to write ${t}: it is the legacy deployment config, which migrate never modifies`);
       }
     }
@@ -73195,10 +73294,10 @@ async function runMigrate(deps, opts) {
     if (existing.length && !opts.force) {
       return fail2(`refusing to overwrite ${existing.join(", ")} (pass --force to replace it; nothing was written)`);
     }
-    mkdirSync7(dirname9(outProject), { recursive: true });
+    mkdirSync7(dirname10(outProject), { recursive: true });
     writeFileSync9(outProject, projectText, { mode: 420 });
     written.push(outProject);
-    mkdirSync7(dirname9(outHost), { recursive: true });
+    mkdirSync7(dirname10(outHost), { recursive: true });
     writeFileSync9(outHost, hostText, { mode: 384 });
     chmodSync5(outHost, 384);
     written.push(outHost);
@@ -73336,7 +73435,7 @@ function runDoctor(deps0, opts = {}) {
     env2.HARMONY_HOME = ISOLATED_HOME;
   }
   if (opts.configmap) {
-    const cmPath = resolve7(opts.configmap);
+    const cmPath = resolve8(opts.configmap);
     let text4 = null;
     try {
       text4 = deps0.readFileSync(cmPath);
@@ -73370,7 +73469,7 @@ function runDoctor(deps0, opts = {}) {
   const deps = {
     ...deps0,
     env: env2,
-    existsSync: (p) => virtual.has(p) ? true : isolated && p.startsWith(ISOLATED_HOME) ? false : opts.configmap && p.startsWith(resolve7(opts.configmap) + "#") ? false : deps0.existsSync(p),
+    existsSync: (p) => virtual.has(p) ? true : isolated && p.startsWith(ISOLATED_HOME) ? false : opts.configmap && p.startsWith(resolve8(opts.configmap) + "#") ? false : deps0.existsSync(p),
     readFileSync: (p) => {
       const v2 = virtual.get(p);
       return v2 !== void 0 ? v2 : deps0.readFileSync(p);
@@ -73381,14 +73480,14 @@ function runDoctor(deps0, opts = {}) {
   const loadLegacy = () => isolated ? null : loadLegacyDeploymentConfig({ configPath: opts.config, env: env2, existsSync: deps.existsSync, readFileSync: deps.readFileSync });
   const snap = opts.configmap || paths.snapshotFile.startsWith(ISOLATED_HOME) ? null : readSnapshot(paths.snapshotFile);
   const knobsSet = LEGACY_ENV_KNOBS.filter((k) => env2[k.name] !== void 0 && env2[k.name] !== "").map((k) => k.name);
-  const projectSource = opts.configmap ? { source: `ConfigMap data["${CONFIGMAP_PROJECT_KEY}"] (project layer)`, path: resolve7(opts.configmap), found: cmLoaded } : { source: "project override file (HARMONY_CONDUCTOR_PROJECT_FILE)", path: paths.projectFile ?? null, found: paths.projectFile ? deps.existsSync(paths.projectFile) : false };
+  const projectSource = opts.configmap ? { source: `ConfigMap data["${CONFIGMAP_PROJECT_KEY}"] (project layer)`, path: resolve8(opts.configmap), found: cmLoaded } : { source: "project override file (HARMONY_CONDUCTOR_PROJECT_FILE)", path: paths.projectFile ?? null, found: paths.projectFile ? deps.existsSync(paths.projectFile) : false };
   const snapshotSource = {
     source: "project snapshot (last-good copy of config_repo main)",
     path: paths.snapshotFile,
     found: snap !== null,
     detail: snap ? `${snap.source.repo}@${snap.source.ref}, fetched ${snap.fetched_at}, sha ${snap.sha ?? "unknown"}` : deps.existsSync(paths.snapshotFile) ? "present but unreadable or malformed" : void 0
   };
-  const hostSource = opts.configmap ? { source: `ConfigMap data["${CONFIGMAP_HOST_KEY}"] (host layer)`, path: resolve7(opts.configmap), found: cmLoaded } : { source: "host file", path: paths.hostFile, found: deps.existsSync(paths.hostFile) };
+  const hostSource = opts.configmap ? { source: `ConfigMap data["${CONFIGMAP_HOST_KEY}"] (host layer)`, path: resolve8(opts.configmap), found: cmLoaded } : { source: "host file", path: paths.hostFile, found: deps.existsSync(paths.hostFile) };
   const legacyFileSource = { source: "legacy deployment.json (deprecated)", path: legacyPath, found: isolated ? false : deps.existsSync(legacyPath) };
   const legacyEnvSource = { source: "legacy env knobs in THIS shell (deprecated)", path: null, found: knobsSet.length > 0, detail: knobsSet.join(", ") || void 0 };
   const sources = [
@@ -73532,7 +73631,7 @@ import { execFile as execFile4 } from "node:child_process";
 
 // src/daemon/conductor-logger.ts
 import { homedir as homedir8 } from "node:os";
-import { dirname as dirname10, join as join19 } from "node:path";
+import { dirname as dirname11, join as join19 } from "node:path";
 
 // src/daemon/log-shipper.ts
 var PERMISSION_RETRY_MS = 5 * 6e4;
@@ -73554,10 +73653,10 @@ function defaultLogsDeps() {
     now: Date.now,
     existsSync: fsExistsSync4,
     readFileSync: (p) => fsReadFileSync4(p, "utf8"),
-    runGcloud: (args) => new Promise((resolve9) => {
+    runGcloud: (args) => new Promise((resolve10) => {
       execFile4("gcloud", args, { maxBuffer: 64 * 1024 * 1024, timeout: 6e4 }, (err, stdout, stderr) => {
         const code = err ? typeof err.code === "number" ? err.code : 1 : 0;
-        resolve9({ code, stdout: String(stdout ?? ""), stderr: String(stderr ?? err?.message ?? "") });
+        resolve10({ code, stdout: String(stdout ?? ""), stderr: String(stderr ?? err?.message ?? "") });
       });
     }),
     configuredProject: () => {
@@ -73925,7 +74024,7 @@ import {
   writeFileSync as writeFileSync10,
   appendFileSync
 } from "node:fs";
-import { join as join20, resolve as resolve8 } from "node:path";
+import { join as join20, resolve as resolve9 } from "node:path";
 
 // src/agents/hooks.ts
 var HARMONY_HOOKS = {
@@ -74054,15 +74153,15 @@ function isFile(p) {
   }
 }
 function collectInstructionSources(input) {
-  const ws = resolve8(input.workspaceDir);
-  const plugin = resolve8(input.pluginDir);
+  const ws = resolve9(input.workspaceDir);
+  const plugin = resolve9(input.pluginDir);
   const candidates = [
     { label: "workspace/CLAUDE.md", path: join20(ws, "CLAUDE.md") },
     { label: "plugin/CLAUDE.md", path: join20(plugin, "CLAUDE.md") },
     { label: "web/CLAUDE.md", path: join20(ws, "web", "CLAUDE.md") }
   ];
   for (const p of input.extraRepoPaths ?? []) {
-    const abs = resolve8(p);
+    const abs = resolve9(p);
     candidates.push({ label: `${abs.replace(/^\/+/, "")}/CLAUDE.md`, path: join20(abs, "CLAUDE.md") });
   }
   const seen = /* @__PURE__ */ new Set();
@@ -74075,7 +74174,7 @@ function collectInstructionSources(input) {
   return out;
 }
 function collectSkillCapabilities(pluginDir) {
-  const root = join20(resolve8(pluginDir), "skills");
+  const root = join20(resolve9(pluginDir), "skills");
   if (!existsSync6(root)) return [];
   const out = [];
   for (const name of readdirSync2(root).sort()) {
@@ -74108,7 +74207,7 @@ function excludeFromGit(workspaceDir, entries) {
 }
 function linkSkills(workspaceDir, pluginDir) {
   const link = join20(workspaceDir, CODEX_SKILLS_LINK);
-  const target = join20(resolve8(pluginDir), "skills");
+  const target = join20(resolve9(pluginDir), "skills");
   if (!existsSync6(target)) throw new Error(`skills directory not found at ${target}`);
   mkdirSync8(join20(workspaceDir, ".agents"), { recursive: true });
   let st2;
@@ -74130,7 +74229,7 @@ function installAuth(authFile, codexHome) {
     throw new Error(`the Codex login-cache file is missing at ${authFile} (HARMONY_CODEX_AUTH_FILE) \u2014 mount it, see container/README.md "Codex credential runbook"`);
   }
   const dest = join20(codexHome, CODEX_AUTH_FILE_NAME);
-  if (resolve8(authFile) !== resolve8(dest)) {
+  if (resolve9(authFile) !== resolve9(dest)) {
     copyFileSync(authFile, dest);
   }
   chmodSync6(dest, 384);
@@ -74161,8 +74260,8 @@ function preflightHookScripts(pluginRoot) {
   return paths;
 }
 function provisionCodex(input) {
-  const workspaceDir = resolve8(input.workspaceDir);
-  const codexHome = resolve8(input.codexHome);
+  const workspaceDir = resolve9(input.workspaceDir);
+  const codexHome = resolve9(input.codexHome);
   const sources = collectInstructionSources(input);
   if (sources.length === 0) throw new Error(`no CLAUDE.md found under ${workspaceDir} / ${input.pluginDir} \u2014 nothing to build AGENTS.md from`);
   const agentsMd = renderCodexAgentsMd(sources, codexOverlayFor(input.pluginDir));
@@ -74172,12 +74271,12 @@ function provisionCodex(input) {
   if (existsSync6(agentsMdPath) && !readFileSync16(agentsMdPath, "utf8").startsWith(GENERATED_AGENTS_HEADER)) {
     throw new Error(`${agentsMdPath} exists and is not a generated file \u2014 refusing to overwrite a repository's own AGENTS.md`);
   }
-  preflightHookScripts(resolve8(input.pluginDir));
+  preflightHookScripts(resolve9(input.pluginDir));
   mkdirSync8(codexHome, { recursive: true });
-  const config2 = renderCodexConfig(HARMONY_MCP_CONNECTION, { pluginRoot: resolve8(input.pluginDir) });
+  const config2 = renderCodexConfig(HARMONY_MCP_CONNECTION, { pluginRoot: resolve9(input.pluginDir) });
   const configPath = join20(codexHome, config2.fileName);
   writeFileSync10(configPath, config2.content, { mode: 420 });
-  const hooks = renderCodexHooks(resolve8(input.pluginDir));
+  const hooks = renderCodexHooks(resolve9(input.pluginDir));
   const hooksPath = join20(codexHome, hooks.fileName);
   writeFileSync10(hooksPath, hooks.content, { mode: 420 });
   writeFileSync10(agentsMdPath, agentsMd);
@@ -74195,10 +74294,10 @@ function provisionCodex(input) {
   };
 }
 function renderCodexProviderConfig(input) {
-  const codexHome = resolve8(input.codexHome);
+  const codexHome = resolve9(input.codexHome);
   mkdirSync8(codexHome, { recursive: true });
   const config2 = renderCodexConfig(HARMONY_MCP_CONNECTION, {
-    pluginRoot: resolve8(input.pluginDir),
+    pluginRoot: resolve9(input.pluginDir),
     provider: input.provider,
     contextWindowTokens: input.contextWindowTokens ?? null
   });
@@ -74210,6 +74309,10 @@ function renderCodexProviderConfig(input) {
 // src/cli/commands/agent.ts
 import { homedir as homedir9 } from "node:os";
 import { join as join21 } from "node:path";
+function figmaMcpConfigArg(env2, exists) {
+  const path4 = env2.HARMONY_FIGMA_MCP_CONFIG;
+  return path4 && exists(path4) ? { mcpConfigPath: path4 } : {};
+}
 function launchRunConfig() {
   try {
     return getRunConfig();
@@ -74358,7 +74461,8 @@ function registerAgentCommands(program3) {
       resumeSessionId: opts.resume || void 0,
       model: opts.model || void 0,
       ...provider2 ? { modelProvider: provider2.name } : {},
-      extraFlags: extra ?? []
+      extraFlags: extra ?? [],
+      ...figmaMcpConfigArg(process.env, existsSync7)
     });
     process.stdout.write(encodeNulArgv(argv));
   });
@@ -74958,7 +75062,7 @@ function registerLegOutputCommands(program3) {
 // src/cli/commands/gates.ts
 import { execFileSync as execFileSync4, spawnSync } from "node:child_process";
 import { mkdirSync as mkdirSync10, readFileSync as readFileSync20, renameSync as renameSync7, writeFileSync as writeFileSync13 } from "node:fs";
-import { dirname as dirname11 } from "node:path";
+import { dirname as dirname12 } from "node:path";
 
 // src/config/notify-sync.ts
 import { createHash as createHash10 } from "node:crypto";
@@ -75248,7 +75352,7 @@ function registerGatesCommands(program3) {
 }
 function writeGateEvidenceMarker(projectRoot, marker) {
   const filePath = gateEvidenceMarkerPath(projectRoot, marker.extension_point);
-  mkdirSync10(dirname11(filePath), { recursive: true });
+  mkdirSync10(dirname12(filePath), { recursive: true });
   const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   writeFileSync13(tmpPath, `${JSON.stringify(marker, null, 2)}
 `, "utf8");
@@ -75277,7 +75381,7 @@ function productionNotifySyncIO() {
       }
     },
     writeCache: (path4, contents) => {
-      mkdirSync10(dirname11(path4), { recursive: true });
+      mkdirSync10(dirname12(path4), { recursive: true });
       const tmpPath = `${path4}.tmp-${process.pid}-${Date.now()}`;
       writeFileSync13(tmpPath, contents, "utf8");
       renameSync7(tmpPath, path4);
@@ -75833,10 +75937,10 @@ function evaluateEligibility(input) {
 var GITHUB_PR_URL = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?/i;
 async function runGhCommand(args) {
   const { execFile: execFile5 } = await import("node:child_process");
-  return await new Promise((resolve9, reject) => {
+  return await new Promise((resolve10, reject) => {
     execFile5("gh", args, { maxBuffer: 10 * 1024 * 1024 }, (err, stdout) => {
       if (err) reject(err);
-      else resolve9(stdout);
+      else resolve10(stdout);
     });
   });
 }
@@ -75928,10 +76032,10 @@ function buildAttestation(args, userId) {
 var GH_RELEASE_INFO_TIMEOUT_MS = 5e3;
 async function runGhForReleaseInfo(args) {
   const { execFile: execFile5 } = await import("node:child_process");
-  return await new Promise((resolve9, reject) => {
+  return await new Promise((resolve10, reject) => {
     execFile5("gh", args, { timeout: GH_RELEASE_INFO_TIMEOUT_MS, maxBuffer: 1024 * 1024 }, (err, stdout) => {
       if (err) reject(err);
-      else resolve9(String(stdout));
+      else resolve10(String(stdout));
     });
   });
 }
@@ -76612,10 +76716,10 @@ function createHintCoalescer(opts) {
     },
     closeWindow() {
       open = false;
-      const resolve9 = waiter;
+      const resolve10 = waiter;
       waiter = null;
-      if (resolve9) {
-        resolve9();
+      if (resolve10) {
+        resolve10();
         return;
       }
       latched = true;
@@ -76625,8 +76729,8 @@ function createHintCoalescer(opts) {
         latched = false;
         return Promise.resolve();
       }
-      return new Promise((resolve9) => {
-        waiter = resolve9;
+      return new Promise((resolve10) => {
+        waiter = resolve10;
       });
     },
     abandon() {
@@ -77734,12 +77838,12 @@ function localActiveProjectName() {
   }
 }
 function realSleep2(ms, signal) {
-  return new Promise((resolve9) => {
-    if (signal?.aborted) return resolve9();
+  return new Promise((resolve10) => {
+    if (signal?.aborted) return resolve10();
     const done = () => {
       clearTimeout(timer);
       signal?.removeEventListener("abort", done);
-      resolve9();
+      resolve10();
     };
     const timer = setTimeout(done, ms);
     signal?.addEventListener("abort", done, { once: true });
@@ -77805,14 +77909,14 @@ async function exitAfterDrain(stream, code, opts) {
     return deadCode;
   }
   let broken = false;
-  await new Promise((resolve9) => {
+  await new Promise((resolve10) => {
     let settled = false;
     const finish2 = () => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       stream.off("error", onError);
-      resolve9();
+      resolve10();
     };
     const onError = () => {
       broken = true;

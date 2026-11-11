@@ -39082,6 +39082,7 @@ function buildClaudeArgv(input) {
   argv.push(...extra);
   if (!extra.includes(CLAUDE_OUTPUT_FORMAT_FLAGS[0])) argv.push(...CLAUDE_OUTPUT_FORMAT_FLAGS);
   if (input.model) argv.push(CLAUDE_MODEL_FLAG, input.model);
+  if (input.mcpConfigPath) argv.push("--mcp-config", input.mcpConfigPath);
   return argv;
 }
 var SESSION_ROOT = "$HOME/.claude/projects";

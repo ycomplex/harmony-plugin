@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, statSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readMountedFigmaToken, renderFigmaMcp } from "../../agents/design-tools/figma.js";
@@ -13,12 +13,15 @@ vi.mock("../../agents/design-tools/figma.js", async (importOriginal) => ({
   readMountedFigmaToken: vi.fn(() => "fixture-access"),
 }));
 beforeEach(() => {
+  // B-1451: install-worker checks the token with one POST; never reach the network from a test.
+  vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 200 })));
   vi.stubEnv(
     "HARMONY_FIGMA_CONTEXT_B64",
     Buffer.from(JSON.stringify({ state: "connected" })).toString("base64"),
   );
 });
 afterEach(() => {
+  vi.unstubAllGlobals();
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
   process.exitCode = 0;
@@ -140,3 +143,95 @@ it.each(["absent", "existing", "duplicate", "header-only"])("Codex installation 
     vi.useRealTimers();
   }
 }, 60_000);
+
+// --- B-1451: the Claude config leaves every checkout; the token check; non-fatal failures. ----------
+describe("B-1451 install-worker", () => {
+  const meta = { state: "connected", connections_enabled: true, generation: 1,
+    access_version: "access-1", pat_version: "pat-1", access_expires_at: "2999-01-01T00:00:00Z" };
+  let dir: string;
+  let stderr: string[];
+  let stdout: string[];
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "b1451-figma-"));
+    mkdirSync(join(dir, "plugin"));
+    writeFileSync(join(dir, "plugin", ".mcp.json"), "{}");
+    vi.stubEnv("HARMONY_FIGMA_CONTEXT_B64", Buffer.from(JSON.stringify(meta)).toString("base64"));
+    vi.stubEnv("HARMONY_FIGMA_MCP_CONFIG", join(dir, "home", ".harmony", "figma-mcp.json"));
+    vi.stubEnv("HARMONY_FIGMA_WORKER_CONTEXT_FILE", join(dir, "context"));
+    vi.mocked(getAuthenticatedContext).mockResolvedValue({ client: { rpc: async () => ({ data: meta, error: null }) } } as never);
+    stderr = []; stdout = [];
+    vi.spyOn(process.stderr, "write").mockImplementation((c) => { stderr.push(String(c)); return true; });
+    vi.spyOn(process.stdout, "write").mockImplementation((c) => { stdout.push(String(c)); return true; });
+  });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+  const run = async (adapter = "claude-code") => {
+    const program = new Command();
+    registerFigmaCommands(program);
+    await program.parseAsync(["figma", "install-worker", "--adapter", adapter, "--plugin-dir", join(dir, "plugin")], { from: "user" });
+  };
+  const target = () => join(dir, "home", ".harmony", "figma-mcp.json");
+
+  it("writes the --mcp-config file in $HOME (0700/0600) and nothing under --plugin-dir", async () => {
+    await run();
+    expect(process.exitCode ?? 0).toBe(0);
+    expect(readFileSync(join(dir, "plugin", ".mcp.json"), "utf8")).toBe("{}");
+    expect(readdirSync(join(dir, "plugin"))).toEqual([".mcp.json"]);
+    const doc = JSON.parse(readFileSync(target(), "utf8"));
+    expect(doc.mcpServers.figma.type).toBe("http");
+    expect(doc.mcpServers.figma.url).toBe("https://mcp.figma.com/mcp");
+    expect(doc.mcpServers.figma.headers.Authorization).toBe("Bearer ${FIGMA_MCP_ACCESS_TOKEN}");
+    expect(readFileSync(target(), "utf8")).not.toContain("fixture-access");
+    expect(statSync(target()).mode & 0o777).toBe(0o600);
+    expect(statSync(join(dir, "home", ".harmony")).mode & 0o777).toBe(0o700);
+    expect(stdout.join("")).toContain(target());
+    expect(stdout.join("") + stderr.join("")).not.toContain("fixture-access");
+  });
+  it("refuses a target inside a git work tree, non-fatally", async () => {
+    mkdirSync(join(dir, "home", ".git"), { recursive: true });
+    await run();
+    expect(process.exitCode ?? 0).toBe(0);
+    expect(existsSync(target())).toBe(false);
+    expect(stderr.join("")).toMatch(/refusing to write the Figma server config inside a git work tree/);
+  });
+  it.each([401, 403])("HTTP %i: configures nothing and prints one skip line", async (status) => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status })));
+    await run();
+    expect(process.exitCode ?? 0).toBe(0);
+    expect(existsSync(target())).toBe(false);
+    expect(stderr.join("")).toBe(`Figma: the connection token failed to authenticate (HTTP ${status}); this leg runs without Figma.\n`);
+    expect(JSON.parse(Buffer.from(readFileSync(join(dir, "context"), "utf8"), "base64").toString()).state).toBe("reconnect");
+  });
+  it("timeout: configures Figma as optional with one line", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => { throw Object.assign(new Error("t"), { name: "TimeoutError" }); }));
+    await run();
+    expect(process.exitCode ?? 0).toBe(0);
+    expect(existsSync(target())).toBe(true);
+    expect(stderr.join("")).toBe("Figma: could not verify the connection token (timed out); Figma is configured as optional for this leg.\n");
+  });
+  it("5xx: configures Figma as optional", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 503 })));
+    await run();
+    expect(stderr.join("")).toContain("could not verify the connection token (HTTP 503)");
+  });
+  it("any failure exits 0 with one line", async () => {
+    vi.mocked(readMountedFigmaToken).mockImplementationOnce(() => { throw new Error("no mount"); });
+    await run();
+    expect(process.exitCode ?? 0).toBe(0);
+    expect(stderr.join("")).toBe("Figma: configuration failed; this leg runs without Figma.\n");
+  });
+  it("sends one initialize POST with the bearer and a timeout signal", async () => {
+    const f = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", f);
+    await run();
+    expect(f).toHaveBeenCalledTimes(1);
+    const [url, init] = f.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("https://mcp.figma.com/mcp");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body)).method).toBe("initialize");
+    expect(init.signal).toBeDefined();
+  });
+  it("codex: the Figma block is optional", () => {
+    expect(renderFigmaMcp("codex")).toContain("required = false");
+    expect(renderFigmaMcp("codex")).not.toContain("required = true");
+  });
+});
