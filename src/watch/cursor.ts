@@ -8,6 +8,8 @@
  *   - Level-triggered reminders: a seat-owned open item whose `last_reported` is older than
  *     `remindMs` is re-emitted with `reminder + 1`. Founder-held items are reported once, never
  *     reminded, and are listed by `--once` with their age.
+ *   - Every `incident` event (B-1452) is ordered before every other event of the same catch-up (stable
+ *     otherwise), before seq numbers are assigned, so it is the first line a seat reads.
  *   - `seq` is bumped once per emitted event (and at least once per changed write).
  */
 import type { BoardSnapshot, TicketSnapshot } from './board-read.js';
@@ -139,6 +141,9 @@ export function catchUp(cursor: WatchCursor | null, snapshot: BoardSnapshot, ctx
     events.push(classifyRemoved(id, prev, cctx));
   }
 
+  // B-1452: incidents first (Array.prototype.sort is stable), before seq numbers are assigned.
+  events.sort((a, b) => (a.event === 'incident' ? 0 : 1) - (b.event === 'incident' ? 0 : 1));
+
   const before = cursor ? JSON.stringify(cursor.tickets) : null;
   const changed = events.length > 0 || before !== JSON.stringify(tickets);
   let seq = cursor?.seq ?? 0;
@@ -166,8 +171,8 @@ export interface CurrentRow {
   key: string;
   title: string;
   state: string | null;
-  /** What is waiting: `ready` / `question` / `park`, or null when nothing is. */
-  waiting: 'ready' | 'question' | 'park' | null;
+  /** What is waiting: `incident` / `ready` / `question` / `park`, or null when nothing is. */
+  waiting: 'incident' | 'ready' | 'question' | 'park' | null;
   reason: string | null;
   /** Who the waiting item is on. Null when nothing is waiting. */
   on: Owner | null;
@@ -200,5 +205,10 @@ export function currentRows(snapshot: BoardSnapshot, ctx: Pick<CatchUpCtx, 'now'
         conduction_status: t.conduction?.status ?? null,
       };
     })
-    .sort((a, b) => a.key.localeCompare(b.key, undefined, { numeric: true }));
+    // B-1452: incidents first, then by key.
+    .sort(
+      (a, b) =>
+        (a.waiting === 'incident' ? 0 : 1) - (b.waiting === 'incident' ? 0 : 1) ||
+        a.key.localeCompare(b.key, undefined, { numeric: true }),
+    );
 }

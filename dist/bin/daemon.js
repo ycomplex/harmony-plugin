@@ -25552,8 +25552,20 @@ var TRIGGER_OWNERS = {
   "discuss": "any-gate",
   "phase-split-probe": "clarify",
   "worker-question": "any-gate",
-  "inception-semantics": "inception"
+  "inception-semantics": "inception",
+  // B-1452: a leg that exposed a credential outside the worker files ONE incident round through
+  // raise_incident (src/tools/incident.ts). Any gate may be running when it happens.
+  "incident": "any-gate"
 };
+var INCIDENT_TRIGGER = "incident";
+var INCIDENT_KIND_CREDENTIAL_EXPOSURE = "credential-exposure";
+function refuseWorkerOnIncident(exchange, operation, detail) {
+  const conductionId = getConductionId();
+  if (!conductionId || exchange.trigger !== INCIDENT_TRIGGER) return;
+  throw new Error(
+    `${operation} refused: conduction worker '${conductionId}' cannot ${detail} on incident exchange ${exchange.id}. Only a human releases an incident, by answering its round ("resume" or "stop") on the web or in the seat. Make no further change and end your turn. Nothing was written.`
+  );
+}
 var VALID_TRIGGERS = Object.keys(TRIGGER_OWNERS);
 var CLARIFY_OWNED_TRIGGERS = VALID_TRIGGERS.filter((t) => TRIGGER_OWNERS[t] === "clarify");
 var isMissingPendingResolutionColumn = (msg) => !!msg && /pending_resolution/.test(msg) && /(does not exist|could not find|schema cache|column)/i.test(msg);
@@ -25593,7 +25605,7 @@ async function startElicitation(client, projectId, userId, args) {
   if (error) throw new Error(error.message);
   return data;
 }
-async function fileElicitationRound(client, projectId, args) {
+async function fileElicitationRound(client, projectId, args, internal = {}) {
   if (!args.context_line?.trim()) throw new Error("context_line is required \u2014 one plain-prose line framing the round");
   const violations = validateRound(args.questions ?? []);
   if (violations.length > 0) {
@@ -25607,6 +25619,7 @@ async function fileElicitationRound(client, projectId, args) {
     }
     throw new Error(`exchange ${exchange.id} is '${exchange.status}' \u2014 rounds can only be filed on an active exchange`);
   }
+  if (args.prior_answers) refuseWorkerOnIncident(exchange, "file_elicitation_round", "echo prior_answers");
   let rounds = Array.isArray(exchange.rounds) ? exchange.rounds : [];
   if (args.prior_answers) {
     const echoed = echoPriorAnswers(rounds, args.prior_answers, (/* @__PURE__ */ new Date()).toISOString());
@@ -25639,7 +25652,16 @@ async function fileElicitationRound(client, projectId, args) {
     awaiting_human_reason: "elicitation-round",
     // `gate` rides along (B-462) so surfaces can group/label the round by the lifecycle gate the
     // exchange serves without re-fetching the exchange (the Queue card's gate pill reads it).
-    awaiting_human_ref: { kind: "elicitation", exchange_id: exchange.id, round: n, gate: exchange.gate ?? null }
+    // B-1452: every round on an incident exchange carries the `incident` marker (a re-asked release
+    // question included), so the watch and the queue keep surfacing it first.
+    awaiting_human_ref: {
+      kind: "elicitation",
+      exchange_id: exchange.id,
+      round: n,
+      gate: exchange.gate ?? null,
+      ...exchange.trigger === INCIDENT_TRIGGER ? { incident: INCIDENT_KIND_CREDENTIAL_EXPOSURE } : {},
+      ...internal.refExtra ?? {}
+    }
   }).eq("id", exchange.task_id);
   if (taskErr) throw new Error(taskErr.message);
   const warnings = warnRound(round.questions);

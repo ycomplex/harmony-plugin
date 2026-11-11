@@ -27,6 +27,28 @@ function isCleanRowShape(row, nonArchivedChildCount) {
   return classifyCleanRowShape(row, nonArchivedChildCount) !== null;
 }
 
+// src/tools/token-shapes.ts
+var B = "(?<![A-Za-z0-9])";
+var TOKEN_SHAPES = [
+  { name: "github", pattern: new RegExp(`${B}(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]*`, "g") },
+  { name: "sk-key", pattern: new RegExp(`${B}sk-[A-Za-z0-9_-]*`, "g") },
+  { name: "jwt", pattern: new RegExp(`${B}eyJ[A-Za-z0-9_+/=.-]*`, "g") },
+  { name: "slack", pattern: new RegExp(`${B}xox[abpr]-[A-Za-z0-9-]+`, "g") },
+  { name: "aws-access-key", pattern: new RegExp(`${B}AKIA[0-9A-Z]{16}`, "g") },
+  // Every Figma token prefix: `figd_` (personal access token), `figu_` (OAuth user token, the shape that
+  // leaked on 2026-11-11), and any other `fig<letter>_` Figma adds. Matches prefix AND body, so a scrub
+  // leaves no prefix behind, including a body with `_` or `-` in short runs the long-run fallback misses.
+  { name: "figma", pattern: new RegExp(`${B}fig[a-z]_[A-Za-z0-9_-]+`, "g") },
+  { name: "google-api-key", pattern: new RegExp(`${B}AIza[0-9A-Za-z_-]{35}`, "g") },
+  { name: "private-key-block", pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----/g },
+  // Last: it would otherwise eat part of a longer, more specific match above.
+  { name: "long-base64-run", pattern: /[A-Za-z0-9+/]{32,}={0,2}/g }
+];
+function containsTokenShape(s) {
+  if (typeof s !== "string" || s.length === 0) return false;
+  return TOKEN_SHAPES.some(({ pattern }) => new RegExp(pattern.source, pattern.flags.replace("g", "")).test(s));
+}
+
 // src/daemon/waiting-on.ts
 var WAIT_CEILING_MS = 24 * 60 * 60 * 1e3;
 var WAIT_DEFAULT_RECHECK_MS = 15 * 60 * 1e3;
@@ -75,7 +97,7 @@ function effectiveLegStart(start, now) {
 }
 function safeRef(value) {
   if (typeof value !== "string") return "[redacted]";
-  if (/(?:^|[/:#._-])(?:gh[pousr]_|github_pat_|sk-|eyJ)/.test(value) || /[A-Za-z0-9+/]{32,}/.test(value)) return "[redacted]";
+  if (containsTokenShape(value)) return "[redacted]";
   if (/^[A-Za-z0-9#:._/-]{1,80}$/.test(value) || /^https:\/\/github\.com\/[a-zA-Z0-9_.-]{1,50}\/[a-zA-Z0-9_.-]{1,100}\/(actions\/runs|pull)\/[0-9]{1,20}$/.test(value)) return value;
   return "[redacted]";
 }

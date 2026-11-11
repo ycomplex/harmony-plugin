@@ -45,4 +45,13 @@ describe('B-1440 wait boundaries and diagnostics', () => {
       expect('message' in d && d.message).not.toContain(ref);
     }
   });
+  it('redacts a Figma OAuth (figu_) ref whole, even though its shape passes the printable allowlist (B-1452)', () => {
+    const ref = ['fi', 'gu_', 'Ab3_x9-Qr7_kL2'].join('');
+    for (const blocks of [0, 2]) {
+      const d = decide({ ...row, waiting_on: { ...marker, ref } }, '2026-11-10T15:41:53Z', blocks);
+      expect('message' in d && d.message).toContain('ref=[redacted], since=');
+      expect('message' in d && d.message).not.toContain(ref);
+      expect('message' in d && d.message).not.toContain(['fi', 'gu_'].join(''));
+    }
+  });
 });

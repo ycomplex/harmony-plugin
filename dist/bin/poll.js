@@ -31655,7 +31655,10 @@ var TRIGGER_OWNERS = {
   "discuss": "any-gate",
   "phase-split-probe": "clarify",
   "worker-question": "any-gate",
-  "inception-semantics": "inception"
+  "inception-semantics": "inception",
+  // B-1452: a leg that exposed a credential outside the worker files ONE incident round through
+  // raise_incident (src/tools/incident.ts). Any gate may be running when it happens.
+  "incident": "any-gate"
 };
 var VALID_TRIGGERS = Object.keys(TRIGGER_OWNERS);
 var CLARIFY_OWNED_TRIGGERS = VALID_TRIGGERS.filter((t) => TRIGGER_OWNERS[t] === "clarify");

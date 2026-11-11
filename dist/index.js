@@ -45001,6 +45001,21 @@ import {
 
 // src/daemon/gate-phase.ts
 var GATES = ["clarify", "decompose", "design", "plan", "build", "release", "verify"];
+var GATE_BY_WORKFLOW_STATE = {
+  Captured: "clarify",
+  Proposed: "clarify",
+  Clarified: "decompose",
+  Decomposed: "design",
+  Designed: "plan",
+  Planned: "build",
+  Built: "release",
+  Deployed: "verify"
+};
+function resolveGatePhase(workflow_state, workflow_activity) {
+  void workflow_activity;
+  if (!workflow_state) return null;
+  return GATE_BY_WORKFLOW_STATE[workflow_state] ?? null;
+}
 
 // src/tools/text-normalize.ts
 var ENTITY_MAP = {
@@ -48479,8 +48494,25 @@ var TRIGGER_OWNERS = {
   "discuss": "any-gate",
   "phase-split-probe": "clarify",
   "worker-question": "any-gate",
-  "inception-semantics": "inception"
+  "inception-semantics": "inception",
+  // B-1452: a leg that exposed a credential outside the worker files ONE incident round through
+  // raise_incident (src/tools/incident.ts). Any gate may be running when it happens.
+  "incident": "any-gate"
 };
+var INCIDENT_TRIGGER = "incident";
+var INCIDENT_KIND_CREDENTIAL_EXPOSURE = "credential-exposure";
+function refuseWorkerOnIncident(exchange, operation2, detail) {
+  const conductionId = getConductionId();
+  if (!conductionId || exchange.trigger !== INCIDENT_TRIGGER) return;
+  throw new Error(
+    `${operation2} refused: conduction worker '${conductionId}' cannot ${detail} on incident exchange ${exchange.id}. Only a human releases an incident, by answering its round ("resume" or "stop") on the web or in the seat. Make no further change and end your turn. Nothing was written.`
+  );
+}
+function latestRoundAnswered(rounds) {
+  if (!Array.isArray(rounds) || rounds.length === 0) return false;
+  const last = rounds[rounds.length - 1];
+  return !!last && typeof last.answers === "object" && last.answers !== null && Object.keys(last.answers).length > 0;
+}
 var VALID_TRIGGERS = Object.keys(TRIGGER_OWNERS);
 var CLARIFY_OWNED_TRIGGERS = VALID_TRIGGERS.filter((t) => TRIGGER_OWNERS[t] === "clarify");
 var VALID_OUTCOMES = ["converged", "force-quit", "abandoned"];
@@ -48528,14 +48560,14 @@ var startElicitationTool = {
     type: "object",
     properties: {
       task_id: { type: "string", description: "The task the exchange belongs to \u2014 UUID, task number, or visual ID (e.g., B-43)" },
-      trigger: { type: "string", description: "What started the exchange: 'pre-draft-clarify' (questions before a clarification draft exists) | 'discuss' (attached to an active brief under discussion) | 'phase-split-probe' (probing whether/where to split phases) | 'worker-question' (the running session itself hit a judgment call or capability denial mid-run \u2014 B-733; see skills/harmony-shared/elicitation-engine.md \xA7The worker-question trigger)" },
+      trigger: { type: "string", description: "What started the exchange: 'pre-draft-clarify' (questions before a clarification draft exists) | 'discuss' (attached to an active brief under discussion) | 'phase-split-probe' (probing whether/where to split phases) | 'worker-question' (the running session itself hit a judgment call or capability denial mid-run \u2014 B-733; see skills/harmony-shared/elicitation-engine.md \xA7The worker-question trigger) | 'inception-semantics' (the inception walk's semantics questions) | 'incident' (opened by raise_incident only, B-1452 \u2014 never open it by hand)" },
       gate: { type: "string", description: "The workflow activity the exchange serves (e.g. 'clarifying'). Optional." },
       brief_id: { type: "string", description: "The active brief a 'discuss' exchange attaches to. Omit for pre-draft triggers." }
     },
     required: ["task_id", "trigger"]
   }
 };
-async function fileElicitationRound(client, projectId, args) {
+async function fileElicitationRound(client, projectId, args, internal = {}) {
   if (!args.context_line?.trim()) throw new Error("context_line is required \u2014 one plain-prose line framing the round");
   const violations = validateRound(args.questions ?? []);
   if (violations.length > 0) {
@@ -48549,6 +48581,7 @@ async function fileElicitationRound(client, projectId, args) {
     }
     throw new Error(`exchange ${exchange.id} is '${exchange.status}' \u2014 rounds can only be filed on an active exchange`);
   }
+  if (args.prior_answers) refuseWorkerOnIncident(exchange, "file_elicitation_round", "echo prior_answers");
   let rounds = Array.isArray(exchange.rounds) ? exchange.rounds : [];
   if (args.prior_answers) {
     const echoed = echoPriorAnswers(rounds, args.prior_answers, (/* @__PURE__ */ new Date()).toISOString());
@@ -48581,7 +48614,16 @@ async function fileElicitationRound(client, projectId, args) {
     awaiting_human_reason: "elicitation-round",
     // `gate` rides along (B-462) so surfaces can group/label the round by the lifecycle gate the
     // exchange serves without re-fetching the exchange (the Queue card's gate pill reads it).
-    awaiting_human_ref: { kind: "elicitation", exchange_id: exchange.id, round: n, gate: exchange.gate ?? null }
+    // B-1452: every round on an incident exchange carries the `incident` marker (a re-asked release
+    // question included), so the watch and the queue keep surfacing it first.
+    awaiting_human_ref: {
+      kind: "elicitation",
+      exchange_id: exchange.id,
+      round: n,
+      gate: exchange.gate ?? null,
+      ...exchange.trigger === INCIDENT_TRIGGER ? { incident: INCIDENT_KIND_CREDENTIAL_EXPOSURE } : {},
+      ...internal.refExtra ?? {}
+    }
   }).eq("id", exchange.task_id);
   if (taskErr) throw new Error(taskErr.message);
   const warnings = warnRound(round.questions);
@@ -48652,6 +48694,10 @@ async function concludeElicitation(client, projectId, args) {
     }
     throw new Error(`exchange ${exchange.id} is already '${exchange.status}' \u2014 cannot conclude it '${args.outcome}'`);
   }
+  if (args.prior_answers) refuseWorkerOnIncident(exchange, "conclude_elicitation", "echo prior_answers");
+  if (!latestRoundAnswered(exchange.rounds)) {
+    refuseWorkerOnIncident(exchange, "conclude_elicitation", "conclude an unanswered round");
+  }
   let roundsUpdate = {};
   if (args.prior_answers) {
     const echoed = echoPriorAnswers(
@@ -48671,7 +48717,7 @@ async function concludeElicitation(client, projectId, args) {
 }
 var concludeElicitationTool = {
   name: "conclude_elicitation",
-  description: `Conclude an elicitation exchange: 'converged' (the agent can now confidently draft a brief that represents the user's intent), 'force-quit' (the human said "best efforts, proceed" \u2014 draft from what you have; mint any claims with provenance 'force-quit'), or 'abandoned'. Sets the exchange status and clears both consumable markers. Writes NOTHING else: it does not touch the attached brief and does not re-set the task's awaiting flag \u2014 for 'abandoned' on a brief-attached exchange the brief row deliberately stays ACTIVE with the flag down, so the owning gate's "brief already active" path re-surfaces it in place on re-entry. If the exchange is already 'abandoned' (a mechanical cancel landed first) and a DIFFERENT outcome is requested, returns the typed no-op { noop: true, cause: 'exchange-cancelled', exchange } instead of throwing (B-461) \u2014 the CALLING AGENT must then archive any claims it minted in that same turn (claims are minted before conclude; the mint\u2192conclude window can race a cancel). Re-issuing the SAME outcome stays idempotent and returns the row.`,
+  description: `Conclude an elicitation exchange: 'converged' (the agent can now confidently draft a brief that represents the user's intent), 'force-quit' (the human said "best efforts, proceed" \u2014 draft from what you have; mint any claims with provenance 'force-quit'), or 'abandoned'. Sets the exchange status and clears both consumable markers. Writes NOTHING else: it does not touch the attached brief and does not re-set the task's awaiting flag \u2014 for 'abandoned' on a brief-attached exchange the brief row deliberately stays ACTIVE with the flag down, so the owning gate's "brief already active" path re-surfaces it in place on re-entry. If the exchange is already 'abandoned' (a mechanical cancel landed first) and a DIFFERENT outcome is requested, returns the typed no-op { noop: true, cause: 'exchange-cancelled', exchange } instead of throwing (B-461) \u2014 the CALLING AGENT must then archive any claims it minted in that same turn (claims are minted before conclude; the mint\u2192conclude window can race a cancel). Re-issuing the SAME outcome stays idempotent and returns the row. B-1452: from a conduction worker (HARMONY_CONDUCTION_ID set), an 'incident' exchange may be concluded only once a human has answered its latest round, and never with prior_answers.`,
   inputSchema: {
     type: "object",
     properties: {
@@ -48711,6 +48757,7 @@ async function submitElicitationAnswers(client, projectId, args) {
       `exchange ${latest.id} is '${latest.status}' \u2014 answers can only be recorded on an active exchange, and this one is already concluded. Nothing was written.`
     );
   }
+  refuseWorkerOnIncident(exchange, "submit_elicitation_answers", "submit answers");
   const nowIso = (/* @__PURE__ */ new Date()).toISOString();
   const echoed = echoPriorAnswers(
     Array.isArray(exchange.rounds) ? exchange.rounds : [],
@@ -48729,7 +48776,7 @@ async function submitElicitationAnswers(client, projectId, args) {
 }
 var submitElicitationAnswersTool = {
   name: "submit_elicitation_answers",
-  description: "Record terminal-given answers to the OPEN round of a task's active elicitation exchange and hand the ball back to the agent \u2014 WITHOUT asking another round and WITHOUT concluding the exchange. This is the terminal twin of the web's answer form and the PRODUCER of the answers marker: it stamps answers_submitted_at, leaves the exchange 'active' (a follow-up round can still be filed), and clears the task's awaiting_human_input (reason/ref nulled) so the conductor watch classifies 'answers-landed'. Never touches workflow_state. Use it when an out-of-band caller holds answers the human gave in the terminal and the next move hasn't been decided yet; use file_elicitation_round's or conclude_elicitation's prior_answers instead when you are filing the next round or concluding in the same turn (those CONSUME the marker). Same guards as prior_answers: only the last filed round's unanswered questions may be answered, a submitted answer is never overwritten, and verbs must fit the question kind \u2014 any violation refuses the whole call with no partial write. Each answer is stamped via:'terminal'. Refuses (writing nothing) when the task has no open exchange, or when its exchange is already concluded \u2014 an 'abandoned' exchange means the human cancelled the discussion, so do not retry.",
+  description: "Record terminal-given answers to the OPEN round of a task's active elicitation exchange and hand the ball back to the agent \u2014 WITHOUT asking another round and WITHOUT concluding the exchange. This is the terminal twin of the web's answer form and the PRODUCER of the answers marker: it stamps answers_submitted_at, leaves the exchange 'active' (a follow-up round can still be filed), and clears the task's awaiting_human_input (reason/ref nulled) so the conductor watch classifies 'answers-landed'. Never touches workflow_state. Use it when an out-of-band caller holds answers the human gave in the terminal and the next move hasn't been decided yet; use file_elicitation_round's or conclude_elicitation's prior_answers instead when you are filing the next round or concluding in the same turn (those CONSUME the marker). Same guards as prior_answers: only the last filed round's unanswered questions may be answered, a submitted answer is never overwritten, and verbs must fit the question kind \u2014 any violation refuses the whole call with no partial write. Each answer is stamped via:'terminal'. Refuses (writing nothing) when the task has no open exchange, or when its exchange is already concluded \u2014 an 'abandoned' exchange means the human cancelled the discussion, so do not retry. Also refuses (writing nothing) when called from a conduction worker (HARMONY_CONDUCTION_ID set) on an 'incident' exchange (B-1452): only a human releases an incident.",
   inputSchema: {
     type: "object",
     properties: {
@@ -56912,6 +56959,229 @@ async function resolveUnparkRunConfig(client, taskId, args) {
   return { ...merged, [INHERITED_FROM_KEY]: previous.id };
 }
 
+// src/tools/token-shapes.ts
+var B = "(?<![A-Za-z0-9])";
+var TOKEN_SHAPES = [
+  { name: "github", pattern: new RegExp(`${B}(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]*`, "g") },
+  { name: "sk-key", pattern: new RegExp(`${B}sk-[A-Za-z0-9_-]*`, "g") },
+  { name: "jwt", pattern: new RegExp(`${B}eyJ[A-Za-z0-9_+/=.-]*`, "g") },
+  { name: "slack", pattern: new RegExp(`${B}xox[abpr]-[A-Za-z0-9-]+`, "g") },
+  { name: "aws-access-key", pattern: new RegExp(`${B}AKIA[0-9A-Z]{16}`, "g") },
+  // Every Figma token prefix: `figd_` (personal access token), `figu_` (OAuth user token, the shape that
+  // leaked on 2026-11-11), and any other `fig<letter>_` Figma adds. Matches prefix AND body, so a scrub
+  // leaves no prefix behind, including a body with `_` or `-` in short runs the long-run fallback misses.
+  { name: "figma", pattern: new RegExp(`${B}fig[a-z]_[A-Za-z0-9_-]+`, "g") },
+  { name: "google-api-key", pattern: new RegExp(`${B}AIza[0-9A-Za-z_-]{35}`, "g") },
+  { name: "private-key-block", pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----/g },
+  // Last: it would otherwise eat part of a longer, more specific match above.
+  { name: "long-base64-run", pattern: /[A-Za-z0-9+/]{32,}={0,2}/g }
+];
+var REDACTED = "[redacted]";
+function scrubTokenShapes(s) {
+  if (typeof s !== "string") return "";
+  let out = s;
+  for (const { pattern } of TOKEN_SHAPES) {
+    out = out.replace(new RegExp(pattern.source, pattern.flags), REDACTED);
+  }
+  return out;
+}
+
+// src/tools/incident.ts
+var INCIDENT_KINDS = [INCIDENT_KIND_CREDENTIAL_EXPOSURE];
+var INCIDENT_RELEASE_QUESTION_ID = "release";
+var GATE_ACTIVITY = {
+  clarify: "clarifying",
+  decompose: "decomposing",
+  design: "designing",
+  plan: "planning",
+  build: "building",
+  release: "releasing",
+  verify: "verifying"
+};
+function incidentGateFor(workflowState) {
+  const gate = resolveGatePhase(workflowState ?? null);
+  return gate ? GATE_ACTIVITY[gate] ?? null : null;
+}
+function clean(s) {
+  try {
+    const text3 = typeof s === "string" ? s.replace(/\\n/g, "\n").trim() : "";
+    return scrubTokenShapes(text3);
+  } catch {
+    return "[redacted]";
+  }
+}
+function incidentContextLine(what, where) {
+  return `Incident \u2014 credential exposure: ${what} was exposed at ${where.replace(/[.\s]+$/, "")}.`;
+}
+function incidentReleaseQuestion(humanSteps) {
+  return {
+    id: INCIDENT_RELEASE_QUESTION_ID,
+    stakes: "load-bearing",
+    kind: "open",
+    text: `Only a human can do this: ${humanSteps.replace(/[.\s]+$/, "")}. When it is done, answer "resume" to let the ticket continue, or "stop" to park it with this incident as the reason.`
+  };
+}
+async function readActiveExchange(client, taskId) {
+  const { data, error: error2 } = await client.from("elicitation_exchanges").select("id, trigger, rounds").eq("task_id", taskId).eq("status", "active").maybeSingle();
+  if (error2) throw new Error(error2.message);
+  return data ?? null;
+}
+async function raiseIncident(client, projectId, userId, args) {
+  if (!args || !args.task_id) throw new Error("task_id is required");
+  if (args.kind !== INCIDENT_KIND_CREDENTIAL_EXPOSURE) {
+    throw new Error(
+      `incident kind '${clean(args.kind)}' is not accepted \u2014 the only incident kind is '${INCIDENT_KIND_CREDENTIAL_EXPOSURE}'. Nothing was written.`
+    );
+  }
+  const what = clean(args.what);
+  const where = clean(args.where);
+  const humanSteps = clean(args.human_steps);
+  const missing3 = [
+    ["what", what],
+    ["where", where],
+    ["human_steps", humanSteps]
+  ].filter(([, v]) => !v).map(([k]) => k);
+  if (missing3.length > 0) {
+    throw new Error(`${missing3.join(", ")} ${missing3.length === 1 ? "is" : "are"} required (never the secret itself). Nothing was written.`);
+  }
+  const scrubbed = what !== String(args.what ?? "").replace(/\\n/g, "\n").trim() || where !== String(args.where ?? "").replace(/\\n/g, "\n").trim() || humanSteps !== String(args.human_steps ?? "").replace(/\\n/g, "\n").trim();
+  const taskId = await resolveTaskId2(client, projectId, args.task_id);
+  let workflowState = null;
+  let fieldValues = null;
+  try {
+    const { data } = await client.from("tasks").select("id, workflow_state, field_values").eq("id", taskId).maybeSingle();
+    const row = data;
+    workflowState = row?.workflow_state ?? null;
+    fieldValues = row?.field_values ?? null;
+  } catch {
+  }
+  let supersededExchangeId = null;
+  let active = await readActiveExchange(client, taskId);
+  if (active && active.trigger !== INCIDENT_TRIGGER) {
+    await concludeElicitation(client, projectId, { exchange_id: active.id, outcome: "abandoned" });
+    supersededExchangeId = active.id;
+    active = null;
+  }
+  let exchangeId;
+  if (active) {
+    exchangeId = active.id;
+  } else {
+    const gate = incidentGateFor(workflowState);
+    const opened = await startElicitation(client, projectId, userId, {
+      task_id: taskId,
+      trigger: INCIDENT_TRIGGER,
+      ...gate ? { gate } : {}
+    });
+    if (opened.trigger !== void 0 && opened.trigger !== INCIDENT_TRIGGER) {
+      throw new Error(
+        `another elicitation exchange (${opened.id}) became active on this ticket while the incident was being raised \u2014 raise it again. The incident round was not filed.`
+      );
+    }
+    exchangeId = opened.id;
+  }
+  const filed = await fileElicitationRound(
+    client,
+    projectId,
+    {
+      exchange_id: exchangeId,
+      context_line: incidentContextLine(what, where),
+      questions: [incidentReleaseQuestion(humanSteps)]
+    },
+    { refExtra: { incident: INCIDENT_KIND_CREDENTIAL_EXPOSURE } }
+  );
+  if (filed && filed.noop === true) {
+    throw new Error(
+      `the incident exchange ${exchangeId} was cancelled before the round landed \u2014 raise the incident again. The incident round was not filed.`
+    );
+  }
+  const rounds = Array.isArray(filed?.rounds) ? filed.rounds : [];
+  const round = rounds.length > 0 ? rounds[rounds.length - 1].n : 1;
+  let clearedModelHandoff = false;
+  const waitingOn = fieldValues?.waiting_on;
+  if (waitingOn && waitingOn.kind === "model-handoff") {
+    try {
+      const { error: error2 } = await client.from("tasks").update({ field_values: { ...fieldValues, waiting_on: null } }).eq("id", taskId);
+      clearedModelHandoff = !error2;
+    } catch {
+      clearedModelHandoff = false;
+    }
+  }
+  const lines = [
+    `INCIDENT-RAISED kind=${INCIDENT_KIND_CREDENTIAL_EXPOSURE} exchange_id=${exchangeId}`,
+    "",
+    `What was exposed: ${what}`,
+    `Where: ${where}`,
+    `Only a human can do this: ${humanSteps}`,
+    "",
+    'The leg stopped and made no further change. Answer the incident round "resume" to let the ticket continue, or "stop" to park it with this incident as the reason.'
+  ];
+  if (supersededExchangeId) {
+    lines.push(
+      "",
+      `The incident takes precedence: the open elicitation exchange ${supersededExchangeId} was concluded 'abandoned'.`
+    );
+  }
+  let commentId = null;
+  let commentError;
+  try {
+    const comment = await addComment(client, projectId, userId, { task_id: taskId, content: lines.join("\n") });
+    commentId = comment?.id ?? null;
+  } catch (err) {
+    commentError = scrubTokenShapes(err instanceof Error ? err.message : String(err?.message ?? err));
+  }
+  return {
+    task_id: taskId,
+    kind: INCIDENT_KIND_CREDENTIAL_EXPOSURE,
+    exchange_id: exchangeId,
+    round,
+    superseded_exchange_id: supersededExchangeId,
+    cleared_model_handoff: clearedModelHandoff,
+    what,
+    where,
+    human_steps: humanSteps,
+    scrubbed,
+    comment_id: commentId,
+    ...commentError !== void 0 ? { comment_error: commentError } : {}
+  };
+}
+function latestRoundAnswered2(rounds) {
+  if (!Array.isArray(rounds) || rounds.length === 0) return false;
+  const last = rounds[rounds.length - 1];
+  return !!last && !!last.answers && typeof last.answers === "object" && Object.keys(last.answers).length > 0;
+}
+var IncidentOpenError = class extends Error {
+};
+async function assertNoOpenIncident(client, taskId, label = taskId) {
+  let active;
+  try {
+    active = await readActiveExchange(client, taskId);
+  } catch {
+    return;
+  }
+  if (!active || active.trigger !== INCIDENT_TRIGGER || latestRoundAnswered2(active.rounds)) return;
+  throw new IncidentOpenError(
+    `${label} has an open incident (credential exposure) waiting on a human \u2014 answer its incident round first ("resume" to continue, or "stop" to park). No conduction was created.`
+  );
+}
+var raiseIncidentTool = {
+  name: "raise_incident",
+  description: `Raise an incident on a ticket (B-1452). Use ONLY when you discovered that you exposed a credential outside the worker \u2014 pushed, posted or sent it somewhere it can be read. Files one incident question round (trigger 'incident'): the ticket pauses for a human (awaiting_human_input, reason 'elicitation-round', awaiting_human_ref.incident = 'credential-exposure'), the conductor launches nothing, and the seat's watch and the queue show it first. An open exchange of any other trigger is concluded 'abandoned' \u2014 the incident takes precedence. Posts an INCIDENT-RAISED comment. NEVER put the secret in any argument: describe it (e.g. "the GitHub token of the build app"), never quote it. Token-shaped text is scrubbed to [redacted] before anything is written, and a run of 32+ letters/digits is scrubbed too, so name a commit by a short SHA. After calling it, make NO further change (no commit, push, revert or cleanup) and END YOUR TURN \u2014 the open round is the clean pause. A human releases it by answering "resume" or "stop".`,
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: { type: "string", description: "The ticket the leg is working \u2014 UUID, task number, or visual ID (e.g., B-43)." },
+      kind: { type: "string", enum: [...INCIDENT_KINDS], description: "The incident kind. Only 'credential-exposure' exists." },
+      what: { type: "string", description: 'What was exposed, described \u2014 never the value (e.g. "a GitHub installation token").' },
+      where: { type: "string", description: 'Where it was exposed (e.g. "commit 1a2b3c4 on branch feat/x of org/repo", "a comment on PR #12").' },
+      human_steps: {
+        type: "string",
+        description: 'Exactly what only a human can do (e.g. "revoke and rotate the token, then rewrite the branch history to drop commit 1a2b3c4").'
+      }
+    },
+    required: ["task_id", "kind", "what", "where", "human_steps"]
+  }
+};
+
 // src/tools/create-conduction.ts
 var HANDOFF_CONTRACT_NOTE = "the duplicate-guard can only detect an active conduction record \u2014 it can't see an in-progress terminal session, so make sure any in-session work on this ticket has stopped before handing it off.";
 async function createConduction2(client, projectId, userId, args) {
@@ -56926,6 +57196,7 @@ async function createConduction2(client, projectId, userId, args) {
   const filledRunConfig = fillRunConfigDefaults(runConfig, defaults);
   await assertRunConfigRuntime(client, filledRunConfig);
   await assertRunConfigPolicy(client, projectId, filledRunConfig);
+  await assertNoOpenIncident(client, taskId, args.task_id);
   try {
     await reviveParkedTicketIfNeeded(client, projectId, userId, taskId, {
       unpark: args.unpark,
@@ -57223,6 +57494,20 @@ var ackProjections = {
   file_elicitation_round: (result) => elicitationAck(result),
   conclude_elicitation: (result) => elicitationAck(result),
   submit_elicitation_answers: (result) => elicitationAck(result),
+  // ——— incident (B-1452) ———
+  // The scrubbed what/where/human_steps are the caller's own text (scrubbed) — dropped; the ack keeps
+  // the server-computed identity of the round and whether scrubbing changed anything.
+  raise_incident: (result) => pick2(result, [
+    "task_id",
+    "kind",
+    "exchange_id",
+    "round",
+    "superseded_exchange_id",
+    "cleared_model_handoff",
+    "scrubbed",
+    "comment_id",
+    "comment_error"
+  ]),
   // ——— attachments ———
   attach_file: (result) => (
     // content_type/byte_size/status come from the server-side finalize sniff; `filename` is derived
@@ -58053,6 +58338,8 @@ function registerTools(disabledFeatures) {
     getElicitationTool,
     concludeElicitationTool,
     submitElicitationAnswersTool,
+    // B-1452 — a leg that exposed a credential raises an incident a human sees first.
+    raiseIncidentTool,
     advanceWorkflowTool,
     referenceKnowledgeTool,
     listTicketKnowledgeTool,
@@ -58371,6 +58658,9 @@ async function handleToolCall(name, args, client, projectId, userId) {
         break;
       case "submit_elicitation_answers":
         result = await submitElicitationAnswers(client, projectId, args);
+        break;
+      case "raise_incident":
+        result = await raiseIncident(client, projectId, userId, args);
         break;
       case "advance_workflow":
         result = await advanceWorkflow(client, projectId, args);

@@ -37922,10 +37922,28 @@ var TRIGGER_OWNERS = {
   "discuss": "any-gate",
   "phase-split-probe": "clarify",
   "worker-question": "any-gate",
-  "inception-semantics": "inception"
+  "inception-semantics": "inception",
+  // B-1452: a leg that exposed a credential outside the worker files ONE incident round through
+  // raise_incident (src/tools/incident.ts). Any gate may be running when it happens.
+  "incident": "any-gate"
 };
+var INCIDENT_TRIGGER = "incident";
+var INCIDENT_KIND_CREDENTIAL_EXPOSURE = "credential-exposure";
+function refuseWorkerOnIncident(exchange, operation2, detail) {
+  const conductionId = getConductionId();
+  if (!conductionId || exchange.trigger !== INCIDENT_TRIGGER) return;
+  throw new Error(
+    `${operation2} refused: conduction worker '${conductionId}' cannot ${detail} on incident exchange ${exchange.id}. Only a human releases an incident, by answering its round ("resume" or "stop") on the web or in the seat. Make no further change and end your turn. Nothing was written.`
+  );
+}
+function latestRoundAnswered(rounds) {
+  if (!Array.isArray(rounds) || rounds.length === 0) return false;
+  const last = rounds[rounds.length - 1];
+  return !!last && typeof last.answers === "object" && last.answers !== null && Object.keys(last.answers).length > 0;
+}
 var VALID_TRIGGERS = Object.keys(TRIGGER_OWNERS);
 var CLARIFY_OWNED_TRIGGERS = VALID_TRIGGERS.filter((t) => TRIGGER_OWNERS[t] === "clarify");
+var VALID_OUTCOMES = ["converged", "force-quit", "abandoned"];
 var isMissingPendingResolutionColumn = (msg) => !!msg && /pending_resolution/.test(msg) && /(does not exist|could not find|schema cache|column)/i.test(msg);
 async function findActiveExchange(client, taskId) {
   const { data, error: error2 } = await client.from("elicitation_exchanges").select(EXCHANGE_COLS).eq("task_id", taskId).eq("status", "active").maybeSingle();
@@ -37963,7 +37981,7 @@ async function startElicitation(client, projectId, userId, args) {
   if (error2) throw new Error(error2.message);
   return data;
 }
-async function fileElicitationRound(client, projectId, args) {
+async function fileElicitationRound(client, projectId, args, internal = {}) {
   if (!args.context_line?.trim()) throw new Error("context_line is required \u2014 one plain-prose line framing the round");
   const violations = validateRound(args.questions ?? []);
   if (violations.length > 0) {
@@ -37977,6 +37995,7 @@ async function fileElicitationRound(client, projectId, args) {
     }
     throw new Error(`exchange ${exchange.id} is '${exchange.status}' \u2014 rounds can only be filed on an active exchange`);
   }
+  if (args.prior_answers) refuseWorkerOnIncident(exchange, "file_elicitation_round", "echo prior_answers");
   let rounds = Array.isArray(exchange.rounds) ? exchange.rounds : [];
   if (args.prior_answers) {
     const echoed = echoPriorAnswers(rounds, args.prior_answers, (/* @__PURE__ */ new Date()).toISOString());
@@ -38009,7 +38028,16 @@ async function fileElicitationRound(client, projectId, args) {
     awaiting_human_reason: "elicitation-round",
     // `gate` rides along (B-462) so surfaces can group/label the round by the lifecycle gate the
     // exchange serves without re-fetching the exchange (the Queue card's gate pill reads it).
-    awaiting_human_ref: { kind: "elicitation", exchange_id: exchange.id, round: n, gate: exchange.gate ?? null }
+    // B-1452: every round on an incident exchange carries the `incident` marker (a re-asked release
+    // question included), so the watch and the queue keep surfacing it first.
+    awaiting_human_ref: {
+      kind: "elicitation",
+      exchange_id: exchange.id,
+      round: n,
+      gate: exchange.gate ?? null,
+      ...exchange.trigger === INCIDENT_TRIGGER ? { incident: INCIDENT_KIND_CREDENTIAL_EXPOSURE } : {},
+      ...internal.refExtra ?? {}
+    }
   }).eq("id", exchange.task_id);
   if (taskErr) throw new Error(taskErr.message);
   const warnings = warnRound(round2.questions);
@@ -38048,6 +38076,39 @@ var fileElicitationRoundTool = {
     required: ["context_line", "questions"]
   }
 };
+async function concludeElicitation(client, projectId, args) {
+  if (!args.outcome || !VALID_OUTCOMES.includes(args.outcome)) {
+    throw new Error(`outcome must be one of: ${VALID_OUTCOMES.join(", ")}`);
+  }
+  const exchange = await resolveExchange(client, projectId, args);
+  if (exchange.status !== "active") {
+    if (exchange.status === args.outcome) return exchange;
+    if (exchange.status === "abandoned") {
+      return { noop: true, cause: "exchange-cancelled", exchange };
+    }
+    throw new Error(`exchange ${exchange.id} is already '${exchange.status}' \u2014 cannot conclude it '${args.outcome}'`);
+  }
+  if (args.prior_answers) refuseWorkerOnIncident(exchange, "conclude_elicitation", "echo prior_answers");
+  if (!latestRoundAnswered(exchange.rounds)) {
+    refuseWorkerOnIncident(exchange, "conclude_elicitation", "conclude an unanswered round");
+  }
+  let roundsUpdate = {};
+  if (args.prior_answers) {
+    const echoed = echoPriorAnswers(
+      Array.isArray(exchange.rounds) ? exchange.rounds : [],
+      args.prior_answers,
+      (/* @__PURE__ */ new Date()).toISOString()
+    );
+    if (echoed.errors.length > 0) {
+      throw new Error(`prior_answers failed the echo guards:
+- ${echoed.errors.join("\n- ")}`);
+    }
+    roundsUpdate = { rounds: echoed.rounds };
+  }
+  const { data, error: error2 } = await client.from("elicitation_exchanges").update({ status: args.outcome, answers_submitted_at: null, force_quit_requested_at: null, ...roundsUpdate }).eq("id", exchange.id).select(EXCHANGE_COLS).single();
+  if (error2) throw new Error(error2.message);
+  return data;
+}
 async function fetchActiveExchange(client, taskId) {
   try {
     const { data, error: error2 } = await client.from("elicitation_exchanges").select("id, status, rounds, answers_submitted_at, force_quit_requested_at").eq("task_id", taskId).eq("status", "active").maybeSingle();
@@ -70572,6 +70633,229 @@ function writeConductBreadcrumb(input, options = {}) {
   return path4;
 }
 
+// src/tools/token-shapes.ts
+var B2 = "(?<![A-Za-z0-9])";
+var TOKEN_SHAPES = [
+  { name: "github", pattern: new RegExp(`${B2}(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]*`, "g") },
+  { name: "sk-key", pattern: new RegExp(`${B2}sk-[A-Za-z0-9_-]*`, "g") },
+  { name: "jwt", pattern: new RegExp(`${B2}eyJ[A-Za-z0-9_+/=.-]*`, "g") },
+  { name: "slack", pattern: new RegExp(`${B2}xox[abpr]-[A-Za-z0-9-]+`, "g") },
+  { name: "aws-access-key", pattern: new RegExp(`${B2}AKIA[0-9A-Z]{16}`, "g") },
+  // Every Figma token prefix: `figd_` (personal access token), `figu_` (OAuth user token, the shape that
+  // leaked on 2026-11-11), and any other `fig<letter>_` Figma adds. Matches prefix AND body, so a scrub
+  // leaves no prefix behind, including a body with `_` or `-` in short runs the long-run fallback misses.
+  { name: "figma", pattern: new RegExp(`${B2}fig[a-z]_[A-Za-z0-9_-]+`, "g") },
+  { name: "google-api-key", pattern: new RegExp(`${B2}AIza[0-9A-Za-z_-]{35}`, "g") },
+  { name: "private-key-block", pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----/g },
+  // Last: it would otherwise eat part of a longer, more specific match above.
+  { name: "long-base64-run", pattern: /[A-Za-z0-9+/]{32,}={0,2}/g }
+];
+var REDACTED = "[redacted]";
+function scrubTokenShapes(s) {
+  if (typeof s !== "string") return "";
+  let out = s;
+  for (const { pattern: pattern2 } of TOKEN_SHAPES) {
+    out = out.replace(new RegExp(pattern2.source, pattern2.flags), REDACTED);
+  }
+  return out;
+}
+
+// src/tools/incident.ts
+var INCIDENT_KINDS = [INCIDENT_KIND_CREDENTIAL_EXPOSURE];
+var INCIDENT_RELEASE_QUESTION_ID = "release";
+var GATE_ACTIVITY = {
+  clarify: "clarifying",
+  decompose: "decomposing",
+  design: "designing",
+  plan: "planning",
+  build: "building",
+  release: "releasing",
+  verify: "verifying"
+};
+function incidentGateFor(workflowState) {
+  const gate = resolveGatePhase(workflowState ?? null);
+  return gate ? GATE_ACTIVITY[gate] ?? null : null;
+}
+function clean(s) {
+  try {
+    const text4 = typeof s === "string" ? s.replace(/\\n/g, "\n").trim() : "";
+    return scrubTokenShapes(text4);
+  } catch {
+    return "[redacted]";
+  }
+}
+function incidentContextLine(what, where2) {
+  return `Incident \u2014 credential exposure: ${what} was exposed at ${where2.replace(/[.\s]+$/, "")}.`;
+}
+function incidentReleaseQuestion(humanSteps) {
+  return {
+    id: INCIDENT_RELEASE_QUESTION_ID,
+    stakes: "load-bearing",
+    kind: "open",
+    text: `Only a human can do this: ${humanSteps.replace(/[.\s]+$/, "")}. When it is done, answer "resume" to let the ticket continue, or "stop" to park it with this incident as the reason.`
+  };
+}
+async function readActiveExchange(client, taskId) {
+  const { data, error: error2 } = await client.from("elicitation_exchanges").select("id, trigger, rounds").eq("task_id", taskId).eq("status", "active").maybeSingle();
+  if (error2) throw new Error(error2.message);
+  return data ?? null;
+}
+async function raiseIncident(client, projectId, userId, args) {
+  if (!args || !args.task_id) throw new Error("task_id is required");
+  if (args.kind !== INCIDENT_KIND_CREDENTIAL_EXPOSURE) {
+    throw new Error(
+      `incident kind '${clean(args.kind)}' is not accepted \u2014 the only incident kind is '${INCIDENT_KIND_CREDENTIAL_EXPOSURE}'. Nothing was written.`
+    );
+  }
+  const what = clean(args.what);
+  const where2 = clean(args.where);
+  const humanSteps = clean(args.human_steps);
+  const missing3 = [
+    ["what", what],
+    ["where", where2],
+    ["human_steps", humanSteps]
+  ].filter(([, v2]) => !v2).map(([k]) => k);
+  if (missing3.length > 0) {
+    throw new Error(`${missing3.join(", ")} ${missing3.length === 1 ? "is" : "are"} required (never the secret itself). Nothing was written.`);
+  }
+  const scrubbed = what !== String(args.what ?? "").replace(/\\n/g, "\n").trim() || where2 !== String(args.where ?? "").replace(/\\n/g, "\n").trim() || humanSteps !== String(args.human_steps ?? "").replace(/\\n/g, "\n").trim();
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  let workflowState = null;
+  let fieldValues = null;
+  try {
+    const { data } = await client.from("tasks").select("id, workflow_state, field_values").eq("id", taskId).maybeSingle();
+    const row = data;
+    workflowState = row?.workflow_state ?? null;
+    fieldValues = row?.field_values ?? null;
+  } catch {
+  }
+  let supersededExchangeId = null;
+  let active = await readActiveExchange(client, taskId);
+  if (active && active.trigger !== INCIDENT_TRIGGER) {
+    await concludeElicitation(client, projectId, { exchange_id: active.id, outcome: "abandoned" });
+    supersededExchangeId = active.id;
+    active = null;
+  }
+  let exchangeId;
+  if (active) {
+    exchangeId = active.id;
+  } else {
+    const gate = incidentGateFor(workflowState);
+    const opened = await startElicitation(client, projectId, userId, {
+      task_id: taskId,
+      trigger: INCIDENT_TRIGGER,
+      ...gate ? { gate } : {}
+    });
+    if (opened.trigger !== void 0 && opened.trigger !== INCIDENT_TRIGGER) {
+      throw new Error(
+        `another elicitation exchange (${opened.id}) became active on this ticket while the incident was being raised \u2014 raise it again. The incident round was not filed.`
+      );
+    }
+    exchangeId = opened.id;
+  }
+  const filed = await fileElicitationRound(
+    client,
+    projectId,
+    {
+      exchange_id: exchangeId,
+      context_line: incidentContextLine(what, where2),
+      questions: [incidentReleaseQuestion(humanSteps)]
+    },
+    { refExtra: { incident: INCIDENT_KIND_CREDENTIAL_EXPOSURE } }
+  );
+  if (filed && filed.noop === true) {
+    throw new Error(
+      `the incident exchange ${exchangeId} was cancelled before the round landed \u2014 raise the incident again. The incident round was not filed.`
+    );
+  }
+  const rounds = Array.isArray(filed?.rounds) ? filed.rounds : [];
+  const round2 = rounds.length > 0 ? rounds[rounds.length - 1].n : 1;
+  let clearedModelHandoff = false;
+  const waitingOn = fieldValues?.waiting_on;
+  if (waitingOn && waitingOn.kind === "model-handoff") {
+    try {
+      const { error: error2 } = await client.from("tasks").update({ field_values: { ...fieldValues, waiting_on: null } }).eq("id", taskId);
+      clearedModelHandoff = !error2;
+    } catch {
+      clearedModelHandoff = false;
+    }
+  }
+  const lines = [
+    `INCIDENT-RAISED kind=${INCIDENT_KIND_CREDENTIAL_EXPOSURE} exchange_id=${exchangeId}`,
+    "",
+    `What was exposed: ${what}`,
+    `Where: ${where2}`,
+    `Only a human can do this: ${humanSteps}`,
+    "",
+    'The leg stopped and made no further change. Answer the incident round "resume" to let the ticket continue, or "stop" to park it with this incident as the reason.'
+  ];
+  if (supersededExchangeId) {
+    lines.push(
+      "",
+      `The incident takes precedence: the open elicitation exchange ${supersededExchangeId} was concluded 'abandoned'.`
+    );
+  }
+  let commentId = null;
+  let commentError;
+  try {
+    const comment = await addComment(client, projectId, userId, { task_id: taskId, content: lines.join("\n") });
+    commentId = comment?.id ?? null;
+  } catch (err) {
+    commentError = scrubTokenShapes(err instanceof Error ? err.message : String(err?.message ?? err));
+  }
+  return {
+    task_id: taskId,
+    kind: INCIDENT_KIND_CREDENTIAL_EXPOSURE,
+    exchange_id: exchangeId,
+    round: round2,
+    superseded_exchange_id: supersededExchangeId,
+    cleared_model_handoff: clearedModelHandoff,
+    what,
+    where: where2,
+    human_steps: humanSteps,
+    scrubbed,
+    comment_id: commentId,
+    ...commentError !== void 0 ? { comment_error: commentError } : {}
+  };
+}
+function latestRoundAnswered2(rounds) {
+  if (!Array.isArray(rounds) || rounds.length === 0) return false;
+  const last = rounds[rounds.length - 1];
+  return !!last && !!last.answers && typeof last.answers === "object" && Object.keys(last.answers).length > 0;
+}
+var IncidentOpenError = class extends Error {
+};
+async function assertNoOpenIncident(client, taskId, label = taskId) {
+  let active;
+  try {
+    active = await readActiveExchange(client, taskId);
+  } catch {
+    return;
+  }
+  if (!active || active.trigger !== INCIDENT_TRIGGER || latestRoundAnswered2(active.rounds)) return;
+  throw new IncidentOpenError(
+    `${label} has an open incident (credential exposure) waiting on a human \u2014 answer its incident round first ("resume" to continue, or "stop" to park). No conduction was created.`
+  );
+}
+var raiseIncidentTool = {
+  name: "raise_incident",
+  description: `Raise an incident on a ticket (B-1452). Use ONLY when you discovered that you exposed a credential outside the worker \u2014 pushed, posted or sent it somewhere it can be read. Files one incident question round (trigger 'incident'): the ticket pauses for a human (awaiting_human_input, reason 'elicitation-round', awaiting_human_ref.incident = 'credential-exposure'), the conductor launches nothing, and the seat's watch and the queue show it first. An open exchange of any other trigger is concluded 'abandoned' \u2014 the incident takes precedence. Posts an INCIDENT-RAISED comment. NEVER put the secret in any argument: describe it (e.g. "the GitHub token of the build app"), never quote it. Token-shaped text is scrubbed to [redacted] before anything is written, and a run of 32+ letters/digits is scrubbed too, so name a commit by a short SHA. After calling it, make NO further change (no commit, push, revert or cleanup) and END YOUR TURN \u2014 the open round is the clean pause. A human releases it by answering "resume" or "stop".`,
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: { type: "string", description: "The ticket the leg is working \u2014 UUID, task number, or visual ID (e.g., B-43)." },
+      kind: { type: "string", enum: [...INCIDENT_KINDS], description: "The incident kind. Only 'credential-exposure' exists." },
+      what: { type: "string", description: 'What was exposed, described \u2014 never the value (e.g. "a GitHub installation token").' },
+      where: { type: "string", description: 'Where it was exposed (e.g. "commit 1a2b3c4 on branch feat/x of org/repo", "a comment on PR #12").' },
+      human_steps: {
+        type: "string",
+        description: 'Exactly what only a human can do (e.g. "revoke and rotate the token, then rewrite the branch history to drop commit 1a2b3c4").'
+      }
+    },
+    required: ["task_id", "kind", "what", "where", "human_steps"]
+  }
+};
+
 // src/cli/commands/conduct.ts
 function registerConductCommand(program3) {
   const conduct = program3.command("conduct").description("Create a conduction for a ticket \u2014 the conductor picks it up and drives the run").argument("<ticket>", "Task ID (UUID, number, or B-123)").option("--unpark", "Revive a Parked ticket and hand it to the conductor in this same call (B-964)", false).option("--resume-to <state>", "Target workflow_state override when reviving a Parked ticket (defaults to the ticket's own parked_from, else Proposed)").option("--model <alias>", "B-925: explicit model alias for this run (fills run_config.model.default)").option("--session-resume", "B-925: explicitly enable session-resume for this run").option("--no-session-resume", "B-925: explicitly disable session-resume for this run").option("--auto-approve-gates <gates>", "B-925: comma-separated forward gates to auto-approve for this run").option("--no-auto-approve-gates", "B-925: explicitly auto-approve no gates for this run").option("--fast-track", "B-1073: run this conduction in fast-track mode (sets run_config.fast_track)").option("--agent <id>", "B-1147: agent runtime for this run (sets run_config.agent.adapter), e.g. claude-code, codex").action(async (ticket, opts) => {
@@ -70610,6 +70894,7 @@ function registerConductCommand(program3) {
           const filledRunConfig = fillRunConfigDefaults(callerRunConfig, defaults3);
           await assertRunConfigRuntime(ctx.client, filledRunConfig);
           await assertRunConfigPolicy(ctx.client, ctx.projectId, filledRunConfig);
+          await assertNoOpenIncident(ctx.client, taskId, ticket);
           await reviveParkedTicketIfNeeded(ctx.client, ctx.projectId, ctx.userId, taskId, {
             unpark: opts.unpark,
             resume_to: opts.resumeTo,
@@ -74949,20 +75234,20 @@ async function recordLegOutput(client, args) {
 }
 
 // src/agents/redaction.ts
-var REDACTED = "[REDACTED]";
+var REDACTED2 = "[REDACTED]";
 var KEY_NAMES = "(?:refresh_token|access_token|id_token|api[_-]?key|OPENAI_API_KEY|CODEX_API_KEY|CODEX_ACCESS_TOKEN)";
 var RULES = [
   // Bearer <token> (header or prose). The token charset covers opaque tokens and JWTs.
-  { re: /(\bBearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi, replace: `$1${REDACTED}` },
+  { re: /(\bBearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi, replace: `$1${REDACTED2}` },
   // "refresh_token": "value" — JSON, with optional escaped quotes (\"…\") when nested in a string.
   {
     re: new RegExp(`((?:\\\\?["'])?${KEY_NAMES}(?:\\\\?["'])?\\s*[:=]\\s*(?:\\\\?["'])?)[^\\s"'\\\\,;&}]{4,}`, "gi"),
-    replace: `$1${REDACTED}`
+    replace: `$1${REDACTED2}`
   },
   // bare JWT
-  { re: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*/g, replace: REDACTED },
+  { re: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*/g, replace: REDACTED2 },
   // sk-… secret keys
-  { re: /\bsk-[A-Za-z0-9_-]{16,}/g, replace: REDACTED }
+  { re: /\bsk-[A-Za-z0-9_-]{16,}/g, replace: REDACTED2 }
 ];
 function redactSecrets(text4) {
   if (typeof text4 !== "string" || text4 === "") return text4;
@@ -77143,6 +77428,7 @@ function expand2(entries) {
 }
 function ownerFor(event, reason, profile) {
   if (event === "waiting" || event === "acted" || event === "state" || event === "start") return "info";
+  if (event === "incident") return "seat";
   if (!profile) return "seat";
   const held = expand2(profile.held_for_founder);
   const owns = expand2(profile.owns);
@@ -77187,10 +77473,17 @@ function legEnded(cur, ctx) {
 function isTerminal2(state) {
   return state !== null && TICKET_TERMINAL_STATES.includes(state);
 }
+function isIncidentPause(cur) {
+  if (cur.awaiting_human_reason !== "elicitation-round") return false;
+  const ref = cur.awaiting_human_ref;
+  if (ref === null || typeof ref !== "object" || Array.isArray(ref)) return false;
+  const incident = ref.incident;
+  return typeof incident === "string" ? incident.length > 0 : incident !== void 0 && incident !== null && incident !== false;
+}
 function openItemOf(cur, ctx) {
   if (ballWithHuman(cur) && legEnded(cur, ctx)) {
     return {
-      event: cur.awaiting_human_reason === "elicitation-round" ? "question" : "ready",
+      event: isIncidentPause(cur) ? "incident" : cur.awaiting_human_reason === "elicitation-round" ? "question" : "ready",
       reason: cur.awaiting_human_reason,
       ref: refOf(cur)
     };
@@ -77502,6 +77795,7 @@ function catchUp(cursor, snapshot, ctx) {
     if (seenIds.has(id)) continue;
     events2.push(classifyRemoved(id, prev, cctx));
   }
+  events2.sort((a3, b) => (a3.event === "incident" ? 0 : 1) - (b.event === "incident" ? 0 : 1));
   const before = cursor ? JSON.stringify(cursor.tickets) : null;
   const changed = events2.length > 0 || before !== JSON.stringify(tickets);
   let seq = cursor?.seq ?? 0;
@@ -77539,7 +77833,9 @@ function currentRows(snapshot, ctx) {
       conduction: t.conduction?.id ?? null,
       conduction_status: t.conduction?.status ?? null
     };
-  }).sort((a3, b) => a3.key.localeCompare(b.key, void 0, { numeric: true }));
+  }).sort(
+    (a3, b) => (a3.waiting === "incident" ? 0 : 1) - (b.waiting === "incident" ? 0 : 1) || a3.key.localeCompare(b.key, void 0, { numeric: true })
+  );
 }
 
 // src/watch/loop.ts
@@ -78402,6 +78698,39 @@ function registerWatchCommands(program3, override = {}) {
   });
 }
 
+// src/cli/commands/incident.ts
+function formatIncidentRaised(data) {
+  const lines = [
+    `Incident raised (${data.kind}) on exchange ${data.exchange_id}, round ${data.round}. The ticket now waits for a human.`,
+    `What: ${data.what}`,
+    `Where: ${data.where}`,
+    `Only a human can do this: ${data.human_steps}`
+  ];
+  if (data.scrubbed) lines.push("Token-shaped text was replaced with [redacted] before anything was written.");
+  if (data.superseded_exchange_id) lines.push(`The open exchange ${data.superseded_exchange_id} was concluded 'abandoned'.`);
+  if (data.comment_error) lines.push(`Warning: the INCIDENT-RAISED comment failed (${data.comment_error}); the round is filed.`);
+  lines.push("Make no further change and end your turn.");
+  return lines.join("\n");
+}
+function registerIncidentCommands(program3) {
+  const incident = program3.command("incident").description("Incidents a worker leg raises for a human (B-1452)");
+  incident.command("raise").description(
+    "Raise an incident: use ONLY when you exposed a credential outside the worker. Never pass the secret itself; after it succeeds make no further change and end your turn."
+  ).requiredOption("--task <task>", "Task ID, number or visual ID").requiredOption("--kind <kind>", `Incident kind: ${INCIDENT_KINDS.join(" | ")}`).requiredOption("--what <text>", "What was exposed, described \u2014 never the value").requiredOption("--where <text>", "Where it was exposed (commit by short SHA, branch, PR, comment)").requiredOption("--human-steps <text>", "Exactly what only a human can do (revoke/rotate, rewrite history, ...)").action(async (opts) => {
+    await runCommand(
+      program3.opts(),
+      (ctx) => raiseIncident(ctx.client, ctx.projectId, ctx.userId, {
+        task_id: opts.task,
+        kind: opts.kind,
+        what: opts.what,
+        where: opts.where,
+        human_steps: opts.humanSteps
+      }),
+      formatIncidentRaised
+    );
+  });
+}
+
 // src/cli/index.ts
 var require2 = createRequire(import.meta.url);
 var { version: version4 } = require2("../../.claude-plugin/plugin.json");
@@ -78411,6 +78740,7 @@ registerAuthCommands(program2);
 registerFigmaCommands(program2);
 registerTaskCommands(program2);
 registerWaitCommands(program2);
+registerIncidentCommands(program2);
 registerAwaitCommands(program2);
 registerDesignCommands(program2);
 registerQueryCommand(program2);

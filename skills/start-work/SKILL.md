@@ -391,6 +391,31 @@ On seeing this literal string, do NOT treat the subagent's return as done or fai
 and quoting the marker's content as the question. Then end the turn — the round is a clean human pause
 (per `skills/harmony-shared/elicitation-engine.md` §The worker-question trigger), not a build failure.
 
+**Parse `harmony-build`'s final report for a `WORKER-INCIDENT:` marker (B-1452) FIRST — before
+`WORKER-QUESTION:` and before treating the return as done or failed.** The build subagent raises an
+incident itself with the CLI (`node /workspace/workspace/plugin/dist/bin/harmony.js incident raise …`,
+see `container/agents/harmony-build.md`). Only when it could NOT run that command does it end its
+report with the literal marker:
+```
+WORKER-INCIDENT:
+what: <what was exposed, described — never the value>
+where: <where it was exposed>
+human_steps: <what only a human can do>
+```
+On seeing it, raise the incident on its behalf at once with
+`mcp__harmony__raise_incident({ task_id, kind: 'credential-exposure', what, where, human_steps })`,
+copying the three lines (the tool scrubs token-shaped text again; never add the secret). Whether the
+subagent raised it or you did, then follow the **Incident protocol** below: make no further commit,
+push, revert or cleanup — not even pushing the build's other work — and end the turn. The open
+incident round is the clean pause.
+
+**Incident protocol (B-1452) — the build gate's pointer.** If this session, or the build it delegated,
+discovers it exposed a credential outside the worker (pushed, posted or sent it where it can be read),
+stop the ticket's work at once and follow `skills/harmony-shared/clean-exit-contract.md`
+§Incident protocol: no further change of any kind, raise with `mcp__harmony__raise_incident` (or
+`harmony incident raise`), name exactly what only a human can do, never repeat the secret, then end the
+turn.
+
 **A `capability-denial` WORKER-QUESTION naming a `.github/workflows/**` path is this ticket's OWN recovery path (B-784) — handle it as ONE round, not a second discovered stall.** Recognize it by the marker's body naming a repo-relative path under `.github/workflows/**` and carrying an embedded patch. On seeing it:
 
 1. **Push whatever else the build completed** on the given branch, if not already pushed (the subagent was instructed to push everything it could before reporting the marker — confirm with `git ls-remote origin <branch>`; push yourself if it didn't land).

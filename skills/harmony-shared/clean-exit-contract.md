@@ -25,6 +25,34 @@ that indistinguishability is the defect, not a cosmetic gap.
 Consuming (a) and reporting (b) are not alternatives — a leg that both consumed a marker AND landed repo
 work owes both.
 
+## Incident protocol (B-1452)
+
+**The one trigger:** you discover that you exposed a credential outside the worker — pushed, posted or
+sent it somewhere it can be read (a commit or branch on a remote, a PR or ticket comment, a log or
+message another system keeps). Nothing else is an incident.
+
+1. **Stop the ticket's work at once.** Make NO further commit, push, revert, history rewrite, cleanup or
+   any other change, on the board or in a repo — each one risks spreading the secret further, and only a
+   human can make it harmless.
+2. **Raise the incident** with the MCP tool `raise_incident` or the CLI `harmony incident raise`
+   (`--task <ticket> --kind credential-exposure --what … --where … --human-steps …`; a worker without MCP
+   tools runs `node /workspace/workspace/plugin/dist/bin/harmony.js incident raise …`). It files the
+   incident round, and the round sets the ticket awaiting a human, so the conductor launches nothing.
+3. **Name exactly what only a human can do**: revoke or rotate the credential, rewrite or delete the
+   history that carries it, delete the comment or message, check the provider's audit log.
+4. **Never repeat the secret** — not in the incident, a comment, a commit message, a report or your
+   own output. Describe it ("the GitHub token of the build app"), never quote it. Token-shaped text is
+   scrubbed anyway; that is a backstop, not permission.
+5. **Never report it only in a comment** or a report: the incident round is what stops the ticket and
+   tells the human first.
+6. **Then end the turn.** The open incident round is the clean pause (`awaiting_human_input: true`, the
+   first clean shape listed below); clause (b)'s progress comment is the INCIDENT-RAISED comment the raise
+   already posted.
+
+A human releases the ticket by answering the round: `resume` (continue) or `stop` (park, with the
+incident as the reason). A conduction worker can never answer it itself — `submit_elicitation_answers`
+refuses it. The next leg's handling is `harmony-conduct` step 1a.
+
 ## Why (b) exists as its own clause, not just "advance state or park with a reason"
 
 A leg can do everything right — commit, push, iterate on a brief, record a knowledge decision — and still
