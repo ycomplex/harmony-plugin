@@ -10,8 +10,8 @@ import {
 
 function withCommon(cmd: Command): Command {
   return cmd
-    .option('--interval <seconds>', 'Seconds between probes', '30')
-    .option('--max-wait <seconds>', 'Give up (exit 3) after this many seconds still pending', '1800');
+    .option('--interval <duration-or-seconds>', 'Time between probes (e.g. 90s, 20m, 1h, or bare seconds)', '30')
+    .option('--max-wait <duration-or-seconds>', 'Give up (exit 3) after this time (e.g. 20m, 1h, or bare seconds)', '1800');
 }
 
 async function run(program: Command, body: (deps: AwaitDeps) => Promise<number>): Promise<void> {
