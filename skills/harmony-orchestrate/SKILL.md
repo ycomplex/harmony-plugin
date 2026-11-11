@@ -64,6 +64,11 @@ never has cause to touch.
   (`mcp__harmony__get_task` it) after the consume. Anything YOU want filed goes to the human as a
   filing word.
 - **Disclose every direct board write** (comments, entry heals, corrections) in your next message.
+- **Never name a client** (B-1459). Your own comments, remarks and PR text, and what you ask a leg
+  to write, never carry a client's or adopter's name, nor their GitHub organisation or repository
+  name: use a neutral description ("one observed deployment", "a second project's stack") and an
+  invented project name in tests. The project owner's own projects are not clients; when unsure
+  whether a name is a client's, ask the human rather than guess.
 - **Remark vs detail vs iterate**: a `remark` rides an accept and is consumed by EXACTLY ONE next
   leg — use it for forward instructions (build gotchas, a freshly-pulled-base note, version or
   target details). `detail` is inert. Ordering/precondition feedback is an `iterate`, never a
