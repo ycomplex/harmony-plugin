@@ -135,18 +135,18 @@ describe('scaffold ticket matching', () => {
     return readProjectContext(client, 'project');
   }
   it('resolves a labelled proposition whose suffix differs from the current project name', async () => {
-    const result = await read([labelled('proposition', 'Founding proposition — Arcwood Customer Portal')]);
+    const result = await read([labelled('proposition', 'Founding proposition — Tidewell Customer Portal')]);
     expect(result.blocks[0]).toMatchObject({ state: 'accepted', source_ids: ['decision'],
       summary: 'Purpose: Serve customers. Personas: Customers. Features: Portal.' });
   });
   it('reports multiple labelled prefixed propositions instead of choosing the current name', async () => {
-    const result = await read([labelled('proposition', 'Founding proposition — Arcwood Customer Portal'),
+    const result = await read([labelled('proposition', 'Founding proposition — Tidewell Customer Portal'),
       labelled('other', 'Founding proposition — Customer Portal')]);
     expect(result.blocks[0]).toMatchObject({ state: 'unresolved', diagnostics: ['Multiple matching scaffold tickets.'] });
   });
   it('ignores an unlabelled prefixed ticket and preserves exact S2 title matching', async () => {
     const result = await read([{ ...task, id: 'unlabelled', title: 'Founding proposition — Customer Portal' },
-      labelled('proposition', 'Founding proposition — Arcwood Customer Portal'),
+      labelled('proposition', 'Founding proposition — Tidewell Customer Portal'),
       labelled('near-architecture', 'Decide the architecture — extra')]);
     expect(result.blocks[0].state).toBe('accepted');
     expect(result.blocks.find(b => b.key === 'architecture')?.diagnostics).toEqual(['Scaffold ticket not found.']);
