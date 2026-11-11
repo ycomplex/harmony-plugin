@@ -1,7 +1,7 @@
-import { ConductorConfigError, loadConductorConfigSync } from "../config/conductor-config.js";
+import { CONDUCTOR_PROJECT_PATH, parseSnapshotText, resolveConductorPaths } from "../config/conductor-config.js";
 import { FigmaSetupError } from "./figma-errors.js";
 import { spawn } from "node:child_process";
-import { chmodSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, chmodSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -21,25 +21,44 @@ export type MintPorts = {
 const DEFAULT_NAMESPACE = "harmony-legs";
 const NAMESPACE_NAME = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
 
-/** Same source as the conductor: gke.namespace from the merged conductor config (project file, host file,
- *  HARMONY_GKE_NAMESPACE), else HARMONY_GKE_NAMESPACE, else harmony-legs. An invalid config stops the
- *  sign-in rather than quietly using the default. */
+/** Namespace-only lookup: driver machines need no conductor launch configuration.
+ * Project source: explicit file, last-good snapshot, then the current workspace. Host and
+ * modern env overrides retain conductor precedence; legacy env and the default are fallbacks. */
 export function resolveSignInNamespace(
   env: NodeJS.ProcessEnv = process.env,
-  load: typeof loadConductorConfigSync = loadConductorConfigSync,
+  io: { exists?: (path: string) => boolean; read?: (path: string) => string; cwd?: string } = {},
 ): string {
-  let ns: string | undefined;
-  try {
-    ns = load({ env, warn: () => {} })?.merged.gke?.namespace;
-  } catch (error) {
-    if (error instanceof ConductorConfigError) {
-      throw new FigmaSetupError(`The conductor configuration is invalid, so the sign-in namespace cannot be resolved:\n${error.message}\nNo pod was created.`);
+  const exists = io.exists ?? existsSync;
+  const read = io.read ?? ((path: string) => readFileSync(path, "utf8"));
+  const paths = resolveConductorPaths(env);
+  const namespace = (text: string): unknown => {
+    try {
+      const config = JSON.parse(text) as { gke?: { namespace?: unknown } } | null;
+      const value = config?.gke?.namespace;
+      if (value === null) throw new FigmaSetupError("gke.namespace is not a valid Kubernetes namespace name. No pod was created.");
+      return value;
+    } catch (error) {
+      if (error instanceof FigmaSetupError) throw error;
+      throw new FigmaSetupError("Cannot read sign-in namespace from invalid conductor JSON. No pod was created.");
     }
-    throw error;
+  };
+  const readConfig = (path: string): string => {
+    try { return read(path); }
+    catch { throw new FigmaSetupError("Cannot read the conductor file for the sign-in namespace. No pod was created."); }
+  };
+  let project: unknown;
+  if (paths.projectFile) {
+    project = namespace(readConfig(paths.projectFile));
+  } else {
+    const snapshot = exists(paths.snapshotFile) ? parseSnapshotText(readConfig(paths.snapshotFile)) : null;
+    const local = join(io.cwd ?? process.cwd(), CONDUCTOR_PROJECT_PATH);
+    if (snapshot) project = namespace(snapshot.content);
+    else if (exists(local)) project = namespace(readConfig(local));
   }
-  ns = ns || env.HARMONY_GKE_NAMESPACE || DEFAULT_NAMESPACE;
-  if (!NAMESPACE_NAME.test(ns) || ns.length > 63) {
-    throw new FigmaSetupError(`"${ns}" is not a valid Kubernetes namespace name. Fix gke.namespace in the conductor configuration, then retry. No pod was created.`);
+  const host = exists(paths.hostFile) ? namespace(readConfig(paths.hostFile)) : undefined;
+  const ns = env.HARMONY_CONDUCTOR_GKE_NAMESPACE ?? host ?? project ?? env.HARMONY_GKE_NAMESPACE ?? DEFAULT_NAMESPACE;
+  if (typeof ns !== "string" || !NAMESPACE_NAME.test(ns) || ns.length > 63) {
+    throw new FigmaSetupError("gke.namespace is not a valid Kubernetes namespace name. Fix it in the conductor configuration, then retry. No pod was created.");
   }
   return ns;
 }

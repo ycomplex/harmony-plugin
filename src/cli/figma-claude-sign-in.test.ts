@@ -1,7 +1,7 @@
 import { FigmaSetupError } from "./figma-errors.js";
 import { describe, expect, it, vi } from "vitest";
 import { withClaudeFigmaSignIn, resolveSignInNamespace, type MintPorts } from "./figma-claude-sign-in.js";
-import { ConductorConfigError } from "../config/conductor-config.js";
+import { evaluateConductorConfig, loadConductorConfigSync } from "../config/conductor-config.js";
 function fake() {
   const calls: string[][]=[];
   const p: MintPorts = { run: vi.fn(async args => {calls.push(args);}), capture: vi.fn(async () => ({ code: 0, out: "yes\n" })), namespace: vi.fn(() => "harmony-legs"), temp:vi.fn(()=>"/tmp/private-figma-test"), chmod:vi.fn(), remove:vi.fn(), report:vi.fn() };
@@ -67,26 +67,53 @@ it("uses a non-default namespace for the permission check, pod commands and the 
  expect(message).toMatch(/Remove pod harmony-figma-.* in team-legs before reconnecting\./);expect(message).not.toContain("harmony-legs");
 });
 describe("resolveSignInNamespace",()=>{
- const loaded=(ns?:string)=>(()=>({merged:{gke:ns?{namespace:ns}:undefined}})) as unknown as typeof import("../config/conductor-config.js").loadConductorConfigSync;
- it("reads gke.namespace from the conductor config",()=>{expect(resolveSignInNamespace({},loaded("team-legs"))).toBe("team-legs");});
- it("falls back to HARMONY_GKE_NAMESPACE, then harmony-legs, when the config sets none or does not exist",()=>{
-  expect(resolveSignInNamespace({HARMONY_GKE_NAMESPACE:"env-legs"},loaded())).toBe("env-legs");
-  expect(resolveSignInNamespace({},loaded())).toBe("harmony-legs");
-  expect(resolveSignInNamespace({},(()=>null) as unknown as typeof import("../config/conductor-config.js").loadConductorConfigSync)).toBe("harmony-legs");
+ const env = { HARMONY_HOME: "/fixture/home" };
+ const hostPath = "/fixture/home/conductor-host.json";
+ const projectPath = "/fixture/workspace/.harmony/conductor.json";
+ const host = JSON.stringify({gcp:{project:"fixture-project"},gcloud:{account:"operator@example.test"},secrets:{api_token:"fixture-secret-name"}});
+ const fixture = (files: Record<string,string>) => ({
+  cwd: "/fixture/workspace", exists: (path:string)=>Object.hasOwn(files,path),
+  read: vi.fn((path:string)=>{if(!Object.hasOwn(files,path))throw new Error("missing");return files[path];}),
  });
- it("stops with an error and no fallback when the conductor config is invalid",()=>{
-  const bad=(()=>{throw new ConductorConfigError({file:"conductor.json",key:"gke.namespace",problem:"must be a string",fix:"set a namespace name"});}) as unknown as typeof import("../config/conductor-config.js").loadConductorConfigSync;
-  expect(()=>resolveSignInNamespace({HARMONY_GKE_NAMESPACE:"env-legs"},bad)).toThrow(/conductor configuration is invalid[\s\S]*gke\.namespace[\s\S]*No pod was created/);
+ it("accepts a driver-only host and defaults to harmony-legs without requiring a project",()=>{
+  const io=fixture({[hostPath]:host});
+  expect(resolveSignInNamespace(env,io)).toBe("harmony-legs");
+  expect(io.read).toHaveBeenCalledExactlyOnceWith(hostPath);
  });
- it("rejects a value that is not a Kubernetes namespace name",()=>{
-  expect(()=>resolveSignInNamespace({},loaded("--context=other"))).toThrow("not a valid Kubernetes namespace name");
-  expect(()=>resolveSignInNamespace({},loaded("Team_Legs"))).toThrow("not a valid Kubernetes namespace name");
+ it("does not relax the conductor loader itself",()=>{
+  const io=fixture({[hostPath]:host});
+  expect(()=>loadConductorConfigSync({env,existsSync:io.exists,readFileSync:io.read,warn:()=>{}})).toThrow("no project file");
  });
- it("does not swallow an unexpected loader failure",()=>{
-  const boom=(()=>{throw new Error("disk");}) as unknown as typeof import("../config/conductor-config.js").loadConductorConfigSync;
-  expect(()=>resolveSignInNamespace({},boom)).toThrow("disk");
+ it("honours the workspace namespace while ignoring unrelated launch keys",()=>{
+  const io=fixture({[hostPath]:host,[projectPath]:JSON.stringify({gke:{namespace:"team-legs"},profile:"not-a-launch-profile"})});
+  expect(resolveSignInNamespace(env,io)).toBe("team-legs");
+  expect(evaluateConductorConfig({env:{...env,HARMONY_CONDUCTOR_PROJECT_FILE:projectPath},existsSync:io.exists,readFileSync:io.read})?.issues.length).toBeGreaterThan(0);
+ });
+ it("prefers explicit project over snapshot and cwd, and snapshot over cwd",()=>{
+  const snapshot=JSON.stringify({version:1,source:{repo:"fixture/repo",ref:"main",path:".harmony/conductor.json"},etag:null,sha:null,fetched_at:"2026-11-11T00:00:00Z",content:JSON.stringify({gke:{namespace:"snapshot-legs"}})});
+  const io=fixture({"/explicit":JSON.stringify({gke:{namespace:"explicit-legs"}}),"/fixture/home/conductor-snapshot.json":snapshot,[projectPath]:JSON.stringify({gke:{namespace:"cwd-legs"}})});
+  expect(resolveSignInNamespace({...env,HARMONY_CONDUCTOR_PROJECT_FILE:"/explicit"},io)).toBe("explicit-legs");
+  expect(resolveSignInNamespace(env,io)).toBe("snapshot-legs");
+ });
+ it("preserves host and modern env overrides, then legacy env and default fallbacks",()=>{
+  const io=fixture({[hostPath]:JSON.stringify({gke:{namespace:"host-legs"}}),[projectPath]:JSON.stringify({gke:{namespace:"project-legs"}})});
+  expect(resolveSignInNamespace(env,io)).toBe("host-legs");
+  expect(resolveSignInNamespace({...env,HARMONY_CONDUCTOR_GKE_NAMESPACE:"override-legs"},io)).toBe("override-legs");
+  expect(resolveSignInNamespace({...env,HARMONY_GKE_NAMESPACE:"env-legs"},fixture({}))).toBe("env-legs");
+  expect(resolveSignInNamespace(env,fixture({}))).toBe("harmony-legs");
+ });
+ it.each(["", "--context=other", "Team_Legs", "a".repeat(64), 42, false, null])("rejects malformed namespace %j before any pod command",async ns=>{
+  const io=fixture({[projectPath]:JSON.stringify({gke:{namespace:ns}})});
+  const {p}=fake();p.namespace=()=>resolveSignInNamespace(env,io);
+  await expect(withClaudeFigmaSignIn(async()=>{},p)).rejects.toThrow("not a valid Kubernetes namespace name");
+  expect(p.capture).not.toHaveBeenCalled();expect(p.run).not.toHaveBeenCalled();expect(p.temp).not.toHaveBeenCalled();
+ });
+ it("refuses unreadable explicit files and malformed JSON without exposing file contents",()=>{
+  expect(()=>resolveSignInNamespace({...env,HARMONY_CONDUCTOR_PROJECT_FILE:"/missing"},fixture({}))).toThrow("Cannot read the conductor file");
+  expect(()=>resolveSignInNamespace(env,fixture({[projectPath]:"invalid private contents"}))).toThrow("invalid conductor JSON");
  });
 });
+
 it("preserves primary failure before cleanup and lists only the pod that remains",async()=>{
  const {p}=fake();p.run=vi.fn(async args=>{if(args.includes("wait"))throw new FigmaSetupError("Figma sign-in pod command failed.");if(args.includes("delete"))throw new Error("Bearer SECRET");});
  let message="";try{await withClaudeFigmaSignIn(async()=>{},p);}catch(e){message=(e as Error).message;}
