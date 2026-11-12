@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { validateBriefFrame } from './brief-frame-schema.js';
 import * as frameSchema from './brief-frame-schema.js';
-import { renderBrief, lintBrief, composeBrief, composeBriefTool, isMissingComposeBriefRevision, isMissingComposeBriefInitial, mergeBriefDoc, resetDocOnReasonChange, isMissingBriefHistorySubstrate, listBriefs, listBriefsTool, getBrief, getBriefTool, resolveBrief, resolveBriefTool, reshapeBrief, reshapeBriefTool, clearRevisionIterateFeedback, validateResolutionProvenance, PROVENANCE_AGENT_SYNTHESIZED, PROVENANCE_WEB_ONLY, fetchPendingResolution, fetchUnderwritingClaims, fetchPendingRemark, consumeAcceptRemark, SENTENCE_WORD_LIMIT, DEFAULT_TAIL, STALE_PATCH_TAIL, PROPOSED_ACS_HEADING, PROMISED_WRITES_HEADING, DE_SCOPE_HEADING, ENTRY_PROVENANCE_PREFIX, frameUnits, readBuildPr, readBuildPrReferences, FRAME_KIND_FOR_REASON, renderSlot, type BriefDoc, type BriefItem, type GateFrame, type CriterionRow } from './briefs.js';
+import { renderBrief, lintBrief, composeBrief, composeBriefTool, isRevisionCompose, isMissingComposeBriefRevision, isMissingComposeBriefInitial, mergeBriefDoc, resetDocOnReasonChange, isMissingBriefHistorySubstrate, listBriefs, listBriefsTool, getBrief, getBriefTool, resolveBrief, resolveBriefTool, reshapeBrief, reshapeBriefTool, clearRevisionIterateFeedback, validateResolutionProvenance, PROVENANCE_AGENT_SYNTHESIZED, PROVENANCE_WEB_ONLY, fetchPendingResolution, fetchUnderwritingClaims, fetchPendingRemark, consumeAcceptRemark, SENTENCE_WORD_LIMIT, DEFAULT_TAIL, STALE_PATCH_TAIL, PROPOSED_ACS_HEADING, PROMISED_WRITES_HEADING, DE_SCOPE_HEADING, ENTRY_PROVENANCE_PREFIX, frameUnits, readBuildPr, readBuildPrReferences, FRAME_KIND_FOR_REASON, renderSlot, type BriefDoc, type BriefItem, type GateFrame, type CriterionRow } from './briefs.js';
 
 // Pass-through: the handlers delegate id resolution to resolveTaskId (like the sibling task tools); the
 // mock returns the input verbatim so the call-order assertions below stay valid for any id shape.
@@ -1533,9 +1533,11 @@ describe('composeBrief — B-843 retained revisions (compose_brief_revision)', (
 
   it('a FIRST compose never calls the revision RPC — there is no predecessor to supersede', async () => {
     // responses: [no active brief] -> [insert row] -> [task update]
+    // B-1411: no iterate_feedback here — a compose carrying send-back words is a REVISION, and a revision
+    // with no active brief is now refused rather than inserted (see the B-1411 describe block).
     const client = makeClient([{ data: null }, { data: { id: 'brief-1' } }, { data: null }], revisionOk);
     await composeBrief(client, PROJECT_ID, USER_ID, {
-      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any, iterate_feedback: 'ignored here',
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
     });
     expect(client.rpc).not.toHaveBeenCalled();
     expect(client.insert).toHaveBeenCalled();
@@ -6164,5 +6166,240 @@ describe('B-1047 harmony-design-decide prose pins', () => {
     'never guess a\n  fingerprint',
   ])('pins %s', (phrase) => {
     expect(prose).toContain(phrase);
+  });
+});
+
+// ——— B-1411: accept, send-back and recompose act only on the revision the caller read ——————————————
+describe('B-1411 — resolve_brief pinned to the revision the caller read', () => {
+  type Row = Record<string, unknown> | null;
+  function makePinClient(state: { pinned: Row; active: Row }, rpcImpl?: (name: string, params: any) => { data: unknown; error: unknown }) {
+    const chain: any = { selects: [] as string[] };
+    let cols = '';
+    for (const m of ['from', 'eq', 'order', 'limit']) chain[m] = vi.fn(() => chain);
+    chain.select = vi.fn((c: string) => { cols = c; chain.selects.push(c); return chain; });
+    // The pinned-revision reads name `status`; the active-brief reads (`id, doc` / `id, iteration`) do not.
+    chain.maybeSingle = vi.fn(async () => ({ data: cols.includes('status') ? state.pinned : state.active, error: null }));
+    chain.rpc = vi.fn(async (name: string, params: any) => rpcImpl ? rpcImpl(name, params) : { data: { brief_id: params._brief_id, brief_status: 'accepted' }, error: null });
+    return chain;
+  }
+  const accept = (client: any, over: Record<string, unknown> = {}) =>
+    resolveBrief(client, PROJECT_ID, { task_id: 'task-1', command: 'accept', provenance: 'human-in-session', ...over } as any);
+
+  it('a matching pin resolves THAT revision: the RPC gets the expected id, no active lookup', async () => {
+    const client = makePinClient({ pinned: { id: 'brief-2', status: 'active', iteration: 2, doc: {} }, active: { id: 'brief-other' } });
+    await accept(client, { expected_brief_id: 'brief-2' });
+    expect(client.rpc).toHaveBeenCalledWith('resolve_brief', expect.objectContaining({ _brief_id: 'brief-2', _command: 'accept' }));
+    expect(client.selects).not.toContain('id, doc');
+    expect(client.eq).toHaveBeenCalledWith('task_id', 'task-1');
+  });
+
+  it('a replaced revision is refused naming both revisions, and the RPC is never called', async () => {
+    const client = makePinClient({
+      pinned: { id: 'brief-1', status: 'superseded', iteration: 1, resolved_command: null, doc: {} },
+      active: { id: 'brief-2', iteration: 2 },
+    });
+    await expect(accept(client, { expected_brief_id: 'brief-1' })).rejects.toThrow(
+      'Brief brief-1 (revision 1) is no longer the active revision: brief brief-2 (revision 2) replaced it. Nothing was accepted. Re-read the brief and accept the revision you have read.',
+    );
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it('with no brief active now, the refusal states the pinned revision\'s status instead', async () => {
+    const client = makePinClient({ pinned: { id: 'brief-1', status: 'deferred', iteration: 3, resolved_command: 'defer', doc: {} }, active: null });
+    await expect(accept(client, { expected_brief_id: 'brief-1' })).rejects.toThrow(/Brief brief-1 \(revision 3\) is no longer the active revision: it is 'deferred' \(resolved via 'defer'\), and no brief is active.*Nothing was accepted/);
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it('a repeat accept of an already-accepted pinned revision calls the RPC for its idempotent result', async () => {
+    const client = makePinClient(
+      { pinned: { id: 'brief-1', status: 'accepted', iteration: 1, resolved_command: 'accept', doc: {} }, active: null },
+      () => ({ data: { brief_id: 'brief-1', brief_status: 'accepted', idempotent: true }, error: null }),
+    );
+    const result = await accept(client, { expected_brief_id: 'brief-1' });
+    expect(client.rpc).toHaveBeenCalledWith('resolve_brief', expect.objectContaining({ _brief_id: 'brief-1' }));
+    expect(result).toEqual(expect.objectContaining({ idempotent: true }));
+  });
+
+  it('the RPC\'s "already resolved via" refusal (the read-vs-RPC race) is re-read and mapped to the plain message', async () => {
+    const state: { pinned: Row; active: Row } = { pinned: { id: 'brief-1', status: 'active', iteration: 1, doc: {} }, active: { id: 'brief-1', iteration: 1 } };
+    const client = makePinClient(state, () => {
+      // A recompose landed between the read and the RPC's row lock.
+      state.pinned = { id: 'brief-1', status: 'superseded', iteration: 1, resolved_command: null };
+      state.active = { id: 'brief-2', iteration: 2 };
+      return { data: null, error: { message: 'brief brief-1 already resolved via "<NULL>" — cannot apply "accept"' } };
+    });
+    await expect(accept(client, { expected_brief_id: 'brief-1' })).rejects.toThrow(/brief brief-2 \(revision 2\) replaced it\. Nothing was accepted/);
+  });
+
+  it('a pin naming no brief on this task is refused with nothing written', async () => {
+    const client = makePinClient({ pinned: null, active: { id: 'brief-2', iteration: 2 } });
+    await expect(accept(client, { expected_brief_id: 'brief-x' })).rejects.toThrow(/Brief brief-x is not a brief on this task\. Nothing was accepted/);
+    expect(client.rpc).not.toHaveBeenCalled();
+  });
+
+  it('without a pin the behaviour is unchanged: the active brief is looked up and resolved', async () => {
+    const client = makePinClient({ pinned: null, active: { id: 'brief-7', doc: {} } });
+    await accept(client);
+    expect(client.selects).toEqual(['id, doc']);
+    expect(client.rpc).toHaveBeenCalledWith('resolve_brief', { _brief_id: 'brief-7', _command: 'accept', _detail: null, p_provenance: 'human-in-session', p_conduction_id: null, p_leg: null });
+  });
+
+  it('the tool schema offers expected_brief_id', () => {
+    expect((resolveBriefTool.inputSchema.properties as Record<string, unknown>).expected_brief_id).toBeDefined();
+  });
+});
+
+describe('B-1411 — reshape_brief pinned to the revision the caller read', () => {
+  function makeClient2(active: Record<string, unknown> | null, pinned: Record<string, unknown> | null, submitError?: string) {
+    const chain: any = { rpcCalls: [] as string[] };
+    let cols = '';
+    for (const m of ['from', 'eq', 'order', 'limit']) chain[m] = vi.fn(() => chain);
+    chain.select = vi.fn((c: string) => { cols = c; return chain; });
+    chain.maybeSingle = vi.fn(async () => ({ data: cols.includes('status') ? pinned : active, error: null }));
+    chain.rpc = vi.fn(async (name: string, params: any) => {
+      chain.rpcCalls.push(name);
+      if (name === 'submit_brief_command' && submitError) return { data: null, error: { message: submitError } };
+      return { data: name === 'submit_brief_command' ? { brief_id: params._brief_id } : null, error: null };
+    });
+    return chain;
+  }
+  const reshape = (client: any, over: Record<string, unknown> = {}) =>
+    reshapeBrief(client, PROJECT_ID, { task_id: 'task-1', feedback: 'tighten the plan', provenance: 'human-in-session', ...over } as any);
+
+  it('a mismatched pin is refused before the audit row: neither RPC is called', async () => {
+    const client = makeClient2({ id: 'brief-2', reason: 'plan-draft', iteration: 2 }, { id: 'brief-1', status: 'superseded', iteration: 1 });
+    await expect(reshape(client, { expected_brief_id: 'brief-1' })).rejects.toThrow(
+      'Brief brief-1 (revision 1) is no longer the active revision: brief brief-2 (revision 2) replaced it. Nothing was sent back.',
+    );
+    expect(client.rpcCalls).toEqual([]);
+  });
+
+  it('a pin with no active brief is refused with the same message shape, nothing written', async () => {
+    const client = makeClient2(null, { id: 'brief-1', status: 'accepted', iteration: 1, resolved_command: 'accept' });
+    await expect(reshape(client, { expected_brief_id: 'brief-1' })).rejects.toThrow(/it is 'accepted' \(resolved via 'accept'\).*Nothing was sent back/);
+    expect(client.rpcCalls).toEqual([]);
+  });
+
+  it('a matching pin sends back as before', async () => {
+    const client = makeClient2({ id: 'brief-1', reason: 'plan-draft' }, null);
+    await reshape(client, { expected_brief_id: 'brief-1' });
+    expect(client.rpcCalls).toEqual(['log_brief_decision_event', 'submit_brief_command']);
+  });
+
+  it('submit_brief_command\'s "only offered on an active brief" refusal is mapped when pinned', async () => {
+    const client = makeClient2({ id: 'brief-1', reason: 'plan-draft', iteration: 1 }, { id: 'brief-1', status: 'accepted', iteration: 1, resolved_command: 'accept' },
+      'brief brief-1 is accepted — iterate is only offered on an active brief');
+    await expect(reshape(client, { expected_brief_id: 'brief-1' })).rejects.toThrow(/Brief brief-1 \(revision 1\) is no longer the active revision.*Nothing was sent back/);
+  });
+
+  it('the tool schema offers expected_brief_id', () => {
+    expect((reshapeBriefTool.inputSchema.properties as Record<string, unknown>).expected_brief_id).toBeDefined();
+  });
+});
+
+describe('B-1411 — a recompose never falls through to a first compose', () => {
+  const accepted = { id: 'brief-1', status: 'accepted', resolved_command: 'accept' };
+  const refusal = /compose_brief refused: the brief you were revising \(.*\) is no longer active — brief brief-1 is 'accepted' \(resolved via 'accept'\)\. Nothing was composed\..*never start a new brief for this gate/;
+  const initialOk = { compose_brief_initial: { data: { id: 'brief-9' }, error: null } };
+
+  it('isRevisionCompose: a revising id, send-back words or a redraft-only cause; never accept-remark / refreshed-inputs', () => {
+    expect(isRevisionCompose({})).toBe(false);
+    expect(isRevisionCompose({ revising_brief_id: 'b' })).toBe(true);
+    expect(isRevisionCompose({ revising_brief_id: '  ' })).toBe(false);
+    expect(isRevisionCompose({ iterate_feedback: 'redo it' })).toBe(true);
+    expect(isRevisionCompose({ iterate_feedback: '' })).toBe(false);
+    for (const source of ['lint-self-review', 'self-review', 'after-discussion', 'human-send-back', 'orchestrator-send-back'] as const) {
+      expect(isRevisionCompose({ revision_cause: { source, lines: ['x'] } })).toBe(true);
+    }
+    for (const source of ['accept-remark', 'refreshed-inputs'] as const) {
+      expect(isRevisionCompose({ revision_cause: { source, lines: ['x'] } })).toBe(false);
+    }
+  });
+
+  it('a lint self-review recompose after an accept is refused: no compose_brief_initial, no insert, no write', async () => {
+    const client = makeClient([{ data: null }, { data: accepted }], initialOk);
+    await expect(composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+      revision_cause: { source: 'lint-self-review', lines: ['warning'] },
+    })).rejects.toThrow(refusal);
+    expect(client.rpc).not.toHaveBeenCalled();
+    expect(client.insert).not.toHaveBeenCalled();
+    expect(client.update).not.toHaveBeenCalled();
+  });
+
+  it('a send-back recompose (iterate_feedback) with no active brief is refused the same way', async () => {
+    const client = makeClient([{ data: null }, { data: accepted }], initialOk);
+    await expect(composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any, iterate_feedback: 'lead with the tradeoff',
+    })).rejects.toThrow(refusal);
+    expect(client.rpc).not.toHaveBeenCalled();
+    expect(client.insert).not.toHaveBeenCalled();
+  });
+
+  it('a revising_brief_id that is not the active brief is refused before any write', async () => {
+    const client = makeClient([{ data: { id: 'brief-2', iteration: 2 } }, { data: { id: 'brief-2', status: 'active' } }]);
+    await expect(composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any, revising_brief_id: 'brief-1',
+    })).rejects.toThrow(/the brief you were revising \(brief-1\) is no longer active — brief brief-2 is 'active'\. Nothing was composed/);
+    expect(client.rpc).not.toHaveBeenCalled();
+    expect(client.update).not.toHaveBeenCalled();
+  });
+
+  it('a revising_brief_id matching the active brief revises it through the RPC', async () => {
+    const client = makeClient([{ data: { id: 'brief-1', iteration: 1 } }, { data: null }],
+      { compose_brief_revision: { data: { id: 'brief-2', iteration: 2 }, error: null } });
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any, revising_brief_id: 'brief-1',
+      revision_cause: { source: 'self-review', lines: ['clearer'] },
+    });
+    expect(client.rpc).toHaveBeenCalledWith('compose_brief_revision', expect.objectContaining({ _task_id: 'task-1' }));
+  });
+
+  it('compose_brief_revision\'s "no active brief" exception (accept raced the RPC) is mapped, with no fallback', async () => {
+    const client = makeClient([{ data: { id: 'brief-1', iteration: 1 } }, { data: accepted }], {
+      compose_brief_revision: { data: null, error: { code: 'P0001', message: 'no active brief for task task-1 — compose_brief_revision revises an existing lineage; insert the first revision directly' } },
+    });
+    await expect(composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any, revising_brief_id: 'brief-1',
+    })).rejects.toThrow(refusal);
+    expect(client.insert).not.toHaveBeenCalled();
+    expect(client.update).not.toHaveBeenCalled();
+    expect(client.rpc).not.toHaveBeenCalledWith('compose_brief_initial', expect.anything());
+  });
+
+  it('the degraded in-place update only touches an ACTIVE row, and a no-row match is the same refusal', async () => {
+    // No compose_brief_revision on this DB (makeClient's default), so the in-place fallback runs.
+    const client = makeClient([
+      { data: { id: 'brief-1', iteration: 1 } },
+      { data: null, error: { code: 'PGRST116', message: 'JSON object requested, multiple (or no) rows returned' } },
+      { data: accepted },
+    ]);
+    await expect(composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any,
+    })).rejects.toThrow(refusal);
+    expect(client.eq).toHaveBeenCalledWith('status', 'active');
+    expect(client.update).toHaveBeenCalledTimes(1); // the briefs update only — never the tasks flag
+  });
+
+  it('a first compose at a new gate (no revision signals, no active brief) still goes through compose_brief_initial', async () => {
+    const client = makeClient([{ data: null }, { data: null }], initialOk);
+    const result = await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any, couple_claim_ids: [],
+    });
+    expect(client.rpc).toHaveBeenCalledWith('compose_brief_initial', expect.objectContaining({ _task_id: 'task-1' }));
+    expect(result.brief).toEqual({ id: 'brief-9' });
+  });
+
+  it('a first compose carrying an accept-remark cause is still a first compose, not a refused revision', async () => {
+    const client = makeClient([{ data: null }, { data: null }], initialOk);
+    await composeBrief(client, PROJECT_ID, USER_ID, {
+      task_id: 'task-1', reason: 'clarification-draft', doc: okDoc as any, couple_claim_ids: [],
+      revision_cause: { source: 'accept-remark', lines: ['answered the remark'] },
+    });
+    expect(client.rpc).toHaveBeenCalledWith('compose_brief_initial', expect.anything());
+  });
+
+  it('the tool schema offers revising_brief_id', () => {
+    expect((composeBriefTool.inputSchema.properties as Record<string, unknown>).revising_brief_id).toBeDefined();
   });
 });

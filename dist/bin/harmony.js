@@ -40429,6 +40429,30 @@ function withDerivedEntryContent(doc, reason, decisionRef, ctx) {
     ]
   };
 }
+var REVISION_ONLY_CAUSES = /* @__PURE__ */ new Set([
+  "lint-self-review",
+  "self-review",
+  "after-discussion",
+  "human-send-back",
+  "orchestrator-send-back"
+]);
+function isRevisionCompose(args) {
+  if (typeof args.revising_brief_id === "string" && args.revising_brief_id.trim()) return true;
+  if (typeof args.iterate_feedback === "string" && args.iterate_feedback.trim()) return true;
+  const source = args.revision_cause?.source;
+  return typeof source === "string" && REVISION_ONLY_CAUSES.has(source);
+}
+var isNoActiveBriefToRevise = (err) => !!err?.message && /no active brief for task/.test(err.message);
+async function staleRevisionError(client, taskId, revisingId) {
+  const { data, error: error2 } = await client.from("briefs").select("id, status, resolved_command").eq("task_id", taskId).order("created_at", { ascending: false }).limit(1).maybeSingle();
+  if (error2) return new Error(error2.message);
+  const latest = data;
+  const was = revisingId ?? "the previous revision";
+  const where2 = latest ? `brief ${latest.id} is '${latest.status ?? "unknown"}'${latest.resolved_command ? ` (resolved via '${latest.resolved_command}')` : ""}` : "the task has no brief at all";
+  return new Error(
+    `compose_brief refused: the brief you were revising (${was}) is no longer active \u2014 ${where2}. Nothing was composed. Re-read the ticket: if it was accepted, consume the pending acceptance once and move to the next gate; never start a new brief for this gate.`
+  );
+}
 function withDiffDerivedRiskClasses(doc, changedPaths, priorRiskClasses) {
   if (doc.frame?.kind !== "release") return doc;
   if (changedPaths === void 0 && priorRiskClasses !== void 0) {
@@ -40621,6 +40645,10 @@ async function composeBrief(client, projectId, userId, args) {
   }
   const { data: existing, error: lookupErr } = await client.from("briefs").select("id, iteration, reason, decision_ref, doc, pending_activity").eq("task_id", taskId).eq("status", "active").maybeSingle();
   if (lookupErr) throw new Error(lookupErr.message);
+  const revisingId = pinnedId(args.revising_brief_id);
+  if (isRevisionCompose(args) && (!existing || revisingId && existing.id !== revisingId)) {
+    throw await staleRevisionError(client, taskId, revisingId);
+  }
   const existingRow = existing;
   const reasonChanged = !!existingRow?.reason && existingRow.reason !== args.reason;
   const mergedDecisionRef = args.decision_ref !== void 0 ? args.decision_ref ?? null : reasonChanged ? null : existingRow?.decision_ref ?? null;
@@ -40800,16 +40828,21 @@ async function composeBrief(client, projectId, userId, args) {
     }
     if (!revisionErr) {
       brief = revision;
+    } else if (isNoActiveBriefToRevise(revisionErr)) {
+      throw await staleRevisionError(client, taskId, revisingId);
     } else if (isMissingComposeBriefRevision(revisionErr)) {
       const updateRow = { ...payload2, iteration: (existing.iteration ?? 1) + 1 };
-      const { data, error: error2 } = await client.from("briefs").update(updateRow).eq("id", briefId).select(BRIEF_COLS).single();
-      if (error2) {
+      const matchedNoRow = (err, row) => err ? err.code === "PGRST116" : !row;
+      const { data, error: error2 } = await client.from("briefs").update(updateRow).eq("id", briefId).eq("status", "active").select(BRIEF_COLS).single();
+      if (error2 && !matchedNoRow(error2, data)) {
         if (!isMissingPendingResolution(error2.message)) throw new Error(error2.message);
         const { pending_resolution: _drop, ...fallback } = updateRow;
-        const { data: data2, error: error22 } = await client.from("briefs").update(fallback).eq("id", briefId).select(BRIEF_COLS).single();
+        const { data: data2, error: error22 } = await client.from("briefs").update(fallback).eq("id", briefId).eq("status", "active").select(BRIEF_COLS).single();
+        if (matchedNoRow(error22, data2)) throw await staleRevisionError(client, taskId, revisingId);
         if (error22) throw new Error(error22.message);
         brief = data2;
       } else {
+        if (matchedNoRow(error2, data)) throw await staleRevisionError(client, taskId, revisingId);
         brief = data;
       }
     } else {
@@ -40879,7 +40912,7 @@ async function composeBrief(client, projectId, userId, args) {
 }
 var composeBriefTool = {
   name: "compose_brief",
-  description: "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the \xA73.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task produces the NEXT REVISION of the same brief (edit/iterate): B-843 supersedes the active row and inserts its successor in one transaction, so every earlier version stays readable and `iteration` keeps counting. Pass `iterate_feedback` (the human's verbatim words) ONLY on the recompose a send-back actually CAUSED: the recompose that CONSUMES a `pending_resolution` marker supplies that marker's `detail`, and every OTHER recompose omits the parameter (it then lands null). Omit it on a self-redraft, a rebase, an answer to an accept-with-remark, and the single recompose that follows a concluded `discuss` exchange \u2014 a brief that was talked over has no send-back words to attribute. compose_brief NEVER reads `pending_resolution` to fill this field; the CALLER supplies it, so re-stamping the last feedback you happen to know about is the defect, not the habit. The revision write is a PARTIAL: fields you omit CARRY FORWARD from the previous revision and only an explicit null clears one \u2014 so omitting `decision_ref` no longer silently drops the pointer to the entry accept promotes. B-901 generalises that to the DOC and to `pending_activity`: the prior revision's doc is merged key-level BEFORE anything is rendered, linted or derived, so a partial recompose can no longer render a page shorter than the record behind it, and the **On accept:** line states the row's true consequence rather than this call's own argument. On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief \u2014 coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning). On a FIRST compose only (when no active brief exists yet), pass `couple_claim_ids` (B-736) = the ids of elicitation claims minted just before this call \u2014 compose atomically couples them (`underwriting_brief_id`) to the brief it creates via `compose_brief_initial`, tolerantly falling back to a bare insert plus a separate coupling update on a DB that does not yet have that RPC; omit it when no exchange ran. Each gate's brief contract \u2014 the one question it answers, its must-haves, and the engagement depth it owes the human \u2014 lives in skills/harmony-shared/brief-authoring.md: author the doc against your gate's section plus its legibility contract; do not restate it here. Write one-scan prose (short sentences, no stacked parentheticals, jargon and internal IDs spelled out); the brief is the summary, and the render appends the depth-pointer line automatically whenever the brief carries a decision_ref \u2014 do not hand-write it. B-866: the doc you compose is the SINGLE authored prose source. The human reads the rendered brief; at the four gates that record their own entry the accept promotes a mechanical projection of the SAME doc as that entry's body (stamped 'Derived from the ratified brief', with any element the brief did not show them marked NOT RATIFIED). Do not author entry prose separately \u2014 put it in the doc. The depth-pointer is rendered from the MERGED decision_ref, so a partial recompose that omits it keeps the pointer. B-876: also author `doc.frame` \u2014 the gate-specific frame, a `kind`-discriminated block carrying the must-haves the BLUF spine has no field for (clarify: solving/in_scope/not_solving; decompose: elements/coverage; design: track/tracks/reach, plus optional designer_frames: [{ id, name, file_key, verdict: adopted|off-library|not-covering|unreadable|not-checked, reason, preview_attachment_id?, preview_filename? }] for every designer-linked Figma frame the adopt check judged (B-1338; each preview must be a finalized image attachment on this ticket); plan: scope/steps/attestation/carried_unproven/ac_coverage; release: act/unproven/evidence_status; verify: environment/criteria ledger/steps runbook). Its `kind` must match the gate `reason`; the render positions it per gate (clarify above DECIDE, release below DECIDE and above Recommend, everything else below Recommend). Omitting it renders exactly the pre-B-876 bytes and every frame rule is a WARNING, with two exceptions: (B-1016) a `release` frame missing `evidence_status` is REFUSED outright \u2014 call `get_build_evidence_status` and carry its counts; (B-1068) a `verify` frame fails its runbook-integrity checks \u2014 see `frame.steps` below. On an in-place iterate (round 2+), also author `doc.revision` = { round, changes: [{ change, responds_to }] }, each change bound to the feedback it answers; it renders under the On-accept line, never above the frame. B-1143: release frames carry `settled_beyond_design: [{ behaviour, ac, knowledge_entry_id }]`, or an explicit `[]` when none; record the knowledge writes before composing. Empty reports touching Accepted surface-tagged entries emit an advisory warning. For a `release-decision-pending` brief pass `changed_paths` (the PR diff) \u2014 compose computes `frame.risk_classes` from it with the deterministic path detector and OVERWRITES whatever you authored there; no diff yields an empty list. That diff-derived field does NOT replace the B-516 classes carried from auto-advanced gates, which still ride the brief as prose labelled as carried from gates. B-838: also pass `diff_content` (the same PR diff, removed/replaced lines) on a `release-decision-pending` compose \u2014 compose computes `frame.contradiction_signal` from it (which Accepted knowledge entries this diff touches or contradicts) and OVERWRITES whatever the doc authored, on the same three-state contract as the field's own doc comment. On the five forward gates (clarify/decompose/design/plan/release), also author `doc.frame.floor_reviewed` = the ids of this ticket's FLOOR-set Accepted entries (`list_ticket_knowledge`, Accepted only) you confirmed reviewed for contradiction before composing \u2014 an empty FLOOR set needs nothing here and warns on nothing; a non-empty one left unreviewed is a WARNING, never a refusal. B-1017: pass `revision_cause` on every redraft that is not a send-back \u2014 see skills/harmony-shared/brief-authoring.md \xA7Stating the cause of a redraft.",
+  description: "Compose (or iterate, in place) the BLUF decision brief for a task and flag it awaiting human input. Pass the STRUCTURED doc (decide / recommend / why / alternatives / context / items / research); the Markdown blob is rendered from it. Runs the \xA73.2 pre-send lint (rejects naked forks; enforces research-first when load-bearing; rejects items labelled `derived-constraint` among the asks) and validates pending_activity against the transition table. pending_activity = the workflow activity `accept` will apply; decision_ref = the Asserted knowledge entry `accept` will promote. Calling again for the same task produces the NEXT REVISION of the same brief (edit/iterate): B-843 supersedes the active row and inserts its successor in one transaction, so every earlier version stays readable and `iteration` keeps counting. Pass `iterate_feedback` (the human's verbatim words) ONLY on the recompose a send-back actually CAUSED: the recompose that CONSUMES a `pending_resolution` marker supplies that marker's `detail`, and every OTHER recompose omits the parameter (it then lands null). Omit it on a self-redraft, a rebase, an answer to an accept-with-remark, and the single recompose that follows a concluded `discuss` exchange \u2014 a brief that was talked over has no send-back words to attribute. compose_brief NEVER reads `pending_resolution` to fill this field; the CALLER supplies it, so re-stamping the last feedback you happen to know about is the defect, not the habit. The revision write is a PARTIAL: fields you omit CARRY FORWARD from the previous revision and only an explicit null clears one \u2014 so omitting `decision_ref` no longer silently drops the pointer to the entry accept promotes. B-901 generalises that to the DOC and to `pending_activity`: the prior revision's doc is merged key-level BEFORE anything is rendered, linted or derived, so a partial recompose can no longer render a page shorter than the record behind it, and the **On accept:** line states the row's true consequence rather than this call's own argument. On an in-place iterate, pass `underwriting_claim_ids` (B-645) = the elicitation-claim ids that STILL underwrite the re-composed brief \u2014 coupled Asserted claims not in the list are archived (empty array archives all; omit to skip pruning). On a FIRST compose only (when no active brief exists yet), pass `couple_claim_ids` (B-736) = the ids of elicitation claims minted just before this call \u2014 compose atomically couples them (`underwriting_brief_id`) to the brief it creates via `compose_brief_initial`, tolerantly falling back to a bare insert plus a separate coupling update on a DB that does not yet have that RPC; omit it when no exchange ran. Each gate's brief contract \u2014 the one question it answers, its must-haves, and the engagement depth it owes the human \u2014 lives in skills/harmony-shared/brief-authoring.md: author the doc against your gate's section plus its legibility contract; do not restate it here. Write one-scan prose (short sentences, no stacked parentheticals, jargon and internal IDs spelled out); the brief is the summary, and the render appends the depth-pointer line automatically whenever the brief carries a decision_ref \u2014 do not hand-write it. B-866: the doc you compose is the SINGLE authored prose source. The human reads the rendered brief; at the four gates that record their own entry the accept promotes a mechanical projection of the SAME doc as that entry's body (stamped 'Derived from the ratified brief', with any element the brief did not show them marked NOT RATIFIED). Do not author entry prose separately \u2014 put it in the doc. The depth-pointer is rendered from the MERGED decision_ref, so a partial recompose that omits it keeps the pointer. B-876: also author `doc.frame` \u2014 the gate-specific frame, a `kind`-discriminated block carrying the must-haves the BLUF spine has no field for (clarify: solving/in_scope/not_solving; decompose: elements/coverage; design: track/tracks/reach, plus optional designer_frames: [{ id, name, file_key, verdict: adopted|off-library|not-covering|unreadable|not-checked, reason, preview_attachment_id?, preview_filename? }] for every designer-linked Figma frame the adopt check judged (B-1338; each preview must be a finalized image attachment on this ticket); plan: scope/steps/attestation/carried_unproven/ac_coverage; release: act/unproven/evidence_status; verify: environment/criteria ledger/steps runbook). Its `kind` must match the gate `reason`; the render positions it per gate (clarify above DECIDE, release below DECIDE and above Recommend, everything else below Recommend). Omitting it renders exactly the pre-B-876 bytes and every frame rule is a WARNING, with two exceptions: (B-1016) a `release` frame missing `evidence_status` is REFUSED outright \u2014 call `get_build_evidence_status` and carry its counts; (B-1068) a `verify` frame fails its runbook-integrity checks \u2014 see `frame.steps` below. On an in-place iterate (round 2+), also author `doc.revision` = { round, changes: [{ change, responds_to }] }, each change bound to the feedback it answers; it renders under the On-accept line, never above the frame. B-1143: release frames carry `settled_beyond_design: [{ behaviour, ac, knowledge_entry_id }]`, or an explicit `[]` when none; record the knowledge writes before composing. Empty reports touching Accepted surface-tagged entries emit an advisory warning. For a `release-decision-pending` brief pass `changed_paths` (the PR diff) \u2014 compose computes `frame.risk_classes` from it with the deterministic path detector and OVERWRITES whatever you authored there; no diff yields an empty list. That diff-derived field does NOT replace the B-516 classes carried from auto-advanced gates, which still ride the brief as prose labelled as carried from gates. B-838: also pass `diff_content` (the same PR diff, removed/replaced lines) on a `release-decision-pending` compose \u2014 compose computes `frame.contradiction_signal` from it (which Accepted knowledge entries this diff touches or contradicts) and OVERWRITES whatever the doc authored, on the same three-state contract as the field's own doc comment. On the five forward gates (clarify/decompose/design/plan/release), also author `doc.frame.floor_reviewed` = the ids of this ticket's FLOOR-set Accepted entries (`list_ticket_knowledge`, Accepted only) you confirmed reviewed for contradiction before composing \u2014 an empty FLOOR set needs nothing here and warns on nothing; a non-empty one left unreviewed is a WARNING, never a refusal. B-1017: pass `revision_cause` on every redraft that is not a send-back \u2014 see skills/harmony-shared/brief-authoring.md \xA7Stating the cause of a redraft. B-1411: on every recompose pass `revising_brief_id` (the id the previous compose_brief returned, or get_brief's id). A revision whose brief is no longer active is refused with nothing written \u2014 it never starts a fresh brief; re-read the ticket and consume a pending acceptance instead.",
   inputSchema: {
     type: "object",
     properties: {
@@ -40983,6 +41016,10 @@ var composeBriefTool = {
         },
         required: ["source", "lines"],
         description: "B-1017 \u2014 WHY this revision exists, supplied by the CALLER: { source, lines }. lint-self-review: pass the previous compose's lint.warnings verbatim (a second self-recompose passes ITS OWN warnings, never the first one's). self-review: your one-line reason. after-discussion / accept-remark / refreshed-inputs: one line naming what happened. For a SEND-BACK pass only iterate_feedback \u2014 the function derives the sender (human vs orchestrator) from the B-896 provenance row; do not also pass a send-back source. Omit on a first compose. A round-2+ compose with neither this nor iterate_feedback WARNS and stores a null cause (renders 'No cause recorded') \u2014 never refused."
+      },
+      revising_brief_id: {
+        type: "string",
+        description: "B-1411 \u2014 on every RECOMPOSE, the id of the brief you are revising: the id the previous compose_brief returned, or get_brief's `id`. Omit on a gate's first compose. A recompose (this id, a non-empty iterate_feedback, or a revision_cause of lint-self-review / self-review / after-discussion / a send-back) whose brief is no longer active \u2014 or is not this id \u2014 is refused with nothing written, naming the task's latest brief. It never falls through to starting a new brief: re-read the ticket, consume a pending acceptance once and move to the next gate."
       }
     },
     required: ["task_id", "reason", "doc"]
@@ -41236,6 +41273,39 @@ ${refusal}`
   }
   throw new WorkerBriefAuthorityError(refusal);
 }
+function pinnedId(raw) {
+  return typeof raw === "string" && raw.trim() ? raw.trim() : void 0;
+}
+var ACT_ACCEPT = { done: "accepted", verb: "accept" };
+var ACT_DEFER = { done: "deferred", verb: "defer" };
+async function replacedRevisionError(client, taskId, expectedId, act) {
+  const { data: expectedRow, error: expectedErr } = await client.from("briefs").select("id, status, iteration, resolved_command").eq("id", expectedId).eq("task_id", taskId).maybeSingle();
+  if (expectedErr) return new Error(expectedErr.message);
+  const { data: activeRow, error: activeErr } = await client.from("briefs").select("id, iteration").eq("task_id", taskId).eq("status", "active").maybeSingle();
+  if (activeErr) return new Error(activeErr.message);
+  return buildReplacedRevisionError(
+    expectedId,
+    expectedRow,
+    activeRow,
+    act
+  );
+}
+function buildReplacedRevisionError(expectedId, expected, active, act) {
+  if (!expected) {
+    return new Error(`Brief ${expectedId} is not a brief on this task. Nothing was ${act.done}. Re-read the brief and ${act.verb} the revision you have read.`);
+  }
+  const named = `Brief ${expectedId} (revision ${expected.iteration ?? "?"})`;
+  if (active) {
+    return new Error(
+      `${named} is no longer the active revision: brief ${active.id} (revision ${active.iteration ?? "?"}) replaced it. Nothing was ${act.done}. Re-read the brief and ${act.verb} the revision you have read.`
+    );
+  }
+  const via = expected.resolved_command ? ` (resolved via '${expected.resolved_command}')` : "";
+  return new Error(
+    `${named} is no longer the active revision: it is '${expected.status ?? "unknown"}'${via}, and no brief is active on this task now. Nothing was ${act.done}. Re-read the ticket before deciding.`
+  );
+}
+var isAlreadyResolvedRefusal = (msg) => !!msg && /already resolved via/.test(msg);
 async function resolveBrief(client, projectId, args, userId) {
   if (!args.task_id) throw new Error("task_id is required");
   if (args.command !== "accept" && args.command !== "defer") {
@@ -41250,6 +41320,8 @@ async function resolveBrief(client, projectId, args, userId) {
     );
   }
   const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const expectedId = pinnedId(args.expected_brief_id);
+  if (expectedId) return resolvePinnedBrief(client, taskId, expectedId, args, provenance, remark);
   const { data: active, error: lookupErr } = await client.from("briefs").select("id, doc").eq("task_id", taskId).eq("status", "active").maybeSingle();
   if (lookupErr) throw new Error(lookupErr.message);
   if (!active) {
@@ -41258,36 +41330,41 @@ async function resolveBrief(client, projectId, args, userId) {
       if (taskErr) throw new Error(taskErr.message);
       const row = task;
       if (row?.workflow_state === "Deployed" && row.awaiting_human_reason === "verification-ack-pending" && row.awaiting_human_ref?.kind === "umbrella-auto-verify") {
-        const { data: data2, error: error3 } = await client.rpc("ack_umbrella_verify", { _task_id: taskId });
-        if (error3) throw new Error(error3.message);
-        return data2;
+        const { data, error: error2 } = await client.rpc("ack_umbrella_verify", { _task_id: taskId });
+        if (error2) throw new Error(error2.message);
+        return data;
       }
     }
     throw new Error(`no active brief for task ${args.task_id}`);
   }
   if (args.command === "accept") {
-    const doc = active.doc ?? {};
-    await requireRemovalCapability(client, doc);
-    const completion2 = doc.frame && (doc.frame.kind === "clarify" || doc.frame.kind === "design") ? doc.frame.completion : void 0;
-    if (completion2) {
-      const { data: labels, error: error3 } = await client.from("task_labels").select("labels(name)").eq("task_id", taskId);
-      if (error3) throw error3;
-      const names = (labels ?? []).flatMap((row) => row.labels ? [row.labels.name] : []);
-      const proposed = doc.payload?.filter((item) => item.write_kind === "label_add").map((item) => item.label_name ?? "decision-only") ?? [];
-      const marker = resolveDeliverableMarker([...names, ...proposed]);
-      if (marker.kind !== "none") {
-        if (provenance.startsWith("agent-synthesized")) throw new Error("Deliverable completion requires explicit human acceptance");
-        if (marker.intended_gate !== completion2.gate) throw new Error("Completing brief does not match the deliverable gate");
-        if (proposed.includes("capture-only")) await requireCaptureCompletionCapability(client, taskId);
-        if (names.includes("capture-only")) assertCaptureAvailable(await readDeliverableStatus(client, taskId, names));
-      }
-    }
-    if ("removal_effective_on_accept" in doc && doc.removal_effective_on_accept && provenance.startsWith("agent-synthesized")) {
-      throw new Error("policy removal effectivity requires an explicit human accept");
+    await runAcceptGuards(client, taskId, active.doc ?? {}, provenance);
+  }
+  return callResolveBriefRpc(client, active.id, args, provenance, remark);
+}
+async function runAcceptGuards(client, taskId, doc, provenance) {
+  await requireRemovalCapability(client, doc);
+  const completion2 = doc.frame && (doc.frame.kind === "clarify" || doc.frame.kind === "design") ? doc.frame.completion : void 0;
+  if (completion2) {
+    const { data: labels, error: error2 } = await client.from("task_labels").select("labels(name)").eq("task_id", taskId);
+    if (error2) throw error2;
+    const names = (labels ?? []).flatMap((row) => row.labels ? [row.labels.name] : []);
+    const proposed = doc.payload?.filter((item) => item.write_kind === "label_add").map((item) => item.label_name ?? "decision-only") ?? [];
+    const marker = resolveDeliverableMarker([...names, ...proposed]);
+    if (marker.kind !== "none") {
+      if (provenance.startsWith("agent-synthesized")) throw new Error("Deliverable completion requires explicit human acceptance");
+      if (marker.intended_gate !== completion2.gate) throw new Error("Completing brief does not match the deliverable gate");
+      if (proposed.includes("capture-only")) await requireCaptureCompletionCapability(client, taskId);
+      if (names.includes("capture-only")) assertCaptureAvailable(await readDeliverableStatus(client, taskId, names));
     }
   }
+  if ("removal_effective_on_accept" in doc && doc.removal_effective_on_accept && provenance.startsWith("agent-synthesized")) {
+    throw new Error("policy removal effectivity requires an explicit human accept");
+  }
+}
+async function callResolveBriefRpc(client, briefId, args, provenance, remark) {
   const rpcArgs = {
-    _brief_id: active.id,
+    _brief_id: briefId,
     _command: args.command,
     _detail: args.detail ?? null,
     // B-734: the decision entry's attribution. Validated above — never a caller's raw string.
@@ -41310,6 +41387,24 @@ async function resolveBrief(client, projectId, args, userId) {
     return withRemarkRecorded(retried, false);
   }
   throw new Error(error2.message);
+}
+async function resolvePinnedBrief(client, taskId, expectedId, args, provenance, remark) {
+  const act = args.command === "accept" ? ACT_ACCEPT : ACT_DEFER;
+  const { data, error: error2 } = await client.from("briefs").select("id, task_id, status, iteration, doc, resolved_command").eq("id", expectedId).eq("task_id", taskId).maybeSingle();
+  if (error2) throw new Error(error2.message);
+  const pinned = data;
+  if (!pinned) throw buildReplacedRevisionError(expectedId, null, null, act);
+  if (pinned.status !== "active") {
+    if (pinned.resolved_command === args.command) return callResolveBriefRpc(client, pinned.id, args, provenance, remark);
+    throw await replacedRevisionError(client, taskId, expectedId, act);
+  }
+  if (args.command === "accept") await runAcceptGuards(client, taskId, pinned.doc ?? {}, provenance);
+  try {
+    return await callResolveBriefRpc(client, pinned.id, args, provenance, remark);
+  } catch (err) {
+    if (isAlreadyResolvedRefusal(err.message)) throw await replacedRevisionError(client, taskId, expectedId, act);
+    throw err;
+  }
 }
 function withRemarkRecorded(data, recorded) {
   const base2 = data && typeof data === "object" ? data : {};
@@ -76464,7 +76559,7 @@ async function findRecordedAttestation(client, taskId) {
   }
 }
 async function composeAndAccept(client, projectId, userId, taskId, args) {
-  await composeBrief(client, projectId, userId, {
+  const composed = await composeBrief(client, projectId, userId, {
     task_id: taskId,
     reason: args.reason,
     pending_activity: args.pendingActivity ?? void 0,
@@ -76481,10 +76576,12 @@ async function composeAndAccept(client, projectId, userId, taskId, args) {
       context: args.context
     }
   });
+  const composedId = composed.brief?.id;
   await resolveBrief(client, projectId, {
     task_id: taskId,
     command: "accept",
-    provenance: RESOLVE_BRIEF_PROVENANCE_RECORDED
+    provenance: RESOLVE_BRIEF_PROVENANCE_RECORDED,
+    ...composedId ? { expected_brief_id: composedId } : {}
   });
   if (PAYLOAD_CARRYING_REASONS.has(args.reason)) {
     const consumed = await consumePendingAcceptanceEvent(client, projectId, taskId, { userId });
