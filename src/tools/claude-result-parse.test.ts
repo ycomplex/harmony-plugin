@@ -7,6 +7,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   MODEL_PRICING,
+  deriveCodexCostUsd,
   deriveCostUsd,
   parseClaudeResultJson,
   resolveCost,
@@ -298,5 +299,89 @@ describe('B-1179: resolveCost priced from the catalog row', () => {
     const cost = resolveCost(uncliParsed(), 'claude-haiku-5-5', { input_per_mtok: 1, cached_input_per_mtok: 0.1, output_per_mtok: 5 });
     expect(cost.cost_source).toBe('derived');
     expect(cost.total_cost_usd).toBeCloseTo((1000 * 1 + 2000 * 5 + 3000 * 0.1 + 400 * 2 + 500 * 1.25) / 1_000_000, 12);
+  });
+});
+
+describe('B-1463: Claude Fable 5.2 and tiered Claude catalog rows', () => {
+  function uncliParsed() {
+    const raw = JSON.parse(envelope()) as Record<string, unknown>;
+    delete raw.total_cost_usd;
+    return parseClaudeResultJson(JSON.stringify(raw))!;
+  }
+  /** Haiku 5.5's catalog row as harmony-web seeds it: a base tier and a long-context tier above 100K. */
+  const haikuRow = {
+    input_per_mtok: 0.1,
+    cached_input_per_mtok: 0.01,
+    output_per_mtok: 0.5,
+    long_context_threshold_tokens: 100_000,
+    long_context_price: { input_per_mtok: 0.5, cached_input_per_mtok: 0.05, output_per_mtok: 2.5 },
+  };
+
+  it('claude-fable-5-2 resolves to its own row (8 / 0.20 / 40, writes 10 / 16), not to fable-5', () => {
+    const row = resolvePricing('claude-fable-5-2');
+    expect(row).toBe(MODEL_PRICING['fable-5-2']);
+    expect(row).toEqual({
+      input_per_mtok: 8,
+      output_per_mtok: 40,
+      cache_write_1h_per_mtok: 16,
+      cache_write_5m_per_mtok: 10,
+      cache_read_per_mtok: 0.2,
+    });
+    // Its neighbours are unchanged.
+    expect(resolvePricing('claude-fable-5-1')).toBe(MODEL_PRICING['fable-5-1']);
+    expect(resolvePricing('claude-fable-5')).toBe(MODEL_PRICING['fable-5']);
+  });
+
+  it('a fable-5-2 catalog row derives the same cost as its MODEL_PRICING row', () => {
+    const parsed = uncliParsed();
+    const fromTable = resolveCost(parsed, 'claude-fable-5-2');
+    const fromRow = resolveCost(parsed, 'claude-fable-5-2', { input_per_mtok: 8, cached_input_per_mtok: 0.2, output_per_mtok: 40 });
+    expect(fromTable.cost_source).toBe('derived');
+    expect(fromTable.total_cost_usd).toBeCloseTo((1000 * 8 + 2000 * 40 + 3000 * 0.2 + 400 * 16 + 500 * 10) / 1_000_000, 12);
+    expect(fromRow.total_cost_usd).toBeCloseTo(fromTable.total_cost_usd!, 12);
+  });
+
+  it('a Claude leg priced from a row WITH a long-context threshold is unknown — never priced from the base tier', () => {
+    expect(resolveCost(uncliParsed(), 'claude-haiku-5-5', haikuRow)).toEqual({ total_cost_usd: null, cost_source: 'unknown' });
+    // A threshold alone (no long-context prices on the row) is still a tiered row.
+    expect(
+      resolveCost(uncliParsed(), 'claude-haiku-5-5', { ...haikuRow, long_context_price: null }),
+    ).toEqual({ total_cost_usd: null, cost_source: 'unknown' });
+    // The threshold row does not fall through to MODEL_PRICING, even for a family the table prices.
+    expect(resolveCost(uncliParsed(), 'claude-opus-5', { ...haikuRow })).toEqual({ total_cost_usd: null, cost_source: 'unknown' });
+  });
+
+  it("the CLI's own cost still wins over a tiered row", () => {
+    const parsed = parseClaudeResultJson(envelope())!;
+    expect(resolveCost(parsed, 'claude-haiku-5-5', haikuRow)).toEqual({ total_cost_usd: 1.25, cost_source: 'cli' });
+  });
+
+  it('Haiku does not regain a price through the MODEL_PRICING fallback', () => {
+    expect(resolvePricing('claude-haiku-5-5')).toBeNull();
+    expect(resolveCost(uncliParsed(), 'claude-haiku-5-5')).toEqual({ total_cost_usd: null, cost_source: 'unknown' });
+  });
+
+  it('a Claude row WITHOUT a threshold (null or absent) is priced from the row exactly as before', () => {
+    const base = { input_per_mtok: 1, cached_input_per_mtok: 0.1, output_per_mtok: 5 };
+    const expected = (1000 * 1 + 2000 * 5 + 3000 * 0.1 + 400 * 2 + 500 * 1.25) / 1_000_000;
+    for (const row of [base, { ...base, long_context_threshold_tokens: null, long_context_price: null }]) {
+      const cost = resolveCost(uncliParsed(), 'claude-haiku-5-5', row);
+      expect(cost.cost_source).toBe('derived');
+      expect(cost.total_cost_usd).toBeCloseTo(expected, 12);
+    }
+  });
+
+  it('a Codex row with a threshold is unchanged: base tier at or below it, long-context tier above it', () => {
+    const row = {
+      input_per_mtok: 2,
+      cached_input_per_mtok: 0.1,
+      output_per_mtok: 10,
+      long_context_threshold_tokens: 272_000,
+      long_context_price: { input_per_mtok: 4, cached_input_per_mtok: 0.2, output_per_mtok: 15 },
+    };
+    const below = deriveCodexCostUsd({ inputTokens: 100_000, cacheReadInputTokens: 50_000, outputTokens: 1_000 }, 'codex:gpt-6.1-sol', row);
+    expect(below).toBeCloseTo((50_000 * 2 + 50_000 * 0.1 + 1_000 * 10) / 1_000_000, 12);
+    const above = deriveCodexCostUsd({ inputTokens: 300_000, cacheReadInputTokens: 100_000, outputTokens: 1_000 }, 'codex:gpt-6.1-sol', row);
+    expect(above).toBeCloseTo((200_000 * 4 + 100_000 * 0.2 + 1_000 * 15) / 1_000_000, 12);
   });
 });

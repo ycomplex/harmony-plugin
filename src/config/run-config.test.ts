@@ -527,6 +527,19 @@ describe('B-881: isAllowedModelAlias (no client — degrade-only fallback)', () 
   it('never contains claude-haiku-5 — a model that has never existed (the defect this ticket purges)', () => {
     expect(MODEL_CATALOG_FALLBACK.some((entry) => entry.alias === 'claude-haiku-5')).toBe(false);
   });
+
+  it('B-1463: is not a second place to add a model — its aliases are exactly the six it carried before Fable 5.2', () => {
+    // A new model (claude-fable-5-2) is added by its model_catalog row alone; this degrade-only list
+    // only ever loses retired models (see its header).
+    expect(MODEL_CATALOG_FALLBACK.map((entry) => entry.alias)).toEqual([
+      'claude-sonnet-5-5',
+      'claude-sonnet-5',
+      'claude-opus-5-5',
+      'claude-opus-5',
+      'claude-haiku-5-5',
+      'claude-fable-5-1',
+    ]);
+  });
 });
 
 describe('B-881: getModelContextBudgetBytes (no client — degrade-only fallback)', () => {
