@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { readSharedDoc, readSkill, referencedHarmonyTools } from './skill-contract.js';
 import { registerTools } from '../tools/index.js';
+import { mergeBriefDoc, type BriefDoc } from '../tools/briefs.js';
+import { validateBriefFrame } from '../tools/brief-frame-schema.js';
 
 // The executable product here is skill prose. Pin the load-bearing instructions at their
 // shared owner and the entry points that must consult them, rather than copy routing logic.
@@ -81,5 +83,38 @@ describe('B-927 no-code completion procedure', () => {
     expect(procedure).toContain('B-1410\ncriterion settlement');
     expect(procedure).toContain('No ordinary release exemption is introduced');
     expect(readSkill('harmony-design-decide').body).toContain('Only for a resolved decision-only ticket on the LAST required sub-track');
+  });
+});
+
+// Exercise the actual revision merge and validator used by compose_brief: a recipe that
+// merely omits frame, or clears completion with null, can retain intent or fail validation.
+describe('B-927 completion intent removal using existing compose contracts', () => {
+  const designFrame = {
+    kind: 'design', track: 'technical-design',
+    tracks: [{ track: 'technical-design', status: 'this-brief' }], reach: [],
+  };
+  const prior = {
+    decide: 'Complete the decision?', items: [],
+    frame: { ...designFrame, completion: { gate: 'design', to_state: 'Verified', realization: 'agreed' } },
+  } as BriefDoc;
+
+  it('replaces the entire design frame to remove completion without an invalid null', () => {
+    const merged = mergeBriefDoc(prior, { decide: 'Implementation is owed', items: [], frame: designFrame } as BriefDoc);
+    expect(merged.frame).not.toHaveProperty('completion');
+    expect(() => validateBriefFrame(merged.frame, 'design')).not.toThrow();
+    // Positive controls: omission inherits the previous completion; null is not schema-valid.
+    expect(mergeBriefDoc(prior, { decide: 'Work is owed', items: [] } as BriefDoc).frame).toHaveProperty('completion');
+    expect(() => validateBriefFrame({ ...designFrame, completion: null }, 'design')).toThrow();
+  });
+
+  it('replaces the frame with an ordinary plan and leaves no completion intent', () => {
+    const planFrame = {
+      kind: 'plan', scope: { repos: ['example-plugin'], surfaces: ['skills'], has_migration: false },
+      steps: ['Implement the accepted scope'], attestation: { base_verified: 'Current source reviewed' },
+      carried_unproven: [], ac_coverage: 'Implementation criterion covered',
+    };
+    const merged = mergeBriefDoc(prior, { decide: 'Approve implementation?', items: [], frame: planFrame } as BriefDoc);
+    expect(merged.frame).not.toHaveProperty('completion');
+    expect(() => validateBriefFrame(merged.frame, 'plan')).not.toThrow();
   });
 });
