@@ -645,6 +645,14 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
      no mode / flag / floor applies). *(Forward-compatible seam: a later phase — B-508 — may replace
      report-and-stop with a hand-off that conducts the children; v1 stops and reports.)*
 
+5a. **No-code recognition and send-back (B-927).** Before routing a Designed ticket to plan,
+   follow `harmony-shared/gate-routing.md` → **Recognize a no-code design outcome**. Check any
+   persisted human implementation obligation first; its send-back procedure removes the marker
+   and resumes ordinary routing without re-stamping. Eligible unmarked no-code scope routes to
+   the design skill's fresh completing brief, not an implementation plan. Re-read the deliverable
+   after stamping before the delegation test: the completing brief is always human-required.
+   Final-track recognition is owned by design-decide under that same shared procedure.
+
 6. **Otherwise, determine the next forward activity and RUN it** by delegating to the owning gate skill
    (state→activity map below). The gate skill queries knowledge, drafts the decision, and `compose_brief`s
    — setting `awaiting_human_input`. **The SAME turn MUST then continue, without ending, into step 1's
@@ -1752,7 +1760,7 @@ report-and-stop above ends *the run* but is likewise resumable — it is a stop,
 
 ## Deliverable gate resolution (B-1384)
 
-Before every state→gate route and delegation test, read `get_task.deliverable` and follow `harmony-shared/gate-routing.md`'s marker table. It overrides older bare-label wording: decision-only at Clarified MUST decompose and design, never fast-forward. Capture-only completes at clarify only with the installed guarded capability. A conflict or unavailable capture capability files a worker-question and cannot advance. Both completing gates remain human-required despite flags or per-gate overrides. At Designed, recover an already announced human completing accept after pending payload consumption, or compose completion on the existing design decision; never route a legacy decision-only ticket to plan/build. Ordinary unlabelled tickets retain the canonical gate table and orchestrator accepts.
+Before every state→gate route and delegation test, read `get_task.deliverable` and follow `harmony-shared/gate-routing.md`'s marker table. It overrides older bare-label wording: decision-only at Clarified MUST decompose and design, never fast-forward. Capture-only completes at clarify only with the installed guarded capability. A conflict or unavailable capture capability files a worker-question and cannot advance. Both completing gates remain human-required despite flags or per-gate overrides. At Designed, recover an already announced human completing accept after pending payload consumption, or compose completion on the existing design decision; never route a legacy decision-only ticket to plan/build. Before ordinary unlabelled Designed routing, run the shared B-927 no-code recognition/send-back procedure. Tickets with implementation owed retain the canonical gate table and orchestrator accepts.
 
 ## The controlled contract is intact (phase-2a guarantee)
 
