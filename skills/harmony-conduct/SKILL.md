@@ -661,6 +661,9 @@ Repeat the following until a **TERMINAL** or **PAUSE** condition is reached (see
    carry the side effects — `harmony-decompose` creates children on accept, `finish-work` does the
    merge/deploy on accept. In a controlled run those happen at the human's accept; in a delegated run the
    conduct loop synthesizes the accept and the gate skill performs the same side effects — see §4b.)*
+   A recompose of that brief passes `revising_brief_id`; if it is refused because the brief is no longer
+   active, return to step 1 and never start a new brief for the gate (brief-authoring.md §Stating the
+   cause of a redraft, B-1411).
 
 ### The delegation test — is THIS gate auto-advanced for this run?
 

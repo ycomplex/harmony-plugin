@@ -103,12 +103,13 @@ Iron rules, each bought with a real failure:
   discarded at recompose, and a brief read there may not be the brief that ends up active.
   `harmony watch` reports `ready` or `question` only when the ball is with a human AND the leg has
   ended (§6). The flag alone is not that signal.
-- **Re-read the row immediately before EVERY resolve verb** and match the brief id in
-  `awaiting_human_ref`, its iteration AND the reason against what you reviewed (B-1411). The watch
-  line's `ref.id` and `ref.iteration` are what you reviewed against. `resolve_brief` targets the
-  ACTIVE brief by task id — if the state moved under you (a browser accept, a recompose), your
-  verb lands on the wrong brief. A message from whoever holds release authority, like "I merged it", is a tripwire: re-read
-  before touching anything.
+- **Pin every resolve verb to the revision you reviewed (B-1411).** On every `resolve_brief` and
+  `reshape_brief`, pass `expected_brief_id` = the `ref.id` from the watch line, or the `id` from the
+  `get_brief` you reviewed. The tool then acts on that exact revision. If a newer revision replaced
+  it, the call is refused with nothing written and names the newer revision: read that revision
+  before deciding. When you take the id from the row, match the brief id in `awaiting_human_ref`,
+  its iteration AND the reason against what you reviewed. A message from whoever holds release
+  authority, like "I merged it", is a tripwire: re-read before touching anything.
 - **One leg wakes per marker.** After a resolve/answer, the conductor wakes the leg on its next
   pass (~1 min). Never double-drive: while a leg is running, make no writes against that ticket.
 - **You are a recovery substrate.** When a worker leg reports an environmental capability denial

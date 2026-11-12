@@ -189,7 +189,8 @@ describe('runRecordedWalk — the happy path (B-1062)', () => {
     // COMPOSED but never accepted — see the dedicated describe block below for that assertion).
     expect(resolveBrief).toHaveBeenCalledTimes(5);
     for (const call of resolveBrief.mock.calls) {
-      expect(call[2]).toMatchObject({ command: 'accept', provenance: RESOLVE_BRIEF_PROVENANCE_RECORDED });
+      // B-1411: each accept is pinned to the revision the walk just composed.
+      expect(call[2]).toMatchObject({ command: 'accept', provenance: RESOLVE_BRIEF_PROVENANCE_RECORDED, expected_brief_id: 'brief-1' });
     }
 
     // compose_brief reasons, in order — including the new verify compose at the end.

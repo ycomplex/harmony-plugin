@@ -513,7 +513,7 @@ async function composeAndAccept(
   taskId: string,
   args: ComposeAndAcceptArgs,
 ): Promise<void> {
-  await composeBrief(client, projectId, userId, {
+  const composed = await composeBrief(client, projectId, userId, {
     task_id: taskId,
     reason: args.reason,
     pending_activity: args.pendingActivity ?? undefined,
@@ -530,10 +530,13 @@ async function composeAndAccept(
       context: args.context,
     },
   });
+  // B-1411: accept exactly the revision this walk just composed, never whatever is active by then.
+  const composedId = (composed.brief as { id?: string } | null)?.id;
   await resolveBrief(client, projectId, {
     task_id: taskId,
     command: 'accept',
     provenance: RESOLVE_BRIEF_PROVENANCE_RECORDED,
+    ...(composedId ? { expected_brief_id: composedId } : {}),
   });
   if (PAYLOAD_CARRYING_REASONS.has(args.reason)) {
     const consumed = await consumePendingAcceptanceEvent(client, projectId, taskId, { userId });
