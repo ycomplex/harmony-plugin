@@ -1,6 +1,6 @@
 # Workspace Figma: founder rollout (B-1201)
 
-> **Living · project · Tier 2** · verified against plugin 0.17.27 / web 8b255df on 2026-11-08 · **revise when:** the connection switch, a Figma identity or secret slot, the refresh image's build or CronJobs, or the enable gate's proofs change. Convention: harmony-workspace `docs/README.md` (B-1044).
+> **Living · project · Tier 2** · verified against plugin 0.17.50 / web 541092e on 2026-11-12 · **revise when:** the connection switch, a Figma identity or secret slot, the refresh image's build or CronJobs, or the enable gate's proofs change. Convention: harmony-workspace `docs/README.md` (B-1044).
 
 Nothing here authorizes a promote, IAM change or cluster apply by a worker. Use placeholders for
 identifiers; never paste credentials into board comments. Run **staging first**, prove it, then prod.
