@@ -62,7 +62,7 @@ export function registerRecordCommand(program: Command): void {
     )
     .option(
       '--to-gate <gate>',
-      `B-1073 fast-track-daemon-ending round — bound the walk to stop at this gate, inclusive (one of: ${RECORD_WALK_GATE_ORDER.join(', ')}). Omit to run to 'verify' (today's unchanged default).`,
+      `B-1073 fast-track-daemon-ending round — bound the walk to stop at this gate, inclusive (one of: ${RECORD_WALK_GATE_ORDER.join(', ')}). Omit to run to 'verify' (today's unchanged default). B-1213: 'deploy' also composes the verify brief (never accepts it), since the walk lands Deployed.`,
     )
     .action(async (ticket: string, opts: RecordOpts) => {
       if (opts.scope !== undefined && opts.scope !== 'product' && opts.scope !== 'deployment') {

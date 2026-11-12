@@ -73,6 +73,7 @@ interface RecordWalkArgs {
   evidence: EligibilityEvidenceLink[];  // see §3 — evidence links, each optionally pre-annotated
   attest_walk?: string;                 // "<who/what was walked>" — see §3 item (e)
   from_gate?: RecordWalkGateName;       // B-1073 — resume starting at this gate; see the paragraph below
+  to_gate?: RecordWalkGateName;         // B-1073 — stop at this gate, inclusive; see the paragraph below
 }
 
 interface EligibilityEvidenceLink {
@@ -119,6 +120,23 @@ only the `deploy` advance and the verify brief, with no re-walk of the gates tha
 Every other `workflow_state` the drain handles derives the equivalent gate the same way, defaulting
 to `'clarify'` for a ticket still at `Captured`/`Proposed` — today's unchanged behavior for every
 non-fast-track walk.
+
+**`to_gate` (B-1073) — the walk can stop early.** `RecordWalkArgs.to_gate` bounds the walk: the named
+gate still runs and every gate after it is skipped; omitted, it defaults to `'verify'`, and the result's
+`stopped_at_gate` is set whenever it is anything else. `to_gate: 'build'` lands clarify..build and
+composes no release or verify brief. A degenerate bound (`to_gate` before `from_gate`) lands nothing.
+
+**A walk that lands Deployed always composes the verify brief (B-1213).** That includes
+`to_gate: 'deploy'`: such a walk reports `deploy` and then `verify` (`reason:
+'verification-ack-pending'`) in `gates`, with `stopped_at_gate: 'deploy'`. The verify brief is
+composed only, never accepted, so the ticket waits on the human instead of sitting at Deployed with
+nobody's turn marked. Its frame is built from the database's `task_verify_readiness` (B-1410) when
+that function exists: a criterion is unticked exactly when readiness lists it as unchecked, and
+readiness's settled (carried or dropped) rows are copied onto the frame's `settled`, with the carried-to
+ticket's visual id as `destination`. When the function is absent, the frame falls back to the plain
+criteria list with no `settled`. If the readiness read fails for another reason, the walk still
+composes the brief from the plain list and names the failure in the brief's `why` and
+`evidence_status`.
 
 ---
 
