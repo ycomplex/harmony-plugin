@@ -63,13 +63,21 @@ export const briefFrameSchema = z.discriminatedUnion('kind', [
   object({ kind: z.literal('verify'), environment: z.enum(['staging', 'production', 'merged-main', 'local']),
     criteria: z.array(object({ ac_id: z.string(), text: z.string(), checked: z.boolean(),
       disposition: z.enum(['walk', 'blocked', 'test-proven', 'not-hand-checkable', 'carried', 'unproven', 'manifest-declared', 'manifest-attested']),
-      step_ref: z.string().optional(), blocked_reason: z.string().optional(), carried_to: z.string().optional(), backed_by: z.string().optional() })),
+      step_ref: z.string().optional(), blocked_reason: z.string().optional(), carried_to: z.string().optional(), backed_by: z.string().optional(),
+      // B-1410 — what the leg recommends if the human chooses to carry this unticked criterion.
+      recommended_carry: object({ destination: z.string().trim().min(1), milestone: z.enum(['source', 'none']), reason: z.string() }).optional() })),
     steps: z.array(object({ ref: z.string(), action: z.string(), expect: z.string(), covers: strings,
       design_node: object({ node_id: z.string(), name: z.string(), caption: z.string().optional(),
         preview_attachment_id: z.string(), preview_filename: z.string() }).optional() })).optional(),
     design_comparison: z.string().optional(),
     exempt_reason: z.string().optional(), evidence_status: z.string(),
-    bounded_accept: object({ open_ac_ids: strings, closes_when: z.string() }).optional() }),
+    // B-1410 — retired: still parses so old briefs render, but compose warns when a frame authors it.
+    bounded_accept: object({ open_ac_ids: strings, closes_when: z.string() }).optional(),
+    // B-1410 — criteria carried or dropped at this gate, read from get_verify_readiness.settled.
+    settled: z.array(object({ criterion_text: z.string(), action: z.enum(['carried', 'dropped']),
+      destination: z.string().nullable().optional(), milestone_landing: z.string().nullable().optional(),
+      landing_reason: z.string().nullable().optional(), drop_reason: z.string().nullable().optional(),
+      settled_by: z.string().nullable().optional(), settled_at: z.string().nullable().optional() })).optional() }),
 ]);
 
 /** B-1047 — the reach/rule refusals a design frame's shape alone cannot express. A frame with no

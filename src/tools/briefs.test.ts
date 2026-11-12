@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { validateBriefFrame } from './brief-frame-schema.js';
 import * as frameSchema from './brief-frame-schema.js';
-import { renderBrief, lintBrief, composeBrief, composeBriefTool, isRevisionCompose, isMissingComposeBriefRevision, isMissingComposeBriefInitial, mergeBriefDoc, resetDocOnReasonChange, isMissingBriefHistorySubstrate, listBriefs, listBriefsTool, getBrief, getBriefTool, resolveBrief, resolveBriefTool, reshapeBrief, reshapeBriefTool, clearRevisionIterateFeedback, validateResolutionProvenance, PROVENANCE_AGENT_SYNTHESIZED, PROVENANCE_WEB_ONLY, fetchPendingResolution, fetchUnderwritingClaims, fetchPendingRemark, consumeAcceptRemark, SENTENCE_WORD_LIMIT, DEFAULT_TAIL, STALE_PATCH_TAIL, PROPOSED_ACS_HEADING, PROMISED_WRITES_HEADING, DE_SCOPE_HEADING, ENTRY_PROVENANCE_PREFIX, frameUnits, readBuildPr, readBuildPrReferences, FRAME_KIND_FOR_REASON, renderSlot, type BriefDoc, type BriefItem, type GateFrame, type CriterionRow } from './briefs.js';
+import { renderBrief, lintBrief, composeBrief, composeBriefTool, isRevisionCompose, isMissingComposeBriefRevision, isMissingComposeBriefInitial, mergeBriefDoc, resetDocOnReasonChange, isMissingBriefHistorySubstrate, listBriefs, listBriefsTool, getBrief, getBriefTool, resolveBrief, resolveBriefTool, reshapeBrief, reshapeBriefTool, clearRevisionIterateFeedback, validateResolutionProvenance, PROVENANCE_AGENT_SYNTHESIZED, PROVENANCE_WEB_ONLY, fetchPendingResolution, fetchUnderwritingClaims, fetchPendingRemark, consumeAcceptRemark, SENTENCE_WORD_LIMIT, DEFAULT_TAIL, STALE_PATCH_TAIL, PROPOSED_ACS_HEADING, PROMISED_WRITES_HEADING, DE_SCOPE_HEADING, ENTRY_PROVENANCE_PREFIX, frameUnits, readBuildPr, readBuildPrReferences, FRAME_KIND_FOR_REASON, renderSlot, BOUNDED_ACCEPT_RETIRED_WARNING, settledLine, type BriefDoc, type BriefItem, type GateFrame, type CriterionRow } from './briefs.js';
 
 // Pass-through: the handlers delegate id resolution to resolveTaskId (like the sibling task tools); the
 // mock returns the input verbatim so the call-order assertions below stay valid for any id shape.
@@ -3763,13 +3763,103 @@ describe('B-876 gate frame', () => {
       expect(r.warnings.join(' ')).toContain('`frame.bounded_accept` is present but is not shaped');
     });
 
-    it('stays silent on a well-formed bounded_accept, and on its absence', () => {
+    // B-1410 — a well-formed bounded_accept no longer trips the B-903 SHAPE warning, but it is retired:
+    // authoring one warns (never refuses), and its absence says nothing.
+    it('warns that a well-formed bounded_accept is retired, without the shape warning, and stays silent on its absence', () => {
       const good = baseDoc({ frame: verifyFrame(1, { bounded_accept: { open_ac_ids: ['ac-3'], closes_when: 'the migration is promoted' } }) });
-      expect(lintBrief(good, renderBrief(good), { reason: 'verification-ack-pending' }).warnings.join(' '))
-        .not.toContain('bounded_accept');
+      const r = lintBrief(good, renderBrief(good), { reason: 'verification-ack-pending' });
+      expect(r.ok).toBe(true);
+      expect(r.warnings).toContain(BOUNDED_ACCEPT_RETIRED_WARNING);
+      expect(r.warnings.join(' ')).not.toContain('is present but is not shaped');
       const absent = baseDoc({ frame: verifyFrame(1) });
       expect(lintBrief(absent, renderBrief(absent), { reason: 'verification-ack-pending' }).warnings.join(' '))
         .not.toContain('bounded_accept');
+    });
+
+    it('renders an old bounded_accept only as a legacy note, never as an accept condition', () => {
+      const doc = baseDoc({ frame: verifyFrame(1, { bounded_accept: { open_ac_ids: ['ac-3'], closes_when: 'the migration is promoted' } }) });
+      const out = renderBrief(doc, null, { reason: 'verification-ack-pending' });
+      expect(out).not.toContain('**Bounded accept:**');
+      expect(out).toContain('Legacy note (bounded accept, retired by B-1410 — not an accept condition)');
+      expect(out).toContain('ac-3');
+    });
+
+    // B-1410 — a 'carried' row must name a criterion that has actually been carried off the ticket.
+    describe('B-1410 carried rows and settled criteria', () => {
+      const carriedRow = criterionRow(2, { disposition: 'carried', carried_to: 'B-12', step_ref: undefined });
+      const frameWithCarry = () => verifyFrame(0, { criteria: [criterionRow(1), carriedRow] });
+
+      it('refuses a carried row whose criterion is still unticked on the ticket', () => {
+        const doc = baseDoc({ frame: frameWithCarry() });
+        const r = lintBrief(doc, renderBrief(doc), { reason: 'verification-ack-pending', uncheckedCriterionIds: ['ac-2'] });
+        expect(r.ok).toBe(false);
+        expect(r.errors.join(' ')).toContain('settle_acceptance_criterion');
+        expect(r.errors.join(' ')).toContain(carriedRow.text);
+      });
+
+      it('accepts a carried row whose criterion is no longer on the ticket', () => {
+        const doc = baseDoc({ frame: frameWithCarry() });
+        const r = lintBrief(doc, renderBrief(doc), { reason: 'verification-ack-pending', uncheckedCriterionIds: ['ac-1'] });
+        expect(r.errors.join(' ')).not.toContain('settle_acceptance_criterion');
+      });
+
+      it('compose reads the ticket criteria and refuses before any write', async () => {
+        const client = makeClient([{ data: null }]);
+        const acChain: any = {};
+        acChain.select = vi.fn(() => acChain);
+        acChain.eq = vi.fn(async () => ({ data: [{ id: 'ac-1', checked: true }, { id: 'ac-2', checked: false }], error: null }));
+        const routedFrom = client.from;
+        client.from = vi.fn((table: string) => (table === 'acceptance_criteria' ? acChain : routedFrom(table)));
+        await expect(composeBrief(client, PROJECT_ID, USER_ID, {
+          task_id: 'task-1', reason: 'verification-ack-pending',
+          doc: { ...baseDoc(), frame: frameWithCarry() } as any,
+        })).rejects.toThrow(/still an unticked acceptance criterion[\s\S]*settle_acceptance_criterion/);
+        expect(acChain.eq).toHaveBeenCalledWith('task_id', 'task-1');
+        expect(client.insert).not.toHaveBeenCalled();
+        expect(client.update).not.toHaveBeenCalled();
+      });
+
+      it('renders the Settled at verify section after the ledger, one line each', () => {
+        const doc = baseDoc({
+          frame: verifyFrame(1, {
+            settled: [
+              { criterion_text: 'Exports to CSV', action: 'carried', destination: 'B-12', milestone_landing: 'source',
+                landing_reason: 'the title is false without it', settled_by: 'founder', settled_at: '2026-11-12' },
+              { criterion_text: 'Shows a spinner', action: 'dropped', destination: null, drop_reason: 'superseded by the skeleton loader',
+                settled_by: 'founder', settled_at: '2026-11-12' },
+            ],
+          }),
+        });
+        const out = renderBrief(doc, null, { reason: 'verification-ack-pending' });
+        const ledger = out.indexOf('| # | Criterion (as filed)');
+        const settledAt = out.indexOf('**Settled at verify**');
+        expect(ledger).toBeGreaterThan(-1);
+        expect(settledAt).toBeGreaterThan(ledger);
+        expect(out).toContain('- "Exports to CSV" — carried to B-12 · milestone: source · the title is false without it · by founder at 2026-11-12');
+        expect(out).toContain('- "Shows a spinner" — dropped: superseded by the skeleton loader · by founder at 2026-11-12');
+        expect(settledLine({ criterion_text: 'X', action: 'dropped' })).toBe('"X" — dropped');
+        expect(renderSlot(doc, 'verify')?.settled).toHaveLength(2);
+      });
+
+      it('renders a recommended carry under an unticked row only', () => {
+        const doc = baseDoc({
+          frame: verifyFrame(0, {
+            criteria: [
+              criterionRow(1, { recommended_carry: { destination: 'new', milestone: 'source', reason: 'the title promises it' } }),
+              criterionRow(2, { checked: true, recommended_carry: { destination: 'B-9', milestone: 'none', reason: 'ignored' } }),
+            ],
+          }),
+        });
+        const out = renderBrief(doc, null, { reason: 'verification-ack-pending' });
+        expect(out).toContain("#1 — Recommended if carried: a new ticket, in this ticket's milestone — the title promises it");
+        expect(out).not.toContain('#2 — Recommended if carried');
+      });
+
+      it('renders nothing new when neither settled nor recommended_carry is present', () => {
+        const out = renderBrief(baseDoc({ frame: verifyFrame(1) }), null, { reason: 'verification-ack-pending' });
+        expect(out).not.toContain('Settled at verify');
+        expect(out).not.toContain('Recommended if carried');
+      });
     });
 
     it("warns on an empty criteria ledger with no exempt_reason, and stays silent when one is given", () => {

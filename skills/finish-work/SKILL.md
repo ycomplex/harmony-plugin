@@ -1185,7 +1185,9 @@ by Verified (test cases + all ACs checked + a PR/merge/deploy comment trail; an 
 its result as a **one-line evidence-status line** — never optional prose — sitting **underneath the runbook
 as supporting confidence**, not as the thing being acked (brief-authoring.md §Verify). Frame it
 exactly like the B-516 release-brief risk signal: present on every verify brief, computed mechanically, so
-a missing piece is surfaced on the brief the human accepts (it does NOT block accept — it informs it):
+a missing piece is surfaced on the brief the human accepts. It is not only a signal: on a build-carrying
+ticket the database guard refuses Deployed→Verified unless there is at least one test case, at least one
+criterion with every criterion ticked, and a recorded PR. Umbrella and decision-only tickets are exempt.
 
 - `complete && !is_umbrella` → `✓ Evidence: complete (N test cases, M/M ACs checked, comment trail present)`
 - `is_umbrella` → `Evidence: N/A (umbrella — carried by children)`
@@ -1194,9 +1196,9 @@ a missing piece is surfaced on the brief the human accepts (it does NOT block ac
 (If incomplete and the build genuinely had its own work, land the missing evidence first — record the test
 cases via `manage_test_cases`, check the ACs via `manage_acceptance_criteria` — then recompute the line.)
 
-**The ONE part of this that is a floor, not a signal (B-747).** Everything above informs the accept without
-blocking it. An **empty** criteria set is different in kind: there is nothing for the shipped work to be
-judged against, so acking it is a rubber stamp rather than a judgement. **B-738 is the proof** — Verified
+**An empty criteria set is a floor, not a signal, checked before composing (B-747).** It is different
+in kind: there is nothing for the shipped work to be judged against, so acking it is a rubber stamp rather
+than a judgement. **B-738 is the proof** — Verified
 with zero criteria, its verify acked against nothing, on a brief that had *displayed* the
 `⚠ Evidence incomplete: acceptance criteria (none created)` line and was accepted anyway. Detection was
 never the gap; blocking was.
@@ -1211,6 +1213,25 @@ This is the same predicate and the same surface the build gate uses (`start-work
 at the two edges where cost turns irreversible, never a second definition. As there, the pre-check exists
 so the refusal is answerable: the substrate guard would refuse by RAISING, which reaches a conductor leg as a
 dirty exit and an operator page.
+
+**3a. Settle every unticked criterion (B-1410) — tick, carry or drop, each on its own, never inside the
+accept.** Before composing the verify brief, call `mcp__harmony__get_verify_readiness({ task_id })`. For
+each criterion in its `unchecked` list, put a `recommended_carry` on that row of the frame (step 4):
+`destination` is `"new"` or an existing open ticket in the same project; `milestone` is `"source"` when
+the original title would be false without the criterion, else `"none"`; `reason` says why. When the
+human says to act on a criterion, do it at once and recompose the brief:
+
+- **tick** → `manage_acceptance_criteria({ task_id, update: [{ id, checked: true }] })`;
+- **carry** → `settle_acceptance_criterion({ task_id, criterion_id, action: "carry", destination_task_id })`,
+  or with `mint: { title, milestone: "source" | "none", landing_reason }` for a new ticket;
+- **drop** → `settle_acceptance_criterion({ task_id, criterion_id, action: "drop", drop_reason })`.
+
+A `{ status: "refused" }` result carries a sentence (the last remaining criterion can never be carried or
+dropped; a destination must be an open ticket in this project): relay it to the human. Render the settled
+rows from `get_verify_readiness.settled` into the frame's `settled`. Never author `disposition: "carried"`
+for a criterion that is still on the ticket (compose refuses it), and never author `bounded_accept` (it is
+retired; compose warns). If either tool returns `{ status: "unavailable" }`, carry and drop do not exist on
+this environment yet: say so, and offer ticking the criterion or reopening the build instead.
 
 **4. The verify frame (B-876) — author `doc.frame` as the criteria LEDGER, and `frame.steps` as the
 RUNBOOK itself.** This is the gate whose whole contract is "confirm reality against these criteria", and
@@ -1237,9 +1258,11 @@ frame: {
       step_ref: "1" },                // REQUIRED on a 'walk' — must resolve to a `frame.steps[].ref` below
     { ac_id: "<id>", text: "<...>", checked: false, disposition: "blocked",
       blocked_reason: "<why it cannot be exercised here>" },
-    { ac_id: "<id>", text: "<...>", checked: false, disposition: "carried",
-      carried_to: "<ticket>", backed_by: "<the tests that do cover it>" }
+    { ac_id: "<id>", text: "<...>", checked: false, disposition: "unproven",
+      recommended_carry: { destination: "new", milestone: "source", reason: "<why>" } }   // B-1410, step 3a
   ],
+  // settled: [/* B-1410 — copied from get_verify_readiness.settled: { criterion_text, action: 'carried' |
+  //            'dropped', destination, milestone_landing, landing_reason, drop_reason, settled_by, settled_at } */],
   // The ordered runbook itself (B-1068) — ONE entry per distinct walk step, not per criterion: several
   // criteria may share a step (`covers` lists every ac_id it discharges). `action` and `expect` are two
   // SEPARATE fields, not one free-text field with an `EXPECT:` habit — `action` is the ONE thing to do,
@@ -1252,14 +1275,14 @@ frame: {
   ],
   // exempt_reason: "<umbrella — carried by children / decision-only>"  — when the ticket has no ACs of its own
   evidence_status: "<the B-560 line from get_build_evidence_status, verbatim>",
-  // bounded_accept: { open_ac_ids: ["<id>"], closes_when: "<what closes them, and where>" }
 }
 ```
 
 The header line the render computes from it — *"N criteria on file · you can confirm M today"* — is the
 number the reader previously had to derive by reconciling ten context bullets against one `why` bullet.
-Use `carried` (with `carried_to`) for a criterion this ack deliberately closes OUT of the ticket: accepting
-closes it permanently, and the human should see that as a row, not infer it from prose.
+A criterion leaves the ticket only through `settle_acceptance_criterion` (step 3a); the brief then shows it
+under **Settled at verify**. The `carried` disposition is legal only for a criterion that is no longer on the
+ticket.
 
 **B-1205 — steps that check an accepted design screen.** When the ticket has an accepted design
 (`field_values.gate_slots.design`), then for each walk step that covers an accepted screen fill

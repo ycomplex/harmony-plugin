@@ -56,6 +56,7 @@ import {
 } from './milestones.js';
 import { listCyclesTool, listCycles, createCycleTool, createCycle, updateCycleTool, updateCycle } from './cycles.js';
 import { listAcceptanceCriteriaTool, listAcceptanceCriteria, manageAcceptanceCriteriaTool, manageAcceptanceCriteria } from './acceptance-criteria.js';
+import { settleAcceptanceCriterionTool, settleAcceptanceCriterion, getVerifyReadinessTool, getVerifyReadiness } from './settle-criteria.js';
 import { listTestCasesTool, listTestCases, manageTestCasesTool, manageTestCases } from './test-cases.js';
 import { listDependenciesTool, listDependencies, manageDependenciesTool, manageDependencies } from './dependencies.js';
 import { listSubtasksTool, listSubtasks, listParentTool, listParent, manageSubtasksTool, manageSubtasks } from './decomposition.js';
@@ -203,6 +204,8 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
     listTicketKnowledgeTool,
     linkTicketEntitiesTool,
     getBuildEvidenceStatusTool,
+    // B-1410 — the verify gate's readiness read (degrades to unavailable before the web migration).
+    getVerifyReadinessTool,
     createConductionTool,
     listConductionsTool,
     requestConductionReapTool,
@@ -217,7 +220,7 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
   if (!disabledFeatures?.subtasks) tools.push(listChecklistItemsTool, manageChecklistItemsTool);
   if (!disabledFeatures?.cycles) tools.push(listCyclesTool, createCycleTool, updateCycleTool);
   if (!disabledFeatures?.milestones) tools.push(listMilestonesTool, createMilestoneTool, updateMilestoneTool, shipMilestoneTool);
-  if (!disabledFeatures?.acceptance) tools.push(listAcceptanceCriteriaTool, manageAcceptanceCriteriaTool, listTestCasesTool, manageTestCasesTool);
+  if (!disabledFeatures?.acceptance) tools.push(listAcceptanceCriteriaTool, manageAcceptanceCriteriaTool, settleAcceptanceCriterionTool, listTestCasesTool, manageTestCasesTool);
   if (!disabledFeatures?.dependencies) tools.push(listDependenciesTool, manageDependenciesTool);
   if (!disabledFeatures?.decomposition) tools.push(listSubtasksTool, listParentTool, manageSubtasksTool);
   // B-449: attachment tools ship dark — present only when the attachments module
@@ -435,6 +438,12 @@ export async function handleToolCall(
         break;
       case 'manage_acceptance_criteria':
         result = await manageAcceptanceCriteria(client, projectId, userId, args as any);
+        break;
+      case 'settle_acceptance_criterion':
+        result = await settleAcceptanceCriterion(client, projectId, args as any);
+        break;
+      case 'get_verify_readiness':
+        result = await getVerifyReadiness(client, projectId, args as any);
         break;
       case 'list_test_cases':
         result = await listTestCases(client, projectId, args as any);

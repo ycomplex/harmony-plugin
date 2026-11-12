@@ -367,6 +367,8 @@ export const ACK_PASS_THROUGH: Record<string, string> = {
   reshape_brief:
     'B-896: already a compact server-computed ack ({brief_id, task_id, command, reason, provenance}) — the RPC payload plus the gate the reshape was taken at and the provenance recorded on the decision entry. '
     + 'The caller-sent feedback text is not echoed by the handler at all, so there is no record echo to strip.',
+  settle_acceptance_criterion:
+    "B-1410: already a compact server-computed ack ({status, settlement_id, action, source_task_id, destination_task_id, destination_minted, destination_criterion_id, already_settled} | {status:'refused', code, message} | {status:'unavailable', message}); the refusal sentence is the database's, never the caller's text, and no mint title or reason is echoed.",
   consume_accept_remark:
     'Already a compact server-computed ack ({brief_id, consumed, already?, unsupported?}) — no caller-sent body to strip (the only arg is the identifier).',
   advance_workflow:

@@ -135,3 +135,31 @@ describe('design reach and rules (B-1047)', () => {
     }
   });
 });
+
+describe('B-1410 verify frame: settled, recommended_carry, retired bounded_accept', () => {
+  const verify = (over: Record<string, unknown> = {}, row: Record<string, unknown> = {}) => ({
+    kind: 'verify', environment: 'staging', evidence_status: 'ok',
+    criteria: [{ ac_id: 'ac-1', text: 'One', checked: false, disposition: 'unproven', ...row }],
+    ...over,
+  });
+
+  it('accepts settled rows and a recommended carry', () => {
+    expect(() => validateBriefFrame(verify({
+      settled: [
+        { criterion_text: 'Two', action: 'carried', destination: 'B-12', milestone_landing: 'source', landing_reason: 'r',
+          drop_reason: null, settled_by: 'u', settled_at: '2026-11-12T00:00:00Z' },
+        { criterion_text: 'Three', action: 'dropped', destination: null, drop_reason: 'no longer wanted' },
+      ],
+    }, { recommended_carry: { destination: 'new', milestone: 'none', reason: 'follow-on work' } }), 'verify')).not.toThrow();
+  });
+
+  it('rejects an unknown settled action and an unknown recommended milestone', () => {
+    expect(() => validateBriefFrame(verify({ settled: [{ criterion_text: 'x', action: 'ticked' }] }))).toThrow('doc.frame.settled[0].action');
+    expect(() => validateBriefFrame(verify({}, { recommended_carry: { destination: 'B-3', milestone: 'later', reason: 'r' } })))
+      .toThrow('doc.frame.criteria[0].recommended_carry.milestone');
+  });
+
+  it('still parses a bounded_accept so old briefs render', () => {
+    expect(() => validateBriefFrame(verify({ bounded_accept: { open_ac_ids: ['ac-1'], closes_when: 'later' } }))).not.toThrow();
+  });
+});
