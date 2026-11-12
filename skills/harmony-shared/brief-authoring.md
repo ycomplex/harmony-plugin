@@ -172,6 +172,12 @@ send-back already wrote (B-896). Never both `iterate_feedback` and `revision_cau
 redraft genuinely answers a send-back AND something else; then `revision_cause` wins and the words ride in
 its `lines`. `doc.revision` (what YOU changed) and this (WHY the revision exists) are not substitutes.
 
+**Every recompose names the brief it revises (B-1411).** Pass `revising_brief_id` = the id the previous
+`compose_brief` returned, or `get_brief`'s id. If `compose_brief` refuses because that brief is no longer
+active (a reviewer accepted it while you were still redrafting), stop drafting this gate. Go back to the
+conduct loop's step 1: re-read the ticket and consume the pending acceptance once. Never compose a fresh
+brief for the same gate.
+
 ## Fixing a lint warning in the leg that raised it (B-1054)
 
 **Fix in the same leg, not a fresh one.** When `compose_brief` returns non-empty `lint.warnings`
