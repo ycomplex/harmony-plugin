@@ -27,11 +27,14 @@ const mocks = vi.hoisted(() => ({
   // B-1073: the build_pr backfill writes through tasks.ts's updateTask (field_values merge).
   updateTask: vi.fn(async () => ({})),
   getProject: vi.fn(async () => ({ key: 'B' })),
+  // B-1213: the verify section reads task_verify_readiness (B-1410). Defaults to 'unavailable' (a
+  // database without the function), so every older test keeps today's plain-criteria behaviour.
+  getVerifyReadiness: vi.fn(async (): Promise<any> => ({ status: 'unavailable', message: 'verify readiness is not available on this environment yet' })),
 }));
 const {
   composeBrief, resolveBrief, consumePendingAcceptanceEvent, writeGateSlot, advanceWorkflow, addComment,
   resolveTaskId, manageAcceptanceCriteria, listAcceptanceCriteria, recordDecision, queryKnowledge, referenceKnowledge,
-  execFile, updateTask,
+  execFile, updateTask, getVerifyReadiness,
 } = mocks;
 
 vi.mock('./briefs.js', () => ({ composeBrief: mocks.composeBrief, resolveBrief: mocks.resolveBrief }));
@@ -48,6 +51,7 @@ vi.mock('./knowledge.js', () => ({ recordDecision: mocks.recordDecision, queryKn
 vi.mock('node:child_process', () => ({ execFile: mocks.execFile }));
 vi.mock('./tasks.js', () => ({ updateTask: mocks.updateTask }));
 vi.mock('./project.js', () => ({ getProject: mocks.getProject }));
+vi.mock('./settle-criteria.js', () => ({ getVerifyReadiness: mocks.getVerifyReadiness }));
 
 import { runRecordedWalk, RATIFIED_BY_RECORDED, RESOLVE_BRIEF_PROVENANCE_RECORDED, KNOWLEDGE_WRITE_PROVENANCE_RECORDED } from './record-walk.js';
 import { PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED } from './provenance.js';
@@ -134,6 +138,7 @@ beforeEach(() => {
   execFile.mockImplementation((_cmd: string, _args: string[], _opts: unknown, cb: (err: unknown, stdout: string) => void) => {
     cb(new Error('gh: command not found'), '');
   });
+  getVerifyReadiness.mockResolvedValue({ status: 'unavailable', message: 'verify readiness is not available on this environment yet' });
 });
 
 describe('runRecordedWalk — refuse-before-write (B-1062)', () => {
@@ -1076,5 +1081,124 @@ describe('recorded entry creation tag contract (B-1232)', () => {
       .filter((entry: any) => entry.type !== 'convention');
     expect(entries).toHaveLength(3);
     for (const entry of entries) expect(entry.tags).toContain('ops-2000');
+  });
+});
+
+describe('runRecordedWalk — a walk that lands Deployed composes the verify brief (B-1213)', () => {
+  const verifyCompose = () => composeBrief.mock.calls.find((c: any) => c[3].reason === 'verification-ack-pending');
+  const twoCriteria = () => listAcceptanceCriteria.mockResolvedValue([
+    { id: 'ac-1', content: 'the recorded AC', checked: true, position: 0, created_by: USER_ID, created_at: '2026-01-01T00:00:00Z' },
+    { id: 'ac-2', content: 'a second AC', checked: true, position: 1, created_by: USER_ID, created_at: '2026-01-01T00:00:00Z' },
+  ] as any);
+  const settledRow = {
+    criterion_id: 'ac-9', criterion_text: 'a carried AC', action: 'carried' as const,
+    destination_task_id: 'task-77', destination_visual_id: 'B-77', destination_minted: true,
+    milestone_landing: 'source', landing_reason: 'the source title needs it', drop_reason: null,
+    settled_by: USER_ID, settled_at: '2026-11-12T10:00:00Z',
+  };
+
+  it("from_gate 'deploy' + to_gate 'deploy' on a Built ticket composes the verify brief, never accepts it, and stops at deploy", async () => {
+    const client = makeClient('Built');
+    const result = await runRecordedWalk(client, PROJECT_ID, USER_ID, { ...eligibleArgs(), from_gate: 'deploy', to_gate: 'deploy' });
+
+    expect(result.refused).toBe(false);
+    expect(result.error).toBeUndefined();
+    expect(result.gates).toEqual([
+      { gate: 'deploy', landed: true },
+      { gate: 'verify', reason: 'verification-ack-pending', landed: true },
+    ]);
+    expect(result.stopped_at_gate).toBe('deploy');
+    expect(advanceWorkflow.mock.calls.map((c: any) => c[2].activity)).toEqual(['deploying']);
+    expect(composeBrief.mock.calls.map((c: any) => c[3].reason)).toEqual(['verification-ack-pending']);
+    expect(verifyCompose()![3].pending_activity).toBe('verifying');
+    expect(resolveBrief).not.toHaveBeenCalled();
+  });
+
+  it("a full walk with to_gate 'deploy' composes the verify brief after deploy and accepts only the five earlier briefs", async () => {
+    const client = makeClient('Proposed');
+    const result = await runRecordedWalk(client, PROJECT_ID, USER_ID, { ...eligibleArgs(), to_gate: 'deploy' });
+
+    expect(result.gates.map((g) => g.gate)).toEqual(['clarify', 'decompose', 'design', 'plan', 'build', 'release', 'deploy', 'verify']);
+    expect(result.gates.at(-1)).toEqual({ gate: 'verify', reason: 'verification-ack-pending', landed: true });
+    expect(result.stopped_at_gate).toBe('deploy');
+    expect(verifyCompose()![3].pending_activity).toBe('verifying');
+    // clarify, decompose, design, plan, release — none for verify.
+    expect(resolveBrief).toHaveBeenCalledTimes(5);
+  });
+
+  it("to_gate 'build' still composes no verify brief and never reads readiness", async () => {
+    await runRecordedWalk(makeClient('Proposed'), PROJECT_ID, USER_ID, { ...eligibleArgs(), to_gate: 'build' });
+    expect(verifyCompose()).toBeUndefined();
+    expect(getVerifyReadiness).not.toHaveBeenCalled();
+  });
+
+  it('readiness ok: unticked state follows readiness.unchecked and settled rows are carried onto frame.settled', async () => {
+    twoCriteria();
+    getVerifyReadiness.mockResolvedValue({
+      status: 'ok', build_carrying: true, is_exempt: false, exempt_reason: null, has_test_cases: false,
+      criteria_count: 2, unchecked: [{ id: 'ac-2', content: 'a second AC' }], settled: [settledRow], blocked: true, missing: [],
+    });
+    const client = makeClient('Built');
+    await runRecordedWalk(client, PROJECT_ID, USER_ID, { ...eligibleArgs(), from_gate: 'deploy', to_gate: 'deploy' });
+
+    expect(getVerifyReadiness).toHaveBeenCalledWith(client, PROJECT_ID, { task_id: 'resolved-B-2000' });
+    const frame = verifyCompose()![3].doc.frame;
+    expect(frame.criteria.map((c: any) => [c.ac_id, c.checked])).toEqual([['ac-1', true], ['ac-2', false]]);
+    expect(frame.settled).toEqual([{
+      criterion_text: 'a carried AC', action: 'carried', destination: 'B-77', milestone_landing: 'source',
+      landing_reason: 'the source title needs it', drop_reason: null, settled_by: USER_ID, settled_at: '2026-11-12T10:00:00Z',
+    }]);
+    // B-1068: the single step still covers every filed criterion.
+    expect(frame.steps).toHaveLength(1);
+    expect(frame.steps[0].covers).toEqual(['ac-1', 'ac-2']);
+  });
+
+  it('readiness ok with nothing settled: frame.settled is omitted', async () => {
+    getVerifyReadiness.mockResolvedValue({
+      status: 'ok', build_carrying: true, is_exempt: false, exempt_reason: null, has_test_cases: false,
+      criteria_count: 1, unchecked: [], settled: [], blocked: false, missing: [],
+    });
+    await runRecordedWalk(makeClient('Built'), PROJECT_ID, USER_ID, { ...eligibleArgs(), from_gate: 'deploy' });
+    expect('settled' in verifyCompose()![3].doc.frame).toBe(false);
+  });
+
+  it('readiness unavailable: no settled, checked flags come from list_acceptance_criteria', async () => {
+    listAcceptanceCriteria.mockResolvedValue([
+      { id: 'ac-1', content: 'the recorded AC', checked: true, position: 0, created_by: USER_ID, created_at: '2026-01-01T00:00:00Z' },
+      { id: 'ac-2', content: 'a second AC', checked: false, position: 1, created_by: USER_ID, created_at: '2026-01-01T00:00:00Z' },
+    ] as any);
+    await runRecordedWalk(makeClient('Built'), PROJECT_ID, USER_ID, { ...eligibleArgs(), from_gate: 'deploy', to_gate: 'deploy' });
+    const doc = verifyCompose()![3].doc;
+    expect(doc.frame.settled).toBeUndefined();
+    expect(doc.frame.criteria.map((c: any) => [c.ac_id, c.checked])).toEqual([['ac-1', true], ['ac-2', false]]);
+    expect(doc.why.join(' ')).not.toContain('readiness read failed');
+  });
+
+  it('readiness throws: the walk still composes the brief from the plain list and names the failure', async () => {
+    getVerifyReadiness.mockRejectedValue({ message: 'permission denied for function task_verify_readiness', code: '42501' });
+    const result = await runRecordedWalk(makeClient('Built'), PROJECT_ID, USER_ID, { ...eligibleArgs(), from_gate: 'deploy', to_gate: 'deploy' });
+
+    expect(result.error).toBeUndefined();
+    expect(result.gates.map((g) => g.gate)).toEqual(['deploy', 'verify']);
+    const doc = verifyCompose()![3].doc;
+    expect(doc.frame.settled).toBeUndefined();
+    expect(doc.frame.criteria).toEqual([{ ac_id: 'ac-1', text: 'the recorded AC', checked: true, disposition: 'walk', step_ref: '1' }]);
+    expect(doc.why.at(-1)).toContain('The verify readiness read failed (permission denied for function task_verify_readiness)');
+    expect(doc.frame.evidence_status).toContain('Verify readiness read failed: permission denied for function task_verify_readiness.');
+  });
+
+  it('B-1068 — a frame with settled rows and an unticked criterion passes the real lintBrief', async () => {
+    const real = await vi.importActual<typeof import('./briefs.js')>('./briefs.js');
+    twoCriteria();
+    getVerifyReadiness.mockResolvedValue({
+      status: 'ok', build_carrying: true, is_exempt: false, exempt_reason: null, has_test_cases: false,
+      criteria_count: 2, unchecked: [{ id: 'ac-2', content: 'a second AC' }], settled: [settledRow], blocked: true, missing: [],
+    });
+    await runRecordedWalk(makeClient('Built'), PROJECT_ID, USER_ID, { ...eligibleArgs(), from_gate: 'deploy', to_gate: 'deploy' });
+    const doc = verifyCompose()![3].doc;
+    const md = real.renderBrief(doc, null, { reason: 'verification-ack-pending' });
+    const lint = real.lintBrief(doc, md, { reason: 'verification-ack-pending' });
+    expect(lint.errors).toEqual([]);
+    expect(lint.ok).toBe(true);
   });
 });

@@ -57974,6 +57974,18 @@ var PAYLOAD_CARRYING_REASONS = /* @__PURE__ */ new Set([
   "design-decision-draft",
   "plan-draft"
 ]);
+function toVerifyFrameSettled(row) {
+  return {
+    criterion_text: row.criterion_text,
+    action: row.action,
+    destination: row.destination_visual_id,
+    milestone_landing: row.milestone_landing,
+    landing_reason: row.landing_reason,
+    drop_reason: row.drop_reason,
+    settled_by: row.settled_by,
+    settled_at: row.settled_at
+  };
+}
 function trimmedOrEmpty(s) {
   return typeof s === "string" ? s.trim() : "";
 }
@@ -58218,6 +58230,7 @@ async function runRecordedWalk(client, projectId, userId, args) {
   const fromGate = args.from_gate ?? "clarify";
   const toGate = args.to_gate ?? "verify";
   const runs = (gate) => shouldRunRecordWalkGate(gate, fromGate, toGate);
+  const composesVerify = runs("verify") || runs("deploy") && toGate === "deploy";
   const boundedAtOrBeforeBuild = recordWalkGateIndex(toGate) <= recordWalkGateIndex("build");
   const attestationSupplied = trimmedOrEmpty(args.attest_walk).length > 0;
   try {
@@ -58446,12 +58459,22 @@ async function runRecordedWalk(client, projectId, userId, args) {
       await advanceWorkflow(client, projectId, { task_id: taskId, activity: "deploying" });
       gates.push({ gate: "deploy", landed: true });
     }
-    if (runs("verify")) {
+    if (composesVerify) {
       const criteriaRows = await listAcceptanceCriteria(client, projectId, { task_id: taskId });
+      let readinessFailure = null;
+      let readiness = null;
+      try {
+        readiness = await getVerifyReadiness(client, projectId, { task_id: taskId });
+      } catch (readErr) {
+        readinessFailure = readErr instanceof Error ? readErr.message : typeof readErr === "object" && readErr !== null && "message" in readErr ? String(readErr.message) : JSON.stringify(readErr);
+      }
+      const readinessOk = readiness?.status === "ok" ? readiness : null;
+      const uncheckedIds = readinessOk ? new Set(readinessOk.unchecked.map((u) => u.id)) : null;
+      const verifySettled = readinessOk ? readinessOk.settled.map(toVerifyFrameSettled) : [];
       const verifyCriteria = (criteriaRows ?? []).map((ac) => ({
         ac_id: ac.id,
         text: ac.content,
-        checked: ac.checked,
+        checked: uncheckedIds ? !uncheckedIds.has(ac.id) : ac.checked,
         disposition: "walk",
         // A recorded ticket's "walk" is auditing the record itself, not re-doing the work — one
         // mechanical acknowledgment step, never a multi-step runbook.
@@ -58480,7 +58503,8 @@ async function runRecordedWalk(client, projectId, userId, args) {
           decide: `Does ${args.task_id}'s recorded work behave as described \u2014 acknowledge verified?`,
           why: [
             "This is a recorded (not conducted) walk \u2014 verification means confirming the record matches what actually happened, not re-doing the work.",
-            attestationWhy
+            attestationWhy,
+            ...readinessFailure !== null ? [`The verify readiness read failed (${readinessFailure}); the criteria ledger below is the plain criteria list, and any carried or dropped criteria are not shown.`] : []
           ],
           items: [{ kind: "decision", text: "Acknowledge verified", recommendation: "verify once confirmed" }],
           frame: {
@@ -58490,7 +58514,8 @@ async function runRecordedWalk(client, projectId, userId, args) {
             environment: "merged-main",
             criteria: verifyCriteria,
             steps: verifySteps,
-            evidence_status: `Recorded walk \u2014 evidence linked from the supplied links (${verifyEvidenceSummary}); ` + (attestationOnFile ? "verify walk attestation on file." : "NO verify-walk attestation is on file \u2014 attest at this verify gate (e.g. in the accept remark).")
+            ...verifySettled.length > 0 ? { settled: verifySettled } : {},
+            evidence_status: `Recorded walk \u2014 evidence linked from the supplied links (${verifyEvidenceSummary}); ` + (attestationOnFile ? "verify walk attestation on file." : "NO verify-walk attestation is on file \u2014 attest at this verify gate (e.g. in the accept remark).") + (readinessFailure !== null ? ` Verify readiness read failed: ${readinessFailure}.` : "")
           }
         }
       });
@@ -58519,7 +58544,7 @@ async function runRecordedWalk(client, projectId, userId, args) {
 }
 var recordTool = {
   name: "record",
-  description: "B-1062 \u2014 walk a non-conducted ticket's gates (clarify -> decompose -> design -> plan -> build -> release) from a human-supplied summary + evidence links, with ZERO worker legs \u2014 producing the same gate-slot/knowledge-entry trail a conducted ticket would get, marked 'recorded, not conducted' (ratified_by: 'recorded' on every gate slot; agent-on-behalf:human-recorded provenance on every knowledge write). Refuses BEFORE any write if any of five eligibility items (multi-repo, migration, auth/shared-core/irreversible-destructive risk, single-sentence-statable change, a 5+ minute verify-walk attestation) fails or is unattested \u2014 the ticket is left byte-identical on a refusal. The verify-walk item is NEVER auto-passed: supply `attest_walk` (\"<who/what was walked>\") or it reports unattested and the walk refuses. On a genuine mid-walk failure, reports exactly which gates already landed (never a silent half-apply) so a human can resume by hand, or via `create_conduction`/`harmony conduct` instead. `evidence` entries carry `repo`/`paths` when already known (e.g. from `gh pr diff`); omit them and this tool evaluates eligibility from `url` alone. `from_gate` resumes a partial walk starting at that gate (omit to start at 'clarify'); `to_gate` bounds it to stop at that gate inclusive (omit to run to 'verify') \u2014 e.g. `to_gate: 'build'` lands clarify..build and stops before release/deploy/verify, for a caller composing its own release brief separately.",
+  description: "B-1062 \u2014 walk a non-conducted ticket's gates (clarify -> decompose -> design -> plan -> build -> release) from a human-supplied summary + evidence links, with ZERO worker legs \u2014 producing the same gate-slot/knowledge-entry trail a conducted ticket would get, marked 'recorded, not conducted' (ratified_by: 'recorded' on every gate slot; agent-on-behalf:human-recorded provenance on every knowledge write). Refuses BEFORE any write if any of five eligibility items (multi-repo, migration, auth/shared-core/irreversible-destructive risk, single-sentence-statable change, a 5+ minute verify-walk attestation) fails or is unattested \u2014 the ticket is left byte-identical on a refusal. The verify-walk item is NEVER auto-passed: supply `attest_walk` (\"<who/what was walked>\") or it reports unattested and the walk refuses. On a genuine mid-walk failure, reports exactly which gates already landed (never a silent half-apply) so a human can resume by hand, or via `create_conduction`/`harmony conduct` instead. `evidence` entries carry `repo`/`paths` when already known (e.g. from `gh pr diff`); omit them and this tool evaluates eligibility from `url` alone. `from_gate` resumes a partial walk starting at that gate (omit to start at 'clarify'); `to_gate` bounds it to stop at that gate inclusive (omit to run to 'verify') \u2014 e.g. `to_gate: 'build'` lands clarify..build and stops before release/deploy/verify, for a caller composing its own release brief separately. A walk that lands Deployed, `to_gate: 'deploy'` included, also composes the verify brief (never accepts it), with settled criteria from task_verify_readiness when the database has it (B-1213).",
   inputSchema: {
     type: "object",
     properties: {
@@ -58555,7 +58580,7 @@ var recordTool = {
       to_gate: {
         type: "string",
         enum: RECORD_WALK_GATE_ORDER,
-        description: "B-1073 fast-track-daemon-ending round \u2014 bound the walk to stop at this gate (inclusive); every gate after it is skipped. Omitted \u21D2 'verify' (today's unchanged default \u2014 every gate runs to the end)."
+        description: "B-1073 fast-track-daemon-ending round \u2014 bound the walk to stop at this gate (inclusive); every gate after it is skipped. Omitted \u21D2 'verify' (today's unchanged default \u2014 every gate runs to the end). B-1213: 'deploy' still composes the verify brief (compose only), since the walk lands Deployed."
       }
     },
     required: ["task_id", "summary", "evidence"]

@@ -67,6 +67,7 @@ import { referenceKnowledge } from './workflow.js';
 import { slugRef } from './payload-refs.js';
 import { updateTask } from './tasks.js';
 import { getProject } from './project.js';
+import { getVerifyReadiness, type VerifyReadinessSettledRow } from './settle-criteria.js';
 
 /** B-1062: the `ratified_by` value stamped on every gate slot this core writes — never the gate's own
  *  name, which is what a live accept would stamp (gate-slots.ts's `WriteGateSlotArgs.ratified_by`). */
@@ -151,7 +152,8 @@ export interface RecordWalkArgs {
    *  end). The daemon fast-track-ending case passes `'build'` so the walk lands clarify..build and
    *  stops BEFORE its own release/deploy/verify sections would run — the real release brief for that
    *  case is composed separately, by the caller, never by this walk's own placeholder release/verify
-   *  sections. */
+   *  sections. B-1213: a walk that lands Deployed always composes the verify brief, so `'deploy'`
+   *  composes it too (compose only, never accepted). */
   to_gate?: RecordWalkGateName;
 }
 
@@ -178,6 +180,21 @@ export interface RecordWalkResult {
    *  the end. Set on BOTH the success return and the catch-block's error return, so even a mid-walk
    *  failure still reports the intended bound (never only on success). */
   stopped_at_gate?: RecordWalkGateName;
+}
+
+/** B-1213 — one `task_verify_readiness` settled row in the verify frame's `settled` shape
+ *  (`SettledCriterionRow` in briefs.ts): the destination is the carried-to ticket's visual id. */
+export function toVerifyFrameSettled(row: VerifyReadinessSettledRow) {
+  return {
+    criterion_text: row.criterion_text,
+    action: row.action,
+    destination: row.destination_visual_id,
+    milestone_landing: row.milestone_landing,
+    landing_reason: row.landing_reason,
+    drop_reason: row.drop_reason,
+    settled_by: row.settled_by,
+    settled_at: row.settled_at,
+  };
 }
 
 function trimmedOrEmpty(s: string | undefined): string {
@@ -649,6 +666,9 @@ export async function runRecordedWalk(
   // the end, exactly as before this round, when `args.to_gate` is omitted.
   const toGate: RecordWalkGateName = args.to_gate ?? 'verify';
   const runs = (gate: RecordWalkGateName) => shouldRunRecordWalkGate(gate, fromGate, toGate);
+  // B-1213: a walk that lands Deployed always composes the verify brief (compose only), so a
+  // `to_gate: 'deploy'` walk does not leave the ticket at Deployed with nobody's turn marked.
+  const composesVerify = runs('verify') || (runs('deploy') && toGate === 'deploy');
 
   const boundedAtOrBeforeBuild = recordWalkGateIndex(toGate) <= recordWalkGateIndex('build');
   const attestationSupplied = trimmedOrEmpty(args.attest_walk).length > 0;
@@ -952,7 +972,7 @@ export async function runRecordedWalk(
 
     }
 
-    if (runs('verify')) {
+    if (composesVerify) {
     // ——— VERIFY — compose ONLY, never accept. This is the ticket's actual human-ack point: verify is
     // the hard floor, and only a live human may accept it (exactly like every conducted ticket) — this
     // walk's job ends at "brief composed, awaiting_human_input set", never resolve_brief. Uses the raw
@@ -960,12 +980,31 @@ export async function runRecordedWalk(
     // B-1073 fast-track-daemon-ending round: this section previously ran UNCONDITIONALLY (no guard at
     // all) even when `from_gate` skipped ahead of it — now bounded by the SAME `runs('verify')` check
     // every other gate section uses, so a `to_gate: 'build'` walk genuinely stops after the build
-    // advance and never composes a release/deploy/verify-shaped write.
+    // advance and never composes a release/deploy/verify-shaped write. B-1213: also runs when the walk
+    // stops at 'deploy' (`composesVerify`), since that walk lands Deployed too.
     const criteriaRows = await listAcceptanceCriteria(client, projectId, { task_id: taskId });
+    // B-1213 — the database's own readiness read (B-1410) decides which criteria are unticked and
+    // which were settled (carried or dropped). Absent function ⇒ today's plain criteria list. A real
+    // read error degrades to the same fallback, but is named on the brief rather than hidden.
+    let readinessFailure: string | null = null;
+    let readiness: Awaited<ReturnType<typeof getVerifyReadiness>> | null = null;
+    try {
+      readiness = await getVerifyReadiness(client, projectId, { task_id: taskId });
+    } catch (readErr) {
+      readinessFailure =
+        readErr instanceof Error
+          ? readErr.message
+          : (typeof readErr === 'object' && readErr !== null && 'message' in readErr
+              ? String((readErr as { message: unknown }).message)
+              : JSON.stringify(readErr));
+    }
+    const readinessOk = readiness?.status === 'ok' ? readiness : null;
+    const uncheckedIds = readinessOk ? new Set(readinessOk.unchecked.map((u) => u.id)) : null;
+    const verifySettled = readinessOk ? readinessOk.settled.map(toVerifyFrameSettled) : [];
     const verifyCriteria = (criteriaRows ?? []).map((ac: { id: string; content: string; checked: boolean }) => ({
       ac_id: ac.id,
       text: ac.content,
-      checked: ac.checked,
+      checked: uncheckedIds ? !uncheckedIds.has(ac.id) : ac.checked,
       disposition: 'walk' as const,
       // A recorded ticket's "walk" is auditing the record itself, not re-doing the work — one
       // mechanical acknowledgment step, never a multi-step runbook.
@@ -1015,6 +1054,10 @@ export async function runRecordedWalk(
           'This is a recorded (not conducted) walk — verification means confirming the record matches ' +
             'what actually happened, not re-doing the work.',
           attestationWhy,
+          ...(readinessFailure !== null
+            ? [`The verify readiness read failed (${readinessFailure}); the criteria ledger below is the ` +
+                'plain criteria list, and any carried or dropped criteria are not shown.']
+            : []),
         ],
         items: [{ kind: 'decision', text: 'Acknowledge verified', recommendation: 'verify once confirmed' }],
         frame: {
@@ -1024,11 +1067,13 @@ export async function runRecordedWalk(
           environment: 'merged-main',
           criteria: verifyCriteria,
           steps: verifySteps,
+          ...(verifySettled.length > 0 ? { settled: verifySettled } : {}),
           evidence_status:
             `Recorded walk — evidence linked from the supplied links (${verifyEvidenceSummary}); ` +
             (attestationOnFile
               ? 'verify walk attestation on file.'
-              : 'NO verify-walk attestation is on file — attest at this verify gate (e.g. in the accept remark).'),
+              : 'NO verify-walk attestation is on file — attest at this verify gate (e.g. in the accept remark).') +
+            (readinessFailure !== null ? ` Verify readiness read failed: ${readinessFailure}.` : ''),
         },
       },
     });
@@ -1103,7 +1148,9 @@ export const recordTool = {
     'eligibility from `url` alone. `from_gate` resumes a partial walk starting at that gate (omit to ' +
     "start at 'clarify'); `to_gate` bounds it to stop at that gate inclusive (omit to run to " +
     "'verify') — e.g. `to_gate: 'build'` lands clarify..build and stops before release/deploy/verify, " +
-    'for a caller composing its own release brief separately.',
+    "for a caller composing its own release brief separately. A walk that lands Deployed, `to_gate: 'deploy'` " +
+    'included, also composes the verify brief (never accepts it), with settled criteria from ' +
+    'task_verify_readiness when the database has it (B-1213).',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -1139,7 +1186,7 @@ export const recordTool = {
       to_gate: {
         type: 'string',
         enum: RECORD_WALK_GATE_ORDER as unknown as string[],
-        description: "B-1073 fast-track-daemon-ending round — bound the walk to stop at this gate (inclusive); every gate after it is skipped. Omitted ⇒ 'verify' (today's unchanged default — every gate runs to the end).",
+        description: "B-1073 fast-track-daemon-ending round — bound the walk to stop at this gate (inclusive); every gate after it is skipped. Omitted ⇒ 'verify' (today's unchanged default — every gate runs to the end). B-1213: 'deploy' still composes the verify brief (compose only), since the walk lands Deployed.",
       },
     },
     required: ['task_id', 'summary', 'evidence'],

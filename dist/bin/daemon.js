@@ -37990,6 +37990,37 @@ function formatInadmissibleFastTrackVerdict(report) {
 Parked pending human review. Use \`harmony conduct <ticket>\` to walk this ticket's gates live, or address the blocking item(s) above and retry the fast-track run.`;
 }
 
+// src/tools/settle-criteria.ts
+var READINESS_UNAVAILABLE_MESSAGE = "verify readiness is not available on this environment yet";
+function isMissingFunction(error) {
+  const code = error?.code;
+  return code === "42883" || code === "PGRST202";
+}
+var getVerifyReadinessTool = {
+  name: "get_verify_readiness",
+  description: "B-1410 \u2014 read-only. Whether a ticket can cross Deployed \u2192 Verified, from the database's own `task_verify_readiness`: build_carrying, is_exempt / exempt_reason (umbrella, decision-only), has_test_cases, criteria_count, `unchecked` [{ id, content }] (each one must be ticked, carried or dropped before the verify accept), `settled` [{ criterion_text, action: 'carried' | 'dropped', destination_visual_id, destination_minted, milestone_landing, landing_reason, drop_reason, settled_by, settled_at, \u2026 }] (render these on the verify frame's `settled`), `blocked` and `missing`. Returns { status: 'ok', \u2026 }; on a database that predates the function, { status: 'unavailable', message }.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: {
+        type: "string",
+        description: "Task identifier \u2014 UUID, task number (e.g., 43), or visual ID (e.g., B-43)"
+      }
+    },
+    required: ["task_id"]
+  }
+};
+async function getVerifyReadiness(client, projectId, args) {
+  assertKnownArguments(getVerifyReadinessTool, args);
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const { data, error } = await client.rpc("task_verify_readiness", { p_task_id: taskId });
+  if (error) {
+    if (isMissingFunction(error)) return { status: "unavailable", message: READINESS_UNAVAILABLE_MESSAGE };
+    throw error;
+  }
+  return { status: "ok", ...data };
+}
+
 // src/tools/record-walk.ts
 var RATIFIED_BY_RECORDED = "recorded";
 var RESOLVE_BRIEF_PROVENANCE_RECORDED = "agent-synthesized:recorded";
@@ -38024,6 +38055,18 @@ var PAYLOAD_CARRYING_REASONS = /* @__PURE__ */ new Set([
   "design-decision-draft",
   "plan-draft"
 ]);
+function toVerifyFrameSettled(row) {
+  return {
+    criterion_text: row.criterion_text,
+    action: row.action,
+    destination: row.destination_visual_id,
+    milestone_landing: row.milestone_landing,
+    landing_reason: row.landing_reason,
+    drop_reason: row.drop_reason,
+    settled_by: row.settled_by,
+    settled_at: row.settled_at
+  };
+}
 function trimmedOrEmpty(s) {
   return typeof s === "string" ? s.trim() : "";
 }
@@ -38268,6 +38311,7 @@ async function runRecordedWalk(client, projectId, userId, args) {
   const fromGate = args.from_gate ?? "clarify";
   const toGate = args.to_gate ?? "verify";
   const runs = (gate) => shouldRunRecordWalkGate(gate, fromGate, toGate);
+  const composesVerify = runs("verify") || runs("deploy") && toGate === "deploy";
   const boundedAtOrBeforeBuild = recordWalkGateIndex(toGate) <= recordWalkGateIndex("build");
   const attestationSupplied = trimmedOrEmpty(args.attest_walk).length > 0;
   try {
@@ -38496,12 +38540,22 @@ async function runRecordedWalk(client, projectId, userId, args) {
       await advanceWorkflow(client, projectId, { task_id: taskId, activity: "deploying" });
       gates.push({ gate: "deploy", landed: true });
     }
-    if (runs("verify")) {
+    if (composesVerify) {
       const criteriaRows = await listAcceptanceCriteria(client, projectId, { task_id: taskId });
+      let readinessFailure = null;
+      let readiness = null;
+      try {
+        readiness = await getVerifyReadiness(client, projectId, { task_id: taskId });
+      } catch (readErr) {
+        readinessFailure = readErr instanceof Error ? readErr.message : typeof readErr === "object" && readErr !== null && "message" in readErr ? String(readErr.message) : JSON.stringify(readErr);
+      }
+      const readinessOk = readiness?.status === "ok" ? readiness : null;
+      const uncheckedIds = readinessOk ? new Set(readinessOk.unchecked.map((u) => u.id)) : null;
+      const verifySettled = readinessOk ? readinessOk.settled.map(toVerifyFrameSettled) : [];
       const verifyCriteria = (criteriaRows ?? []).map((ac) => ({
         ac_id: ac.id,
         text: ac.content,
-        checked: ac.checked,
+        checked: uncheckedIds ? !uncheckedIds.has(ac.id) : ac.checked,
         disposition: "walk",
         // A recorded ticket's "walk" is auditing the record itself, not re-doing the work — one
         // mechanical acknowledgment step, never a multi-step runbook.
@@ -38530,7 +38584,8 @@ async function runRecordedWalk(client, projectId, userId, args) {
           decide: `Does ${args.task_id}'s recorded work behave as described \u2014 acknowledge verified?`,
           why: [
             "This is a recorded (not conducted) walk \u2014 verification means confirming the record matches what actually happened, not re-doing the work.",
-            attestationWhy
+            attestationWhy,
+            ...readinessFailure !== null ? [`The verify readiness read failed (${readinessFailure}); the criteria ledger below is the plain criteria list, and any carried or dropped criteria are not shown.`] : []
           ],
           items: [{ kind: "decision", text: "Acknowledge verified", recommendation: "verify once confirmed" }],
           frame: {
@@ -38540,7 +38595,8 @@ async function runRecordedWalk(client, projectId, userId, args) {
             environment: "merged-main",
             criteria: verifyCriteria,
             steps: verifySteps,
-            evidence_status: `Recorded walk \u2014 evidence linked from the supplied links (${verifyEvidenceSummary}); ` + (attestationOnFile ? "verify walk attestation on file." : "NO verify-walk attestation is on file \u2014 attest at this verify gate (e.g. in the accept remark).")
+            ...verifySettled.length > 0 ? { settled: verifySettled } : {},
+            evidence_status: `Recorded walk \u2014 evidence linked from the supplied links (${verifyEvidenceSummary}); ` + (attestationOnFile ? "verify walk attestation on file." : "NO verify-walk attestation is on file \u2014 attest at this verify gate (e.g. in the accept remark).") + (readinessFailure !== null ? ` Verify readiness read failed: ${readinessFailure}.` : "")
           }
         }
       });
