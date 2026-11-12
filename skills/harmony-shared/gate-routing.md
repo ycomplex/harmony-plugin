@@ -121,6 +121,94 @@ Two explicit guarded labels name the deliverable. Resolve via `get_task.delivera
 Both consumers inherit this branch from here: `harmony-conduct` at the deliverable gate of its forward
 walk, `harmony-next` when resolving the deliverable gate's brief.
 
+## Recognize a no-code design outcome (B-927)
+
+Run this procedure at the **last required design sub-track**, and on **Designed pickup before
+ordinary plan acceptance**, including start-work's plan entry. This is a new marker producer,
+not a PR-less release lane. The owning design skill composes the completion brief; conduct and
+start-work route to it before requesting an implementation plan or PR.
+
+### Eligibility and guarded classification
+
+1. Read the full ticket, Accepted design decisions and their named supporting evidence. The
+   **whole deliverable scope** must be a decision or explanation: no implementation is owed.
+   At final design, the current brief must resolve the last required track; all other required
+   tracks must already be Accepted. At Designed recovery, all required tracks must be Accepted.
+   A no-code recommendation alone, an empty or checked AC list, or an earlier orchestrator accept
+   is insufficient. Mixed scope or unresolved implementation stays on the ordinary path.
+2. Read `get_task.deliverable` before acting. Capture-only and conflicting markers never enter
+   this design route. Verified, Cancelled and Parked are terminal. Planned/Built/Deployed or a
+   recorded build PR retain the existing revise-scope route, never retroactive classification.
+   Use the full stored PR reference, not a meta projection's synthetic null branch.
+3. For an eligible **unmarked** ticket, resolve the exact existing `decision-only` label UUID
+   with `mcp__harmony__list_labels`, then call
+   `mcp__harmony__manage_labels({task_id, add: [decisionLabelId]})`. The existing
+   `can_mark_decision_only` database guard is the authority; do not bypass a refusal, create a
+   lookalike label or use a label_add proposal that lands only after acceptance. A missing label,
+   conflict or capability/eligibility refusal files an answerable worker-question. Permission,
+   malformed response and network errors remain explicit failures, never evidence of success.
+4. **Re-read the ticket after stamping.** Require `deliverable.kind === 'decision'`,
+   `intended_gate === 'design'` and `guard_available === true` before composing completion.
+   Unmarked `guard_available: false` alone did not diagnose missing capability. An unavailable
+   guarded contract now files a worker-question; never complete or fall through to build.
+   The marker is classification metadata only: it accepts no decision, satisfies no criteria
+   and advances no state.
+
+### Fresh completing brief and restart safety
+
+At final design, compose the last track's normal decision with its evidence and explicit
+`frame.completion: {gate: "design", to_state: "Verified", realization: "agreed"}`. At Designed,
+compose on the existing Accepted design decision, with `pending_activity: null`; do not mint a
+replacement decision merely to announce completion. An earlier non-completing design accept
+never authorizes this new consequence. Name the exact decision and evidence and ask:
+
+> Accept this decision and evidence as the completed deliverable? Accepting completes this
+> ticket to Verified; nothing is built and realization stays agreed.
+
+The marker MUST land **before composing** so the existing human floor sees it. Recognition,
+prior design acceptance and orchestrator approval never authorize completion. This is a
+**human hard floor in every mode and per-gate override**. Only a fresh explicit human completing
+accept goes through the existing payload consume, then `fast-forwarding` procedure above.
+
+After interruption, read the row, active brief and pending acceptance event again. Reuse a
+successful stamp and an active completing brief; never duplicate an accept or force a state.
+If stamping succeeded but composition did not, compose the missing brief. A previous human
+completing accept is recoverable only under the existing explicit-announcement contract above.
+Ordinary build tickets keep their plan, pushed PR, release and verify gates, including B-1410
+criterion settlement. No ordinary release exemption is introduced.
+
+### Human send-back: implementation is owed
+
+A human's iterate/edit saying work is owed rejects the no-code classification. **Before any
+label removal**, persist their verbatim feedback and the implementation obligation in a ticket
+comment, so restart cannot rediscover no-code from the old Accepted design alone. On pickup,
+read that unresolved obligation as well as the design. Do not re-stamp while it remains unresolved.
+
+Resolve the actual `decision-only` label UUID from the full read and remove **only that marker**
+through `mcp__harmony__manage_labels({task_id, remove: [decisionLabelId]})`. Re-read and require an
+unmarked deliverable before ordinary planning. Preserve every unrelated label. A removal failure
+or a remaining conflict files a worker-question; never force a state or pretend planning is safe.
+This guarded label path uses existing permissions; the add-eligibility check does not prohibit
+removal. No schema change is required.
+
+Retire the active completing brief's intent through the existing revision path, passing
+`revising_brief_id` and replacing the **entire frame** with a fresh non-completing frame
+that omits `completion`. Do not omit the frame itself: that inherits the old completion intent.
+The design frame schema does not accept `completion: null`. At Designed,
+when the Accepted design already supports implementation, recompose as `plan-draft` with
+`pending_activity: 'planning'`, a plan frame and **`decision_ref: null`**, so plan acceptance cannot
+re-promote the old design. At Decomposed, continue the ordinary required design tracks without
+completion. If the feedback changes Accepted design substance, use the existing human-ratified
+revise-scope/design revision route first; never silently overwrite Accepted decisions or plan
+against a contradicted design. Removing classification alone is not a workflow back-edge.
+A generic wording edit that still supports no-code may retain the marker; defer retains normal
+Parked semantics. Neither is a completing accept.
+
+If a crash occurs after the obligation comment or removal, the next pickup resumes this send-back
+procedure before no-code recognition. An already absent marker needs no second removal. The
+fresh unmarked row and unresolved implementation obligation lead back to the ordinary plan route,
+not a loop that re-stamps the marker and traps the ticket.
+
 ## Human-facing vocabulary (B-446)
 
 When pointing a human forward, name the **release gate** and the **verify gate** by those gate names;

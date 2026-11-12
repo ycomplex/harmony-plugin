@@ -499,7 +499,13 @@ carries the exact write_kind-tagged set verbatim on `consume_pending_acceptance_
 a drop with its `from_ac_id`), then on confirm execute them via the SAME `manage_acceptance_criteria`
 calls step 5 always makes.
 
-**Decision-only completion line (B-1384).** On the LAST required sub-track author `doc.frame.completion: {gate: "design", to_state: "Verified", realization: "agreed"}`. Resolve both labels through the shared contract; capture-only and conflicts never authorize design completion. Earlier sub-tracks omit completion intent.  If the ticket carries the **`decision-only` label** (a decision
+**Recognize no-code before final-track compose (B-927).** Follow
+`harmony-shared/gate-routing.md` → **Recognize a no-code design outcome** before composing the
+last required sub-track, including unmarked tickets. Apply its guarded classification before
+composition, human floor, restart and human send-back procedures. At Designed recovery, use
+the existing Accepted decision and a fresh completing brief; never reuse a non-completing accept.
+
+**Decision-only completion line (B-1384).** Only for a resolved decision-only ticket on the LAST required sub-track author `doc.frame.completion: {gate: "design", to_state: "Verified", realization: "agreed"}`. Resolve both labels through the shared contract; capture-only and conflicts never authorize design completion. Earlier sub-tracks omit completion intent.  If the ticket carries the **`decision-only` label** (a decision
 ticket whose deliverable IS this design decision — e.g. an inception S2 decision ticket), the **last
 required sub-track's** brief is its **deliverable gate**: that brief MUST carry an explicit completion line
 in its context — *"Accepting this completes the ticket to Verified via the decision-only fast-forward;
