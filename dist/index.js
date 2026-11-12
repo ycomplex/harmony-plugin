@@ -49000,7 +49000,9 @@ var briefFrameSchema = external_exports.discriminatedUnion("kind", [
       step_ref: external_exports.string().optional(),
       blocked_reason: external_exports.string().optional(),
       carried_to: external_exports.string().optional(),
-      backed_by: external_exports.string().optional()
+      backed_by: external_exports.string().optional(),
+      // B-1410 — what the leg recommends if the human chooses to carry this unticked criterion.
+      recommended_carry: object3({ destination: external_exports.string().trim().min(1), milestone: external_exports.enum(["source", "none"]), reason: external_exports.string() }).optional()
     })),
     steps: external_exports.array(object3({
       ref: external_exports.string(),
@@ -49018,7 +49020,19 @@ var briefFrameSchema = external_exports.discriminatedUnion("kind", [
     design_comparison: external_exports.string().optional(),
     exempt_reason: external_exports.string().optional(),
     evidence_status: external_exports.string(),
-    bounded_accept: object3({ open_ac_ids: strings, closes_when: external_exports.string() }).optional()
+    // B-1410 — retired: still parses so old briefs render, but compose warns when a frame authors it.
+    bounded_accept: object3({ open_ac_ids: strings, closes_when: external_exports.string() }).optional(),
+    // B-1410 — criteria carried or dropped at this gate, read from get_verify_readiness.settled.
+    settled: external_exports.array(object3({
+      criterion_text: external_exports.string(),
+      action: external_exports.enum(["carried", "dropped"]),
+      destination: external_exports.string().nullable().optional(),
+      milestone_landing: external_exports.string().nullable().optional(),
+      landing_reason: external_exports.string().nullable().optional(),
+      drop_reason: external_exports.string().nullable().optional(),
+      settled_by: external_exports.string().nullable().optional(),
+      settled_at: external_exports.string().nullable().optional()
+    })).optional()
   })
 ]);
 function designRuleIssues(frame) {
@@ -50076,6 +50090,24 @@ var CRITERION_DISPOSITIONS = Object.keys(DISPOSITION_MARK);
 function dispositionLabel(row) {
   return DISPOSITION_MARK[row.disposition] + (row.disposition === "blocked" && row.blocked_reason ? ` \u2014 ${row.blocked_reason}` : "") + (row.disposition === "carried" && row.carried_to ? ` to ${row.carried_to}` : "");
 }
+function recommendedCarryLine(rec) {
+  const dest = rec.destination === "new" ? "a new ticket" : rec.destination;
+  const milestone = rec.milestone === "source" ? "in this ticket's milestone" : "with no milestone";
+  return `Recommended if carried: ${dest}, ${milestone}${rec.reason?.trim() ? ` \u2014 ${rec.reason.trim()}` : ""}`;
+}
+function settledLine(row) {
+  const parts = [];
+  if (row.action === "carried") {
+    parts.push(`"${row.criterion_text}" \u2014 carried to ${row.destination ?? "another ticket"}`);
+    if (row.milestone_landing) parts.push(`milestone: ${row.milestone_landing}`);
+    if (row.landing_reason) parts.push(row.landing_reason);
+  } else {
+    parts.push(`"${row.criterion_text}" \u2014 dropped${row.drop_reason ? `: ${row.drop_reason}` : ""}`);
+  }
+  const who = [row.settled_by ? `by ${row.settled_by}` : null, row.settled_at ? `at ${row.settled_at}` : null].filter(Boolean).join(" ");
+  if (who) parts.push(who);
+  return parts.join(" \xB7 ");
+}
 function cell(value) {
   return (value ?? "\u2014").replace(/\|/g, "\\|").replace(/\n+/g, " ").trim() || "\u2014";
 }
@@ -50212,14 +50244,20 @@ function renderFrame(frame) {
           out.push(`| ${i + 1} | ${cell(r.text)} | ${cell(disposition)} | ${cell(r.step_ref)} | ${cell(r.backed_by)} |`);
         });
         out.push("");
+        const recommendations = rows.map((r, i) => ({ r, n: i + 1 })).filter(({ r }) => r.checked !== true && r.recommended_carry);
+        for (const { r, n } of recommendations) out.push(`#${n} \u2014 ${recommendedCarryLine(r.recommended_carry)}`);
+        if (recommendations.length) out.push("");
       } else if (frame.exempt_reason) {
         out.push(`This ticket carries no acceptance criteria of its own \u2014 ${frame.exempt_reason}`, "");
+      }
+      if (frame.settled?.length) {
+        out.push("**Settled at verify**", ...frame.settled.map((row) => `- ${settledLine(row)}`), "");
       }
       out.push(`**Covers:** ${frame.environment}`);
       out.push(`**Evidence (mechanical):** ${frame.evidence_status}`);
       if (frame.bounded_accept) {
         const ids2 = frame.bounded_accept.open_ac_ids?.length ? frame.bounded_accept.open_ac_ids.join(", ") : "none";
-        out.push(`**Bounded accept:** criteria left open \u2014 ${ids2}. Closes when ${frame.bounded_accept.closes_when}`);
+        out.push(`**Legacy note (bounded accept, retired by B-1410 \u2014 not an accept condition):** this brief left criteria open \u2014 ${ids2}; it named the closing condition as: ${frame.bounded_accept.closes_when}`);
       }
       break;
     }
@@ -50575,12 +50613,14 @@ function renderSlot(doc, gate) {
           closes_when: frame.bounded_accept.closes_when
         };
       }
+      if (frame.settled?.length) out.settled = frame.settled.map(settledLine);
       return out;
     }
     default:
       return null;
   }
 }
+var BOUNDED_ACCEPT_RETIRED_WARNING = "bounded_accept is retired (B-1410): mark the criterion satisfied, carry it, or drop it";
 function isPrShaped(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const v = value;
@@ -50789,6 +50829,15 @@ function lintFrame(doc, ctx, errors, warnings) {
       if (frame && typeof frame === "object" && "runbook" in frame) {
         errors.push("`frame.runbook` is not a field of the verify frame. Author the walk in `frame.steps` (B-1068) \u2014 `{ ref, action, expect, covers }[]`.");
       }
+      if (ctx.uncheckedCriterionIds?.length) {
+        const unticked = new Set(ctx.uncheckedCriterionIds);
+        for (const row of rows) {
+          if (row?.disposition === "carried" && typeof row.ac_id === "string" && unticked.has(row.ac_id)) {
+            errors.push(`Criterion "${row.text ?? row.ac_id}" is dispositioned 'carried', but it is still an unticked acceptance criterion on this ticket. Carry it first with settle_acceptance_criterion (action 'carry'), then recompose \u2014 the brief must not claim a move that has not happened.`);
+          }
+        }
+      }
+      if (frame.bounded_accept !== void 0) warnings.push(BOUNDED_ACCEPT_RETIRED_WARNING);
       if (frame.bounded_accept !== void 0 && !isBoundedAcceptShaped(frame.bounded_accept)) {
         warnings.push(
           '`frame.bounded_accept` is present but is not shaped `{ open_ac_ids: string[], closes_when: string }`. The render walks those two keys, so a malformed value renders "criteria left open \u2014 none. Closes when undefined" \u2014 name the criteria this accept leaves open and what closes them.'
@@ -51365,8 +51414,15 @@ async function composeBrief(client, projectId, userId, args) {
       floorCount = void 0;
     }
   }
+  let uncheckedCriterionIds;
+  if (doc.frame?.kind === "verify" && (doc.frame.criteria ?? []).some((r) => r?.disposition === "carried")) {
+    const { data: acRows, error: acError } = await client.from("acceptance_criteria").select("id, checked").eq("task_id", taskId);
+    if (acError) throw acError;
+    uncheckedCriterionIds = (acRows ?? []).filter((r) => r.checked !== true).map((r) => r.id);
+  }
   const content = renderBrief(doc, mergedDecisionRef, renderCtx);
   const lint = lintBrief(doc, content, {
+    uncheckedCriterionIds,
     reason: args.reason,
     buildPr,
     buildPrRefs,
@@ -51569,7 +51625,7 @@ var composeBriefTool = {
           tail: { type: "string", description: "Optional custom command tail line; defaults to the standard one" },
           frame: {
             type: "object",
-            description: "B-876 \u2014 the gate-specific frame, discriminated by `kind` (must match the gate reason): 'clarify' { solving, in_scope[], not_solving[{item,lands}], floor_reviewed?[] } | 'decompose' { elements[{text,surface?,covers?}], coverage, existing_children_checked, floor_reviewed?[] } | 'design' { track, tracks[{track,status,note?}], reach[], reach_level? ('this_ticket_only'|'this_surface'|'this_product', B-1047 \u2014 declare it on every design brief), rules?[{ref,operation:'create'|'amend'|'reference',wording,domains[],surfaces[],knowledge_scope:'product'|'deployment',reach:'this_surface'|'this_product',target_entry_id,expected_fingerprint,before?,title?}] (B-1047 \u2014 beyond-ticket reach with zero rules is REFUSED; this_ticket_only allows only 'reference'; amend/reference need target_entry_id + expected_fingerprint (from read_rule_registry); create/amend need wording, knowledge_scope and reach; a reference never restates its rule, so wording/knowledge_scope/reach are optional there and `title` is display-only; compose derives the 'rule_bundle' payload item and refuses when this database lacks the rule registry), not_reopened?[], derisk?{run[],not_run[]}, files_on_accept?[], floor_reviewed?[] } | 'plan' { scope{repos[],surfaces[],has_migration}, steps[], attestation{base_verified,derisked_by_running?}, carried_unproven[{item,reason}], ac_coverage, landing?, design_delta?, design_read?{version_id|null,screens[],drift: 'changed'|'unchanged'|'unchecked'} (B-1205), floor_reviewed?[] } | 'release' { settled_beyond_design?[{behaviour,ac,knowledge_entry_id}], act(LandingShape), unproven[{item,reason}], evidence_status{proven_by_run,walk_at_verify,unproven,total,detail?}, risk_classes[], pr_review_state?, contradiction_signal?{status,message,entries[{entry_id,title,state,matched_values[],source}],truncated?}, floor_reviewed?[] } | 'verify' { environment, criteria[{ac_id,text,checked,disposition,step_ref?,blocked_reason?,carried_to?,backed_by?}], steps?[{ref,action,expect,covers[],design_node?{node_id,name,caption?,preview_attachment_id,preview_filename}}], design_comparison?, exempt_reason?, evidence_status, bounded_accept? }. `floor_reviewed` (B-838) applies to the FIVE forward gates only \u2014 never verify. LandingShape = { repos[], pr_count, lands_in: 'staging'|'production'|'both'|'merged-main', atomicity: 'single'|'together'|'ordered', ordering? (required when ordered), irreversible[], prs?[{repo,number,url}] (B-890, optional forever \u2014 populated from field_values.prerequisite_pr then build_pr) }. Every rule over this field is a WARNING, with two exceptions: (B-1016) a `release` frame missing `evidence_status` is REFUSED outright; (B-1068) a `verify` frame is REFUSED when a `walk`-kind criterion has no `frame.steps` at all, when a `step_ref` matches no declared step, when a step covers no filed criterion, when a `walk` criterion names no `step_ref`, when a step's `action` or `expect` is blank, or when `items[].kind === 'step'` / a raw `frame.runbook` key is present \u2014 author the walk as `frame.steps: [{ ref, action, expect, covers }]`, one action plus one expected observation per step, `covers` naming the acceptance-criterion ids it discharges. Omit the frame entirely and the render is byte-identical to the pre-B-876 output."
+            description: "B-876 \u2014 the gate-specific frame, discriminated by `kind` (must match the gate reason): 'clarify' { solving, in_scope[], not_solving[{item,lands}], floor_reviewed?[] } | 'decompose' { elements[{text,surface?,covers?}], coverage, existing_children_checked, floor_reviewed?[] } | 'design' { track, tracks[{track,status,note?}], reach[], reach_level? ('this_ticket_only'|'this_surface'|'this_product', B-1047 \u2014 declare it on every design brief), rules?[{ref,operation:'create'|'amend'|'reference',wording,domains[],surfaces[],knowledge_scope:'product'|'deployment',reach:'this_surface'|'this_product',target_entry_id,expected_fingerprint,before?,title?}] (B-1047 \u2014 beyond-ticket reach with zero rules is REFUSED; this_ticket_only allows only 'reference'; amend/reference need target_entry_id + expected_fingerprint (from read_rule_registry); create/amend need wording, knowledge_scope and reach; a reference never restates its rule, so wording/knowledge_scope/reach are optional there and `title` is display-only; compose derives the 'rule_bundle' payload item and refuses when this database lacks the rule registry), not_reopened?[], derisk?{run[],not_run[]}, files_on_accept?[], floor_reviewed?[] } | 'plan' { scope{repos[],surfaces[],has_migration}, steps[], attestation{base_verified,derisked_by_running?}, carried_unproven[{item,reason}], ac_coverage, landing?, design_delta?, design_read?{version_id|null,screens[],drift: 'changed'|'unchanged'|'unchecked'} (B-1205), floor_reviewed?[] } | 'release' { settled_beyond_design?[{behaviour,ac,knowledge_entry_id}], act(LandingShape), unproven[{item,reason}], evidence_status{proven_by_run,walk_at_verify,unproven,total,detail?}, risk_classes[], pr_review_state?, contradiction_signal?{status,message,entries[{entry_id,title,state,matched_values[],source}],truncated?}, floor_reviewed?[] } | 'verify' { environment, criteria[{ac_id,text,checked,disposition,step_ref?,blocked_reason?,carried_to?,backed_by?,recommended_carry?{destination:'new'|<ticket>,milestone:'source'|'none',reason}}], steps?[{ref,action,expect,covers[],design_node?{node_id,name,caption?,preview_attachment_id,preview_filename}}], design_comparison?, exempt_reason?, evidence_status, settled?[{criterion_text,action:'carried'|'dropped',destination,milestone_landing,landing_reason,drop_reason,settled_by,settled_at}] (B-1410 \u2014 copy from get_verify_readiness.settled), bounded_accept? (RETIRED by B-1410 \u2014 warned; tick, carry or drop the criterion instead) }. `floor_reviewed` (B-838) applies to the FIVE forward gates only \u2014 never verify. LandingShape = { repos[], pr_count, lands_in: 'staging'|'production'|'both'|'merged-main', atomicity: 'single'|'together'|'ordered', ordering? (required when ordered), irreversible[], prs?[{repo,number,url}] (B-890, optional forever \u2014 populated from field_values.prerequisite_pr then build_pr) }. Every rule over this field is a WARNING, with two exceptions: (B-1016) a `release` frame missing `evidence_status` is REFUSED outright; (B-1068) a `verify` frame is REFUSED when a `walk`-kind criterion has no `frame.steps` at all, when a `step_ref` matches no declared step, when a step covers no filed criterion, when a `walk` criterion names no `step_ref`, when a step's `action` or `expect` is blank, or when `items[].kind === 'step'` / a raw `frame.runbook` key is present; (B-1410) a `verify` frame is also REFUSED when a `carried` row names a criterion still unticked on the ticket \u2014 carry it with settle_acceptance_criterion first \u2014 author the walk as `frame.steps: [{ ref, action, expect, covers }]`, one action plus one expected observation per step, `covers` naming the acceptance-criterion ids it discharges. Omit the frame entirely and the render is byte-identical to the pre-B-876 output."
           },
           revision: {
             type: "object",
@@ -55178,6 +55234,137 @@ async function manageAcceptanceCriteria(client, projectId, userId, args) {
   return results;
 }
 
+// src/tools/settle-criteria.ts
+var SETTLE_UNAVAILABLE_MESSAGE = "carry and drop are not available on this environment yet";
+var READINESS_UNAVAILABLE_MESSAGE = "verify readiness is not available on this environment yet";
+function isMissingFunction(error2) {
+  const code = error2?.code;
+  return code === "42883" || code === "PGRST202";
+}
+var REFUSAL_RE = /settle refused:\s*([a-z][a-z-]*):\s*([\s\S]*)$/;
+function parseSettleRefusal(error2) {
+  const message = error2?.message;
+  if (typeof message !== "string") return null;
+  const match = REFUSAL_RE.exec(message);
+  if (!match) return null;
+  return { code: match[1], message: match[2].trim() };
+}
+var settleAcceptanceCriterionTool = {
+  name: "settle_acceptance_criterion",
+  description: "B-1410 \u2014 settle ONE unticked acceptance criterion at the verify gate, applied immediately and on its own (never inside the verify accept). action 'carry' moves the criterion to an open ticket in the same project \u2014 an existing one (`destination_task_id`) or one minted here (`mint`: { title, milestone: 'source' | 'none', landing_reason }) \u2014 and leaves a trace on this ticket; action 'drop' removes it with a required `drop_reason` and leaves a trace. To mark a criterion satisfied, tick it with manage_acceptance_criteria instead. The database refuses a ticked criterion, the last remaining criterion, a destination that is this ticket, another project's ticket or a closed ticket, and a missing reason; a refusal returns { status: 'refused', code, message } (relay the message), success returns { status: 'settled', settlement_id, action, source_task_id, destination_task_id, destination_minted, destination_criterion_id, already_settled }. On a database that predates the function it returns { status: 'unavailable', message } \u2014 say so and offer a tick or reopening the build instead.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: {
+        type: "string",
+        description: "Optional context: the ticket the criterion is on (UUID, task number, or visual ID like B-43). When given, a criterion that is not on this ticket is refused before anything is written."
+      },
+      criterion_id: { type: "string", description: "The acceptance criterion UUID to settle." },
+      action: { type: "string", enum: ["carry", "drop"], description: "'carry' or 'drop'." },
+      destination_task_id: {
+        type: "string",
+        description: "carry only: an existing open ticket in this project to carry the criterion to (UUID, task number, or visual ID like B-12). Omit when minting with `mint`."
+      },
+      mint: {
+        type: "object",
+        description: "carry only: mint a new ticket to carry the criterion to, instead of naming an existing one.",
+        properties: {
+          title: { type: "string", description: "Title of the new ticket." },
+          milestone: {
+            type: "string",
+            enum: ["source", "none"],
+            description: "'source' lands it in this ticket's milestone (the original title would be false without the criterion); 'none' leaves it unscheduled."
+          },
+          landing_reason: { type: "string", description: "Why it lands where it does." }
+        },
+        required: ["title", "milestone"]
+      },
+      drop_reason: { type: "string", description: "drop only: why the criterion is dropped. Required." }
+    },
+    required: ["criterion_id", "action"]
+  }
+};
+async function settleAcceptanceCriterion(client, projectId, args) {
+  assertKnownArguments(settleAcceptanceCriterionTool, args);
+  if (args.mint !== void 0 && args.mint !== null && typeof args.mint === "object") {
+    const allowed = Object.keys(settleAcceptanceCriterionTool.inputSchema.properties.mint.properties);
+    const unknown2 = Object.keys(args.mint).filter((k) => !allowed.includes(k));
+    if (unknown2.length) {
+      throw new Error(
+        `settle_acceptance_criterion does not accept: ${unknown2.map((k) => `mint.${k}`).join(", ")}. mint accepts: ${allowed.join(", ")}.`
+      );
+    }
+  }
+  if (args.action !== "carry" && args.action !== "drop") {
+    return {
+      status: "refused",
+      code: "invalid-action",
+      message: `action must be 'carry' or 'drop', not '${String(args.action)}'.`
+    };
+  }
+  if (args.action === "carry" && args.destination_task_id && args.mint) {
+    return {
+      status: "refused",
+      code: "destination-required",
+      message: "Carry to an existing ticket or mint a new one, not both."
+    };
+  }
+  if (args.task_id) {
+    const sourceId = await resolveTaskId2(client, projectId, args.task_id);
+    const { data: data2, error: error3 } = await client.from("acceptance_criteria").select("id").eq("id", args.criterion_id).eq("task_id", sourceId).maybeSingle();
+    if (error3) throw error3;
+    if (!data2) {
+      return {
+        status: "refused",
+        code: "criterion-not-found",
+        message: `Criterion ${args.criterion_id} is not an acceptance criterion of ${args.task_id}.`
+      };
+    }
+  }
+  const destination = args.action === "carry" && args.destination_task_id ? await resolveTaskId2(client, projectId, args.destination_task_id) : null;
+  const params = {
+    p_criterion_id: args.criterion_id,
+    p_action: args.action,
+    p_destination_task_id: destination,
+    p_mint_title: args.action === "carry" ? args.mint?.title ?? null : null,
+    p_mint_milestone: args.action === "carry" ? args.mint?.milestone ?? null : null,
+    p_landing_reason: args.action === "carry" ? args.mint?.landing_reason ?? null : null,
+    p_drop_reason: args.action === "drop" ? args.drop_reason ?? null : null
+  };
+  const { data, error: error2 } = await client.rpc("settle_acceptance_criterion", params);
+  if (error2) {
+    if (isMissingFunction(error2)) return { status: "unavailable", message: SETTLE_UNAVAILABLE_MESSAGE };
+    const refusal = parseSettleRefusal(error2);
+    if (refusal) return { status: "refused", ...refusal };
+    throw error2;
+  }
+  return { status: "settled", ...data };
+}
+var getVerifyReadinessTool = {
+  name: "get_verify_readiness",
+  description: "B-1410 \u2014 read-only. Whether a ticket can cross Deployed \u2192 Verified, from the database's own `task_verify_readiness`: build_carrying, is_exempt / exempt_reason (umbrella, decision-only), has_test_cases, criteria_count, `unchecked` [{ id, content }] (each one must be ticked, carried or dropped before the verify accept), `settled` [{ criterion_text, action: 'carried' | 'dropped', destination_visual_id, destination_minted, milestone_landing, landing_reason, drop_reason, settled_by, settled_at, \u2026 }] (render these on the verify frame's `settled`), `blocked` and `missing`. Returns { status: 'ok', \u2026 }; on a database that predates the function, { status: 'unavailable', message }.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      task_id: {
+        type: "string",
+        description: "Task identifier \u2014 UUID, task number (e.g., 43), or visual ID (e.g., B-43)"
+      }
+    },
+    required: ["task_id"]
+  }
+};
+async function getVerifyReadiness(client, projectId, args) {
+  assertKnownArguments(getVerifyReadinessTool, args);
+  const taskId = await resolveTaskId2(client, projectId, args.task_id);
+  const { data, error: error2 } = await client.rpc("task_verify_readiness", { p_task_id: taskId });
+  if (error2) {
+    if (isMissingFunction(error2)) return { status: "unavailable", message: READINESS_UNAVAILABLE_MESSAGE };
+    throw error2;
+  }
+  return { status: "ok", ...data };
+}
+
 // src/tools/test-cases.ts
 var TEST_CASE_TYPES = ["unit", "e2e", "integration"];
 var listTestCasesTool = {
@@ -58465,6 +58652,8 @@ function registerTools(disabledFeatures) {
     listTicketKnowledgeTool,
     linkTicketEntitiesTool,
     getBuildEvidenceStatusTool,
+    // B-1410 — the verify gate's readiness read (degrades to unavailable before the web migration).
+    getVerifyReadinessTool,
     createConductionTool,
     listConductionsTool,
     requestConductionReapTool,
@@ -58478,7 +58667,7 @@ function registerTools(disabledFeatures) {
   if (!disabledFeatures?.subtasks) tools.push(listChecklistItemsTool, manageChecklistItemsTool);
   if (!disabledFeatures?.cycles) tools.push(listCyclesTool, createCycleTool, updateCycleTool);
   if (!disabledFeatures?.milestones) tools.push(listMilestonesTool, createMilestoneTool, updateMilestoneTool, shipMilestoneTool);
-  if (!disabledFeatures?.acceptance) tools.push(listAcceptanceCriteriaTool, manageAcceptanceCriteriaTool, listTestCasesTool, manageTestCasesTool);
+  if (!disabledFeatures?.acceptance) tools.push(listAcceptanceCriteriaTool, manageAcceptanceCriteriaTool, settleAcceptanceCriterionTool, listTestCasesTool, manageTestCasesTool);
   if (!disabledFeatures?.dependencies) tools.push(listDependenciesTool, manageDependenciesTool);
   if (!disabledFeatures?.decomposition) tools.push(listSubtasksTool, listParentTool, manageSubtasksTool);
   if (!disabledFeatures?.attachments) tools.push(downloadAttachmentTool, attachFileTool);
@@ -58709,6 +58898,12 @@ async function handleToolCall(name, args, client, projectId, userId) {
         break;
       case "manage_acceptance_criteria":
         result = await manageAcceptanceCriteria(client, projectId, userId, args);
+        break;
+      case "settle_acceptance_criterion":
+        result = await settleAcceptanceCriterion(client, projectId, args);
+        break;
+      case "get_verify_readiness":
+        result = await getVerifyReadiness(client, projectId, args);
         break;
       case "list_test_cases":
         result = await listTestCases(client, projectId, args);
