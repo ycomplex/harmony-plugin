@@ -38886,6 +38886,14 @@ var MODEL_PRICING = {
     cache_write_5m_per_mtok: 12.5,
     cache_read_per_mtok: 0.25
   },
+  /** B-1463: Anthropic's published table, 2026-11-12. */
+  "fable-5-2": {
+    input_per_mtok: 8,
+    output_per_mtok: 40,
+    cache_write_1h_per_mtok: 16,
+    cache_write_5m_per_mtok: 10,
+    cache_read_per_mtok: 0.2
+  },
   "fable-5": {
     input_per_mtok: 10,
     output_per_mtok: 50,
@@ -38894,6 +38902,9 @@ var MODEL_PRICING = {
     cache_read_per_mtok: 1
   }
 };
+function isTieredClaudeRow(row) {
+  return !!row && row.long_context_threshold_tokens !== null && row.long_context_threshold_tokens !== void 0;
+}
 function rowToModelPricing(row) {
   return {
     input_per_mtok: row.input_per_mtok,
@@ -38932,7 +38943,8 @@ function resolveCost(parsed, model, rowPrice) {
   if (typeof parsed.cli_cost_usd === "number" && parsed.cli_cost_usd > 0) {
     return { total_cost_usd: parsed.cli_cost_usd, cost_source: "cli" };
   }
-  const derived = deriveCostUsd(parsed, rowPrice ? rowToModelPricing(rowPrice) : resolvePricing(model));
+  const pricing = isTieredClaudeRow(rowPrice) ? null : rowPrice ? rowToModelPricing(rowPrice) : resolvePricing(model);
+  const derived = deriveCostUsd(parsed, pricing);
   if (derived !== null) return { total_cost_usd: derived, cost_source: "derived" };
   return { total_cost_usd: null, cost_source: "unknown" };
 }

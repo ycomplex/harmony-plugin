@@ -86,9 +86,11 @@ export interface ModelPricing {
 
 /** B-495's price table, keyed by a lower-cased model-alias SUBSTRING (the `--model` alias the leg
  *  actually launched with). The LONGEST matching key wins, so `claude-opus-5-5` resolves to its own
- *  row rather than the broader `opus` row, and `claude-fable-5-1` to its own rather than `fable-5`.
+ *  row rather than the broader `opus` row, and `claude-fable-5-1` / `claude-fable-5-2` to their own
+ *  rather than `fable-5`.
  *
- *  Only ratified rates belong here (B-1096: Anthropic's published table, 2026-10). An unrecognized
+ *  Only ratified rates belong here (B-1096: Anthropic's published table, 2026-10; the `fable-5-2`
+ *  row, B-1463: Anthropic's published table, 2026-11-12). An unrecognized
  *  model resolves to NO pricing, so its `cost_source` is `'unknown'` and its `total_cost_usd` is
  *  null — an honest "we cannot say" rather than a plausible-looking number computed from somebody
  *  else's rates. That is the whole point of carrying `cost_source` at all. Two deliberate gaps:
@@ -96,7 +98,8 @@ export interface ModelPricing {
  *      usage cannot say which side of that line each request fell on — so it stays unpriced.
  *    - Claude Sonnet 4.6 and older Sonnets ($3/$15) are not matched by `sonnet-5`.
  *  Cache writes are 1.25x (5m) / 2x (1h) the input rate on every row; cache READS are not a uniform
- *  multiplier (0.1x generally, 0.05x on Opus 5.5, 0.025x on Fable 5.1), so each row states its own.
+ *  multiplier (0.1x generally, 0.05x on Opus 5.5, 0.025x on Fable 5.1 and Fable 5.2), so each row
+ *  states its own.
  *
  *  B-1179: this table is now the one-release FALLBACK behind the model-catalog row's own prices
  *  (src/tools/catalog-pricing.ts), consulted only when the row carries none. Retire it once the prod
@@ -132,6 +135,14 @@ export const MODEL_PRICING: Readonly<Record<string, ModelPricing>> = {
     cache_write_5m_per_mtok: 12.5,
     cache_read_per_mtok: 0.25,
   },
+  /** B-1463: Anthropic's published table, 2026-11-12. */
+  'fable-5-2': {
+    input_per_mtok: 8,
+    output_per_mtok: 40,
+    cache_write_1h_per_mtok: 16,
+    cache_write_5m_per_mtok: 10,
+    cache_read_per_mtok: 0.2,
+  },
   'fable-5': {
     input_per_mtok: 10,
     output_per_mtok: 50,
@@ -140,6 +151,16 @@ export const MODEL_PRICING: Readonly<Record<string, ModelPricing>> = {
     cache_read_per_mtok: 1,
   },
 };
+
+/** B-1463: a CLAUDE catalog row with a long-context threshold (Haiku 5.5: a second price tier above
+ *  a 100K-token prompt) cannot price a leg. A Claude leg's usage is aggregated across many requests
+ *  and cannot say which side of the threshold each request fell on (B-1096's reasoning for leaving
+ *  Haiku out of MODEL_PRICING), so pricing it from the base tier would understate it. Such a row
+ *  yields NO derived cost: the leg is 'unknown' unless the CLI reported its own cost. The Codex path
+ *  (deriveCodexCostUsd) prices per request and is unaffected. */
+export function isTieredClaudeRow(row: CatalogRowPrice | null | undefined): boolean {
+  return !!row && row.long_context_threshold_tokens !== null && row.long_context_threshold_tokens !== undefined;
+}
 
 /** B-1179: a catalog row's three prices as a Claude ModelPricing. The row's cached-input price is
  *  the cache-READ rate; the two cache-WRITE rates are the published multiples of the input rate
@@ -300,7 +321,11 @@ export function deriveCodexCostUsd(
  *  `'unknown'` with a null cost when neither is available.
  *
  *  B-1179: the derived figure is priced from the catalog `rowPrice` when one is given, else from
- *  MODEL_PRICING. The CLI's own figure still wins over both. */
+ *  MODEL_PRICING. The CLI's own figure still wins over both.
+ *
+ *  B-1463: a row with a long-context threshold is tiered and yields no derived figure (see
+ *  isTieredClaudeRow) — and it does NOT fall through to MODEL_PRICING either: the row is the
+ *  authority, and it says this leg cannot be priced from aggregated usage. */
 export function resolveCost(
   parsed: ParsedClaudeResult,
   model: string | null | undefined,
@@ -309,7 +334,12 @@ export function resolveCost(
   if (typeof parsed.cli_cost_usd === 'number' && parsed.cli_cost_usd > 0) {
     return { total_cost_usd: parsed.cli_cost_usd, cost_source: 'cli' };
   }
-  const derived = deriveCostUsd(parsed, rowPrice ? rowToModelPricing(rowPrice) : resolvePricing(model));
+  const pricing = isTieredClaudeRow(rowPrice)
+    ? null
+    : rowPrice
+      ? rowToModelPricing(rowPrice)
+      : resolvePricing(model);
+  const derived = deriveCostUsd(parsed, pricing);
   if (derived !== null) return { total_cost_usd: derived, cost_source: 'derived' };
   return { total_cost_usd: null, cost_source: 'unknown' };
 }
