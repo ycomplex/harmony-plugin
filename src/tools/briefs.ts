@@ -150,6 +150,24 @@ export interface CriterionRow {
   blocked_reason?: string;
   carried_to?: string;
   backed_by?: string;
+  /** B-1410 — on an UNTICKED row: what the leg recommends if the human chooses to carry it.
+   *  `destination` is `'new'` (mint a ticket) or an existing open ticket's id / visual id; `milestone`
+   *  is `'source'` when the original title would be false without the criterion, else `'none'`. */
+  recommended_carry?: { destination: string; milestone: 'source' | 'none'; reason: string };
+}
+
+/** B-1410 — one criterion carried or dropped at the verify gate, as `get_verify_readiness.settled`
+ *  reports it (the database's settlement trace; the leg copies it, never invents it). */
+export interface SettledCriterionRow {
+  criterion_text: string;
+  action: 'carried' | 'dropped';
+  /** The destination ticket's visual id for a carry; null for a drop. */
+  destination?: string | null;
+  milestone_landing?: string | null;
+  landing_reason?: string | null;
+  drop_reason?: string | null;
+  settled_by?: string | null;
+  settled_at?: string | null;
 }
 
 /** B-1068 — one step of verify's WALK, the ordered runbook itself. A verify brief cannot compose a
@@ -349,7 +367,12 @@ export type GateFrame =
       design_comparison?: string;
       exempt_reason?: string;
       evidence_status: string;
+      /** RETIRED by B-1410 — still parses so old briefs render, rendered only as a legacy note (never
+       *  as an accept condition), and compose warns when a frame authors it. An unticked criterion is
+       *  now ticked, carried or dropped before the accept. */
       bounded_accept?: { open_ac_ids: string[]; closes_when: string };
+      /** B-1410 — the criteria carried or dropped at this gate, rendered as "Settled at verify". */
+      settled?: SettledCriterionRow[];
       // NOTE: verify deliberately carries NO `floor_reviewed` — B-838 names exactly the five FORWARD
       // gates (clarify/decompose/design/plan/release); verify is not one of them (confirmed at plan
       // time: Planned->Built is a brief-less SYSTEM/AGENT advance, and there is no sixth variant).
@@ -751,6 +774,31 @@ function dispositionLabel(row: CriterionRow): string {
   );
 }
 
+/** B-1410 — "Recommended if carried: …" for an unticked row's `recommended_carry`. */
+function recommendedCarryLine(rec: NonNullable<CriterionRow['recommended_carry']>): string {
+  const dest = rec.destination === 'new' ? 'a new ticket' : rec.destination;
+  const milestone = rec.milestone === 'source' ? "in this ticket's milestone" : 'with no milestone';
+  return `Recommended if carried: ${dest}, ${milestone}${rec.reason?.trim() ? ` — ${rec.reason.trim()}` : ''}`;
+}
+
+/** B-1410 — one "Settled at verify" line: what happened to the criterion, where it went or why it
+ *  was dropped, and who settled it when. Shared by the render and the durable verify section. */
+export function settledLine(row: SettledCriterionRow): string {
+  const parts: string[] = [];
+  if (row.action === 'carried') {
+    parts.push(`"${row.criterion_text}" — carried to ${row.destination ?? 'another ticket'}`);
+    if (row.milestone_landing) parts.push(`milestone: ${row.milestone_landing}`);
+    if (row.landing_reason) parts.push(row.landing_reason);
+  } else {
+    parts.push(`"${row.criterion_text}" — dropped${row.drop_reason ? `: ${row.drop_reason}` : ''}`);
+  }
+  const who = [row.settled_by ? `by ${row.settled_by}` : null, row.settled_at ? `at ${row.settled_at}` : null]
+    .filter(Boolean)
+    .join(' ');
+  if (who) parts.push(who);
+  return parts.join(' · ');
+}
+
 /** Escape a pipe so a criterion containing one cannot break the ledger's table row. */
 function cell(value: string | undefined): string {
   return (value ?? '—').replace(/\|/g, '\\|').replace(/\n+/g, ' ').trim() || '—';
@@ -909,16 +957,29 @@ function renderFrame(frame: GateFrame): string[] {
           out.push(`| ${i + 1} | ${cell(r.text)} | ${cell(disposition)} | ${cell(r.step_ref)} | ${cell(r.backed_by)} |`);
         });
         out.push('');
+        // B-1410 — a Markdown table cannot hold a note under a row, so each unticked row's carry
+        // recommendation follows the table, keyed by the row's number.
+        const recommendations = rows
+          .map((r, i) => ({ r, n: i + 1 }))
+          .filter(({ r }) => r.checked !== true && r.recommended_carry);
+        for (const { r, n } of recommendations) out.push(`#${n} — ${recommendedCarryLine(r.recommended_carry!)}`);
+        if (recommendations.length) out.push('');
       } else if (frame.exempt_reason) {
         out.push(`This ticket carries no acceptance criteria of its own — ${frame.exempt_reason}`, '');
       }
+      // B-1410 — what was carried or dropped at this gate, after the ledger, one line each.
+      if (frame.settled?.length) {
+        out.push('**Settled at verify**', ...frame.settled.map((row) => `- ${settledLine(row)}`), '');
+      }
       out.push(`**Covers:** ${frame.environment}`);
       out.push(`**Evidence (mechanical):** ${frame.evidence_status}`);
+      // B-1410 — bounded_accept is retired. An old brief that carries one still shows it, but as a
+      // legacy note: it is no longer a condition of the accept.
       if (frame.bounded_accept) {
         const ids = frame.bounded_accept.open_ac_ids?.length
           ? frame.bounded_accept.open_ac_ids.join(', ')
           : 'none';
-        out.push(`**Bounded accept:** criteria left open — ${ids}. Closes when ${frame.bounded_accept.closes_when}`);
+        out.push(`**Legacy note (bounded accept, retired by B-1410 — not an accept condition):** this brief left criteria open — ${ids}; it named the closing condition as: ${frame.bounded_accept.closes_when}`);
       }
       break;
     }
@@ -1575,6 +1636,8 @@ export function renderSlot(doc: BriefDoc, gate: GateSlotName): GateSlotContent |
           closes_when: frame.bounded_accept.closes_when,
         };
       }
+      // B-1410 — the settled criteria, in the brief's own words.
+      if (frame.settled?.length) out.settled = frame.settled.map(settledLine);
       return out;
     }
     default:
@@ -1610,7 +1673,16 @@ export interface BriefLintContext {
    *  revision states no cause" rule, gated on the same post-increment `iteration` as the `doc.revision`
    *  rule, so a first compose can never warn. Absent (an older caller) warns on nothing. */
   statesCause?: boolean;
+  /** B-1410 — the ids of this ticket's acceptance criteria that are still UNTICKED, read at compose
+   *  only for a verify frame that authors a `carried` row. A `carried` row naming one of these is
+   *  refused: the criterion has not been carried yet, so the brief would claim a move that never
+   *  happened. Absent ⇒ the rule cannot run and refuses nothing. */
+  uncheckedCriterionIds?: string[];
 }
+
+/** B-1410 — the compose warning for a verify frame that authors the retired `bounded_accept`. */
+export const BOUNDED_ACCEPT_RETIRED_WARNING =
+  'bounded_accept is retired (B-1410): mark the criterion satisfied, carry it, or drop it';
 
 /** B-876 — one pull request read out of a task's `field_values`. `key` is the path it was found at
  *  (`build_pr`, `build_pr.web_pr`, `build_pr_plugin`, …) so the brief can name WHICH reference it means. */
@@ -1946,6 +2018,23 @@ function lintFrame(doc: BriefDoc, ctx: BriefLintContext, errors: string[], warni
       // B-903 — `bounded_accept` is only renderable in its declared shape. A bare string (the observed
       // malformation) renders as "criteria left open — none. Closes when undefined", which reads as a
       // finished sentence and is a false statement about what stays open.
+      // B-1410 — HARD REFUSAL: a `carried` row whose criterion is still an unticked criterion on this
+      // ticket. Carrying is a database action (settle_acceptance_criterion) that moves the criterion
+      // off the ticket; a ledger row cannot stand in for it. A carried row whose criterion is no longer
+      // on the ticket (already carried) is fine.
+      if (ctx.uncheckedCriterionIds?.length) {
+        const unticked = new Set(ctx.uncheckedCriterionIds);
+        for (const row of rows) {
+          if (row?.disposition === 'carried' && typeof row.ac_id === 'string' && unticked.has(row.ac_id)) {
+            errors.push(`Criterion "${row.text ?? row.ac_id}" is dispositioned 'carried', but it is still an unticked acceptance criterion on this ticket. Carry it first with settle_acceptance_criterion (action 'carry'), then recompose — the brief must not claim a move that has not happened.`);
+          }
+        }
+      }
+
+      // B-1410 — bounded_accept is retired; it still parses (old briefs render) but a new frame
+      // authoring it is warned, never refused.
+      if (frame.bounded_accept !== undefined) warnings.push(BOUNDED_ACCEPT_RETIRED_WARNING);
+
       if (frame.bounded_accept !== undefined && !isBoundedAcceptShaped(frame.bounded_accept)) {
         warnings.push(
           '`frame.bounded_accept` is present but is not shaped `{ open_ac_ids: string[], closes_when: string }`. The render walks those two keys, so a malformed value renders "criteria left open — none. Closes when undefined" — name the criteria this accept leaves open and what closes them.',
@@ -3297,8 +3386,24 @@ export async function composeBrief(
     }
   }
 
+  // B-1410 — a verify frame authoring a `carried` row needs the ticket's unticked criteria, so the
+  // lint can refuse a row whose criterion was never actually carried. Read only then; a read error
+  // propagates (a refusal guard that fails open is not a guard).
+  let uncheckedCriterionIds: string[] | undefined;
+  if (doc.frame?.kind === 'verify' && (doc.frame.criteria ?? []).some((r) => r?.disposition === 'carried')) {
+    const { data: acRows, error: acError } = await client
+      .from('acceptance_criteria')
+      .select('id, checked')
+      .eq('task_id', taskId);
+    if (acError) throw acError;
+    uncheckedCriterionIds = ((acRows ?? []) as Array<{ id: string; checked: boolean | null }>)
+      .filter((r) => r.checked !== true)
+      .map((r) => r.id);
+  }
+
   const content = renderBrief(doc, mergedDecisionRef, renderCtx);
   const lint = lintBrief(doc, content, {
+    uncheckedCriterionIds,
     reason: args.reason,
     buildPr,
     buildPrRefs,
@@ -3616,7 +3721,7 @@ export const composeBriefTool = {
           frame: {
             type: 'object',
             description:
-              "B-876 — the gate-specific frame, discriminated by `kind` (must match the gate reason): 'clarify' { solving, in_scope[], not_solving[{item,lands}], floor_reviewed?[] } | 'decompose' { elements[{text,surface?,covers?}], coverage, existing_children_checked, floor_reviewed?[] } | 'design' { track, tracks[{track,status,note?}], reach[], reach_level? ('this_ticket_only'|'this_surface'|'this_product', B-1047 — declare it on every design brief), rules?[{ref,operation:'create'|'amend'|'reference',wording,domains[],surfaces[],knowledge_scope:'product'|'deployment',reach:'this_surface'|'this_product',target_entry_id,expected_fingerprint,before?,title?}] (B-1047 — beyond-ticket reach with zero rules is REFUSED; this_ticket_only allows only 'reference'; amend/reference need target_entry_id + expected_fingerprint (from read_rule_registry); create/amend need wording, knowledge_scope and reach; a reference never restates its rule, so wording/knowledge_scope/reach are optional there and `title` is display-only; compose derives the 'rule_bundle' payload item and refuses when this database lacks the rule registry), not_reopened?[], derisk?{run[],not_run[]}, files_on_accept?[], floor_reviewed?[] } | 'plan' { scope{repos[],surfaces[],has_migration}, steps[], attestation{base_verified,derisked_by_running?}, carried_unproven[{item,reason}], ac_coverage, landing?, design_delta?, design_read?{version_id|null,screens[],drift: 'changed'|'unchanged'|'unchecked'} (B-1205), floor_reviewed?[] } | 'release' { settled_beyond_design?[{behaviour,ac,knowledge_entry_id}], act(LandingShape), unproven[{item,reason}], evidence_status{proven_by_run,walk_at_verify,unproven,total,detail?}, risk_classes[], pr_review_state?, contradiction_signal?{status,message,entries[{entry_id,title,state,matched_values[],source}],truncated?}, floor_reviewed?[] } | 'verify' { environment, criteria[{ac_id,text,checked,disposition,step_ref?,blocked_reason?,carried_to?,backed_by?}], steps?[{ref,action,expect,covers[],design_node?{node_id,name,caption?,preview_attachment_id,preview_filename}}], design_comparison?, exempt_reason?, evidence_status, bounded_accept? }. `floor_reviewed` (B-838) applies to the FIVE forward gates only — never verify. LandingShape = { repos[], pr_count, lands_in: 'staging'|'production'|'both'|'merged-main', atomicity: 'single'|'together'|'ordered', ordering? (required when ordered), irreversible[], prs?[{repo,number,url}] (B-890, optional forever — populated from field_values.prerequisite_pr then build_pr) }. Every rule over this field is a WARNING, with two exceptions: (B-1016) a `release` frame missing `evidence_status` is REFUSED outright; (B-1068) a `verify` frame is REFUSED when a `walk`-kind criterion has no `frame.steps` at all, when a `step_ref` matches no declared step, when a step covers no filed criterion, when a `walk` criterion names no `step_ref`, when a step's `action` or `expect` is blank, or when `items[].kind === 'step'` / a raw `frame.runbook` key is present — author the walk as `frame.steps: [{ ref, action, expect, covers }]`, one action plus one expected observation per step, `covers` naming the acceptance-criterion ids it discharges. Omit the frame entirely and the render is byte-identical to the pre-B-876 output.",
+              "B-876 — the gate-specific frame, discriminated by `kind` (must match the gate reason): 'clarify' { solving, in_scope[], not_solving[{item,lands}], floor_reviewed?[] } | 'decompose' { elements[{text,surface?,covers?}], coverage, existing_children_checked, floor_reviewed?[] } | 'design' { track, tracks[{track,status,note?}], reach[], reach_level? ('this_ticket_only'|'this_surface'|'this_product', B-1047 — declare it on every design brief), rules?[{ref,operation:'create'|'amend'|'reference',wording,domains[],surfaces[],knowledge_scope:'product'|'deployment',reach:'this_surface'|'this_product',target_entry_id,expected_fingerprint,before?,title?}] (B-1047 — beyond-ticket reach with zero rules is REFUSED; this_ticket_only allows only 'reference'; amend/reference need target_entry_id + expected_fingerprint (from read_rule_registry); create/amend need wording, knowledge_scope and reach; a reference never restates its rule, so wording/knowledge_scope/reach are optional there and `title` is display-only; compose derives the 'rule_bundle' payload item and refuses when this database lacks the rule registry), not_reopened?[], derisk?{run[],not_run[]}, files_on_accept?[], floor_reviewed?[] } | 'plan' { scope{repos[],surfaces[],has_migration}, steps[], attestation{base_verified,derisked_by_running?}, carried_unproven[{item,reason}], ac_coverage, landing?, design_delta?, design_read?{version_id|null,screens[],drift: 'changed'|'unchanged'|'unchecked'} (B-1205), floor_reviewed?[] } | 'release' { settled_beyond_design?[{behaviour,ac,knowledge_entry_id}], act(LandingShape), unproven[{item,reason}], evidence_status{proven_by_run,walk_at_verify,unproven,total,detail?}, risk_classes[], pr_review_state?, contradiction_signal?{status,message,entries[{entry_id,title,state,matched_values[],source}],truncated?}, floor_reviewed?[] } | 'verify' { environment, criteria[{ac_id,text,checked,disposition,step_ref?,blocked_reason?,carried_to?,backed_by?,recommended_carry?{destination:'new'|<ticket>,milestone:'source'|'none',reason}}], steps?[{ref,action,expect,covers[],design_node?{node_id,name,caption?,preview_attachment_id,preview_filename}}], design_comparison?, exempt_reason?, evidence_status, settled?[{criterion_text,action:'carried'|'dropped',destination,milestone_landing,landing_reason,drop_reason,settled_by,settled_at}] (B-1410 — copy from get_verify_readiness.settled), bounded_accept? (RETIRED by B-1410 — warned; tick, carry or drop the criterion instead) }. `floor_reviewed` (B-838) applies to the FIVE forward gates only — never verify. LandingShape = { repos[], pr_count, lands_in: 'staging'|'production'|'both'|'merged-main', atomicity: 'single'|'together'|'ordered', ordering? (required when ordered), irreversible[], prs?[{repo,number,url}] (B-890, optional forever — populated from field_values.prerequisite_pr then build_pr) }. Every rule over this field is a WARNING, with two exceptions: (B-1016) a `release` frame missing `evidence_status` is REFUSED outright; (B-1068) a `verify` frame is REFUSED when a `walk`-kind criterion has no `frame.steps` at all, when a `step_ref` matches no declared step, when a step covers no filed criterion, when a `walk` criterion names no `step_ref`, when a step's `action` or `expect` is blank, or when `items[].kind === 'step'` / a raw `frame.runbook` key is present; (B-1410) a `verify` frame is also REFUSED when a `carried` row names a criterion still unticked on the ticket — carry it with settle_acceptance_criterion first — author the walk as `frame.steps: [{ ref, action, expect, covers }]`, one action plus one expected observation per step, `covers` naming the acceptance-criterion ids it discharges. Omit the frame entirely and the render is byte-identical to the pre-B-876 output.",
           },
           revision: {
             type: 'object',

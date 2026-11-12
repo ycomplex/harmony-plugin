@@ -705,3 +705,26 @@ describe('finish-work skill contract (evolved)', () => {
     expect(o1.toLowerCase()).toMatch(/literal\s+`landingshape\['lands_in'\]` member/);
   });
 });
+
+describe('finish-work verify settles unticked criteria (B-1410)', () => {
+  const skill = readSkill('finish-work');
+  const o3 = skill.body.slice(skill.body.indexOf('### O3. Verify'), skill.body.indexOf('## Freeform mode'));
+
+  it('states the database guard instead of the old "does not block accept" sentence', () => {
+    expect(o3).not.toContain('it does NOT block accept');
+    expect(o3).toMatch(/database guard refuses Deployed→Verified/);
+    expect(o3).toMatch(/Umbrella and decision-only tickets are exempt/);
+  });
+
+  it('describes tick, carry and drop through the real tools, and retires bounded_accept', () => {
+    const tools = referencedHarmonyTools(o3);
+    expect(tools).toContain('get_verify_readiness');
+    expect(o3).toContain('settle_acceptance_criterion');
+    expect(o3).toContain('recommended_carry');
+    expect(o3).toContain('get_verify_readiness.settled');
+    expect(o3).toMatch(/Never author `disposition: "carried"`/);
+    expect(o3).toMatch(/never author `bounded_accept`/);
+    expect(o3).not.toMatch(/^\s*\/\/ bounded_accept:/m);
+    expect(o3).toMatch(/status: "unavailable"/);
+  });
+});
