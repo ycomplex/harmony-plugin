@@ -48,6 +48,14 @@ the B-609 web migration seeds the `Planned`/`Built` → `revising-decomposing` �
 - Anything earlier → tell the user the ticket isn't ready to build (it needs clarify/decompose/design
   first) and suggest `/harmony-plugin:harmony-next`.
 
+**Before ordinary Designed planning (B-927):** follow
+`harmony-shared/gate-routing.md` → **Recognize a no-code design outcome**. An eligible unmarked
+no-code outcome goes to design-decide's explicit human completing brief before plan acceptance,
+not a fabricated PR. Check persisted human implementation obligations first and run the shared
+human send-back procedure: remove the marker, re-read, clear completion intent and resume ordinary
+planning without re-stamping. A changed Accepted design needs the existing design revision route.
+Only implementation-bearing tickets proceed to O2; their PR and B-1410 verify requirements stay intact.
+
 ### O2. Plan (Designed → Planned)
 
 **Affected feature accounts (B-1235).** Follow
