@@ -20,6 +20,25 @@ export function runningPluginRoot(moduleUrl = import.meta.url, read = (p: string
   }
   return null;
 }
+/** The channel an archive url names: an exact `/channels/<prod|staging>/` segment pair, or the release shape
+ *  `/<prod|staging>/releases/<v>/harmony-plugin-<v>.zip`. Null when absent or conflicting. */
+export function archiveChannel(url: unknown): 'prod' | 'staging' | null {
+  if (typeof url !== 'string') return null;
+  let path: string;
+  try { path = new URL(url).pathname; } catch { return null; }
+  const segments = path.split('/');
+  const found = new Set<'prod' | 'staging'>();
+  for (let i = 0; i < segments.length - 1; i++) {
+    if (segments[i] !== 'channels') continue;
+    const next = segments[i + 1];
+    if (next === 'prod' || next === 'staging') found.add(next);
+  }
+  // The published shape (docs/plugin-release-artefact.md): <base>/<channel>/releases/<version>/harmony-plugin-<version>.zip,
+  // where <base> need not end in /channels.
+  const tail = /\/(prod|staging)\/releases\/([^/]+)\/harmony-plugin-([^/]+)\.zip$/.exec(path);
+  if (tail && tail[2] === tail[3]) found.add(tail[1] as 'prod' | 'staging');
+  return found.size === 1 ? [...found][0] : null;
+}
 export function resolvePluginSource(opts: {
   root?: string | null;
   home?: string;
@@ -53,9 +72,20 @@ export function resolvePluginSource(opts: {
         try { if (canonical(entry.installPath) !== canonical(root)) continue; } catch { continue; }
         const market = marketplaces?.[key.slice('harmony-plugin@'.length)];
         if (typeof market?.installLocation !== 'string') continue;
-        const catalog = json(join(market.installLocation, '.claude-plugin/marketplace.json'));
+        // A git marketplace keeps its file at <installLocation>/.claude-plugin/marketplace.json; a URL marketplace
+        // (B-1475's archive releases) may store the downloaded file as installLocation itself or beside it.
+        const catalog = json(join(market.installLocation, '.claude-plugin/marketplace.json'))
+          ?? json(market.installLocation)
+          ?? json(join(market.installLocation, 'marketplace.json'));
         const sources = Array.isArray(catalog?.plugins) ? catalog.plugins.filter((p: any) => p?.name === 'harmony-plugin') : [];
         for (const plugin of sources) {
+          if (plugin.source?.source === 'archive') {
+            // Archive entries carry no repository; the channel is the exact /channels/<prod|staging>/ path segment.
+            const channel = archiveChannel(plugin.source.url);
+            if (channel) { channels.add(channel); evidence.add('matching installation and archive url channel'); }
+            else { channels.add('unknown'); evidence.add('unrecognized archive url'); }
+            continue;
+          }
           if (plugin.source?.source !== 'github' || plugin.source.repo !== result.repository) continue;
           if (plugin.source.ref === 'prod' || plugin.source.ref === 'staging') {
             channels.add(plugin.source.ref); evidence.add('matching installation and marketplace source.ref');

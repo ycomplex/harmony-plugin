@@ -71963,6 +71963,25 @@ function runningPluginRoot(moduleUrl = import.meta.url, read = (p) => readFileSy
   }
   return null;
 }
+function archiveChannel(url2) {
+  if (typeof url2 !== "string") return null;
+  let path4;
+  try {
+    path4 = new URL(url2).pathname;
+  } catch {
+    return null;
+  }
+  const segments = path4.split("/");
+  const found = /* @__PURE__ */ new Set();
+  for (let i = 0; i < segments.length - 1; i++) {
+    if (segments[i] !== "channels") continue;
+    const next = segments[i + 1];
+    if (next === "prod" || next === "staging") found.add(next);
+  }
+  const tail = /\/(prod|staging)\/releases\/([^/]+)\/harmony-plugin-([^/]+)\.zip$/.exec(path4);
+  if (tail && tail[2] === tail[3]) found.add(tail[1]);
+  return found.size === 1 ? [...found][0] : null;
+}
 function resolvePluginSource(opts = {}) {
   const read = opts.read ?? ((p) => readFileSync12(p, "utf8"));
   const canonical2 = opts.canonical ?? realpathSync2;
@@ -72000,9 +72019,20 @@ function resolvePluginSource(opts = {}) {
         }
         const market = marketplaces?.[key.slice("harmony-plugin@".length)];
         if (typeof market?.installLocation !== "string") continue;
-        const catalog = json(join12(market.installLocation, ".claude-plugin/marketplace.json"));
+        const catalog = json(join12(market.installLocation, ".claude-plugin/marketplace.json")) ?? json(market.installLocation) ?? json(join12(market.installLocation, "marketplace.json"));
         const sources = Array.isArray(catalog?.plugins) ? catalog.plugins.filter((p) => p?.name === "harmony-plugin") : [];
         for (const plugin of sources) {
+          if (plugin.source?.source === "archive") {
+            const channel = archiveChannel(plugin.source.url);
+            if (channel) {
+              channels.add(channel);
+              evidence.add("matching installation and archive url channel");
+            } else {
+              channels.add("unknown");
+              evidence.add("unrecognized archive url");
+            }
+            continue;
+          }
           if (plugin.source?.source !== "github" || plugin.source.repo !== result.repository) continue;
           if (plugin.source.ref === "prod" || plugin.source.ref === "staging") {
             channels.add(plugin.source.ref);

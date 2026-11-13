@@ -65,3 +65,43 @@ describe('installed plugin source', () => {
     expect(result.exitCode).toBe(0);
   });
 });
+describe('archive (URL marketplace) installs, B-1475', () => {
+  function archiveFixture(url: unknown, where: 'dotdir' | 'file' | 'beside' = 'dotdir', head?: string) {
+    const h = fixture(undefined, head);
+    const catalog = JSON.stringify({ name: 'harmony', plugins: [{ name: 'harmony-plugin', source: { source: 'archive', url, sha256: 'a'.repeat(64) } }] });
+    h.files['/home/operator/.claude/plugins/installed_plugins.json'] = JSON.stringify({ plugins: { 'harmony-plugin@harmony': [{ installPath: root }] } });
+    const location = where === 'file' ? '/market/harmony.json' : '/market';
+    h.files['/home/operator/.claude/plugins/known_marketplaces.json'] = JSON.stringify({ harmony: { installLocation: location } });
+    const path = where === 'dotdir' ? '/market/.claude-plugin/marketplace.json' : where === 'file' ? '/market/harmony.json' : '/market/marketplace.json';
+    h.files[path] = catalog;
+    return h;
+  }
+  const base = 'https://downloads.example.test/plugin';
+  it.each(['prod', 'staging'] as const)('derives %s from an exact /channels/<channel>/ segment', (channel) => {
+    expect(archiveFixture(`${base}/channels/${channel}/releases/1.2.3/harmony-plugin-1.2.3.zip`).resolve()).toEqual({
+      repository: 'ycomplex/harmony-plugin', clone_url: 'https://github.com/ycomplex/harmony-plugin.git', channel, evidence: 'matching installation and archive url channel',
+    });
+  });
+  it.each(['prod', 'staging'] as const)('derives %s from the published release shape <base>/<channel>/releases/<v>/harmony-plugin-<v>.zip', (channel) => {
+    expect(archiveFixture(`${base}/${channel}/releases/1.2.3/harmony-plugin-1.2.3.zip`).resolve().channel).toBe(channel);
+  });
+  it.each(['file', 'beside'] as const)('reads a URL marketplace stored %s', (where) => {
+    expect(archiveFixture(`${base}/channels/prod/releases/1.2.3/harmony-plugin-1.2.3.zip`, where).resolve().channel).toBe('prod');
+  });
+  it.each([
+    `${base}/channels/production/releases/1.2.3/harmony-plugin-1.2.3.zip`,
+    `${base}/channelsprod/x.zip`,
+    `${base}/channels/prod/a/channels/staging/b.zip`,
+    'not a url',
+    42,
+  ])('reports an unrecognized archive url %s as unknown', (url) => {
+    expect(archiveFixture(url).resolve()).toMatchObject({ channel: 'unknown', evidence: 'unrecognized archive url' });
+  });
+  it('does not require a repository for archive entries, and still refuses conflicting HEAD evidence', () => {
+    const h = archiveFixture(`${base}/channels/prod/releases/1.2.3/harmony-plugin-1.2.3.zip`, 'dotdir', 'staging');
+    expect(h.resolve()).toMatchObject({ channel: 'unknown', evidence: 'conflicting installation evidence' });
+    const other = archiveFixture(`${base}/channels/prod/releases/1.2.3/harmony-plugin-1.2.3.zip`);
+    other.files[`${root}/.claude-plugin/plugin.json`] = JSON.stringify({ name: 'harmony-plugin' });
+    expect(other.resolve()).toMatchObject({ repository: null, channel: 'prod' });
+  });
+});
