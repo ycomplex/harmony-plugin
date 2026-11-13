@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { validateBriefFrame } from './brief-frame-schema.js';
 import * as frameSchema from './brief-frame-schema.js';
+import { renderEntry, renderStandardBrief } from './briefs.js';
 import { renderBrief, lintBrief, composeBrief, composeBriefTool, isRevisionCompose, isMissingComposeBriefRevision, isMissingComposeBriefInitial, mergeBriefDoc, resetDocOnReasonChange, isMissingBriefHistorySubstrate, listBriefs, listBriefsTool, getBrief, getBriefTool, resolveBrief, resolveBriefTool, reshapeBrief, reshapeBriefTool, clearRevisionIterateFeedback, validateResolutionProvenance, PROVENANCE_AGENT_SYNTHESIZED, PROVENANCE_WEB_ONLY, fetchPendingResolution, fetchUnderwritingClaims, fetchPendingRemark, consumeAcceptRemark, SENTENCE_WORD_LIMIT, DEFAULT_TAIL, STALE_PATCH_TAIL, PROPOSED_ACS_HEADING, PROMISED_WRITES_HEADING, DE_SCOPE_HEADING, ENTRY_PROVENANCE_PREFIX, frameUnits, readBuildPr, readBuildPrReferences, FRAME_KIND_FOR_REASON, renderSlot, BOUNDED_ACCEPT_RETIRED_WARNING, settledLine, type BriefDoc, type BriefItem, type GateFrame, type CriterionRow } from './briefs.js';
 
 // Pass-through: the handlers delegate id resolution to resolveTaskId (like the sibling task tools); the
@@ -6491,5 +6492,215 @@ describe('B-1411 — a recompose never falls through to a first compose', () => 
 
   it('the tool schema offers revising_brief_id', () => {
     expect((composeBriefTool.inputSchema.properties as Record<string, unknown>).revising_brief_id).toBeDefined();
+  });
+});
+
+// ——— B-1305: project brief sections ————————————————————————————————————————————————————————————————
+describe('composeBrief — B-1305 project sections', () => {
+  const COMMIT = 'abcdef0123456789abcdef0123456789abcdef01';
+  const declaredReader = (fresh = true, warnings: string[] = []) =>
+    vi.fn(async () => ({
+      kind: 'declared' as const,
+      warnings,
+      repos: [
+        {
+          repository: 'acme-co/widget-app',
+          commit: COMMIT,
+          fresh,
+          sections: [
+            { id: 'ears', title: 'Requirements in EARS form', instruction: 'Restate each criterion.' },
+            { id: 'risks', title: 'Risks', instruction: 'Name the risks.' },
+          ],
+        },
+      ],
+    }));
+  const filled = [
+    { id: 'ears', markdown: 'When a user saves, the app shall persist.' },
+    { repository: 'acme-co/widget-app', id: 'risks', markdown: 'None beyond the usual.' },
+  ];
+  const insertedDoc = (client: any) => client.insert.mock.calls[0][0].doc;
+  const insertedContent = (client: any) => client.insert.mock.calls[0][0].content as string;
+  const firstCompose = () => makeClient([{ data: null }, { data: { id: 'b1' } }, { data: null }]);
+  const args = (doc: Record<string, unknown>, reason = 'clarification-draft') =>
+    ({ task_id: 'task-1', reason, doc: { ...okDoc, ...doc } as any, pending_activity: null as any });
+
+  it('refuses before any write when a declared section is missing, naming repository, id, title and instruction', async () => {
+    const client = firstCompose();
+    const err = await composeBrief(client, PROJECT_ID, USER_ID, args({ sections: [filled[0]] }), { readSectionDeclarations: declaredReader() })
+      .then(() => null, (e: Error) => e);
+    expect(err?.message).toContain("missing section 'risks' for acme-co/widget-app");
+    expect(err?.message).toContain('"Risks": Name the risks.');
+    expect(client.insert).not.toHaveBeenCalled();
+    expect(client.rpc).not.toHaveBeenCalled();
+    expect(client.from).not.toHaveBeenCalled();
+  });
+
+  it('refuses an undeclared id, an empty section, an over-long section and an ambiguous duplicate supply', async () => {
+    const run = async (sections: unknown) =>
+      composeBrief(firstCompose(), PROJECT_ID, USER_ID, args({ sections }), { readSectionDeclarations: declaredReader() })
+        .then(() => '', (e: Error) => e.message);
+    expect(await run([...filled, { id: 'extra', markdown: 'x' }])).toMatch(/'extra' is not declared/);
+    expect(await run([filled[0], { id: 'risks', markdown: '   ' }])).toMatch(/missing section 'risks'/);
+    expect(await run([filled[0], { id: 'risks', markdown: 'r'.repeat(4001) }])).toMatch(/4001 characters — at most 4000/);
+    expect(await run([...filled, filled[0]])).toMatch(/supplied twice/);
+    expect(await run([...filled.slice(0, 1), { repository: 'acme-co/other', id: 'risks', markdown: 'x' }])).toMatch(/not declared/);
+  });
+
+  it('refuses a credential-shaped section and a credential env value, naming only the shape or variable', async () => {
+    const token = ['gh', 'p_', 'x'.repeat(36)].join('');
+    const m1 = await composeBrief(firstCompose(), PROJECT_ID, USER_ID,
+      args({ sections: [filled[0], { id: 'risks', markdown: `uses ${token}` }] }), { readSectionDeclarations: declaredReader() })
+      .then(() => '', (e: Error) => e.message);
+    expect(m1).toMatch(/\(github\)/);
+    expect(m1).not.toContain(token);
+    const value = ['plain', '-secret-', 'value-here'].join('');
+    const m2 = await composeBrief(firstCompose(), PROJECT_ID, USER_ID,
+      args({ sections: [filled[0], { id: 'risks', markdown: `is ${value}` }] }),
+      { readSectionDeclarations: declaredReader(), env: { DEPLOY_SECRET: value } })
+      .then(() => '', (e: Error) => e.message);
+    expect(m2).toContain('DEPLOY_SECRET');
+    expect(m2).not.toContain(value);
+  });
+
+  it('stamps title, repository, commit and freshness from the declaration and renders after the standard brief', async () => {
+    const plain = firstCompose();
+    await composeBrief(plain, PROJECT_ID, USER_ID, args({}));
+    const client = firstCompose();
+    const res = await composeBrief(client, PROJECT_ID, USER_ID,
+      args({ sections: [filled[1], { ...filled[0], title: 'agent title ignored' }] }), { readSectionDeclarations: declaredReader(false) });
+    expect(insertedDoc(client).sections).toEqual([
+      { repository: 'acme-co/widget-app', id: 'ears', title: 'Requirements in EARS form', markdown: filled[0].markdown, commit: COMMIT, fresh: false },
+      { repository: 'acme-co/widget-app', id: 'risks', title: 'Risks', markdown: filled[1].markdown, commit: COMMIT, fresh: false },
+    ]);
+    const standard = insertedContent(plain);
+    const content = insertedContent(client);
+    expect(content.startsWith(standard)).toBe(true);
+    expect(content.slice(standard.length)).toBe(
+      "\n\n---\n\n## Project sections\n\n_Written by the agent at this project's request. Not checked by Harmony._" +
+        '\n\n### acme-co/widget-app — declared at abcdef0 (may be out of date: the default branch could not be fetched)' +
+        `\n\n#### Requirements in EARS form\n\n${filled[0].markdown}\n\n#### Risks\n\n${filled[1].markdown}`,
+    );
+    expect(res.lint.warnings.some((w) => /could not be fetched/.test(w))).toBe(true);
+  });
+
+  it('a project declaring nothing leaves the doc and content byte for byte as today', async () => {
+    const a = firstCompose();
+    await composeBrief(a, PROJECT_ID, USER_ID, args({}), { readSectionDeclarations: async () => ({ kind: 'none' }) });
+    const b = firstCompose();
+    await composeBrief(b, PROJECT_ID, USER_ID, args({}));
+    expect(insertedContent(a)).toBe(insertedContent(b));
+    expect('sections' in insertedDoc(a)).toBe(false);
+    expect('sections_omitted' in insertedDoc(a)).toBe(false);
+    expect(insertedContent(a)).not.toContain('Project sections');
+  });
+
+  it('a revision is refused without its sections even though the prior revision carried them', async () => {
+    const prior = { ...okDoc, sections: [{ repository: 'acme-co/widget-app', id: 'ears', title: 'T', markdown: 'm', commit: COMMIT, fresh: true }] };
+    const client = makeClient([{ data: { id: 'old', iteration: 1, reason: 'clarification-draft', doc: prior } }]);
+    await expect(composeBrief(client, PROJECT_ID, USER_ID, { ...args({}), revising_brief_id: 'old' }, { readSectionDeclarations: declaredReader() }))
+      .rejects.toThrow(/missing section 'ears'/);
+    expect(client.rpc).not.toHaveBeenCalled();
+    expect(client.update).not.toHaveBeenCalled();
+  });
+
+  it('clears a prior revision\'s sections with explicit nulls once the project stops declaring them', async () => {
+    const prior = { ...okDoc, sections: [{ repository: 'acme-co/widget-app', id: 'ears', title: 'T', markdown: 'm', commit: COMMIT, fresh: true }], sections_omitted: null };
+    const client = makeClient([{ data: { id: 'old', iteration: 1, reason: 'clarification-draft', doc: prior } }, { data: { id: 'old' } }, { data: null }]);
+    await composeBrief(client, PROJECT_ID, USER_ID, { ...args({}), revising_brief_id: 'old' }, { readSectionDeclarations: async () => ({ kind: 'none' }) });
+    const written = client.update.mock.calls[0][0];
+    expect(written.doc.sections).toBeNull();
+    expect(written.doc.sections_omitted).toBeNull();
+    expect(written.content).not.toContain('Project sections');
+  });
+
+  it('mechanical composes skip the check and say why no sections were produced', async () => {
+    const reader = declaredReader();
+    const client = firstCompose();
+    await composeBrief(client, PROJECT_ID, USER_ID, args({}), { mechanical: true, readSectionDeclarations: reader });
+    expect(reader).not.toHaveBeenCalled();
+    expect(insertedDoc(client).sections_omitted).toEqual({ reason: 'mechanical' });
+    expect(insertedContent(client).endsWith(
+      "\n\n---\n\n_This project's brief sections were not produced: this brief was composed with no agent writing it._",
+    )).toBe(true);
+  });
+
+  it('a normal compose in a fast-track run is NOT exempt (only the internal flag exempts)', async () => {
+    const prev = process.env.HARMONY_RUN_CONFIG_JSON;
+    process.env.HARMONY_RUN_CONFIG_JSON = Buffer.from(JSON.stringify({ fast_track: true })).toString('base64');
+    try {
+      const reader = declaredReader();
+      await expect(composeBrief(firstCompose(), PROJECT_ID, USER_ID, args({}), { readSectionDeclarations: reader }))
+        .rejects.toThrow(/missing section/);
+      // The MCP handler passes four arguments: a doc-level flag cannot exempt a brief either.
+      await expect(composeBrief(firstCompose(), PROJECT_ID, USER_ID, { ...args({}), __mechanical: true, mechanical: true } as any, { readSectionDeclarations: reader }))
+        .rejects.toThrow(/missing section/);
+    } finally {
+      if (prev === undefined) delete process.env.HARMONY_RUN_CONFIG_JSON;
+      else process.env.HARMONY_RUN_CONFIG_JSON = prev;
+    }
+  });
+
+  it('unreadable declarations never refuse: the brief says so and the lint warns', async () => {
+    const client = firstCompose();
+    const res = await composeBrief(client, PROJECT_ID, USER_ID, args({}), {
+      readSectionDeclarations: async () => ({ kind: 'unreadable', detail: 'no repository could be read' }),
+    });
+    expect(insertedDoc(client).sections_omitted).toEqual({ reason: 'declarations-unreadable', detail: 'no repository could be read' });
+    expect(insertedContent(client).endsWith("\n\n---\n\n_This project's brief section declarations could not be read: no repository could be read._")).toBe(true);
+    expect(res.lint.warnings.some((w) => /could not be read/.test(w))).toBe(true);
+  });
+
+  it('a malformed declaration is a lint warning, never an error, and is not enforced', async () => {
+    const client = firstCompose();
+    const res = await composeBrief(client, PROJECT_ID, USER_ID, args({}), {
+      readSectionDeclarations: async () => ({ kind: 'declared', repos: [], warnings: ['acme-co/widget-app:.harmony/project.yml: bad id; not enforced'] }),
+    });
+    expect(res.lint.ok).toBe(true);
+    expect(res.lint.warnings).toContain('acme-co/widget-app:.harmony/project.yml: bad id; not enforced');
+    expect('sections' in insertedDoc(client)).toBe(false);
+  });
+
+  it('stale-patch-review and revise-scope-review never read or carry sections', async () => {
+    const reader = declaredReader();
+    for (const reason of ['stale-patch-review']) {
+      const client = firstCompose();
+      await composeBrief(client, PROJECT_ID, USER_ID, args({}, reason), { readSectionDeclarations: reader });
+      expect('sections' in insertedDoc(client)).toBe(false);
+    }
+    expect(reader).not.toHaveBeenCalled();
+  });
+
+  it('the MCP tool schema documents doc.sections and exposes no exemption flag', () => {
+    const schema = composeBriefTool.inputSchema as any;
+    expect(schema.properties.doc.properties.sections.items.required).toEqual(['id', 'markdown']);
+    for (const k of ['mechanical', '__mechanical']) {
+      expect(schema.properties).not.toHaveProperty(k);
+      expect(schema.properties.doc.properties).not.toHaveProperty(k);
+    }
+  });
+});
+
+describe('B-1305 — sections never reach the knowledge entry or the gate slot', () => {
+  const sections = [{ repository: 'acme-co/widget-app', id: 'ears', title: 'EARS', markdown: 'Decided: something else entirely', commit: 'abcdef0123', fresh: true }];
+  const doc: BriefDoc = {
+    decide: 'Ship it?',
+    recommend: { text: 'Yes' },
+    why: ['Because.'],
+    items: [{ kind: 'decision', text: 'Pick', recommendation: 'A' }],
+    frame: { kind: 'clarify', solving: 'x', in_scope: ['a'], not_solving: [] } as any,
+  };
+  it('renderEntry is identical with and without sections', () => {
+    expect(renderEntry({ ...doc, sections }, { reason: 'clarification-draft' })).toBe(renderEntry(doc, { reason: 'clarification-draft' }));
+    expect(renderEntry({ ...doc, sections_omitted: { reason: 'mechanical' } }, { reason: 'clarification-draft' }))
+      .toBe(renderEntry(doc, { reason: 'clarification-draft' }));
+  });
+  it('renderSlot is identical with and without sections', () => {
+    expect(renderSlot({ ...doc, sections }, 'clarify')).toEqual(renderSlot(doc, 'clarify'));
+  });
+  it('the standard brief is an exact prefix of the rendered brief', () => {
+    const ctx = { reason: 'clarification-draft', accept: null };
+    const standard = renderStandardBrief(doc, null, ctx);
+    expect(renderBrief(doc, null, ctx)).toBe(standard);
+    expect(renderBrief({ ...doc, sections }, null, ctx).startsWith(standard)).toBe(true);
   });
 });

@@ -37,6 +37,15 @@ import {
   malformedEvidenceWarning,
 } from '../config/manifest-evidence.js';
 import { readAttestation } from './attestation-lineage.js';
+import {
+  applySectionsOutcome,
+  renderProjectSectionsArea,
+  resolveSectionsForCompose,
+  type BriefProjectSection,
+  type BriefSectionReader,
+  type BriefSectionsOmitted,
+} from './brief-project-sections.js';
+import { BRIEF_SECTION_GATE_FOR_REASON } from '../config/project-manifest.js';
 
 export interface BriefItem {
   /** §3.2 sort: a decision (always recommended), a content-input (only the human can supply it),
@@ -425,6 +434,12 @@ export interface BriefDoc {
    *  is always added regardless of whether this field is populated. */
   tags?: string[];
   knowledge_scope?: 'product' | 'deployment';
+  /** B-1305 — the project sections this brief carries, stamped by compose_brief from the project's
+   *  declarations (title, repository, commit, freshness). The agent supplies `{ repository?, id,
+   *  markdown }`. Rendered after the standard brief; never in the knowledge entry or the gate slot. */
+  sections?: BriefProjectSection[] | null;
+  /** B-1305 — why a brief that could carry project sections carries none. */
+  sections_omitted?: BriefSectionsOmitted | null;
 }
 
 export interface BriefLintResult {
@@ -1186,6 +1201,14 @@ function promisedWriteLines(
  *  reason renders its promise from the payload its accept will execute. Still `ctx`-gated, and still
  *  byte-identical for a doc with no payload. */
 export function renderBrief(doc: BriefDoc, decisionRef?: DecisionRef | null, ctx?: BriefRenderContext): string {
+  // B-1305 — the project sections area is appended AFTER everything the standard brief renders, so the
+  // standard brief is always an exact prefix; a doc with neither sections key renders today's bytes.
+  return renderStandardBrief(doc, decisionRef, ctx) + renderProjectSectionsArea(doc);
+}
+
+/** B-1305 — the brief WITHOUT the project sections area: what the §3.2 lint judges and what
+ *  `renderEntry` checks ratification against, so sections can never ratify or alter an entry. */
+export function renderStandardBrief(doc: BriefDoc, decisionRef?: DecisionRef | null, ctx?: BriefRenderContext): string {
   const out: string[] = [];
   const frame = doc.frame;
 
@@ -1392,7 +1415,8 @@ function decidedItems(doc: BriefDoc): Array<{ item: BriefItem; line: string }> {
  * displayed is correctly marked.
  */
 export function renderEntry(doc: BriefDoc, ctx?: EntryRenderContext): string {
-  const briefContent = renderBrief(doc, ctx?.decisionRef ?? null, ctx);
+  // B-1305: the STANDARD brief — project sections never ratify an element of the entry.
+  const briefContent = renderStandardBrief(doc, ctx?.decisionRef ?? null, ctx);
   // Blank text is vacuously ratified: there is no claim in it to vet.
   const isRatified = (text: string): boolean => !text.trim() || briefContent.includes(text);
   const mark = (text: string): string => (isRatified(text) ? text : `${text} ${NOT_RATIFIED_MARK}`);
@@ -3082,17 +3106,39 @@ export async function clearRevisionIterateFeedback(
   if (error) throw new Error(error.message);
 }
 
+/** B-1305 — internal-only compose options. NOT part of the MCP tool's input schema: the MCP handler calls
+ *  composeBrief with four arguments, so no agent can mark its own brief mechanical. */
+export interface ComposeBriefOptions {
+  /** True only for briefs no agent wrote (the recorded-walk core). Exempt from project sections. */
+  mechanical?: boolean;
+  /** The declaration reader; defaults to the default-branch reader. */
+  readSectionDeclarations?: BriefSectionReader;
+  /** The environment the section credential scan compares against; defaults to process.env. */
+  env?: Record<string, string | undefined>;
+}
+
 export async function composeBrief(
   client: SupabaseClient,
   projectId: string,
   userId: string,
   args: ComposeBriefArgs,
+  options: ComposeBriefOptions = {},
 ): Promise<{ brief: unknown; lint: BriefLintResult }> {
   if (!args.task_id) throw new Error('task_id is required');
   if (!VALID_REASONS.includes(args.reason)) {
     throw new Error(`reason must be one of: ${VALID_REASONS.join(', ')}`);
   }
   if (!args.doc?.decide?.trim()) throw new Error('doc.decide is required');
+  // B-1305 — the project sections, checked on the document THIS call received (never the merged one, so
+  // every revision carries them again). Read once per compose, before anything is written; a missing or
+  // refused section throws here.
+  const sectionsOutcome = await resolveSectionsForCompose({
+    gate: BRIEF_SECTION_GATE_FOR_REASON[args.reason],
+    supplied: (args.doc as { sections?: unknown }).sections,
+    mechanical: options.mechanical === true,
+    reader: options.readSectionDeclarations,
+    env: options.env,
+  });
   // B-1017 — validate the cause's shape ONCE, up front: a malformed cause is a caller bug, not a DB
   // round-trip (the DB CHECK would refuse it anyway, after the reads and the lint had already run).
   if (args.revision_cause !== undefined && !isRevisionCause(args.revision_cause)) {
@@ -3195,7 +3241,9 @@ export async function composeBrief(
   // B-1004 — across a gate-reason change nothing of the prior gate carries: omitted prior keys are sent
   // as explicit nulls so neither this merge nor the DB's `prior || patch` can resurrect them.
   const patchDoc = resetDocOnReasonChange(priorDoc, args.doc, existingRow?.reason, args.reason);
-  const mergedDoc = mergeBriefDoc(priorDoc, patchDoc);
+  // B-1305 — the stamped project sections (or their explicit clearing) land on the merged doc, so the
+  // render, the stored doc and the database's `prior || patch` agree. Identity when nothing applies.
+  const mergedDoc = applySectionsOutcome(mergeBriefDoc(priorDoc, patchDoc), priorDoc, sectionsOutcome);
   if (derivesEntryContent(args.reason) && mergedDecisionRef?.id) {
     // Only an explicitly supplied claim is a refusal boundary. Old gate callers must still compose.
     const explicit = args.doc.claim;
@@ -3402,7 +3450,8 @@ export async function composeBrief(
   }
 
   const content = renderBrief(doc, mergedDecisionRef, renderCtx);
-  const lint = lintBrief(doc, content, {
+  // B-1305 — the lint judges the STANDARD brief: project sections are the project's prose, not Harmony's.
+  const lint = lintBrief(doc, renderStandardBrief(doc, mergedDecisionRef, renderCtx), {
     uncheckedCriterionIds,
     reason: args.reason,
     buildPr,
@@ -3416,6 +3465,7 @@ export async function composeBrief(
     // B-1017 — an explicit cause, or a send-back the DB derives one from.
     statesCause: args.revision_cause !== undefined || args.iterate_feedback != null,
   });
+  lint.warnings.push(...sectionsOutcome.warnings);
   if (doc.claim_source === 'derived') lint.warnings.push('doc.claim omitted — a derived first-sentence proposal is shown when available; supply doc.claim to author the exact statement.');
   const settlement = await settlementWarning(client, projectId, doc, args.changed_paths);
   if (settlement) lint.warnings.push(settlement);
@@ -3718,6 +3768,20 @@ export const composeBriefTool = {
           removal_effective_on_accept: { type: 'boolean', description: 'Explicit HUMAN policy cutover choice; defaults false, never auto-approved.' },
           load_bearing_gap: { type: 'boolean', description: 'true when a load-bearing knowledge gap blocks a substantive decision (forces research-first)' },
           tail: { type: 'string', description: 'Optional custom command tail line; defaults to the standard one' },
+          sections: {
+            type: 'array',
+            description:
+              "B-1305 — the project's brief sections for this gate (read them first with read_brief_sections). One item per declared section: { repository?, id, markdown }; `repository` (owner/name) may be omitted when only one repository declares the id. Every declared section must be present, non-empty and at most 4,000 characters; an undeclared id, a credential-shaped string or the value of a credential-named environment variable is refused before anything is written. Supply them on EVERY compose, revisions included — they are not carried forward. A repository the ticket does not touch may say 'Not applicable to this ticket'. Title, repository, commit and freshness are stamped from the declaration. Rendered after the standard brief; never copied into the knowledge entry or the gate slot.",
+            items: {
+              type: 'object',
+              properties: {
+                repository: { type: 'string' },
+                id: { type: 'string' },
+                markdown: { type: 'string' },
+              },
+              required: ['id', 'markdown'],
+            },
+          },
           frame: {
             type: 'object',
             description:

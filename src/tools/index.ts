@@ -467,6 +467,7 @@ export async function handleToolCall(
         result = await manageSubtasks(client, projectId, userId, args as any);
         break;
       case 'compose_brief':
+        // B-1305: four arguments only — the internal `mechanical` option is never reachable from MCP.
         result = await composeBrief(client, projectId, userId, args as any);
         break;
       case 'get_brief':
