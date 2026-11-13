@@ -1,3 +1,5 @@
+import { runCommand } from '../run-command.js';
+import { flagFasttrackHandoff } from '../../tools/fasttrack-handoff.js';
 // B-1072 — `harmony fasttrack <check|scope-check>` — the two READ-ONLY CLI accessors the
 // harmony-fasttrack skill's Check phase and pre-PR-open scope guard use. Both commands mutate
 // NOTHING and report purely through stdout/stderr + the process exit code, mirroring `harmony
@@ -44,10 +46,12 @@ export function registerFasttrackCommands(program: Command): void {
   const fasttrack = program
     .command('fasttrack')
     .description(
-      'B-1072 — read-only accessors backing the harmony-fasttrack skill: the same eligibility ' +
-        "floor harmony record --check uses, and a git-diff scope-budget guard. Neither mutates " +
-        'anything.',
+      'Fast-track eligibility and scope checks, plus the guarded interactive PR handoff.',
     );
+
+  fasttrack.command('handoff').argument('<ticket>').action(async (ticket: string) => {
+    await runCommand(program.opts(), async (ctx) => flagFasttrackHandoff(ctx.client, ctx.projectId, ctx.userId, { task_id: ticket }), (r) => JSON.stringify(r));
+  });
 
   fasttrack
     .command('check')

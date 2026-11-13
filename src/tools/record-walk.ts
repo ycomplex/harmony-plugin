@@ -1,3 +1,4 @@
+import { handoffOperation, type HandoffRef } from './fasttrack-handoff.js';
 import { bookkeepingTags } from './knowledge-bookkeeping.js';
 import { encodeClaim } from './knowledge-claim.js';
 // B-1062 — the RECORDED gate-walk core.
@@ -25,9 +26,9 @@ import { encodeClaim } from './knowledge-claim.js';
 // honest existing-vocabulary read: an agent, not a live human, is issuing this accept, under the
 // 'recorded' delegation mode.
 //
-// REFUSE-BEFORE-WRITE (AC-critical): `evaluateEligibility` (record-eligibility.ts) runs FIRST, before
-// this function resolves a task id or touches the database at all. Any failing/unattested item refuses
-// the WHOLE walk — the ticket is left byte-identical. See `runRecordedWalk`'s early return below.
+// REFUSE-BEFORE-WRITE: ordinary ineligible walks remain write-free. The entry wrapper first reads
+// the modeled interactive handoff so its three named refusals can preserve the pause and report why.
+// No ordinary refusal writes a comment or changes the ticket.
 //
 // MID-WALK FAILURE: once eligible, each gate's writes are attempted in order and appended to `landed`
 // as they succeed. A thrown error from any gate is caught HERE (never left to crash the caller) and
@@ -615,7 +616,57 @@ async function coupleDecomposeNoSplitConvention(
  * Walk a ticket's gates — clarify -> decompose -> design -> plan -> build -> release — from a human
  * summary + evidence trail, with ZERO worker legs. See this file's header for the full contract.
  */
-export async function runRecordedWalk(
+export async function runRecordedWalk(client: SupabaseClient, projectId: string, userId: string, args: RecordWalkArgs): Promise<RecordWalkResult> {
+  // Reading the ownership marker is necessary even on refusal; ordinary refusals remain write-free.
+  const id = await resolveTaskId(client, projectId, args.task_id);
+  const { data, error } = await client.from('tasks').select('field_values, awaiting_human_reason, workflow_state').eq('id', id).eq('project_id', projectId).single();
+  if (error) throw error;
+  const marker = data?.field_values?.fast_track_handoff as HandoffRef | undefined;
+  if (!marker) return runRecordedWalkCore(client, projectId, userId, args);
+  let ref: HandoffRef = marker;
+  // The walk can finish composing verify and be interrupted before its final cleanup.
+  // The recorded release slot proves this is recovery, not a second walk or a new accept.
+  if (data?.workflow_state === 'Deployed' && data?.awaiting_human_reason === 'verification-ack-pending' &&
+      data?.field_values?.gate_slots?.release?.ratified_by === RATIFIED_BY_RECORDED) {
+    const cleared = await handoffOperation(client, id, 'clear', ref);
+    return { task_id: id, refused: !cleared.applied,
+      ...(!cleared.applied ? { refusal_reason: `Handoff cleanup preserved a newer owner: ${cleared.reason}.` } : {}),
+      eligibility: evaluateEligibility({summary:args.summary,evidence:args.evidence,attestWalk:args.attest_walk}),
+      gates: [], attestation_recorded: false };
+  }
+
+  if (ref.recording_until && Date.parse(ref.recording_until) > Date.now()) return { task_id: id, refused: true, refusal_reason: 'Recording is already in progress. If it was interrupted, retry after the fifteen-minute claim expires.', eligibility: evaluateEligibility({ summary: args.summary, evidence: args.evidence, attestWalk: args.attest_walk }), gates: [], attestation_recorded: false };
+  const refuse = async (message: string): Promise<RecordWalkResult> => {
+    const restored = await handoffOperation(client, id, 'refuse', ref, message);
+    await addComment(client, projectId, userId, { task_id: id, content: `Recording refused: ${message}${restored.applied ? ' The merge-and-record handoff remains pending.' : ' A newer decision owns the ticket; it was preserved.'}` });
+    return { task_id: id, refused: true, refusal_reason: message, eligibility: evaluateEligibility({ summary: args.summary, evidence: args.evidence, attestWalk: args.attest_walk }), gates: [], attestation_recorded: false };
+  };
+  if (args.to_gate && recordWalkGateIndex(args.to_gate) < recordWalkGateIndex('deploy')) return refuse('Complete the merge-and-record walk through deployment before clearing this handoff.');
+  const pr = data?.field_values?.build_pr;
+  if (!pr?.pr_url) return refuse('The ticket’s PR reference is missing. Restore it before recording.');
+  if (!args.attest_walk?.trim()) return refuse('An attestation sentence is required.');
+  if (!args.evidence.some(e => e.url === ref.pr_url)) return refuse('Recording evidence must include the handoff’s recorded PR.');
+  const info = await fetchEvidencePrReleaseInfo({ url: ref.pr_url, repo: ref.repo });
+  if (!info || !info.merged) return refuse(`PR #${ref.pr_number ?? '?'} is not merged or its merge could not be confirmed.`);
+  const started = await handoffOperation(client, id, 'begin', ref);
+  if (!started.applied) return { task_id: id, refused: true, refusal_reason: `Recording could not claim the handoff: ${started.reason}.`, eligibility: evaluateEligibility({summary:args.summary,evidence:args.evidence,attestWalk:args.attest_walk}), gates:[], attestation_recorded:false };
+  ref = started.ref ?? ref;
+  try {
+    const resumeFrom: Record<string, RecordWalkGateName> = { Clarified: 'decompose', Decomposed: 'design', Designed: 'plan', Planned: 'build', Built: 'release', Deployed: 'verify' };
+    const result = await runRecordedWalkCore(client, projectId, userId, { ...args, from_gate: args.from_gate ?? resumeFrom[data?.workflow_state] });
+    if (result.refused || result.error) {
+      await refuse(result.refusal_reason ?? result.error ?? 'Recording did not complete.');
+      return result;
+    }
+    await handoffOperation(client, id, 'clear', ref);
+    return result;
+  } catch (error) {
+    await refuse(error instanceof Error ? error.message : 'Recording failed.');
+    throw error;
+  }
+}
+
+async function runRecordedWalkCore(
   client: SupabaseClient,
   projectId: string,
   userId: string,
@@ -638,8 +689,8 @@ export async function runRecordedWalk(
       (args.from_gate !== undefined && recordWalkGateIndex(args.from_gate) > recordWalkGateIndex('clarify')),
   });
 
-  // REFUSE-BEFORE-WRITE: nothing below this line runs on an ineligible ticket — not even a task-id
-  // resolve (a read), so the ticket is left provably byte-identical.
+  // Ordinary refusals are write-free. The entry wrapper reads ownership first so a handoff-aware
+  // refusal can retain the modeled human step and report its reason.
   if (!eligibility.eligible) {
     return {
       task_id: args.task_id,
