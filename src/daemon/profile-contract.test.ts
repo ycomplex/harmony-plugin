@@ -3101,7 +3101,8 @@ describe('provision.sh: PLUGIN_DIR/WORKDIR follow the nested layout (B-726 (a))'
   const script = readFileSync(provisionPath, 'utf8');
 
   it('PLUGIN_DIR points inside the workspace checkout', () => {
-    expect(script).toContain('PLUGIN_DIR=/workspace/workspace/plugin');
+    // B-1478: a release leg's entrypoint names the release dir; every clone leg keeps the nested default.
+    expect(script).toContain('PLUGIN_DIR="${HARMONY_PLUGIN_DIR:-/workspace/workspace/plugin}"');
   });
 
   it('WORKDIR defaults inside the workspace checkout', () => {
