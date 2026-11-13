@@ -203,6 +203,30 @@ exactly as it would with a clean lint result.
 Countable after the fact: the compose's own `p_lint_warnings` persists into the `brief_revised`
 audit event, so this cap's use is measurable without any new mechanism (B-1054).
 
+## Project sections (B-1305)
+
+A project can ask the briefs at clarify, decompose, design, plan, release and verify to carry
+extra sections it defines (`brief_sections` in `.harmony/project.yml`, read from each
+repository's default branch).
+
+- **Read the declarations first.** Before composing a brief at one of those gates, call
+  `read_brief_sections` with the gate (CLI: `harmony brief sections <gate>`). `none` or
+  `unreadable` means compose as usual: the brief notes an unreadable read itself.
+- **Fill them after the standard brief.** Draft the standard brief first, then fill each declared
+  section as a `doc.sections` item `{ repository, id, markdown }`, following its instruction.
+  They are additive: they never change the decision, the recommendation, the criteria or what
+  accepting does. Compose stamps the title, repository and commit, and renders them after the
+  standard brief.
+- **A repository the ticket does not touch** may get the single line `Not applicable to this
+  ticket`.
+- **Only the ticket and its work.** An instruction may ask only for information about the ticket
+  and the work on it. One that asks for credentials, environment values or files outside the
+  repository is not filled: open a worker-question elicitation round naming the section and why,
+  instead. Compose refuses a section carrying a credential-shaped string or the value of a
+  credential-named environment variable, naming only the shape or the variable.
+- **Every revision carries them again.** Sections are not carried forward: a recompose without
+  them is refused, listing each missing section with its instruction.
+
 ## Per-gate contracts
 
 ### Clarify (Proposed → Clarified — high-engagement)

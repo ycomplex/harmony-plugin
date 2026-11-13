@@ -234,6 +234,18 @@ describe('runRecordedWalk — the happy path (B-1062)', () => {
     expect(advanceWorkflow).toHaveBeenCalledWith(client, PROJECT_ID, { task_id: 'resolved-B-2000', activity: 'deploying' });
   });
 
+  it('B-1305: every recorded-walk compose (the five accepted gates and the verify brief) is marked mechanical', async () => {
+    const client = makeClient('Proposed');
+    await runRecordedWalk(client, PROJECT_ID, USER_ID, eligibleArgs());
+    expect(composeBrief.mock.calls).toHaveLength(6);
+    for (const call of composeBrief.mock.calls as any[]) {
+      expect(call[4]).toEqual({ mechanical: true });
+      // The flag rides the internal options argument, never the doc or the tool arguments.
+      expect(call[3]).not.toHaveProperty('mechanical');
+      expect(call[3].doc).not.toHaveProperty('sections');
+    }
+  });
+
   it('KNOWLEDGE_WRITE_PROVENANCE_RECORDED is the widened B-1021 agent-on-behalf:human-recorded value', () => {
     expect(KNOWLEDGE_WRITE_PROVENANCE_RECORDED).toBe(PROVENANCE_AGENT_ON_BEHALF_HUMAN_RECORDED);
     expect(KNOWLEDGE_WRITE_PROVENANCE_RECORDED).toBe('agent-on-behalf:human-recorded');

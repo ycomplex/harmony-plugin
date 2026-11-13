@@ -32,7 +32,7 @@ if [ -s "$GUARD_HOME/plugin-dir" ]; then
   fi
 fi
 
-pattern_names=(figma-token figma-token github-token github-token openai-style-key jwt)
+pattern_names=(figma-token figma-token github-token github-token openai-style-key jwt supabase-secret-key harmony-api-token)
 patterns=(
   'figu_[A-Za-z0-9_-]{20,}'
   'figd_[A-Za-z0-9_-]{20,}'
@@ -40,6 +40,8 @@ patterns=(
   'github_pat_[A-Za-z0-9_]{30,}'
   '(^|[^A-Za-z0-9_-])sk-[A-Za-z0-9_-]{20,}'
   'eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'
+  'sb_secret_[A-Za-z0-9_-]{20,}'
+  'harmony_[0-9a-f]{64}'
 )
 
 while read -r local_ref local_sha remote_ref remote_sha; do

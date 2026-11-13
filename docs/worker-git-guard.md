@@ -53,7 +53,8 @@ The pre-push hook prints one line per refusal, prefixed `B-1451 push guard:`, an
 2. The push runs from the main worktree of the plugin code checkout recorded at install time. A
    linked worktree of that checkout passes; that is where plugin work belongs.
 3. An added line in the commits being pushed has the shape of a credential: a Figma token, a GitHub
-   token, a fine-grained GitHub token, an OpenAI-style key or a JWT. The range is the commits after the
+   token, a fine-grained GitHub token, an OpenAI-style key, a JWT, a Supabase secret key or a Harmony
+   API token (B-1305). The range is the commits after the
    remote's old tip, or, for a new branch, those not on any remote-tracking branch. The refusal names
    the file, the line in the new file, the commit and the pattern name, never the matched text.
    Removed lines are not scanned.

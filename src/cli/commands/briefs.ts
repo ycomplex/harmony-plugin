@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import { listBriefs } from '../../tools/briefs.js';
 import { runCommand } from '../run-command.js';
 import { formatTable } from '../formatter.js';
+import { formatBriefSections, readBriefSections } from '../../tools/brief-project-sections.js';
 
 /**
  * B-878 — the terminal mirror of `list_briefs`: the full brief history of a ticket (every gate ask,
@@ -37,5 +38,25 @@ export function registerBriefCommands(program: Command): void {
           ]);
         },
       );
+    });
+
+  // B-1305 — the terminal mirror of `read_brief_sections`: the brief sections this project declares for a
+  // gate, read from each repository's default branch. Local only (git), so it needs no board login.
+  program
+    .command('brief')
+    .description("Read this project's brief settings")
+    .command('sections')
+    .description("Show the brief sections this project declares for a gate (from each repository's default branch)")
+    .argument('<gate>', 'clarify | decompose | design | plan | release | verify')
+    .action(async (gate: string) => {
+      const json = !!program.opts().json;
+      try {
+        const data = await readBriefSections({ gate });
+        console.log(json ? JSON.stringify(data, null, 2) : formatBriefSections(data));
+      } catch (err: unknown) {
+        const message = (err as Error)?.message ?? String(err);
+        console.error(json ? JSON.stringify({ error: message }) : `Error: ${message}`);
+        process.exit(1);
+      }
     });
 }
