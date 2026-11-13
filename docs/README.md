@@ -31,6 +31,11 @@ before the key is added.
 and `release.json` every push to `staging` and `prod` publishes, the bucket layout, immutability, what Claude Code
 does with an archive marketplace (with the probe's results), and the founder's setup steps.
 
+`gated-download-walk.md` (B-1477) is the founder's walk for installing the plugin from the gated download beside
+today's install: the token file and header helper, the settings entry, install, checks, an update arriving, a refused
+token, and rolling back. It holds the recorded run of `scripts/gated-install-check.sh` and lists the test-only steps
+the customer guide must not copy.
+
 `recorded-walk-contract.md` (B-1062) is the contract for recording a ticket's gates instead of conducting them: the
 `recorded_walk_requests` table the web's Record action writes and the plugin's walk reads.
 

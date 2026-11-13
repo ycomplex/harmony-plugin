@@ -226,12 +226,27 @@ where nothing had changed. Claude Code accepted an HTTPS host on a private (non-
 self-signed certificate trusted through `NODE_EXTRA_CA_CERTS`. The probe sent no bearer, so it did not exercise
 authentication.
 
+At B-1477, against the production gated download with a real token, on Claude Code `2.1.323` (recorded run in
+[`gated-download-walk.md`](gated-download-walk.md), repeatable with
+[`scripts/gated-install-check.sh`](../scripts/gated-install-check.sh)):
+
+- The route that works is to declare the marketplace in user settings: an `extraKnownMarketplaces.harmony` entry
+  with a url source, a `headersHelper` that reads a token file, and `autoUpdate: true`.
+- Once declared, `claude plugin marketplace add <BASE>/prod/marketplace.json` is refused: "its source doesn't
+  match its extraKnownMarketplaces entry in user or managed settings". Before any session,
+  `claude plugin marketplace update harmony` says the marketplace is not found.
+- A session start fetches the declared marketplace, even a headless one that stops at "Not logged in".
+  `claude plugin install harmony-plugin@harmony` then installs it, enabled.
+- With a refused token, `claude plugin marketplace update` and `claude plugin update` both fail with 401. The
+  installed copy stays enabled at the same version, and its cache files are unchanged.
+- With the good token back, both work again; the plugin update reports it is already at the latest version.
+
 ### Not confirmed
 
-These are left to B-1477:
+B-1477's verify covers these, by the founder's walk in [`gated-download-walk.md`](gated-download-walk.md):
 
-- when background auto-update runs;
-- whether the installed copy survives a 401 during a background refresh;
+- when background auto-update runs, and that it sends the header;
+- whether a logged-in session still loads the plugin after a refused refresh (and with a revoked token);
 - macOS and Windows.
 
 ## Handoffs
@@ -243,6 +258,10 @@ zip. A read-only credential for the bucket is B-1476's choice.
 **B-1477 and B-1479 (the founder's test and the migration guide).** Authenticate with a url-source
 `headersHelper` that reads a token file. Never use static `headers`, and never an entry-level `headersHelper`
 (it blocks auto-update). Users must turn auto-update on for the new marketplace.
+
+The founder's test is [`gated-download-walk.md`](gated-download-walk.md). B-1479's guide may follow its install
+route, but must not copy its test-only steps (the helper's log line, the wrong and revoked token exercise, and the
+check script); the walk lists them at the end.
 
 The re-key from `harmony-plugin@ycomplex` to `harmony-plugin@harmony` touches:
 
