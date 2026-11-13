@@ -113,8 +113,12 @@ byte-identical.
 ## Public addresses
 
 `<PUBLIC_BASE_URL>/<channel>/...` maps one to one onto the bucket's `channels/<channel>/...`. For example,
-`<base>/prod/marketplace.json` is the object `channels/prod/marketplace.json`. Serving these addresses (and gating
-them) is B-1476.
+`<base>/prod/marketplace.json` is the object `channels/prod/marketplace.json`. B-1476 serves and gates these
+addresses through the edge function `plugin-download` on the production Supabase project, so the base address has
+the form `https://<PROD_REF>.supabase.co/functions/v1/plugin-download`. That is the value for `_PUBLIC_BASE_URL` on
+both release triggers, and for `plugin_release.base_url` in a project file that opts its worker legs into the
+release (B-1478). Every request carries `Authorization: Bearer <Harmony API token>`. Whether customers later get a
+stable address on Harmony's own domain is decided before B-1479's migration guide.
 
 ## What a consumer may rely on
 
