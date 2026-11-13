@@ -133,6 +133,41 @@ A consumer may not rely on:
 - the bucket's name, or the base URL, being any particular value;
 - the zip's contents beyond the plugin's tracked tree (B-1480 will trim it).
 
+## Worker legs (B-1478)
+
+A conductor's legs take the plugin from this download only when the project file opts in
+(`.harmony/conductor.json` `"plugin_source": "release"` with `plugin_release.base_url`; see
+[`conductor-config.md`](conductor-config.md)). Cloning the plugin stays the default and the fallback.
+
+`container/entrypoint.sh`, baked into the worker image, then:
+
+1. maps the leg's posture to a channel: `prod` reads `prod`, `ack:staging` or `staging` reads `staging`; any other
+   posture has no published channel and falls back;
+2. GETs `<base_url>/<channel>/release.json` with `Authorization: Bearer $HARMONY_API_TOKEN`;
+3. maps the record's `zip.object` (`channels/<channel>/<rest>`) to `<base_url>/<channel>/<rest>` and GETs the zip
+   with the same header;
+4. checks the zip's sha256 against `zip.sha256`, the zip's own `.claude-plugin/plugin.json` version against
+   `version`, and that the tree carries `container/release-runtime` (the marker of a release that supports worker
+   legs; an older release falls back);
+5. extracts it to `$HOME/harmony-plugin`, makes it read-only, exports `HARMONY_PLUGIN_DIR`, and execs that
+   release's `container/provision.sh`. The repository entry with `is_plugin: true` is not cloned; every other
+   repository still is, the meta repository first.
+
+The bearer is read from a mode-600 file that is removed before the hand-off; it is never in argv or output.
+Requests use https only, with a 10 s connect and 300 s total timeout, follow at most three https redirects (curl
+drops the bearer on a redirect to another host), and accept at most 1 MiB of `release.json` and 256 MiB of zip.
+The image's CA bundle is used; `CURL_CA_BUNDLE` overrides it, as curl itself provides.
+
+Any failure prints exactly one stderr line, `PLUGIN-SOURCE-FALLBACK: <reason>; cloning <ref>`, and the leg clones as
+it would without the setting. `provision.sh` receives the outcome as `HARMONY_PLUGIN_SOURCE_RESULT` (`release`,
+`clone` or `clone-fallback(<reason>)`), shows it in its banner as `plugin_source=…`, and after a fallback posts one
+comment on the ticket naming the reason (best-effort). In a release leg, the B-1451 detach and dirty check are
+skipped: the release directory is not a git checkout.
+
+The paths a worker and the conductor read from the plugin at run time are listed in
+`src/release/runtime-paths.ts`; a trimmed zip (B-1480) must keep them. `scripts/prove-release-fetch.sh` re-runs the
+mechanism proof in the real worker image against a local HTTPS server.
+
 ## Immutability
 
 A version already published with different bytes makes the publish fail. Nothing changes: the pointers stay
