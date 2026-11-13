@@ -217,6 +217,9 @@ export const claudeCodeAdapter: AgentAdapter = {
       'GIT_TOKEN',
       'HARMONY_TRANSCRIPT_MOUNT_ROOT',
       'HARMONY_PLUGIN_POSTURE',
+      // B-1478: where the leg takes the plugin from, and the release endpoint (forwarded only when set).
+      'HARMONY_PLUGIN_SOURCE',
+      'HARMONY_PLUGIN_RELEASE_URL',
       'HARMONY_REPOS_JSON',
       'HARMONY_RUN_CONFIG_JSON',
       'HARMONY_MODEL',

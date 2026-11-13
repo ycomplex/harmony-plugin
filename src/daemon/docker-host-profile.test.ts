@@ -34,6 +34,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DeploymentConfigSchema } from '../config/deployment-config.js';
 import { renderTemplate } from './config.js';
+import { channelEnv } from './fixtures/channel-env.js';
 
 function repoPath(rel: string): string {
   return fileURLToPath(new URL(`../../${rel}`, import.meta.url));
@@ -237,7 +238,7 @@ function makeWorld(opts: WorldOptions = {}): World {
     '    echo "mint" >> "$STUB_LOGS/order.log"',
     '    out=""; prev=""',
     '    for a in "$@"; do [ "$prev" = "--out" ] && out="$a"; prev="$a"; done',
-    `    printf 'HARMONY_API_TOKEN=base\\nGIT_TOKEN=%s\\n' '${TOKEN}' > "$out"`,
+    `    printf 'HARMONY_API_TOKEN=base\\nGIT_TOKEN=%s\\n%s' '${TOKEN}' "\${STUB_MINT_EXTRA:-}" > "$out"`,
     `    printf '%s' '${RUN_CONFIG_BODY}' > "$(dirname "$out")/run-config.json"`,
     '    echo "$out" ;;',
     'esac',
@@ -408,6 +409,19 @@ describe.skipIf(!BASH_AVAILABLE)('docker-host-worker-launch.sh (EXECUTED against
     const bareMint = log(bare, 'node.log').split('\n').find((line) => line.includes('mint-installation-token.mjs'));
     expect(bareMint).not.toContain('--model');
     expect(bareMint).toContain('--run-config {} --run-config-path');
+  });
+
+  it('B-1478: the plugin source rides the shipped run.env (the whole minted file) into docker run --env-file', () => {
+    const extra = channelEnv('cloud', 'prod', { plugin_source: 'release', plugin_release: { base_url: 'https://abcdefghijklmnop.supabase.co/functions/v1/plugin-download' } })
+      .split('\n').filter((l) => l.startsWith('HARMONY_PLUGIN_')).map((l) => `${l}\n`).join('');
+    expect(extra).toContain('HARMONY_PLUGIN_SOURCE=release');
+    const world = makeWorld();
+    expect(launch(world, { STUB_MINT_EXTRA: extra }).status).toBe(0);
+    expect(log(world, 'env-file-at-run')).toContain('HARMONY_PLUGIN_SOURCE=release\n');
+    expect(log(world, 'env-file-at-run')).toContain('HARMONY_PLUGIN_RELEASE_URL=https://abcdefghijklmnop.supabase.co/functions/v1/plugin-download\n');
+    const bare = makeWorld();
+    expect(launch(bare).status).toBe(0);
+    expect(log(bare, 'env-file-at-run')).not.toMatch(/HARMONY_PLUGIN_(SOURCE|RELEASE_URL)/);
   });
 
   it('ships both per-run files through ssh STDIN — the token is never in any argv — and stamps the host', () => {

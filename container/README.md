@@ -99,9 +99,19 @@ see "Running a second project's toolchain" below.
   image. Switching targets or rotating secrets is a config change, never a
   rebuild.
 - **Provisioning-from-clone:** the image bakes ONLY `entrypoint.sh`
-  (validate → clone → hand off). Everything substantive runs from
+  (validate → clone, or fetch the release (B-1478) → hand off). Everything substantive runs from
   `container/provision.sh` at the CLONED plugin ref, so provisioning can never
   drift from the plugin it provisions.
+- **Plugin from the released download (B-1478, opt-in):** with
+  `"plugin_source": "release"` in `.harmony/conductor.json`, `entrypoint.sh`
+  fetches the channel's released plugin (`release.json`, then the zip, with
+  the board API token as a bearer), verifies its sha256, its version and the
+  `container/release-runtime` marker, extracts it read-only to
+  `$HOME/harmony-plugin` and runs ITS `provision.sh` instead of cloning the
+  plugin. Any failure prints one `PLUGIN-SOURCE-FALLBACK: <reason>; cloning
+  <ref>` line and clones exactly as before; without the setting nothing
+  changes. Contract: `docs/plugin-release-artefact.md`, "Worker legs"; proof
+  in the real image: `scripts/prove-release-fetch.sh`.
 - **Read plane ≠ deploy plane:** `HARMONY_TARGET` picks which board/DB the
   MCP + CLI talk to (default `prod` — where tickets live). Deploys happen in
   CI from GitHub secrets after a merge; the container never deploys.

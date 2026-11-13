@@ -53,6 +53,11 @@ const DeploymentEnvSchema = z
     // profile). Encodes which plugin ref to run AND whether running it ahead of prod is
     // acknowledged: "prod" | "ack:<ref>" | a bare "<ref>" (unacknowledged) — see provision.sh.
     HARMONY_PLUGIN_POSTURE: z.string().optional(),
+    // B-1478: where a leg takes the plugin from ("clone" | "release") and the release endpoint's base URL —
+    // projected from .harmony/conductor.json's plugin_source / plugin_release.base_url, read by
+    // container/entrypoint.sh. Absent = clone, exactly as before.
+    HARMONY_PLUGIN_SOURCE: z.enum(['clone', 'release']).optional(),
+    HARMONY_PLUGIN_RELEASE_URL: z.string().optional(),
     // Agent layer.
     CLAUDE_CODE_OAUTH_TOKEN: z.string().optional(),
     ANTHROPIC_API_KEY: z.string().optional(),

@@ -67,6 +67,8 @@ at boot (a change is logged as `restart needed`).
 | `repos` | list of `{ url, ref?, path, meta_repo_role?, is_plugin? }` (the B-814 entry list, unchanged) | unset (the three-slot default) | project | launch env (`HARMONY_REPOS_JSON`) |
 | `agent_flags` | map adapter id -> flag string; only `claude-code` is wired | unset | project | launch env (`CLAUDE_HEADLESS_FLAGS`) |
 | `profiles.cloud`, `profiles.gke` | `{ max_workers?, agents?, providers?, required_tools? }` on top of the built-in template; **no other profile name, no custom template** | none | project | restart |
+| `plugin_source` | `"clone"` \| `"release"` | unset = `clone` | project | launch env (`HARMONY_PLUGIN_SOURCE`) |
+| `plugin_release.base_url` | `https://` URL, no query, fragment or credentials; the only key of `plugin_release` | unset | project | launch env (`HARMONY_PLUGIN_RELEASE_URL`, a trailing slash dropped) |
 | `config_repo` | `"owner/name"` | none (no default repo) | host | start |
 | `config_ref` | string | `main` | host | start |
 | `plugin_dir` | path | required (both profiles launch from the host's plugin checkout) | host | launch env |
@@ -100,6 +102,32 @@ launch's environment.
 
 `secrets` holds **names only**. A value that looks like a credential (`ghp_`, `github_pat_`, `sk-`, `eyJ`,
 a PEM block, a 40+ character token) is refused with a pointer to Secret Manager.
+
+### Where a leg takes the plugin from (B-1478)
+
+`plugin_source` says where each worker leg takes the plugin from. `"clone"` (the default, and what an absent key
+means) clones the plugin repository at the channel's branch, exactly as before. `"release"` fetches the channel's
+released download instead ([`plugin-release-artefact.md`](plugin-release-artefact.md), "Worker legs"), from the
+gated endpoint named by `plugin_release.base_url`, for example:
+
+```json
+"plugin_source": "release",
+"plugin_release": { "base_url": "https://<ref>.supabase.co/functions/v1/plugin-download" }
+```
+
+`"release"` without `plugin_release.base_url` is refused. The channel is the leg's existing posture: `channel:
+"prod"` reads the `prod` release and `channel: "staging"` the `staging` one.
+
+- **Update the conductor first.** The project file's schema is strict: a conductor whose plugin predates B-1478
+  reports a project file carrying either key as invalid. Update the conductor (and, on a local conductor, its plugin
+  checkout) to a release that carries this schema **before** the project file sets either key. The keys reach the
+  leg through the launchers, so they must be that release too.
+- **Release mode needs the gated endpoint.** Until the download endpoint (B-1476) is deployed and answers for the
+  board's API token, every leg falls back: it prints one stderr line, `PLUGIN-SOURCE-FALLBACK: <reason>; cloning
+  <ref>`, clones as before, and posts one comment on its ticket naming the reason. Any other failure (no release on
+  the channel, a refused token, a checksum or version mismatch, a release older than worker support) falls back the
+  same way. A fallback never stops a leg.
+- An absent `plugin_source` puts nothing new in a leg's environment.
 
 ## Precedence
 

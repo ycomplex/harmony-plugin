@@ -21548,6 +21548,27 @@ var ProfileOverrideSchema = external_exports.object({
   required_tools: RequiredToolsSchema.optional()
 }).strict();
 var ProfilesSchema = external_exports.object({ cloud: ProfileOverrideSchema.optional(), gke: ProfileOverrideSchema.optional() }).strict();
+var PLUGIN_SOURCES = ["clone", "release"];
+var PluginSourceSchema = external_exports.enum(PLUGIN_SOURCES);
+function pluginReleaseBaseUrlProblem(raw) {
+  if (!/^https:\/\/[A-Za-z0-9._~:/%@-]+$/.test(raw)) return "must be an https:// URL of plain URL characters (no spaces, quotes, query or fragment)";
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return "is not a URL";
+  }
+  if (parsed.username || parsed.password) return "must carry no credentials";
+  if (!parsed.hostname) return "has no host";
+  return null;
+}
+var PluginReleaseSchema = external_exports.object({
+  base_url: external_exports.string().superRefine((v, ctx) => {
+    const problem = pluginReleaseBaseUrlProblem(v);
+    if (problem) ctx.addIssue({ code: external_exports.ZodIssueCode.custom, message: problem });
+  })
+}).strict();
+var PLUGIN_RELEASE_NEEDS_BASE_URL = 'plugin_source "release" needs plugin_release.base_url (the gated download endpoint)';
 var projectShape = {
   channel: ChannelSchema.optional(),
   profile: ProfileNameSchema.optional(),
@@ -21571,7 +21592,11 @@ var projectShape = {
   /** B-1183: adapter id -> headless flag string (claude-code -> env.CLAUDE_HEADLESS_FLAGS). */
   agent_flags: AgentFlagsSchema.optional(),
   /** B-1183: per-profile max_workers / agents / required_tools for built-in profiles. */
-  profiles: ProfilesSchema.optional()
+  profiles: ProfilesSchema.optional(),
+  /** B-1478: "clone" (default) | "release" (-> env.HARMONY_PLUGIN_SOURCE). */
+  plugin_source: PluginSourceSchema.optional(),
+  /** B-1478: { base_url } of the gated download endpoint (-> env.HARMONY_PLUGIN_RELEASE_URL). */
+  plugin_release: PluginReleaseSchema.optional()
 };
 var SUPABASE_URL_NEEDS_CUSTOM = 'supabase_url is only allowed with "target": "custom"';
 var ProjectFileSchema = external_exports.object({
@@ -21582,6 +21607,9 @@ var ProjectFileSchema = external_exports.object({
 }).strict().superRefine((p, ctx) => {
   if (p.supabase_url !== void 0 && p.target !== "custom") {
     ctx.addIssue({ code: external_exports.ZodIssueCode.custom, path: ["supabase_url"], message: SUPABASE_URL_NEEDS_CUSTOM });
+  }
+  if (p.plugin_source === "release" && !p.plugin_release?.base_url) {
+    ctx.addIssue({ code: external_exports.ZodIssueCode.custom, path: ["plugin_release"], message: PLUGIN_RELEASE_NEEDS_BASE_URL });
   }
 });
 function looksLikeSecretValue(v) {
@@ -22005,6 +22033,9 @@ function validateMerged(merged, env = {}) {
   if (merged.supabase_url !== void 0 && merged.target !== "custom") {
     need(PROJECT_FILE_LABEL, "supabase_url", SUPABASE_URL_NEEDS_CUSTOM, 'add "target": "custom" or remove supabase_url');
   }
+  if (merged.plugin_source === "release" && !merged.plugin_release?.base_url) {
+    need(PROJECT_FILE_LABEL, "plugin_release.base_url", PLUGIN_RELEASE_NEEDS_BASE_URL, 'add "plugin_release": { "base_url": "https://<ref>.supabase.co/functions/v1/plugin-download" }, or remove "plugin_source": "release"');
+  }
   if (!merged.profile) {
     need(PROJECT_FILE_LABEL, "profile", "required key is missing", 'add "profile": "cloud" (or "gke") to .harmony/conductor.json');
     return issues;
@@ -22086,6 +22117,8 @@ function projectToDeploymentConfig(merged, legacy = null, warnings = []) {
   putEnv("HARMONY_TARGET", merged.target);
   putEnv("HARMONY_SUPABASE_URL", merged.supabase_url);
   putEnv(AGENT_FLAG_ENV["claude-code"], merged.agent_flags?.["claude-code"]);
+  putEnv("HARMONY_PLUGIN_SOURCE", merged.plugin_source);
+  putEnv("HARMONY_PLUGIN_RELEASE_URL", merged.plugin_release?.base_url?.replace(/\/+$/, ""));
   if (envSet) out.env = env;
   return out;
 }
@@ -22274,6 +22307,11 @@ var DeploymentEnvSchema = external_exports.object({
   // profile). Encodes which plugin ref to run AND whether running it ahead of prod is
   // acknowledged: "prod" | "ack:<ref>" | a bare "<ref>" (unacknowledged) — see provision.sh.
   HARMONY_PLUGIN_POSTURE: external_exports.string().optional(),
+  // B-1478: where a leg takes the plugin from ("clone" | "release") and the release endpoint's base URL —
+  // projected from .harmony/conductor.json's plugin_source / plugin_release.base_url, read by
+  // container/entrypoint.sh. Absent = clone, exactly as before.
+  HARMONY_PLUGIN_SOURCE: external_exports.enum(["clone", "release"]).optional(),
+  HARMONY_PLUGIN_RELEASE_URL: external_exports.string().optional(),
   // Agent layer.
   CLAUDE_CODE_OAUTH_TOKEN: external_exports.string().optional(),
   ANTHROPIC_API_KEY: external_exports.string().optional(),

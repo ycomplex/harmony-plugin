@@ -116,6 +116,27 @@ describe.skipIf(!CAPABLE)('explicit project channel reaches the gke worker', () 
   });
 });
 
+// B-1478: plugin_source / plugin_release ride the minted env into the leg secret; absent, nothing new does.
+describe.skipIf(!CAPABLE)('B-1478: the plugin source reaches the gke leg secret', () => {
+  const URL = 'https://abcdefghijklmnop.supabase.co/functions/v1/plugin-download';
+  it('release + base_url from the project file are forwarded as HARMONY_PLUGIN_SOURCE / HARMONY_PLUGIN_RELEASE_URL', () => {
+    const env = channelEnv('gke', 'prod', { plugin_source: 'release', plugin_release: { base_url: URL } });
+    expect(env).toContain('HARMONY_PLUGIN_SOURCE=release');
+    const w = makeWorld({ ...seq([COMPLETE], [CLEAN_POD]), STUB_CHANNEL_ENV: env });
+    expect(launch(w).status).toBe(0);
+    const secret = read(w, 'envfile-copy');
+    expect(secret).toContain('HARMONY_PLUGIN_SOURCE=release\n');
+    expect(secret).toContain(`HARMONY_PLUGIN_RELEASE_URL=${URL}\n`);
+    expect(secret).toContain('HARMONY_PLUGIN_POSTURE=prod\n');
+  });
+
+  it('absent setting: neither variable is in the leg secret', () => {
+    const w = makeWorld({ ...seq([COMPLETE], [CLEAN_POD]), STUB_CHANNEL_ENV: channelEnv('gke', 'prod') });
+    expect(launch(w).status).toBe(0);
+    expect(read(w, 'envfile-copy')).not.toMatch(/HARMONY_PLUGIN_(SOURCE|RELEASE_URL)/);
+  });
+});
+
 describe.skipIf(!CAPABLE)('gke-worker-launch.sh — the ticket-disk storage class', () => {
   it('falls back to standard-rwo, with a line saying so, on a cluster without harmony-ticket-disk', () => {
     const w = makeWorld(seq([COMPLETE], [CLEAN_POD]));
