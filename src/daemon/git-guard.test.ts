@@ -80,6 +80,8 @@ describe('B-1451 pre-push guard', () => {
     ['github-token', 'github' + '_pat_' + 'D'.repeat(40)],
     ['openai-style-key', 's' + 'k-' + 'E'.repeat(30)],
     ['jwt', 'ey' + 'J' + 'F'.repeat(12) + '.ey' + 'J' + 'G'.repeat(12) + '.' + 'H'.repeat(12)],
+    ['supabase-secret-key', 'sb' + '_secret_' + 'K'.repeat(30)],
+    ['harmony-api-token', 'harmony' + '_' + 'a1'.repeat(32)],
   ];
   it.each(fakes)('refuses an added %s line without printing the value', (name, fake) => {
     const dir = newRepo(`tok-${name}-${fake.length}`);

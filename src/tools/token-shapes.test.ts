@@ -15,6 +15,8 @@ const SAMPLES: Record<string, string> = {
   'figma-oauth': j('fi', 'gu_', 'abc-DEF_123'),
   google: j('AI', 'za', 'A'.repeat(35)),
   'private-key': j('-----BEGIN ', 'RSA PRIVATE', ' KEY-----'),
+  'supabase-secret': j('sb', '_secret_', 'Ab3_x9-Qr7'),
+  'harmony-api-token': j('harmony', '_', 'ab12'.repeat(16)),
   'long-run': 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7',
 };
 
@@ -33,6 +35,21 @@ describe('token shapes', () => {
       expect(out).toMatch(/^before .*\[redacted\].* after$/);
     });
   }
+
+  it('B-1305: names the Supabase secret key and Harmony API token shapes, ahead of the catch-all', () => {
+    const names = TOKEN_SHAPES.map((s) => s.name);
+    expect(names.indexOf('supabase-secret-key')).toBeGreaterThan(-1);
+    expect(names.indexOf('harmony-api-token')).toBeGreaterThan(-1);
+    expect(names.indexOf('supabase-secret-key')).toBeLessThan(names.indexOf('long-base64-run'));
+    expect(names.indexOf('harmony-api-token')).toBeLessThan(names.indexOf('long-base64-run'));
+    const sb = j('sb', '_secret_', 'Ab3_x9-Qr7');
+    expect(scrubTokenShapes(`k=${sb};`)).toBe('k=[redacted];');
+    const ht = j('harmony', '_', 'ab12'.repeat(16));
+    expect(scrubTokenShapes(`t=${ht};`)).toBe('t=[redacted];');
+    // a publishable key and a short harmony_ word are not credentials
+    expect(containsTokenShape('the harmony_plugin package')).toBe(false);
+    expect(containsTokenShape(j('sb', '_publishable_', 'abc'))).toBe(false);
+  });
 
   it('scrubs the whole token, not just its prefix, and is idempotent', () => {
     const t = j('gh', 's_', 'Zz9'.repeat(12));

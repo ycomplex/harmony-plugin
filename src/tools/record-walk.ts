@@ -547,7 +547,9 @@ async function composeAndAccept(
       payload: args.payload ?? [],
       context: args.context,
     },
-  });
+  // B-1305: a recorded walk's brief is composed with no agent writing it, so it is exempt from the
+  // project's brief sections (internal flag; the MCP compose_brief tool can never set it).
+  }, { mechanical: true });
   // B-1411: accept exactly the revision this walk just composed, never whatever is active by then.
   const composedId = (composed.brief as { id?: string } | null)?.id;
   await resolveBrief(client, projectId, {
@@ -1127,7 +1129,8 @@ async function runRecordedWalkCore(
             (readinessFailure !== null ? ` Verify readiness read failed: ${readinessFailure}.` : ''),
         },
       },
-    });
+    // B-1305: composed with no agent writing it — exempt from the project's brief sections.
+    }, { mechanical: true });
     gates.push({ gate: 'verify', reason: 'verification-ack-pending', landed: true });
 
     }

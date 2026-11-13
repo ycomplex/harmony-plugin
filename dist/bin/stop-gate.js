@@ -41,6 +41,10 @@ var TOKEN_SHAPES = [
   { name: "figma", pattern: new RegExp(`${B}fig[a-z]_[A-Za-z0-9_-]+`, "g") },
   { name: "google-api-key", pattern: new RegExp(`${B}AIza[0-9A-Za-z_-]{35}`, "g") },
   { name: "private-key-block", pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----/g },
+  // B-1305: a Supabase secret (service) key, `sb_secret_` and its body.
+  { name: "supabase-secret-key", pattern: new RegExp(`${B}sb_secret_[A-Za-z0-9_-]+`, "g") },
+  // B-1305: a Harmony API token, `harmony_` and 64 hex characters.
+  { name: "harmony-api-token", pattern: new RegExp(`${B}harmony_[0-9a-f]{64}(?![0-9a-f])`, "g") },
   // Last: it would otherwise eat part of a longer, more specific match above.
   { name: "long-base64-run", pattern: /[A-Za-z0-9+/]{32,}={0,2}/g }
 ];

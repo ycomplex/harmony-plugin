@@ -31823,12 +31823,64 @@ var ProjectManifestBodySchema = external_exports.object({
   release: ReleaseGateSchema.optional(),
   verify: VerifyGateSchema.optional(),
   notify: external_exports.array(NotifyEntrySchema).optional(),
-  fasttrack: FasttrackSchema.optional()
+  fasttrack: FasttrackSchema.optional(),
+  // B-1305: recognised here, validated by parseBriefSections (scoped, never whole-file malformed).
+  brief_sections: external_exports.unknown().optional()
+}).strict();
+var BRIEF_SECTION_GATES = ["clarify", "decompose", "design", "plan", "release", "verify"];
+var BRIEF_SECTION_LIMITS = {
+  sectionsPerGate: 3,
+  titleChars: 80,
+  instructionChars: 600,
+  markdownChars: 4e3
+};
+var BriefSectionSchema = external_exports.object({
+  id: external_exports.string(),
+  title: external_exports.string().min(1).max(BRIEF_SECTION_LIMITS.titleChars),
+  instruction: external_exports.string().min(1).max(BRIEF_SECTION_LIMITS.instructionChars)
 }).strict();
 
 // src/config/manifest-evidence.ts
 var ATTESTED_MARKER = "ATTESTED:";
 var UNPARSED_ATTESTED_MARKER_CLAUSE = `\u26A0\uFE0F ${ATTESTED_MARKER} appears but no key could be read from it \u2014 put the marker at the start of its own line`;
+
+// src/config/brief-sections.ts
+var import_yaml2 = __toESM(require_dist(), 1);
+
+// src/tools/token-shapes.ts
+var B = "(?<![A-Za-z0-9])";
+var TOKEN_SHAPES = [
+  { name: "github", pattern: new RegExp(`${B}(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]*`, "g") },
+  { name: "sk-key", pattern: new RegExp(`${B}sk-[A-Za-z0-9_-]*`, "g") },
+  { name: "jwt", pattern: new RegExp(`${B}eyJ[A-Za-z0-9_+/=.-]*`, "g") },
+  { name: "slack", pattern: new RegExp(`${B}xox[abpr]-[A-Za-z0-9-]+`, "g") },
+  { name: "aws-access-key", pattern: new RegExp(`${B}AKIA[0-9A-Z]{16}`, "g") },
+  // Every Figma token prefix: `figd_` (personal access token), `figu_` (OAuth user token, the shape that
+  // leaked on 2026-11-11), and any other `fig<letter>_` Figma adds. Matches prefix AND body, so a scrub
+  // leaves no prefix behind, including a body with `_` or `-` in short runs the long-run fallback misses.
+  { name: "figma", pattern: new RegExp(`${B}fig[a-z]_[A-Za-z0-9_-]+`, "g") },
+  { name: "google-api-key", pattern: new RegExp(`${B}AIza[0-9A-Za-z_-]{35}`, "g") },
+  { name: "private-key-block", pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----/g },
+  // B-1305: a Supabase secret (service) key, `sb_secret_` and its body.
+  { name: "supabase-secret-key", pattern: new RegExp(`${B}sb_secret_[A-Za-z0-9_-]+`, "g") },
+  // B-1305: a Harmony API token, `harmony_` and 64 hex characters.
+  { name: "harmony-api-token", pattern: new RegExp(`${B}harmony_[0-9a-f]{64}(?![0-9a-f])`, "g") },
+  // Last: it would otherwise eat part of a longer, more specific match above.
+  { name: "long-base64-run", pattern: /[A-Za-z0-9+/]{32,}={0,2}/g }
+];
+
+// src/tools/brief-project-sections.ts
+var readBriefSectionsTool = {
+  name: "read_brief_sections",
+  description: "B-1305 \u2014 read the extra brief sections this project declares for a gate (`brief_sections` in each repository's .harmony/project.yml, read from the repository's DEFAULT BRANCH, never the working tree). Call it before composing a brief at clarify, decompose, design, plan, release or verify. Returns { gate, kind: 'none' } (nothing declared \u2014 compose as usual), { gate, kind: 'unreadable', detail } (compose as usual; the brief notes it), or { gate, kind: 'declared', repos: [{ repository, commit, fresh, sections: [{ id, title, instruction }] }], warnings } \u2014 then fill every section as compose_brief doc.sections items { repository, id, markdown }. Read-only.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      gate: { type: "string", enum: [...BRIEF_SECTION_GATES], description: "The gate whose brief you are about to compose" }
+    },
+    required: ["gate"]
+  }
+};
 
 // src/tools/briefs.ts
 var DEFAULT_TAIL = "Type `accept`, `edit`, `iterate <feedback>`, or `defer`.";
@@ -32183,7 +32235,7 @@ function promisedWriteLine(item) {
 function promisedWriteLines(payload, skipAcceptanceCriteria) {
   return (payload ?? []).filter((p) => !(skipAcceptanceCriteria && p.write_kind === "acceptance_criterion")).map(promisedWriteLine).filter((line) => line !== null);
 }
-function renderBrief(doc, decisionRef, ctx) {
+function renderStandardBrief(doc, decisionRef, ctx) {
   const out = [];
   const frame = doc.frame;
   if (frame?.kind === "clarify") out.push(...renderFrame(frame), "");
@@ -32268,7 +32320,7 @@ function decidedItems(doc) {
   return out;
 }
 function renderEntry(doc, ctx) {
-  const briefContent = renderBrief(doc, ctx?.decisionRef ?? null, ctx);
+  const briefContent = renderStandardBrief(doc, ctx?.decisionRef ?? null, ctx);
   const isRatified = (text2) => !text2.trim() || briefContent.includes(text2);
   const mark = (text2) => isRatified(text2) ? text2 : `${text2} ${NOT_RATIFIED_MARK}`;
   const markAll = (lines) => lines.map(mark);
@@ -32348,6 +32400,19 @@ var composeBriefTool = {
           removal_effective_on_accept: { type: "boolean", description: "Explicit HUMAN policy cutover choice; defaults false, never auto-approved." },
           load_bearing_gap: { type: "boolean", description: "true when a load-bearing knowledge gap blocks a substantive decision (forces research-first)" },
           tail: { type: "string", description: "Optional custom command tail line; defaults to the standard one" },
+          sections: {
+            type: "array",
+            description: "B-1305 \u2014 the project's brief sections for this gate (read them first with read_brief_sections). One item per declared section: { repository?, id, markdown }; `repository` (owner/name) may be omitted when only one repository declares the id. Every declared section must be present, non-empty and at most 4,000 characters; an undeclared id, a credential-shaped string or the value of a credential-named environment variable is refused before anything is written. Supply them on EVERY compose, revisions included \u2014 they are not carried forward. A repository the ticket does not touch may say 'Not applicable to this ticket'. Title, repository, commit and freshness are stamped from the declaration. Rendered after the standard brief; never copied into the knowledge entry or the gate slot.",
+            items: {
+              type: "object",
+              properties: {
+                repository: { type: "string" },
+                id: { type: "string" },
+                markdown: { type: "string" }
+              },
+              required: ["id", "markdown"]
+            }
+          },
           frame: {
             type: "object",
             description: "B-876 \u2014 the gate-specific frame, discriminated by `kind` (must match the gate reason): 'clarify' { solving, in_scope[], not_solving[{item,lands}], floor_reviewed?[] } | 'decompose' { elements[{text,surface?,covers?}], coverage, existing_children_checked, floor_reviewed?[] } | 'design' { track, tracks[{track,status,note?}], reach[], reach_level? ('this_ticket_only'|'this_surface'|'this_product', B-1047 \u2014 declare it on every design brief), rules?[{ref,operation:'create'|'amend'|'reference',wording,domains[],surfaces[],knowledge_scope:'product'|'deployment',reach:'this_surface'|'this_product',target_entry_id,expected_fingerprint,before?,title?}] (B-1047 \u2014 beyond-ticket reach with zero rules is REFUSED; this_ticket_only allows only 'reference'; amend/reference need target_entry_id + expected_fingerprint (from read_rule_registry); create/amend need wording, knowledge_scope and reach; a reference never restates its rule, so wording/knowledge_scope/reach are optional there and `title` is display-only; compose derives the 'rule_bundle' payload item and refuses when this database lacks the rule registry), not_reopened?[], derisk?{run[],not_run[]}, files_on_accept?[], floor_reviewed?[] } | 'plan' { scope{repos[],surfaces[],has_migration}, steps[], attestation{base_verified,derisked_by_running?}, carried_unproven[{item,reason}], ac_coverage, landing?, design_delta?, design_read?{version_id|null,screens[],drift: 'changed'|'unchanged'|'unchecked'} (B-1205), floor_reviewed?[] } | 'release' { settled_beyond_design?[{behaviour,ac,knowledge_entry_id}], act(LandingShape), unproven[{item,reason}], evidence_status{proven_by_run,walk_at_verify,unproven,total,detail?}, risk_classes[], pr_review_state?, contradiction_signal?{status,message,entries[{entry_id,title,state,matched_values[],source}],truncated?}, floor_reviewed?[] } | 'verify' { environment, criteria[{ac_id,text,checked,disposition,step_ref?,blocked_reason?,carried_to?,backed_by?,recommended_carry?{destination:'new'|<ticket>,milestone:'source'|'none',reason}}], steps?[{ref,action,expect,covers[],design_node?{node_id,name,caption?,preview_attachment_id,preview_filename}}], design_comparison?, exempt_reason?, evidence_status, settled?[{criterion_text,action:'carried'|'dropped',destination,milestone_landing,landing_reason,drop_reason,settled_by,settled_at}] (B-1410 \u2014 copy from get_verify_readiness.settled), bounded_accept? (RETIRED by B-1410 \u2014 warned; tick, carry or drop the criterion instead) }. `floor_reviewed` (B-838) applies to the FIVE forward gates only \u2014 never verify. LandingShape = { repos[], pr_count, lands_in: 'staging'|'production'|'both'|'merged-main', atomicity: 'single'|'together'|'ordered', ordering? (required when ordered), irreversible[], prs?[{repo,number,url}] (B-890, optional forever \u2014 populated from field_values.prerequisite_pr then build_pr) }. Every rule over this field is a WARNING, with two exceptions: (B-1016) a `release` frame missing `evidence_status` is REFUSED outright; (B-1068) a `verify` frame is REFUSED when a `walk`-kind criterion has no `frame.steps` at all, when a `step_ref` matches no declared step, when a step covers no filed criterion, when a `walk` criterion names no `step_ref`, when a step's `action` or `expect` is blank, or when `items[].kind === 'step'` / a raw `frame.runbook` key is present; (B-1410) a `verify` frame is also REFUSED when a `carried` row names a criterion still unticked on the ticket \u2014 carry it with settle_acceptance_criterion first \u2014 author the walk as `frame.steps: [{ ref, action, expect, covers }]`, one action plus one expected observation per step, `covers` naming the acceptance-criterion ids it discharges. Omit the frame entirely and the render is byte-identical to the pre-B-876 output."

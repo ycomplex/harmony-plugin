@@ -28,6 +28,8 @@ const READ_TOOLS = [
   'read_feature_accounts',
   // B-1047 — the rule registry read; no record echo to strip.
   'read_rule_registry',
+  // B-1305 — the project's brief section declarations (git, not the board); no record echo to strip.
+  'read_brief_sections',
   'preview_feature_amendment',
   'preview_knowledge_questions',
   'get_project',

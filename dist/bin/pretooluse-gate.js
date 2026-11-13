@@ -22915,9 +22915,20 @@ var ProjectManifestBodySchema = external_exports.object({
   release: ReleaseGateSchema.optional(),
   verify: VerifyGateSchema.optional(),
   notify: external_exports.array(NotifyEntrySchema).optional(),
-  fasttrack: FasttrackSchema.optional()
+  fasttrack: FasttrackSchema.optional(),
+  // B-1305: recognised here, validated by parseBriefSections (scoped, never whole-file malformed).
+  brief_sections: external_exports.unknown().optional()
 }).strict();
-var KNOWN_TOP_LEVEL_KEYS = ["version", "preconditions", "build", "release", "verify", "notify", "fasttrack"];
+var KNOWN_TOP_LEVEL_KEYS = [
+  "version",
+  "preconditions",
+  "build",
+  "release",
+  "verify",
+  "notify",
+  "fasttrack",
+  "brief_sections"
+];
 function isPlainObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -23071,6 +23082,17 @@ function resolveExtensionPoint(result, extensionPoint) {
   const steps = extensionPoint === "build.before_pr" ? result.manifest.build?.before_pr : extensionPoint === "release.before_merge" ? result.manifest.release?.before_merge : result.manifest.verify?.before_ack;
   return { outcome: "steps", steps: steps ?? [] };
 }
+var BRIEF_SECTION_LIMITS = {
+  sectionsPerGate: 3,
+  titleChars: 80,
+  instructionChars: 600,
+  markdownChars: 4e3
+};
+var BriefSectionSchema = external_exports.object({
+  id: external_exports.string(),
+  title: external_exports.string().min(1).max(BRIEF_SECTION_LIMITS.titleChars),
+  instruction: external_exports.string().min(1).max(BRIEF_SECTION_LIMITS.instructionChars)
+}).strict();
 
 // src/hooks/pretooluse-gate.ts
 var GATE_OVERRIDE_ENV = "HARMONY_GATE_OVERRIDE";

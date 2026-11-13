@@ -4002,10 +4002,10 @@ var require_resolve_block_map = __commonJS({
       let offset = bm.offset;
       let commentEnd = null;
       for (const collItem of bm.items) {
-        const { start, key, sep, value } = collItem;
+        const { start, key, sep: sep2, value } = collItem;
         const keyProps = resolveProps.resolveProps(start, {
           indicator: "explicit-key-ind",
-          next: key ?? sep?.[0],
+          next: key ?? sep2?.[0],
           offset,
           onError,
           parentIndent: bm.indent,
@@ -4019,7 +4019,7 @@ var require_resolve_block_map = __commonJS({
             else if ("indent" in key && key.indent !== bm.indent)
               onError(offset, "BAD_INDENT", startColMsg);
           }
-          if (!keyProps.anchor && !keyProps.tag && !sep) {
+          if (!keyProps.anchor && !keyProps.tag && !sep2) {
             commentEnd = keyProps.end;
             if (keyProps.comment) {
               if (map.comment)
@@ -4043,7 +4043,7 @@ var require_resolve_block_map = __commonJS({
         ctx.atKey = false;
         if (utilMapIncludes.mapIncludes(ctx, map.items, keyNode))
           onError(keyStart, "DUPLICATE_KEY", "Map keys must be unique");
-        const valueProps = resolveProps.resolveProps(sep ?? [], {
+        const valueProps = resolveProps.resolveProps(sep2 ?? [], {
           indicator: "map-value-ind",
           next: value,
           offset: keyNode.range[2],
@@ -4059,7 +4059,7 @@ var require_resolve_block_map = __commonJS({
             if (ctx.options.strict && keyProps.start < valueProps.found.offset - 1024)
               onError(keyNode.range, "KEY_OVER_1024_CHARS", "The : indicator must be at most 1024 chars after the start of an implicit block mapping key");
           }
-          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : composeEmptyNode(ctx, offset, sep, null, valueProps, onError);
+          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : composeEmptyNode(ctx, offset, sep2, null, valueProps, onError);
           if (ctx.schema.compat)
             utilFlowIndentCheck.flowIndentCheck(bm.indent, value, onError);
           offset = valueNode.range[2];
@@ -4150,7 +4150,7 @@ var require_resolve_end = __commonJS({
       let comment = "";
       if (end) {
         let hasSpace = false;
-        let sep = "";
+        let sep2 = "";
         for (const token of end) {
           const { source, type } = token;
           switch (type) {
@@ -4164,13 +4164,13 @@ var require_resolve_end = __commonJS({
               if (!comment)
                 comment = cb;
               else
-                comment += sep + cb;
-              sep = "";
+                comment += sep2 + cb;
+              sep2 = "";
               break;
             }
             case "newline":
               if (comment)
-                sep += source;
+                sep2 += source;
               hasSpace = true;
               break;
             default:
@@ -4213,18 +4213,18 @@ var require_resolve_flow_collection = __commonJS({
       let offset = fc.offset + fc.start.source.length;
       for (let i = 0; i < fc.items.length; ++i) {
         const collItem = fc.items[i];
-        const { start, key, sep, value } = collItem;
+        const { start, key, sep: sep2, value } = collItem;
         const props = resolveProps.resolveProps(start, {
           flow: fcName,
           indicator: "explicit-key-ind",
-          next: key ?? sep?.[0],
+          next: key ?? sep2?.[0],
           offset,
           onError,
           parentIndent: fc.indent,
           startOnNewline: false
         });
         if (!props.found) {
-          if (!props.anchor && !props.tag && !sep && !value) {
+          if (!props.anchor && !props.tag && !sep2 && !value) {
             if (i === 0 && props.comma)
               onError(props.comma, "UNEXPECTED_TOKEN", `Unexpected , in ${fcName}`);
             else if (i < fc.items.length - 1)
@@ -4278,8 +4278,8 @@ var require_resolve_flow_collection = __commonJS({
             }
           }
         }
-        if (!isMap && !sep && !props.found) {
-          const valueNode = value ? composeNode(ctx, value, props, onError) : composeEmptyNode(ctx, props.end, sep, null, props, onError);
+        if (!isMap && !sep2 && !props.found) {
+          const valueNode = value ? composeNode(ctx, value, props, onError) : composeEmptyNode(ctx, props.end, sep2, null, props, onError);
           coll.items.push(valueNode);
           offset = valueNode.range[2];
           if (isBlock(value))
@@ -4291,7 +4291,7 @@ var require_resolve_flow_collection = __commonJS({
           if (isBlock(key))
             onError(keyNode.range, "BLOCK_IN_FLOW", blockMsg);
           ctx.atKey = false;
-          const valueProps = resolveProps.resolveProps(sep ?? [], {
+          const valueProps = resolveProps.resolveProps(sep2 ?? [], {
             flow: fcName,
             indicator: "map-value-ind",
             next: value,
@@ -4302,8 +4302,8 @@ var require_resolve_flow_collection = __commonJS({
           });
           if (valueProps.found) {
             if (!isMap && !props.found && ctx.options.strict) {
-              if (sep)
-                for (const st of sep) {
+              if (sep2)
+                for (const st of sep2) {
                   if (st === valueProps.found)
                     break;
                   if (st.type === "newline") {
@@ -4320,7 +4320,7 @@ var require_resolve_flow_collection = __commonJS({
             else
               onError(valueProps.start, "MISSING_CHAR", `Missing , or : between ${fcName} items`);
           }
-          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : valueProps.found ? composeEmptyNode(ctx, valueProps.end, sep, null, valueProps, onError) : null;
+          const valueNode = value ? composeNode(ctx, value, valueProps, onError) : valueProps.found ? composeEmptyNode(ctx, valueProps.end, sep2, null, valueProps, onError) : null;
           if (valueNode) {
             if (isBlock(value))
               onError(valueNode.range, "BLOCK_IN_FLOW", blockMsg);
@@ -4500,7 +4500,7 @@ var require_resolve_block_scalar = __commonJS({
           chompStart = i + 1;
       }
       let value = "";
-      let sep = "";
+      let sep2 = "";
       let prevMoreIndented = false;
       for (let i = 0; i < contentStart; ++i)
         value += lines[i][0].slice(trimIndent) + "\n";
@@ -4517,24 +4517,24 @@ var require_resolve_block_scalar = __commonJS({
           indent = "";
         }
         if (type === Scalar.Scalar.BLOCK_LITERAL) {
-          value += sep + indent.slice(trimIndent) + content;
-          sep = "\n";
+          value += sep2 + indent.slice(trimIndent) + content;
+          sep2 = "\n";
         } else if (indent.length > trimIndent || content[0] === "	") {
-          if (sep === " ")
-            sep = "\n";
-          else if (!prevMoreIndented && sep === "\n")
-            sep = "\n\n";
-          value += sep + indent.slice(trimIndent) + content;
-          sep = "\n";
+          if (sep2 === " ")
+            sep2 = "\n";
+          else if (!prevMoreIndented && sep2 === "\n")
+            sep2 = "\n\n";
+          value += sep2 + indent.slice(trimIndent) + content;
+          sep2 = "\n";
           prevMoreIndented = true;
         } else if (content === "") {
-          if (sep === "\n")
+          if (sep2 === "\n")
             value += "\n";
           else
-            sep = "\n";
+            sep2 = "\n";
         } else {
-          value += sep + content;
-          sep = " ";
+          value += sep2 + content;
+          sep2 = " ";
           prevMoreIndented = false;
         }
       }
@@ -4716,25 +4716,25 @@ var require_resolve_flow_scalar = __commonJS({
       if (!match)
         return source;
       let res = match[1];
-      let sep = " ";
+      let sep2 = " ";
       let pos = first.lastIndex;
       line.lastIndex = pos;
       while (match = line.exec(source)) {
         if (match[1] === "") {
-          if (sep === "\n")
-            res += sep;
+          if (sep2 === "\n")
+            res += sep2;
           else
-            sep = "\n";
+            sep2 = "\n";
         } else {
-          res += sep + match[1];
-          sep = " ";
+          res += sep2 + match[1];
+          sep2 = " ";
         }
         pos = line.lastIndex;
       }
       const last = /[ \t]*(.*)/sy;
       last.lastIndex = pos;
       match = last.exec(source);
-      return res + sep + (match?.[1] ?? "");
+      return res + sep2 + (match?.[1] ?? "");
     }
     function doubleQuotedValue(source, onError) {
       let res = "";
@@ -5544,14 +5544,14 @@ var require_cst_stringify = __commonJS({
         }
       }
     }
-    function stringifyItem({ start, key, sep, value }) {
+    function stringifyItem({ start, key, sep: sep2, value }) {
       let res = "";
       for (const st of start)
         res += st.source;
       if (key)
         res += stringifyToken(key);
-      if (sep)
-        for (const st of sep)
+      if (sep2)
+        for (const st of sep2)
           res += st.source;
       if (value)
         res += stringifyToken(value);
@@ -6718,18 +6718,18 @@ var require_parser = __commonJS({
         if (this.type === "map-value-ind") {
           const prev = getPrevProps(this.peek(2));
           const start = getFirstKeyStartProps(prev);
-          let sep;
+          let sep2;
           if (scalar.end) {
-            sep = scalar.end;
-            sep.push(this.sourceToken);
+            sep2 = scalar.end;
+            sep2.push(this.sourceToken);
             delete scalar.end;
           } else
-            sep = [this.sourceToken];
+            sep2 = [this.sourceToken];
           const map = {
             type: "block-map",
             offset: scalar.offset,
             indent: scalar.indent,
-            items: [{ start, key: scalar, sep }]
+            items: [{ start, key: scalar, sep: sep2 }]
           };
           this.onKeyLine = true;
           this.stack[this.stack.length - 1] = map;
@@ -6882,15 +6882,15 @@ var require_parser = __commonJS({
                 } else if (isFlowToken(it.key) && !includesToken(it.sep, "newline")) {
                   const start2 = getFirstKeyStartProps(it.start);
                   const key = it.key;
-                  const sep = it.sep;
-                  sep.push(this.sourceToken);
+                  const sep2 = it.sep;
+                  sep2.push(this.sourceToken);
                   delete it.key;
                   delete it.sep;
                   this.stack.push({
                     type: "block-map",
                     offset: this.offset,
                     indent: this.indent,
-                    items: [{ start: start2, key, sep }]
+                    items: [{ start: start2, key, sep: sep2 }]
                   });
                 } else if (start.length > 0) {
                   it.sep = it.sep.concat(start, this.sourceToken);
@@ -7084,13 +7084,13 @@ var require_parser = __commonJS({
             const prev = getPrevProps(parent);
             const start = getFirstKeyStartProps(prev);
             fixFlowSeqItems(fc);
-            const sep = fc.end.splice(1, fc.end.length);
-            sep.push(this.sourceToken);
+            const sep2 = fc.end.splice(1, fc.end.length);
+            sep2.push(this.sourceToken);
             const map = {
               type: "block-map",
               offset: fc.offset,
               indent: fc.indent,
-              items: [{ start, key: fc, sep }]
+              items: [{ start, key: fc, sep: sep2 }]
             };
             this.onKeyLine = true;
             this.stack[this.stack.length - 1] = map;
@@ -7487,11 +7487,11 @@ function __metadata(metadataKey, metadataValue) {
 }
 function __awaiter(thisArg, _arguments, P, generator) {
   function adopt(value) {
-    return value instanceof P ? value : new P(function(resolve) {
-      resolve(value);
+    return value instanceof P ? value : new P(function(resolve2) {
+      resolve2(value);
     });
   }
-  return new (P || (P = Promise))(function(resolve, reject) {
+  return new (P || (P = Promise))(function(resolve2, reject) {
     function fulfilled(value) {
       try {
         step(generator.next(value));
@@ -7507,7 +7507,7 @@ function __awaiter(thisArg, _arguments, P, generator) {
       }
     }
     function step(result) {
-      result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected);
+      result.done ? resolve2(result.value) : adopt(result.value).then(fulfilled, rejected);
     }
     step((generator = generator.apply(thisArg, _arguments || [])).next());
   });
@@ -7698,14 +7698,14 @@ function __asyncValues(o) {
   }, i);
   function verb(n) {
     i[n] = o[n] && function(v) {
-      return new Promise(function(resolve, reject) {
-        v = o[n](v), settle(resolve, reject, v.done, v.value);
+      return new Promise(function(resolve2, reject) {
+        v = o[n](v), settle(resolve2, reject, v.done, v.value);
       });
     };
   }
-  function settle(resolve, reject, d, v) {
+  function settle(resolve2, reject, d, v) {
     Promise.resolve(v).then(function(v2) {
-      resolve({ value: v2, done: d });
+      resolve2({ value: v2, done: d });
     }, reject);
   }
 }
@@ -11195,15 +11195,15 @@ var require_RealtimeChannel = __commonJS({
             }
           }
         } else {
-          return new Promise((resolve) => {
+          return new Promise((resolve2) => {
             var _a2, _b2, _c;
             const push = this.channelAdapter.push(args.type, args, opts.timeout || this.timeout);
             if (args.type === "broadcast" && !((_c = (_b2 = (_a2 = this.params) === null || _a2 === void 0 ? void 0 : _a2.config) === null || _b2 === void 0 ? void 0 : _b2.broadcast) === null || _c === void 0 ? void 0 : _c.ack)) {
-              resolve("ok");
+              resolve2("ok");
             }
-            push.receive("ok", () => resolve("ok"));
-            push.receive("error", () => resolve("error"));
-            push.receive("timeout", () => resolve("timed out"));
+            push.receive("ok", () => resolve2("ok"));
+            push.receive("error", () => resolve2("error"));
+            push.receive("timeout", () => resolve2("timed out"));
           });
         }
       }
@@ -11228,8 +11228,8 @@ var require_RealtimeChannel = __commonJS({
        * @category Realtime
        */
       async unsubscribe(timeout = this.timeout) {
-        return new Promise((resolve) => {
-          this.channelAdapter.unsubscribe(timeout).receive("ok", () => resolve("ok")).receive("timeout", () => resolve("timed out")).receive("error", () => resolve("error"));
+        return new Promise((resolve2) => {
+          this.channelAdapter.unsubscribe(timeout).receive("ok", () => resolve2("ok")).receive("timeout", () => resolve2("timed out")).receive("error", () => resolve2("error"));
         });
       }
       /**
@@ -11310,8 +11310,8 @@ var require_RealtimeChannel = __commonJS({
       }
       /** @internal */
       _notThisChannelEvent(event, ref) {
-        const { close, error, leave, join: join7 } = constants_1.CHANNEL_EVENTS;
-        const events2 = [close, error, leave, join7];
+        const { close, error, leave, join: join8 } = constants_1.CHANNEL_EVENTS;
+        const events2 = [close, error, leave, join8];
         return ref && events2.includes(event) && ref !== this.joinPush.ref;
       }
       /** @internal */
@@ -11423,11 +11423,11 @@ var require_socketAdapter = __commonJS({
         this.socket.connect();
       }
       disconnect(callback, code, reason, timeout = 1e4) {
-        return new Promise((resolve) => {
-          setTimeout(() => resolve("timeout"), timeout);
+        return new Promise((resolve2) => {
+          setTimeout(() => resolve2("timeout"), timeout);
           this.socket.disconnect(() => {
             callback();
-            resolve("ok");
+            resolve2("ok");
           }, code, reason);
         });
       }
@@ -23232,10 +23232,10 @@ async function searchKnowledge(client, projectId, args, started = performance.no
       record("timeout", "deadline");
       return void 0;
     }
-    const timeout = new Promise((resolve) => {
+    const timeout = new Promise((resolve2) => {
       timer = setTimeout(() => {
         routeController.abort();
-        resolve(void 0);
+        resolve2(void 0);
       }, ms);
     });
     try {
@@ -23703,7 +23703,7 @@ async function queryKnowledge(client, projectId, args) {
   const result = await queryKnowledgeUnlogged(client, projectId, queryArgs);
   await Promise.race([
     logKnowledgeRetrieval(client, projectId, { task_id, gate, search: queryArgs.search }, result),
-    new Promise((resolve) => setTimeout(resolve, RETRIEVAL_LOG_BUDGET_MS).unref())
+    new Promise((resolve2) => setTimeout(resolve2, RETRIEVAL_LOG_BUDGET_MS).unref())
   ]);
   return result;
 }
@@ -26655,9 +26655,20 @@ var ProjectManifestBodySchema = external_exports.object({
   release: ReleaseGateSchema.optional(),
   verify: VerifyGateSchema.optional(),
   notify: external_exports.array(NotifyEntrySchema).optional(),
-  fasttrack: FasttrackSchema.optional()
+  fasttrack: FasttrackSchema.optional(),
+  // B-1305: recognised here, validated by parseBriefSections (scoped, never whole-file malformed).
+  brief_sections: external_exports.unknown().optional()
 }).strict();
-var KNOWN_TOP_LEVEL_KEYS = ["version", "preconditions", "build", "release", "verify", "notify", "fasttrack"];
+var KNOWN_TOP_LEVEL_KEYS = [
+  "version",
+  "preconditions",
+  "build",
+  "release",
+  "verify",
+  "notify",
+  "fasttrack",
+  "brief_sections"
+];
 function isPlainObject3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -26807,6 +26818,65 @@ function loadProjectManifest(projectRoot, deps = {}) {
 }
 function getDeclaredEvidence(manifest) {
   return manifest.verify?.evidence ?? [];
+}
+var BRIEF_SECTION_GATES = ["clarify", "decompose", "design", "plan", "release", "verify"];
+var BRIEF_SECTION_GATE_FOR_REASON = {
+  "clarification-draft": "clarify",
+  "decomposition-proposal": "decompose",
+  "design-decision-draft": "design",
+  "plan-draft": "plan",
+  "release-decision-pending": "release",
+  "verification-ack-pending": "verify"
+};
+var BRIEF_SECTION_LIMITS = {
+  sectionsPerGate: 3,
+  titleChars: 80,
+  instructionChars: 600,
+  markdownChars: 4e3
+};
+var BRIEF_SECTION_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,39}$/;
+var BriefSectionSchema = external_exports.object({
+  id: external_exports.string(),
+  title: external_exports.string().min(1).max(BRIEF_SECTION_LIMITS.titleChars),
+  instruction: external_exports.string().min(1).max(BRIEF_SECTION_LIMITS.instructionChars)
+}).strict();
+function parseBriefSections(raw) {
+  if (raw === void 0 || raw === null) return { ok: true, byGate: {} };
+  if (!isPlainObject3(raw)) return { ok: false, problem: "brief_sections must be a mapping of gate names to lists of sections" };
+  const byGate = {};
+  for (const [gate, list] of Object.entries(raw)) {
+    if (!BRIEF_SECTION_GATES.includes(gate)) {
+      return { ok: false, problem: `brief_sections names an unknown gate '${gate}' \u2014 recognised gates are ${BRIEF_SECTION_GATES.join(", ")}` };
+    }
+    if (!Array.isArray(list)) return { ok: false, problem: `brief_sections.${gate} must be a list of sections` };
+    if (list.length > BRIEF_SECTION_LIMITS.sectionsPerGate) {
+      return { ok: false, problem: `brief_sections.${gate} declares ${list.length} sections \u2014 at most ${BRIEF_SECTION_LIMITS.sectionsPerGate} per gate` };
+    }
+    const seen = /* @__PURE__ */ new Set();
+    const sections = [];
+    for (const [i, entry] of list.entries()) {
+      const where = `brief_sections.${gate}[${i}]`;
+      const parsed = BriefSectionSchema.safeParse(entry);
+      if (!parsed.success) {
+        const issue = parsed.error.issues[0];
+        const field = issue?.path.join(".") || "(section)";
+        let why = issue?.message ?? "invalid";
+        if (issue?.code === "too_big" && field === "title") why = `longer than ${BRIEF_SECTION_LIMITS.titleChars} characters`;
+        if (issue?.code === "too_big" && field === "instruction") why = `longer than ${BRIEF_SECTION_LIMITS.instructionChars} characters`;
+        if (issue?.code === "unrecognized_keys") why = `unrecognised key(s) ${issue.keys.join(", ")} \u2014 a section has id, title and instruction`;
+        return { ok: false, problem: `${where}: ${field === "(section)" ? "" : `${field} `}${why}` };
+      }
+      const { id } = parsed.data;
+      if (!BRIEF_SECTION_ID_PATTERN.test(id)) {
+        return { ok: false, problem: `${where}: id '${id}' must be lowercase letters, digits and hyphens, start with a letter or digit, at most 40 characters` };
+      }
+      if (seen.has(id)) return { ok: false, problem: `brief_sections.${gate} declares the id '${id}' twice` };
+      seen.add(id);
+      sections.push(parsed.data);
+    }
+    if (sections.length > 0) byGate[gate] = sections;
+  }
+  return { ok: true, byGate };
 }
 
 // src/config/manifest-evidence.ts
@@ -26980,6 +27050,421 @@ async function readAttestation(client, taskId) {
   const details = await readAttestationDetails(client, taskId);
   return { attestedKeys: parseAttestedKeys(details), unparsedMarker: hasUnparsedAttestedMarker(details) };
 }
+
+// src/config/brief-sections.ts
+var import_yaml2 = __toESM(require_dist(), 1);
+import { execFile } from "node:child_process";
+import { existsSync as nodeExistsSync3, readFileSync as nodeReadFileSync3 } from "node:fs";
+import { dirname as dirname3, isAbsolute, join as join5, relative, resolve, sep } from "node:path";
+var FETCH_INTERVAL_MS = 6e4;
+var FETCH_TIMEOUT_MS = 1e4;
+var processFetchLog = /* @__PURE__ */ new Map();
+function realGit(args, opts) {
+  return new Promise((done) => {
+    execFile(
+      "git",
+      args,
+      {
+        cwd: opts.cwd,
+        timeout: opts.timeoutMs ?? FETCH_TIMEOUT_MS,
+        env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+        maxBuffer: 4 * 1024 * 1024
+      },
+      (err, stdout) => done({ ok: !err, stdout: String(stdout ?? "") })
+    );
+  });
+}
+function defaultBriefSectionsIO() {
+  return {
+    cwd: () => process.cwd(),
+    existsSync: nodeExistsSync3,
+    readFileSync: (p) => nodeReadFileSync3(p, "utf8"),
+    git: realGit,
+    now: () => Date.now(),
+    fetchLog: processFetchLog
+  };
+}
+function repositoryFromUrl(url) {
+  const trimmed = url.trim().replace(/\/+$/, "").replace(/\.git$/, "");
+  const m = trimmed.match(/[/:]([^/:]+)\/([^/:]+)$/);
+  return m ? `${m[1]}/${m[2]}` : null;
+}
+function findConductorRepos(io, start) {
+  let directory = start;
+  for (; ; ) {
+    const file = join5(directory, ".harmony", "conductor.json");
+    if (io.existsSync(file)) {
+      let config;
+      try {
+        config = JSON.parse(io.readFileSync(file));
+      } catch {
+        return { root: directory, repos: [] };
+      }
+      const entries = Array.isArray(config.repos) ? config.repos : [];
+      const meta = entries.find((e) => e && e.meta_repo_role === true && typeof e.path === "string");
+      const repos = [];
+      for (const entry of entries) {
+        if (!entry || typeof entry.path !== "string" || entry.path.length === 0) continue;
+        repos.push({ path: localRepoPath(io, directory, entry.path, meta?.path), label: entry.path });
+      }
+      return { root: directory, repos };
+    }
+    const parent = dirname3(directory);
+    if (parent === directory) return null;
+    directory = parent;
+  }
+}
+function localRepoPath(io, root, path2, metaPath) {
+  if (!isAbsolute(path2)) return resolve(root, path2);
+  if (io.existsSync(path2)) return path2;
+  if (metaPath && isAbsolute(metaPath)) {
+    const rel = relative(metaPath, path2);
+    if (rel === "") return root;
+    if (!rel.startsWith("..") && !isAbsolute(rel) && !rel.split(sep).includes("..")) return join5(root, rel);
+  }
+  return path2;
+}
+async function defaultBranch(io, top) {
+  const head2 = await io.git(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], { cwd: top });
+  const name = head2.stdout.trim().replace(/^refs\/remotes\/origin\//, "");
+  if (head2.ok && name) return name;
+  for (const candidate of ["main", "master"]) {
+    const r = await io.git(["rev-parse", "--verify", "--quiet", `refs/remotes/origin/${candidate}`], { cwd: top });
+    if (r.ok) return candidate;
+  }
+  return "main";
+}
+async function quietFetch(io, top, branch) {
+  const key = `${top}\0${branch}`;
+  const last = io.fetchLog.get(key);
+  if (last && io.now() - last.at < FETCH_INTERVAL_MS) return last.ok;
+  const r = await io.git(["fetch", "--quiet", "--no-tags", "origin", branch], { cwd: top, timeoutMs: FETCH_TIMEOUT_MS });
+  io.fetchLog.set(key, { at: io.now(), ok: r.ok });
+  return r.ok;
+}
+async function readRepo(io, candidate) {
+  const topR = io.existsSync(candidate.path) ? await io.git(["rev-parse", "--show-toplevel"], { cwd: candidate.path }) : { ok: false, stdout: "" };
+  if (!topR.ok) {
+    return { kind: "skipped", warning: `brief sections: ${candidate.label} is not a git checkout here; its declarations were not read` };
+  }
+  const top = topR.stdout.trim() || candidate.path;
+  const origin = await io.git(["remote", "get-url", "origin"], { cwd: top });
+  const repository = origin.ok ? repositoryFromUrl(origin.stdout) : null;
+  if (!repository) {
+    return { kind: "skipped", warning: `brief sections: ${top} has no origin remote; its declarations were not read` };
+  }
+  const branch = await defaultBranch(io, top);
+  const fresh = await quietFetch(io, top, branch);
+  const ref = `refs/remotes/origin/${branch}`;
+  const commitR = await io.git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], { cwd: top });
+  if (!commitR.ok || !commitR.stdout.trim()) {
+    return { kind: "skipped", warning: `brief sections: ${repository} has no readable origin/${branch}; its declarations were not read` };
+  }
+  const commit = commitR.stdout.trim();
+  const listed = await io.git(["ls-tree", "--name-only", commit, "--", PROJECT_MANIFEST_RELATIVE_PATH], { cwd: top });
+  if (!listed.ok) {
+    return { kind: "skipped", warning: `brief sections: ${repository} origin/${branch} could not be listed; its declarations were not read` };
+  }
+  if (listed.stdout.trim() === "") return { kind: "absent" };
+  const shown = await io.git(["show", `${commit}:${PROJECT_MANIFEST_RELATIVE_PATH}`], { cwd: top });
+  if (!shown.ok) {
+    return { kind: "skipped", warning: `brief sections: ${repository}'s ${PROJECT_MANIFEST_RELATIVE_PATH} on origin/${branch} could not be read` };
+  }
+  const file = `${repository}:${PROJECT_MANIFEST_RELATIVE_PATH} (origin/${branch} at ${commit.slice(0, 7)})`;
+  let parsed;
+  try {
+    parsed = (0, import_yaml2.parse)(shown.stdout);
+  } catch {
+    if (!/brief_sections/.test(shown.stdout)) return { kind: "absent" };
+    return { kind: "malformed", warning: `${file}: brief_sections could not be read (invalid YAML); its sections are not enforced` };
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed) || !("brief_sections" in parsed)) {
+    return { kind: "read", repository, commit, fresh, byGate: {} };
+  }
+  const result = parseBriefSections(parsed.brief_sections);
+  if (!result.ok) {
+    return { kind: "malformed", warning: `${file}: ${result.problem}; its brief sections are not enforced` };
+  }
+  return { kind: "read", repository, commit, fresh, byGate: result.byGate };
+}
+async function readBriefSectionDeclarations(gate, io = defaultBriefSectionsIO()) {
+  try {
+    const cwd = io.cwd();
+    const conductor = findConductorRepos(io, cwd);
+    let candidates;
+    if (conductor) {
+      candidates = conductor.repos;
+      if (candidates.length === 0) {
+        candidates = [{ path: conductor.root, label: conductor.root }];
+      }
+    } else {
+      const top = await io.git(["rev-parse", "--show-toplevel"], { cwd });
+      if (!top.ok || !top.stdout.trim()) {
+        return { kind: "unreadable", detail: "no .harmony/conductor.json was found and the working directory is not inside a git repository" };
+      }
+      candidates = [{ path: top.stdout.trim(), label: top.stdout.trim() }];
+    }
+    const warnings = [];
+    const repos = [];
+    let readable = 0;
+    const reads = await Promise.all(candidates.map((candidate) => readRepo(io, candidate)));
+    for (const r of reads) {
+      if (r.kind === "skipped") {
+        warnings.push(r.warning);
+        continue;
+      }
+      readable += 1;
+      if (r.kind === "malformed") warnings.push(r.warning);
+      else if (r.kind === "read") {
+        const sections = r.byGate[gate];
+        if (sections && sections.length > 0) repos.push({ repository: r.repository, commit: r.commit, fresh: r.fresh, sections });
+      }
+    }
+    if (readable === 0) {
+      return { kind: "unreadable", detail: warnings.join("; ") || "no repository could be read" };
+    }
+    if (repos.length === 0 && warnings.length === 0) return { kind: "none" };
+    return { kind: "declared", repos, warnings };
+  } catch (err) {
+    return { kind: "unreadable", detail: `the declarations could not be read (${err?.message ?? String(err)})` };
+  }
+}
+function hasEnforcedSections(d) {
+  return d.kind === "declared" && d.repos.some((r) => r.sections.length > 0);
+}
+
+// src/tools/token-shapes.ts
+var B = "(?<![A-Za-z0-9])";
+var TOKEN_SHAPES = [
+  { name: "github", pattern: new RegExp(`${B}(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]*`, "g") },
+  { name: "sk-key", pattern: new RegExp(`${B}sk-[A-Za-z0-9_-]*`, "g") },
+  { name: "jwt", pattern: new RegExp(`${B}eyJ[A-Za-z0-9_+/=.-]*`, "g") },
+  { name: "slack", pattern: new RegExp(`${B}xox[abpr]-[A-Za-z0-9-]+`, "g") },
+  { name: "aws-access-key", pattern: new RegExp(`${B}AKIA[0-9A-Z]{16}`, "g") },
+  // Every Figma token prefix: `figd_` (personal access token), `figu_` (OAuth user token, the shape that
+  // leaked on 2026-11-11), and any other `fig<letter>_` Figma adds. Matches prefix AND body, so a scrub
+  // leaves no prefix behind, including a body with `_` or `-` in short runs the long-run fallback misses.
+  { name: "figma", pattern: new RegExp(`${B}fig[a-z]_[A-Za-z0-9_-]+`, "g") },
+  { name: "google-api-key", pattern: new RegExp(`${B}AIza[0-9A-Za-z_-]{35}`, "g") },
+  { name: "private-key-block", pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----/g },
+  // B-1305: a Supabase secret (service) key, `sb_secret_` and its body.
+  { name: "supabase-secret-key", pattern: new RegExp(`${B}sb_secret_[A-Za-z0-9_-]+`, "g") },
+  // B-1305: a Harmony API token, `harmony_` and 64 hex characters.
+  { name: "harmony-api-token", pattern: new RegExp(`${B}harmony_[0-9a-f]{64}(?![0-9a-f])`, "g") },
+  // Last: it would otherwise eat part of a longer, more specific match above.
+  { name: "long-base64-run", pattern: /[A-Za-z0-9+/]{32,}={0,2}/g }
+];
+
+// src/tools/brief-section-scan.ts
+var CATCH_ALL = "long-base64-run";
+var CREDENTIAL_NAME = /TOKEN|KEY|SECRET|PASSWORD|CREDENTIAL/i;
+var ENV_VALUE_MIN_LENGTH = 16;
+function scanSectionText(text2, env = process.env) {
+  if (typeof text2 !== "string" || text2.length === 0) return null;
+  for (const { name, pattern } of TOKEN_SHAPES) {
+    if (name === CATCH_ALL) continue;
+    if (new RegExp(pattern.source, pattern.flags.replace("g", "")).test(text2)) return { kind: "shape", shape: name };
+  }
+  for (const [variable, value] of Object.entries(env)) {
+    if (!CREDENTIAL_NAME.test(variable)) continue;
+    if (typeof value !== "string" || value.length < ENV_VALUE_MIN_LENGTH) continue;
+    if (text2.includes(value)) return { kind: "env", variable };
+  }
+  return null;
+}
+function describeScanFinding(f) {
+  return f.kind === "shape" ? `it contains text shaped like a credential (${f.shape})` : `it contains the value of the environment variable ${f.variable}`;
+}
+
+// src/tools/brief-project-sections.ts
+var defaultReader = (gate) => readBriefSectionDeclarations(gate);
+var NOT_APPLICABLE_LINE = "Not applicable to this ticket";
+function checkBriefSections(supplied, declared, env = process.env) {
+  const problems = [];
+  const items = supplied === void 0 || supplied === null ? [] : Array.isArray(supplied) ? supplied : [];
+  if (supplied !== void 0 && supplied !== null && !Array.isArray(supplied)) {
+    problems.push("doc.sections must be a list of { repository?, id, markdown }");
+  }
+  const owners = /* @__PURE__ */ new Map();
+  for (const repo of declared.repos) {
+    for (const s of repo.sections) owners.set(s.id, [...owners.get(s.id) ?? [], repo.repository]);
+  }
+  const key = (repository, id) => `${repository}\0${id}`;
+  const filled = /* @__PURE__ */ new Map();
+  for (const [i, raw] of items.entries()) {
+    const item = raw;
+    if (!item || typeof item !== "object" || typeof item.id !== "string" || typeof item.markdown !== "string") {
+      problems.push(`doc.sections[${i}] must be { repository?, id, markdown } with string id and markdown`);
+      continue;
+    }
+    if (item.repository !== void 0 && typeof item.repository !== "string") {
+      problems.push(`doc.sections[${i}].repository must be a string`);
+      continue;
+    }
+    const declaredBy = owners.get(item.id) ?? [];
+    let repository = item.repository;
+    if (repository === void 0) {
+      if (declaredBy.length === 1) repository = declaredBy[0];
+      else if (declaredBy.length > 1) {
+        problems.push(`section '${item.id}' is declared by ${declaredBy.join(" and ")}: name its repository`);
+        continue;
+      }
+    }
+    if (repository === void 0 || !declaredBy.includes(repository)) {
+      problems.push(
+        `section '${item.id}'${repository ? ` for ${repository}` : ""} is not declared for this gate \u2014 remove it`
+      );
+      continue;
+    }
+    const k = key(repository, item.id);
+    if (filled.has(k)) {
+      problems.push(`section '${item.id}' for ${repository} is supplied twice`);
+      continue;
+    }
+    if (item.markdown.trim() === "") continue;
+    if (item.markdown.length > BRIEF_SECTION_LIMITS.markdownChars) {
+      problems.push(
+        `section '${item.id}' for ${repository} is ${item.markdown.length} characters \u2014 at most ${BRIEF_SECTION_LIMITS.markdownChars}`
+      );
+      filled.set(k, item.markdown);
+      continue;
+    }
+    const finding = scanSectionText(item.markdown, env);
+    if (finding) {
+      problems.push(`section '${item.id}' for ${repository} was refused: ${describeScanFinding(finding)}. Remove it and describe it instead`);
+      filled.set(k, item.markdown);
+      continue;
+    }
+    filled.set(k, item.markdown);
+  }
+  for (const repo of declared.repos) {
+    for (const s of repo.sections) {
+      if (!filled.has(key(repo.repository, s.id))) {
+        problems.push(
+          `missing section '${s.id}' for ${repo.repository} \u2014 "${s.title}": ${s.instruction} (a repository this ticket does not touch may say '${NOT_APPLICABLE_LINE}')`
+        );
+      }
+    }
+  }
+  if (problems.length > 0) {
+    return {
+      ok: false,
+      message: "compose_brief: this project's brief sections for this gate are not complete (supply doc.sections as [{ repository, id, markdown }] on every compose, revisions included):\n- " + problems.join("\n- ")
+    };
+  }
+  const sections = [];
+  for (const repo of declared.repos) {
+    for (const s of repo.sections) {
+      sections.push({
+        repository: repo.repository,
+        id: s.id,
+        title: s.title,
+        markdown: filled.get(key(repo.repository, s.id)),
+        commit: repo.commit,
+        fresh: repo.fresh
+      });
+    }
+  }
+  return { ok: true, sections };
+}
+async function resolveSectionsForCompose(opts) {
+  if (!opts.gate) return { kind: "clear", warnings: [] };
+  const declarations = await (opts.reader ?? defaultReader)(opts.gate);
+  if (opts.mechanical) {
+    if (hasEnforcedSections(declarations)) {
+      return { kind: "set", sections: null, omitted: { reason: "mechanical" }, warnings: [] };
+    }
+    return { kind: "clear", warnings: [] };
+  }
+  if (declarations.kind === "unreadable") {
+    return {
+      kind: "set",
+      sections: null,
+      omitted: { reason: "declarations-unreadable", detail: declarations.detail },
+      warnings: [`brief sections: the project's declarations could not be read (${declarations.detail}); the brief carries none`]
+    };
+  }
+  const warnings = declarations.kind === "declared" ? [...declarations.warnings] : [];
+  if (!hasEnforcedSections(declarations)) {
+    if (Array.isArray(opts.supplied) && opts.supplied.length > 0) {
+      warnings.push("doc.sections ignored: this project declares no brief sections for this gate");
+    }
+    return { kind: "clear", warnings };
+  }
+  const checked = checkBriefSections(opts.supplied, declarations, opts.env ?? process.env);
+  if (!checked.ok) throw new Error(checked.message);
+  for (const repo of declarations.repos) {
+    if (!repo.fresh) {
+      warnings.push(`brief sections: ${repo.repository}'s default branch could not be fetched; its declarations were read from the last-fetched copy`);
+    }
+  }
+  return { kind: "set", sections: checked.sections, omitted: null, warnings };
+}
+function applySectionsOutcome(doc, prior, outcome) {
+  const d = doc;
+  const p = prior ?? {};
+  const want = outcome.kind === "set" ? { sections: outcome.sections, sections_omitted: outcome.omitted } : { sections: null, sections_omitted: null };
+  let out = null;
+  for (const k of ["sections", "sections_omitted"]) {
+    const value = want[k];
+    if (value === null) {
+      if (k in p) {
+        if (d[k] !== null) (out ??= { ...d })[k] = null;
+      } else if (k in d) {
+        out ??= { ...d };
+        delete out[k];
+      }
+    } else {
+      (out ??= { ...d })[k] = value;
+    }
+  }
+  return out ?? d;
+}
+function renderProjectSectionsArea(doc) {
+  const omitted = doc.sections_omitted;
+  if (omitted?.reason === "mechanical") {
+    return "\n\n---\n\n_This project's brief sections were not produced: this brief was composed with no agent writing it._";
+  }
+  if (omitted?.reason === "declarations-unreadable") {
+    return `
+
+---
+
+_This project's brief section declarations could not be read: ${omitted.detail}._`;
+  }
+  const sections = Array.isArray(doc.sections) ? doc.sections : [];
+  if (sections.length === 0) return "";
+  const parts = [
+    "\n\n---\n\n## Project sections\n\n_Written by the agent at this project's request. Not checked by Harmony._"
+  ];
+  let current = null;
+  for (const s of sections) {
+    if (s.repository !== current) {
+      current = s.repository;
+      const stale = s.fresh ? "" : " (may be out of date: the default branch could not be fetched)";
+      parts.push(`
+
+### ${s.repository} \u2014 declared at ${String(s.commit).slice(0, 7)}${stale}`);
+    }
+    parts.push(`
+
+#### ${s.title}
+
+${s.markdown}`);
+  }
+  return parts.join("");
+}
+var readBriefSectionsTool = {
+  name: "read_brief_sections",
+  description: "B-1305 \u2014 read the extra brief sections this project declares for a gate (`brief_sections` in each repository's .harmony/project.yml, read from the repository's DEFAULT BRANCH, never the working tree). Call it before composing a brief at clarify, decompose, design, plan, release or verify. Returns { gate, kind: 'none' } (nothing declared \u2014 compose as usual), { gate, kind: 'unreadable', detail } (compose as usual; the brief notes it), or { gate, kind: 'declared', repos: [{ repository, commit, fresh, sections: [{ id, title, instruction }] }], warnings } \u2014 then fill every section as compose_brief doc.sections items { repository, id, markdown }. Read-only.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      gate: { type: "string", enum: [...BRIEF_SECTION_GATES], description: "The gate whose brief you are about to compose" }
+    },
+    required: ["gate"]
+  }
+};
 
 // src/tools/briefs.ts
 var FRAME_KIND_FOR_REASON = {
@@ -27415,6 +27900,9 @@ function promisedWriteLines(payload2, skipAcceptanceCriteria) {
   return (payload2 ?? []).filter((p) => !(skipAcceptanceCriteria && p.write_kind === "acceptance_criterion")).map(promisedWriteLine).filter((line) => line !== null);
 }
 function renderBrief(doc, decisionRef, ctx) {
+  return renderStandardBrief(doc, decisionRef, ctx) + renderProjectSectionsArea(doc);
+}
+function renderStandardBrief(doc, decisionRef, ctx) {
   const out = [];
   const frame = doc.frame;
   if (frame?.kind === "clarify") out.push(...renderFrame(frame), "");
@@ -27499,7 +27987,7 @@ function decidedItems(doc) {
   return out;
 }
 function renderEntry(doc, ctx) {
-  const briefContent = renderBrief(doc, ctx?.decisionRef ?? null, ctx);
+  const briefContent = renderStandardBrief(doc, ctx?.decisionRef ?? null, ctx);
   const isRatified = (text2) => !text2.trim() || briefContent.includes(text2);
   const mark = (text2) => isRatified(text2) ? text2 : `${text2} ${NOT_RATIFIED_MARK}`;
   const markAll = (lines) => lines.map(mark);
@@ -28305,12 +28793,19 @@ var isMissingComposeBriefInitial = (err) => {
   const msg = err.message ?? "";
   return /compose_brief_initial/.test(msg) && /(does not exist|could not find|schema cache)/i.test(msg);
 };
-async function composeBrief(client, projectId, userId, args) {
+async function composeBrief(client, projectId, userId, args, options = {}) {
   if (!args.task_id) throw new Error("task_id is required");
   if (!VALID_REASONS.includes(args.reason)) {
     throw new Error(`reason must be one of: ${VALID_REASONS.join(", ")}`);
   }
   if (!args.doc?.decide?.trim()) throw new Error("doc.decide is required");
+  const sectionsOutcome = await resolveSectionsForCompose({
+    gate: BRIEF_SECTION_GATE_FOR_REASON[args.reason],
+    supplied: args.doc.sections,
+    mechanical: options.mechanical === true,
+    reader: options.readSectionDeclarations,
+    env: options.env
+  });
   if (args.revision_cause !== void 0 && !isRevisionCause(args.revision_cause)) {
     throw new Error(`compose_brief: revision_cause must be { source: <one of ${REVISION_CAUSE_SOURCES.join(" | ")}>, lines: string[] }`);
   }
@@ -28334,7 +28829,7 @@ async function composeBrief(client, projectId, userId, args) {
   const mergedDecisionRef = args.decision_ref !== void 0 ? args.decision_ref ?? null : reasonChanged ? null : existingRow?.decision_ref ?? null;
   const priorDoc = existingRow?.doc ?? null;
   const patchDoc = resetDocOnReasonChange(priorDoc, args.doc, existingRow?.reason, args.reason);
-  const mergedDoc = mergeBriefDoc(priorDoc, patchDoc);
+  const mergedDoc = applySectionsOutcome(mergeBriefDoc(priorDoc, patchDoc), priorDoc, sectionsOutcome);
   if (derivesEntryContent(args.reason) && mergedDecisionRef?.id) {
     const explicit = args.doc.claim;
     if (explicit !== void 0 && !isSingleSentenceShaped(explicit)) {
@@ -28434,7 +28929,7 @@ async function composeBrief(client, projectId, userId, args) {
     uncheckedCriterionIds = (acRows ?? []).filter((r) => r.checked !== true).map((r) => r.id);
   }
   const content = renderBrief(doc, mergedDecisionRef, renderCtx);
-  const lint = lintBrief(doc, content, {
+  const lint = lintBrief(doc, renderStandardBrief(doc, mergedDecisionRef, renderCtx), {
     uncheckedCriterionIds,
     reason: args.reason,
     buildPr,
@@ -28448,6 +28943,7 @@ async function composeBrief(client, projectId, userId, args) {
     // B-1017 — an explicit cause, or a send-back the DB derives one from.
     statesCause: args.revision_cause !== void 0 || args.iterate_feedback != null
   });
+  lint.warnings.push(...sectionsOutcome.warnings);
   if (doc.claim_source === "derived") lint.warnings.push("doc.claim omitted \u2014 a derived first-sentence proposal is shown when available; supply doc.claim to author the exact statement.");
   const settlement = await settlementWarning(client, projectId, doc, args.changed_paths);
   if (settlement) lint.warnings.push(settlement);
@@ -28636,6 +29132,19 @@ var composeBriefTool = {
           removal_effective_on_accept: { type: "boolean", description: "Explicit HUMAN policy cutover choice; defaults false, never auto-approved." },
           load_bearing_gap: { type: "boolean", description: "true when a load-bearing knowledge gap blocks a substantive decision (forces research-first)" },
           tail: { type: "string", description: "Optional custom command tail line; defaults to the standard one" },
+          sections: {
+            type: "array",
+            description: "B-1305 \u2014 the project's brief sections for this gate (read them first with read_brief_sections). One item per declared section: { repository?, id, markdown }; `repository` (owner/name) may be omitted when only one repository declares the id. Every declared section must be present, non-empty and at most 4,000 characters; an undeclared id, a credential-shaped string or the value of a credential-named environment variable is refused before anything is written. Supply them on EVERY compose, revisions included \u2014 they are not carried forward. A repository the ticket does not touch may say 'Not applicable to this ticket'. Title, repository, commit and freshness are stamped from the declaration. Rendered after the standard brief; never copied into the knowledge entry or the gate slot.",
+            items: {
+              type: "object",
+              properties: {
+                repository: { type: "string" },
+                id: { type: "string" },
+                markdown: { type: "string" }
+              },
+              required: ["id", "markdown"]
+            }
+          },
           frame: {
             type: "object",
             description: "B-876 \u2014 the gate-specific frame, discriminated by `kind` (must match the gate reason): 'clarify' { solving, in_scope[], not_solving[{item,lands}], floor_reviewed?[] } | 'decompose' { elements[{text,surface?,covers?}], coverage, existing_children_checked, floor_reviewed?[] } | 'design' { track, tracks[{track,status,note?}], reach[], reach_level? ('this_ticket_only'|'this_surface'|'this_product', B-1047 \u2014 declare it on every design brief), rules?[{ref,operation:'create'|'amend'|'reference',wording,domains[],surfaces[],knowledge_scope:'product'|'deployment',reach:'this_surface'|'this_product',target_entry_id,expected_fingerprint,before?,title?}] (B-1047 \u2014 beyond-ticket reach with zero rules is REFUSED; this_ticket_only allows only 'reference'; amend/reference need target_entry_id + expected_fingerprint (from read_rule_registry); create/amend need wording, knowledge_scope and reach; a reference never restates its rule, so wording/knowledge_scope/reach are optional there and `title` is display-only; compose derives the 'rule_bundle' payload item and refuses when this database lacks the rule registry), not_reopened?[], derisk?{run[],not_run[]}, files_on_accept?[], floor_reviewed?[] } | 'plan' { scope{repos[],surfaces[],has_migration}, steps[], attestation{base_verified,derisked_by_running?}, carried_unproven[{item,reason}], ac_coverage, landing?, design_delta?, design_read?{version_id|null,screens[],drift: 'changed'|'unchanged'|'unchecked'} (B-1205), floor_reviewed?[] } | 'release' { settled_beyond_design?[{behaviour,ac,knowledge_entry_id}], act(LandingShape), unproven[{item,reason}], evidence_status{proven_by_run,walk_at_verify,unproven,total,detail?}, risk_classes[], pr_review_state?, contradiction_signal?{status,message,entries[{entry_id,title,state,matched_values[],source}],truncated?}, floor_reviewed?[] } | 'verify' { environment, criteria[{ac_id,text,checked,disposition,step_ref?,blocked_reason?,carried_to?,backed_by?,recommended_carry?{destination:'new'|<ticket>,milestone:'source'|'none',reason}}], steps?[{ref,action,expect,covers[],design_node?{node_id,name,caption?,preview_attachment_id,preview_filename}}], design_comparison?, exempt_reason?, evidence_status, settled?[{criterion_text,action:'carried'|'dropped',destination,milestone_landing,landing_reason,drop_reason,settled_by,settled_at}] (B-1410 \u2014 copy from get_verify_readiness.settled), bounded_accept? (RETIRED by B-1410 \u2014 warned; tick, carry or drop the criterion instead) }. `floor_reviewed` (B-838) applies to the FIVE forward gates only \u2014 never verify. LandingShape = { repos[], pr_count, lands_in: 'staging'|'production'|'both'|'merged-main', atomicity: 'single'|'together'|'ordered', ordering? (required when ordered), irreversible[], prs?[{repo,number,url}] (B-890, optional forever \u2014 populated from field_values.prerequisite_pr then build_pr) }. Every rule over this field is a WARNING, with two exceptions: (B-1016) a `release` frame missing `evidence_status` is REFUSED outright; (B-1068) a `verify` frame is REFUSED when a `walk`-kind criterion has no `frame.steps` at all, when a `step_ref` matches no declared step, when a step covers no filed criterion, when a `walk` criterion names no `step_ref`, when a step's `action` or `expect` is blank, or when `items[].kind === 'step'` / a raw `frame.runbook` key is present; (B-1410) a `verify` frame is also REFUSED when a `carried` row names a criterion still unticked on the ticket \u2014 carry it with settle_acceptance_criterion first \u2014 author the walk as `frame.steps: [{ ref, action, expect, covers }]`, one action plus one expected observation per step, `covers` naming the acceptance-criterion ids it discharges. Omit the frame entirely and the render is byte-identical to the pre-B-876 output."
@@ -29356,7 +29865,7 @@ async function recoverDeclaredWait(client, projectId, taskId, firedAtMs, nowMs) 
 import { existsSync as existsSync4, readFileSync as readFileSync7, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "node:fs";
 import { exec, spawn } from "node:child_process";
 import { hostname } from "node:os";
-import { dirname as dirname5, join as join6 } from "node:path";
+import { dirname as dirname6, join as join7 } from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 import { randomUUID } from "node:crypto";
 
@@ -34919,7 +35428,7 @@ var _getRequestParams = (method, options, parameters, body) => {
   return _objectSpread22(_objectSpread22({}, params), parameters);
 };
 async function _handleRequest(fetcher, method, url, options, parameters, body, namespace) {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve2, reject) => {
     fetcher(url, _getRequestParams(method, options, parameters, body)).then((result) => {
       if (!result.ok) throw result;
       if (options === null || options === void 0 ? void 0 : options.noResolveJson) return result;
@@ -34929,7 +35438,7 @@ async function _handleRequest(fetcher, method, url, options, parameters, body, n
         if (!contentType || !contentType.includes("application/json")) return {};
       }
       return result.json();
-    }).then((data) => resolve(data)).catch((error) => handleError(error, reject, options, namespace));
+    }).then((data) => resolve2(data)).catch((error) => handleError(error, reject, options, namespace));
   });
 }
 function createFetchApi(namespace = "storage") {
@@ -38107,11 +38616,11 @@ function buildAttestation(args, userId) {
 }
 var GH_RELEASE_INFO_TIMEOUT_MS = 5e3;
 async function runGhForReleaseInfo(args) {
-  const { execFile: execFile3 } = await import("node:child_process");
-  return await new Promise((resolve, reject) => {
-    execFile3("gh", args, { timeout: GH_RELEASE_INFO_TIMEOUT_MS, maxBuffer: 1024 * 1024 }, (err, stdout) => {
+  const { execFile: execFile4 } = await import("node:child_process");
+  return await new Promise((resolve2, reject) => {
+    execFile4("gh", args, { timeout: GH_RELEASE_INFO_TIMEOUT_MS, maxBuffer: 1024 * 1024 }, (err, stdout) => {
       if (err) reject(err);
-      else resolve(String(stdout));
+      else resolve2(String(stdout));
     });
   });
 }
@@ -38240,7 +38749,9 @@ async function composeAndAccept(client, projectId, userId, taskId, args) {
       payload: args.payload ?? [],
       context: args.context
     }
-  });
+    // B-1305: a recorded walk's brief is composed with no agent writing it, so it is exempt from the
+    // project's brief sections (internal flag; the MCP compose_brief tool can never set it).
+  }, { mechanical: true });
   const composedId = composed.brief?.id;
   await resolveBrief(client, projectId, {
     task_id: taskId,
@@ -38654,7 +39165,8 @@ async function runRecordedWalkCore(client, projectId, userId, args) {
             evidence_status: `Recorded walk \u2014 evidence linked from the supplied links (${verifyEvidenceSummary}); ` + (attestationOnFile ? "verify walk attestation on file." : "NO verify-walk attestation is on file \u2014 attest at this verify gate (e.g. in the accept remark).") + (readinessFailure !== null ? ` Verify readiness read failed: ${readinessFailure}.` : "")
           }
         }
-      });
+        // B-1305: composed with no agent writing it — exempt from the project's brief sections.
+      }, { mechanical: true });
       gates.push({ gate: "verify", reason: "verification-ack-pending", landed: true });
     }
   } catch (err) {
@@ -40142,7 +40654,7 @@ function shouldInspectWorkerImage(profile) {
 }
 
 // src/config/conductor-secrets.ts
-import { execFile } from "node:child_process";
+import { execFile as execFile2 } from "node:child_process";
 import { readFileSync as readFileSync5 } from "node:fs";
 
 // src/daemon/conductor-remote.ts
@@ -40286,21 +40798,21 @@ async function resolveConductorSecrets(deps) {
   }
   return result;
 }
-var execFileSecretExec = (file, args) => new Promise((resolve) => {
-  execFile(file, args, { maxBuffer: 1024 * 1024, timeout: 3e4 }, (err, stdout) => {
-    if (!err) return resolve({ code: 0, stdout: String(stdout) });
+var execFileSecretExec = (file, args) => new Promise((resolve2) => {
+  execFile2(file, args, { maxBuffer: 1024 * 1024, timeout: 3e4 }, (err, stdout) => {
+    if (!err) return resolve2({ code: 0, stdout: String(stdout) });
     const code = err.code;
-    resolve({ code: code === "ENOENT" ? 127 : typeof code === "number" ? code : 1, stdout: "" });
+    resolve2({ code: code === "ENOENT" ? 127 : typeof code === "number" ? code : 1, stdout: "" });
   });
 });
 
 // src/daemon/conductor-logger.ts
 import { appendFileSync, existsSync as existsSync3, mkdirSync, renameSync, statSync, unlinkSync } from "node:fs";
 import { homedir as homedir3 } from "node:os";
-import { dirname as dirname3, join as join5 } from "node:path";
+import { dirname as dirname4, join as join6 } from "node:path";
 
 // src/daemon/log-shipper.ts
-import { execFile as execFile2 } from "node:child_process";
+import { execFile as execFile3 } from "node:child_process";
 var LOG_NAME = "harmony-conductor";
 var FLUSH_INTERVAL_MS = 5e3;
 var FLUSH_BATCH = 500;
@@ -40311,12 +40823,12 @@ var ENTRIES_WRITE_URL = "https://logging.googleapis.com/v2/entries:write";
 var REQUEST_TIMEOUT_MS3 = 1e4;
 var TOKEN_TIMEOUT_MS = 15e3;
 function gcloudAccessToken(account) {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve2, reject) => {
     const env = account ? { ...process.env, CLOUDSDK_CORE_ACCOUNT: account } : process.env;
-    execFile2("gcloud", ["auth", "print-access-token"], { env, timeout: TOKEN_TIMEOUT_MS }, (err, stdout) => {
+    execFile3("gcloud", ["auth", "print-access-token"], { env, timeout: TOKEN_TIMEOUT_MS }, (err, stdout) => {
       const token = String(stdout ?? "").trim();
       if (err || !token) reject(new Error(err ? `gcloud auth print-access-token failed (${err.message.split("\n")[0]})` : "gcloud returned no token"));
-      else resolve(token);
+      else resolve2(token);
     });
   });
 }
@@ -40503,7 +41015,7 @@ function createRotatingFile(path2, opts = {}) {
       try {
         if (size === void 0) {
           try {
-            fs.mkdirSync(dirname3(path2));
+            fs.mkdirSync(dirname4(path2));
           } catch {
           }
           size = fs.existsSync(path2) ? fs.statSync(path2).size : 0;
@@ -40518,7 +41030,7 @@ function createRotatingFile(path2, opts = {}) {
   };
 }
 function resolveConductorLogPath(env) {
-  return env.HARMONY_CONDUCTOR_LOG || join5(env.HARMONY_HOME || join5(homedir3(), ".harmony"), "logs", "conductor.log");
+  return env.HARMONY_CONDUCTOR_LOG || join6(env.HARMONY_HOME || join6(homedir3(), ".harmony"), "logs", "conductor.log");
 }
 var LEADING_TICKET = /^([A-Za-z][A-Za-z0-9]*-\d+)\b/;
 var CONDUCTION_ID = /\bconduction ([0-9a-f]{8}-[0-9a-f-]{27})/;
@@ -40673,7 +41185,7 @@ function createRegistryClient(deps) {
   const call = (name, args, cls, timeoutMs = defaultTimeout) => withWriteRetry(
     deps,
     { class: cls, endpoint: `rpc(${name})` },
-    () => new Promise((resolve, reject) => {
+    () => new Promise((resolve2, reject) => {
       let done = false;
       const cancel = deps.startTimeout(timeoutMs, () => {
         if (done) return;
@@ -40695,7 +41207,7 @@ function createRegistryClient(deps) {
           done = true;
           cancel();
           if (error) reject(error);
-          else resolve(data);
+          else resolve2(data);
         },
         (err) => {
           if (done) return;
@@ -41138,7 +41650,7 @@ import { existsSync as fsExistsSync2, readFileSync as fsReadFileSync2 } from "no
 // src/config/conductor-project-source.ts
 import { createHash as createHash2 } from "node:crypto";
 import { chmodSync, mkdirSync as mkdirSync2, readFileSync as readFileSync6, renameSync as renameSync2, rmSync, writeFileSync } from "node:fs";
-import { dirname as dirname4 } from "node:path";
+import { dirname as dirname5 } from "node:path";
 var REQUEST_TIMEOUT_MS4 = 1e4;
 function gitBlobSha(text2) {
   const body = Buffer.from(text2, "utf8");
@@ -41200,7 +41712,7 @@ function readSnapshot(path2) {
   }
 }
 function writeSnapshot(path2, snap) {
-  mkdirSync2(dirname4(path2), { recursive: true });
+  mkdirSync2(dirname5(path2), { recursive: true });
   const tmp = `${path2}.${process.pid}.${Date.now().toString(36)}.tmp`;
   try {
     writeFileSync(tmp, `${JSON.stringify(snap, null, 2)}
@@ -43129,10 +43641,10 @@ function createHintCoalescer(opts) {
     },
     closeWindow() {
       open = false;
-      const resolve = waiter;
+      const resolve2 = waiter;
       waiter = null;
-      if (resolve) {
-        resolve();
+      if (resolve2) {
+        resolve2();
         return;
       }
       latched = true;
@@ -43142,8 +43654,8 @@ function createHintCoalescer(opts) {
         latched = false;
         return Promise.resolve();
       }
-      return new Promise((resolve) => {
-        waiter = resolve;
+      return new Promise((resolve2) => {
+        waiter = resolve2;
       });
     },
     abandon() {
@@ -43324,7 +43836,7 @@ function startHintSubscription(deps) {
 
 // src/bin/daemon.ts
 function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve2) => setTimeout(resolve2, ms));
 }
 function parseDaemonArgs(argv) {
   const args = {};
@@ -43336,8 +43848,8 @@ function parseDaemonArgs(argv) {
 }
 async function markCleanShutdownBounded(client, holder, logFn, timeoutMs) {
   let timer;
-  const timeout = new Promise((resolve) => {
-    timer = setTimeout(() => resolve("timeout"), timeoutMs);
+  const timeout = new Promise((resolve2) => {
+    timer = setTimeout(() => resolve2("timeout"), timeoutMs);
     timer.unref?.();
   });
   try {
@@ -43360,8 +43872,8 @@ var CLEAN_SHUTDOWN_TIMEOUT_MS = 2e3;
 var HINT_CLOSE_TIMEOUT_MS = 1e3;
 async function closeHintsBounded(hints, logFn, timeoutMs) {
   let timer;
-  const timeout = new Promise((resolve) => {
-    timer = setTimeout(() => resolve("timeout"), timeoutMs);
+  const timeout = new Promise((resolve2) => {
+    timer = setTimeout(() => resolve2("timeout"), timeoutMs);
     timer.unref?.();
   });
   try {
@@ -43441,7 +43953,7 @@ ${err instanceof Error ? err.message : String(err)}
     process.exit(1);
   }
   const log = (line) => conductorLogger.line(line);
-  const runCommand = (cmd, opts) => new Promise((resolve) => {
+  const runCommand = (cmd, opts) => new Promise((resolve2) => {
     const child = exec(cmd, { env: opts?.env });
     const chunks = [];
     let tailBytes = 0;
@@ -43475,22 +43987,22 @@ ${err instanceof Error ? err.message : String(err)}
     }
     child.on("error", (err) => {
       log(`command failed to spawn: ${err.message}`);
-      resolve({ exitCode: null, outputTail: chunks.join(""), outputBytes });
+      resolve2({ exitCode: null, outputTail: chunks.join(""), outputBytes });
     });
     child.on("close", (code) => {
       const line = quietLogLine(code, opts);
       if (line !== null) log(line);
-      resolve({ exitCode: code, outputTail: chunks.join(""), outputBytes });
+      resolve2({ exitCode: code, outputTail: chunks.join(""), outputBytes });
     });
   });
-  const probeOneRepo = (url, ref) => new Promise((resolve) => {
+  const probeOneRepo = (url, ref) => new Promise((resolve2) => {
     exec(`git ls-remote ${JSON.stringify(url)} ${JSON.stringify(ref)}`, (err, stdout) => {
       if (err) {
-        resolve(null);
+        resolve2(null);
         return;
       }
       const sha = stdout.trim().split(/\s+/)[0];
-      resolve(sha && sha.length > 0 ? sha : null);
+      resolve2(sha && sha.length > 0 ? sha : null);
     });
   });
   const probeRef = async (ref) => {
@@ -43604,7 +44116,7 @@ ${err instanceof Error ? err.message : String(err)}
       holderId: leaseHolder,
       configPath: daemonArgv.config,
       spawnRestarter: (args) => {
-        const harmonyBin = join6(dirname5(fileURLToPath2(import.meta.url)), "harmony.js");
+        const harmonyBin = join7(dirname6(fileURLToPath2(import.meta.url)), "harmony.js");
         if (!existsSync4(harmonyBin)) throw new Error(`${harmonyBin} does not exist`);
         const child = spawn(process.execPath, [harmonyBin, ...args], { detached: true, stdio: "ignore", env: process.env });
         child.on("error", () => {
