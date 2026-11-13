@@ -68,11 +68,12 @@ describe('harmony-fasttrack skill contract', () => {
     );
   });
 
-  it('states the no-conduct-breadcrumb rule plainly', () => {
-    const body = skill.body;
-    expect(body).toContain('conduct-sessions');
-    expect(body.toLowerCase()).toMatch(/does not write/);
-    expect(body.toLowerCase()).toContain("do not \"fix\" this by adding a breadcrumb".toLowerCase());
+  it('requires a confirmed pending handoff before the standalone breadcrumb stop', () => {
+    expect(skill.body).toContain('applied:true');
+    expect(skill.body).toContain('harmony conduct breadcrumb');
+    expect(skill.body).toContain('sanctioned B-870 stop');
+    expect(skill.body).toContain('missing-function fallback');
+    expect(skill.body).toContain('conductor invocation keeps');
   });
 
   it('points at start-work O3 by reference rather than duplicating its mechanics', () => {

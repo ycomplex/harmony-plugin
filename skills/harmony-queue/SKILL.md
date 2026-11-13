@@ -86,3 +86,7 @@ STALE — KNOWLEDGE CHANGED (agent will draft a patch for review)
 
 End by offering: "Run `/harmony-plugin:harmony-next` to start on the highest-priority item, or name a
 ticket." Do not take any write action from this skill.
+
+
+### Interactive fast-track handoff
+For `awaiting_human_reason=fast-track-merge-pending` / ref kind `fast-track-merge`, render **Human step** without fetching or implying a brief. Show: “Merge PR #N, then re-run fast-track (or harmony record) and confirm the work with an attestation sentence.” Link the ref’s recorded PR URL; omit the number if missing. Show `refusal_reason` beneath the instruction. No Accept, Defer, Manual override or merge-complete action is offered.

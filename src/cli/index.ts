@@ -1,3 +1,4 @@
+import { registerQueueCommand } from './commands/queue.js';
 import { registerWaitCommands } from './commands/wait.js';
 import { registerAwaitCommands } from './commands/await.js';
 import { createRequire } from 'node:module';
@@ -62,6 +63,7 @@ registerIncidentCommands(program);
 registerAwaitCommands(program);
 registerDesignCommands(program);
 registerQueryCommand(program);
+registerQueueCommand(program);
 registerCommentCommands(program);
 registerProjectCommands(program);
 registerMemberCommands(program);

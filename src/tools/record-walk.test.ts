@@ -142,8 +142,8 @@ beforeEach(() => {
 });
 
 describe('runRecordedWalk — refuse-before-write (B-1062)', () => {
-  it('an ineligible ticket refuses before any write — the client is never touched', async () => {
-    const client = {} as any; // no `.from`/`.rpc` at all — any real call would throw immediately
+  it('an ineligible ticket refuses before any write — ownership reads do not permit writes', async () => {
+    const client = makeClient(); // ownership read is allowed; every writer below must remain untouched
     const result = await runRecordedWalk(client, PROJECT_ID, USER_ID, {
       task_id: 'B-2000',
       summary: 'Fix the flaky retry timer in the poller.',
@@ -153,7 +153,7 @@ describe('runRecordedWalk — refuse-before-write (B-1062)', () => {
     expect(result.refused).toBe(true);
     expect(result.refusal_reason).toContain('Verify walk');
     expect(result.gates).toEqual([]);
-    expect(resolveTaskId).not.toHaveBeenCalled();
+    expect(addComment).not.toHaveBeenCalled();
     expect(composeBrief).not.toHaveBeenCalled();
     expect(resolveBrief).not.toHaveBeenCalled();
     expect(writeGateSlot).not.toHaveBeenCalled();
@@ -163,7 +163,7 @@ describe('runRecordedWalk — refuse-before-write (B-1062)', () => {
   });
 
   it('a multi-repo-ineligible ticket also refuses before any write', async () => {
-    const client = {} as any;
+    const client = makeClient();
     const result = await runRecordedWalk(client, PROJECT_ID, USER_ID, {
       task_id: 'B-2000',
       summary: 'Fix the flaky retry timer.',
@@ -567,10 +567,7 @@ describe('runRecordedWalk — mid-walk failure reporting (B-1062)', () => {
         }),
       })),
     } as any;
-    const result = await runRecordedWalk(client, PROJECT_ID, USER_ID, eligibleArgs());
-    expect(result.error).toBeDefined();
-    expect(result.error).toContain('task row not found');
-    expect(result.gates).toEqual([]);
+    await expect(runRecordedWalk(client, PROJECT_ID, USER_ID, eligibleArgs())).rejects.toMatchObject({ code: 'PGRST116' });
     expect(composeBrief).not.toHaveBeenCalled();
   });
 });
@@ -691,7 +688,7 @@ describe('runRecordedWalk — verify-walk item deferred when bounded at or befor
   });
 
   it("to_gate: 'build' with a failing (a)-(d) item still refuses, nothing written", async () => {
-    const client = {} as any;
+    const client = makeClient();
     const result = await runRecordedWalk(client, PROJECT_ID, USER_ID, {
       ...noAttest(),
       evidence: [
@@ -703,14 +700,14 @@ describe('runRecordedWalk — verify-walk item deferred when bounded at or befor
     expect(result.refused).toBe(true);
     expect(result.refusal_reason).toContain('Single repo');
     expect(result.refusal_reason).not.toContain('Verify walk');
-    expect(resolveTaskId).not.toHaveBeenCalled();
+    expect(addComment).not.toHaveBeenCalled();
     expect(composeBrief).not.toHaveBeenCalled();
     expect(writeGateSlot).not.toHaveBeenCalled();
     expect(advanceWorkflow).not.toHaveBeenCalled();
   });
 
   it('NO to_gate and no attest_walk still refuses on the verify-walk item (regression)', async () => {
-    const result = await runRecordedWalk({} as any, PROJECT_ID, USER_ID, noAttest());
+    const result = await runRecordedWalk(makeClient(), PROJECT_ID, USER_ID, noAttest());
     expect(result.refused).toBe(true);
     expect(result.refusal_reason).toContain('Verify walk');
     expect(result.eligibility.items.find((i) => i.item === 'verify_walk_attestation')!.verdict).toBe('unattested');
@@ -720,7 +717,7 @@ describe('runRecordedWalk — verify-walk item deferred when bounded at or befor
   it.each(['release', 'deploy', 'verify'] as const)(
     'to_gate: %s with no attest_walk still refuses (only at-or-before build defers)',
     async (toGate) => {
-      const result = await runRecordedWalk({} as any, PROJECT_ID, USER_ID, { ...noAttest(), to_gate: toGate });
+      const result = await runRecordedWalk(makeClient(), PROJECT_ID, USER_ID, { ...noAttest(), to_gate: toGate });
       expect(result.refused).toBe(true);
       expect(result.refusal_reason).toContain('Verify walk');
       expect(writeGateSlot).not.toHaveBeenCalled();
@@ -872,7 +869,7 @@ describe('runRecordedWalk — the resumed-walk deferral of the verify-walk item 
   });
 
   it('a FULL walk from clarify with NO attestation still refuses exactly as before', async () => {
-    const result = await runRecordedWalk({} as any, PROJECT_ID, USER_ID, noAttestArgs());
+    const result = await runRecordedWalk(makeClient(), PROJECT_ID, USER_ID, noAttestArgs());
     expect(result.refused).toBe(true);
     expect(result.refusal_reason).toContain('Verify walk');
     expect(result.eligibility.items.find((i) => i.item === 'verify_walk_attestation')!.verdict).toBe('unattested');
@@ -1213,4 +1210,42 @@ describe('runRecordedWalk — a walk that lands Deployed composes the verify bri
     expect(lint.errors).toEqual([]);
     expect(lint.ok).toBe(true);
   });
+});
+
+describe('B-1472 handoff-aware recording', () => {
+ const ref={kind:'fast-track-merge',pr_url:'https://github.com/example/atlas/pull/72',pr_number:72,head_sha:'abc',repo:'example/atlas'};
+ function handoffClient(pr: unknown = {pr_url:ref.pr_url,head_sha:'abc'}) {
+   const c=makeRichClient({workflowState:'Captured',fieldValues:{build_pr:pr,fast_track_handoff:ref}});
+   c.rpc=vi.fn(async () => ({data:{applied:true},error:null}));return c;
+ }
+ it('retains the handoff and names missing attestation before any walk writes', async () => {
+  const c=handoffClient();const r=await runRecordedWalk(c,PROJECT_ID,USER_ID,{...{...eligibleArgs(),evidence:[{url:ref.pr_url,repo:ref.repo,paths:['src/tools/foo.ts']}]},attest_walk:''});
+  expect(r.refused).toBe(true);expect(r.refusal_reason).toContain('attestation');
+  expect(c.rpc).toHaveBeenCalledWith('fasttrack_handoff',expect.objectContaining({p_action:'refuse',p_expected:ref}));
+  expect(addComment).toHaveBeenCalledWith(c,PROJECT_ID,USER_ID,expect.objectContaining({content:expect.stringContaining('attestation')}));
+  expect(composeBrief).not.toHaveBeenCalled();
+ });
+ it('retains the snapshot when build_pr is absent', async () => {
+  const r=await runRecordedWalk(handoffClient(null),PROJECT_ID,USER_ID,{...eligibleArgs(),evidence:[{url:ref.pr_url,repo:ref.repo,paths:['src/tools/foo.ts']}]});expect(r.refusal_reason).toContain('PR reference is missing');
+ });
+ it('unconfirmable or unmerged PR retains the handoff', async () => {
+  const c=handoffClient();const r=await runRecordedWalk(c,PROJECT_ID,USER_ID,{...eligibleArgs(),evidence:[{url:ref.pr_url,repo:ref.repo,paths:['src/tools/foo.ts']}]});expect(r.refused).toBe(true);expect(r.refusal_reason).toContain('not merged');expect(composeBrief).not.toHaveBeenCalled();
+ });
+ it('claims and clears only the same owner after success, after composing verify', async () => {
+  execFile.mockImplementation((_cmd:any,_args:any,_opts:any,cb:any)=>cb(null,JSON.stringify({number:72,mergedAt:'2026-11-13T10:00:00Z',headRefOid:'abc',author:{login:'author'},headRefName:'fix/example',baseRefName:'main'})));
+  const c=handoffClient();const r=await runRecordedWalk(c,PROJECT_ID,USER_ID,{...eligibleArgs(),evidence:[{url:ref.pr_url,repo:ref.repo,paths:['src/tools/foo.ts']}]});expect(r.error).toBeUndefined();expect(r.refused).toBe(false);
+  expect(c.rpc.mock.calls.map((x:any)=>x[1].p_action)).toEqual(['begin','clear']);
+  expect(c.rpc.mock.calls[1][1].p_expected).toEqual(ref);
+  expect(composeBrief.mock.calls.at(-1)?.[3].reason).toBe('verification-ack-pending');
+ });
+});
+
+
+it('B-1472: recovers after verify composition without replaying or dismissing verify', async () => {
+ const ref={kind:'fast-track-merge',pr_url:'https://github.com/example/atlas/pull/72',head_sha:'abc'};
+ const row={workflow_state:'Deployed',awaiting_human_reason:'verification-ack-pending',field_values:{fast_track_handoff:ref,gate_slots:{release:{ratified_by:'recorded'}}}};
+ const c={from:()=>({select:()=>({eq:()=>({eq:()=>({single:async()=>({data:row,error:null})})})})}),rpc:vi.fn(async()=>({data:{applied:true},error:null}))} as any;
+ const result=await runRecordedWalk(c,PROJECT_ID,USER_ID,eligibleArgs());
+ expect(result.refused).toBe(false);expect(result.gates).toEqual([]);expect(composeBrief).not.toHaveBeenCalled();
+ expect(c.rpc).toHaveBeenCalledWith('fasttrack_handoff',expect.objectContaining({p_action:'clear',p_expected:ref}));
 });

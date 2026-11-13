@@ -1,3 +1,4 @@
+import { flagFasttrackHandoff, flagFasttrackHandoffTool } from './fasttrack-handoff.js';
 import { readProjectContextTool, readProjectContext } from './project-context.js';
 import { proseTools, readProse, configureProse, setDefinedIn } from './knowledge-prose.js';
 import { knowledgeNameTools, readKnowledgeNames, renameKnowledgeConcept, previewKnowledgeMerge, mergeKnowledgeConcepts } from './knowledge-names.js';
@@ -198,6 +199,7 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
     // B-1305 — the project's brief section declarations for a gate (read before compose_brief).
     readBriefSectionsTool,
     flagReleaseApprovalPendingTool,
+    flagFasttrackHandoffTool,
     startElicitationTool, fileElicitationRoundTool, getElicitationTool, concludeElicitationTool,
     submitElicitationAnswersTool,
     // B-1452 — a leg that exposed a credential raises an incident a human sees first.
@@ -502,6 +504,9 @@ export async function handleToolCall(
         break;
       case 'record':
         result = await recordToolHandler(client, projectId, userId, args as any);
+        break;
+      case 'flag_fasttrack_handoff':
+        result = await flagFasttrackHandoff(client, projectId, userId, args as any);
         break;
       case 'flag_release_approval_pending':
         result = await flagReleaseApprovalPending(client, projectId, args as any);
