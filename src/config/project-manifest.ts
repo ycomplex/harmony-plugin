@@ -15,13 +15,21 @@
 // revision, the same way DeploymentConfigSchema (src/config/deployment-config.ts) does not need
 // passthrough either — both are versioned config files, not wire payloads between build revisions.
 //
-// Seven keys, exactly the ratified design: `version`, `preconditions` (declared data, NEVER
+// Eight keys, exactly the ratified design: `version`, `preconditions` (declared data, NEVER
 // executed — see the safety-relevant test in project-manifest.test.ts proving this), the three
 // extension points `build.before_pr` / `release.before_merge` / `verify.before_ack`, each an
 // ordered list of `run:` or `agent_task:` steps, B-973's `notify` (declared data, NEVER
-// dispatched to — see below), and B-1072's `fasttrack.scope_budget` (declared data consumed ONLY by
+// dispatched to — see below), B-1072's `fasttrack.scope_budget` (declared data consumed ONLY by
 // the harmony-fasttrack skill's own pre-PR-open scope guard, src/tools/fasttrack-scope.ts — never
-// read by this file or by `harmony gates run`).
+// read by this file or by `harmony gates run`), and B-1305's `brief_sections` (extra sections a
+// project asks the briefs at each gate to carry).
+//
+// B-1305: `brief_sections` is RECOGNISED by the strict top-level schema but its CONTENT is validated
+// separately, by parseBriefSections below. A malformed brief_sections block therefore never makes the
+// whole file malformed and never stops a build / release / verify step: the brief reader
+// (src/config/brief-sections.ts) reports it as a warning naming the file and the problem, and does
+// not enforce it. The manifest stays `version: 1`; an older plugin that does not know the key reports
+// the whole file as malformed, which is why the docs say to update the plugin and the conductor first.
 //
 // B-973: `notify` is a list of `{ on, endpoint }` entries declaring which workflow-state transitions
 // a project wants an external endpoint told about. It is the SECOND declared-but-unconsumed key,
@@ -180,7 +188,7 @@ const GateSchema = z.object({ before_pr: z.array(StepSchema).optional() }).stric
 const ReleaseGateSchema = z.object({ before_merge: z.array(StepSchema).optional() }).strict();
 const VerifyGateSchema = z.object({ before_ack: z.array(StepSchema).optional(), evidence: z.array(EvidenceEntrySchema).optional() }).strict();
 
-/** The 7-key top-level schema. Deliberately `.strict()` (see this file's header) — an unrecognized
+/** The 8-key top-level schema. Deliberately `.strict()` (see this file's header) — an unrecognized
  *  top-level key is AC5's own "malformed" example, not a forward-compat pass-through case. */
 const ProjectManifestBodySchema = z
   .object({
@@ -191,6 +199,8 @@ const ProjectManifestBodySchema = z
     verify: VerifyGateSchema.optional(),
     notify: z.array(NotifyEntrySchema).optional(),
     fasttrack: FasttrackSchema.optional(),
+    // B-1305: recognised here, validated by parseBriefSections (scoped, never whole-file malformed).
+    brief_sections: z.unknown().optional(),
   })
   .strict();
 
@@ -239,7 +249,16 @@ export interface LoadProjectManifestDeps {
   readFileSync?: (path: string) => string;
 }
 
-const KNOWN_TOP_LEVEL_KEYS = ['version', 'preconditions', 'build', 'release', 'verify', 'notify', 'fasttrack'] as const;
+const KNOWN_TOP_LEVEL_KEYS = [
+  'version',
+  'preconditions',
+  'build',
+  'release',
+  'verify',
+  'notify',
+  'fasttrack',
+  'brief_sections',
+] as const;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -539,4 +558,89 @@ export function getDeclaredEvidence(manifest: ProjectManifest): EvidenceEntry[] 
  *  for the actual default values. Pure read, same posture as getPreconditions/getDeclaredEvidence. */
 export function getScopeBudget(manifest: ProjectManifest): { files?: number; lines?: number } {
   return manifest.fasttrack?.scope_budget ?? {};
+}
+
+// --- B-1305: `brief_sections` ----------------------------------------------------------------------
+
+/** The gates whose brief may carry project sections, and the brief reason each maps to. Stale-patch
+ *  review and revise-scope review never carry sections, so they have no gate name here. */
+export const BRIEF_SECTION_GATES = ['clarify', 'decompose', 'design', 'plan', 'release', 'verify'] as const;
+export type BriefSectionGate = (typeof BRIEF_SECTION_GATES)[number];
+
+export const BRIEF_SECTION_GATE_FOR_REASON: Readonly<Record<string, BriefSectionGate>> = {
+  'clarification-draft': 'clarify',
+  'decomposition-proposal': 'decompose',
+  'design-decision-draft': 'design',
+  'plan-draft': 'plan',
+  'release-decision-pending': 'release',
+  'verification-ack-pending': 'verify',
+};
+
+/** The limits, per gate PER REPOSITORY (one project file). */
+export const BRIEF_SECTION_LIMITS = {
+  sectionsPerGate: 3,
+  titleChars: 80,
+  instructionChars: 600,
+  markdownChars: 4000,
+} as const;
+
+export const BRIEF_SECTION_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,39}$/;
+
+export interface BriefSectionDeclaration {
+  id: string;
+  title: string;
+  instruction: string;
+}
+
+const BriefSectionSchema = z
+  .object({
+    id: z.string(),
+    title: z.string().min(1).max(BRIEF_SECTION_LIMITS.titleChars),
+    instruction: z.string().min(1).max(BRIEF_SECTION_LIMITS.instructionChars),
+  })
+  .strict();
+
+export type BriefSectionsParse =
+  | { ok: true; byGate: Partial<Record<BriefSectionGate, BriefSectionDeclaration[]>> }
+  | { ok: false; problem: string };
+
+/** Validate the CONTENT of a `brief_sections` block. `undefined` is an empty declaration. Returns the
+ *  first problem as one readable line (never throws), so the caller can name the file beside it. */
+export function parseBriefSections(raw: unknown): BriefSectionsParse {
+  if (raw === undefined || raw === null) return { ok: true, byGate: {} };
+  if (!isPlainObject(raw)) return { ok: false, problem: 'brief_sections must be a mapping of gate names to lists of sections' };
+  const byGate: Partial<Record<BriefSectionGate, BriefSectionDeclaration[]>> = {};
+  for (const [gate, list] of Object.entries(raw)) {
+    if (!(BRIEF_SECTION_GATES as readonly string[]).includes(gate)) {
+      return { ok: false, problem: `brief_sections names an unknown gate '${gate}' — recognised gates are ${BRIEF_SECTION_GATES.join(', ')}` };
+    }
+    if (!Array.isArray(list)) return { ok: false, problem: `brief_sections.${gate} must be a list of sections` };
+    if (list.length > BRIEF_SECTION_LIMITS.sectionsPerGate) {
+      return { ok: false, problem: `brief_sections.${gate} declares ${list.length} sections — at most ${BRIEF_SECTION_LIMITS.sectionsPerGate} per gate` };
+    }
+    const seen = new Set<string>();
+    const sections: BriefSectionDeclaration[] = [];
+    for (const [i, entry] of list.entries()) {
+      const where = `brief_sections.${gate}[${i}]`;
+      const parsed = BriefSectionSchema.safeParse(entry);
+      if (!parsed.success) {
+        const issue = parsed.error.issues[0];
+        const field = issue?.path.join('.') || '(section)';
+        let why = issue?.message ?? 'invalid';
+        if (issue?.code === 'too_big' && field === 'title') why = `longer than ${BRIEF_SECTION_LIMITS.titleChars} characters`;
+        if (issue?.code === 'too_big' && field === 'instruction') why = `longer than ${BRIEF_SECTION_LIMITS.instructionChars} characters`;
+        if (issue?.code === 'unrecognized_keys') why = `unrecognised key(s) ${issue.keys.join(', ')} — a section has id, title and instruction`;
+        return { ok: false, problem: `${where}: ${field === '(section)' ? '' : `${field} `}${why}` };
+      }
+      const { id } = parsed.data;
+      if (!BRIEF_SECTION_ID_PATTERN.test(id)) {
+        return { ok: false, problem: `${where}: id '${id}' must be lowercase letters, digits and hyphens, start with a letter or digit, at most 40 characters` };
+      }
+      if (seen.has(id)) return { ok: false, problem: `brief_sections.${gate} declares the id '${id}' twice` };
+      seen.add(id);
+      sections.push(parsed.data);
+    }
+    if (sections.length > 0) byGate[gate as BriefSectionGate] = sections;
+  }
+  return { ok: true, byGate };
 }
