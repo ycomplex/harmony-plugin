@@ -141,6 +141,39 @@ const ProfileOverrideSchema = z
 
 const ProfilesSchema = z.object({ cloud: ProfileOverrideSchema.optional(), gke: ProfileOverrideSchema.optional() }).strict();
 
+/** B-1478: where a leg takes the plugin from. "clone" (the default, and what an absent key means) clones the
+ *  plugin repository at the channel's branch; "release" fetches the channel's released download from
+ *  plugin_release.base_url, verifies it and falls back to the clone on any failure (container/entrypoint.sh). */
+export const PLUGIN_SOURCES = ['clone', 'release'] as const;
+const PluginSourceSchema = z.enum(PLUGIN_SOURCES);
+
+/** B-1478: the base of the gated download endpoint, e.g. https://<ref>.supabase.co/functions/v1/plugin-download.
+ *  https only, no query, fragment or credentials, and only URL-safe characters: the value rides env files and
+ *  the cloud profile's quoted YAML unescaped. A trailing slash is dropped when it is put in the env. */
+export function pluginReleaseBaseUrlProblem(raw: string): string | null {
+  if (!/^https:\/\/[A-Za-z0-9._~:/%@-]+$/.test(raw)) return 'must be an https:// URL of plain URL characters (no spaces, quotes, query or fragment)';
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return 'is not a URL';
+  }
+  if (parsed.username || parsed.password) return 'must carry no credentials';
+  if (!parsed.hostname) return 'has no host';
+  return null;
+}
+
+const PluginReleaseSchema = z
+  .object({
+    base_url: z.string().superRefine((v, ctx) => {
+      const problem = pluginReleaseBaseUrlProblem(v);
+      if (problem) ctx.addIssue({ code: z.ZodIssueCode.custom, message: problem });
+    }),
+  })
+  .strict();
+
+export const PLUGIN_RELEASE_NEEDS_BASE_URL = 'plugin_source "release" needs plugin_release.base_url (the gated download endpoint)';
+
 /** Every key a project file may carry (besides `version`), all optional here — the project schema
  *  re-requires `channel` and `profile`; the host schema keeps them optional (it only OVERRIDES). */
 const projectShape = {
@@ -167,6 +200,10 @@ const projectShape = {
   agent_flags: AgentFlagsSchema.optional(),
   /** B-1183: per-profile max_workers / agents / required_tools for built-in profiles. */
   profiles: ProfilesSchema.optional(),
+  /** B-1478: "clone" (default) | "release" (-> env.HARMONY_PLUGIN_SOURCE). */
+  plugin_source: PluginSourceSchema.optional(),
+  /** B-1478: { base_url } of the gated download endpoint (-> env.HARMONY_PLUGIN_RELEASE_URL). */
+  plugin_release: PluginReleaseSchema.optional(),
 };
 
 const SUPABASE_URL_NEEDS_CUSTOM = 'supabase_url is only allowed with "target": "custom"';
@@ -183,6 +220,9 @@ export const ProjectFileSchema = z
   .superRefine((p, ctx) => {
     if (p.supabase_url !== undefined && p.target !== 'custom') {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['supabase_url'], message: SUPABASE_URL_NEEDS_CUSTOM });
+    }
+    if (p.plugin_source === 'release' && !p.plugin_release?.base_url) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['plugin_release'], message: PLUGIN_RELEASE_NEEDS_BASE_URL });
     }
   });
 export type ProjectFile = z.infer<typeof ProjectFileSchema>;
@@ -787,6 +827,9 @@ export function validateMerged(merged: ConductorConfig, env: NodeJS.ProcessEnv =
   if (merged.supabase_url !== undefined && merged.target !== 'custom') {
     need(PROJECT_FILE_LABEL, 'supabase_url', SUPABASE_URL_NEEDS_CUSTOM, 'add "target": "custom" or remove supabase_url');
   }
+  if (merged.plugin_source === 'release' && !merged.plugin_release?.base_url) {
+    need(PROJECT_FILE_LABEL, 'plugin_release.base_url', PLUGIN_RELEASE_NEEDS_BASE_URL, 'add "plugin_release": { "base_url": "https://<ref>.supabase.co/functions/v1/plugin-download" }, or remove "plugin_source": "release"');
+  }
   if (!merged.profile) {
     need(PROJECT_FILE_LABEL, 'profile', 'required key is missing', 'add "profile": "cloud" (or "gke") to .harmony/conductor.json');
     return issues; // every other requirement depends on the profile
@@ -891,6 +934,9 @@ export function projectToDeploymentConfig(
   putEnv('HARMONY_TARGET', merged.target);
   putEnv('HARMONY_SUPABASE_URL', merged.supabase_url);
   putEnv(AGENT_FLAG_ENV['claude-code'], merged.agent_flags?.['claude-code']);
+  // B-1478: absent keys put nothing in the env, so a project that never names them launches exactly as before.
+  putEnv('HARMONY_PLUGIN_SOURCE', merged.plugin_source);
+  putEnv('HARMONY_PLUGIN_RELEASE_URL', merged.plugin_release?.base_url?.replace(/\/+$/, ''));
   if (envSet) out.env = env;
   return out;
 }
