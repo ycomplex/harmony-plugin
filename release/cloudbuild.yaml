@@ -1,0 +1,80 @@
+# B-1475: publishes the plugin's released download — a versioned zip, a Claude Code marketplace file and a release
+# record — to a private Cloud Storage bucket. Contract: docs/plugin-release-artefact.md.
+#
+# Run it from a Cloud Build trigger on the `staging` branch and one on `prod`: only those branches carry a real
+# version and the built dist/ (main is source only, and scripts/build-release.mjs refuses it). Nothing waits for it:
+# promote-prod.sh pushes `prod` and returns.
+#
+# Substitutions (no deployment value has a default here):
+#   _RELEASE_BUCKET   REQUIRED. The bucket name, without gs://.
+#   _PUBLIC_BASE_URL  REQUIRED. The https base the channels are served under; <base>/<channel>/... maps 1:1 to the
+#                     bucket's channels/<channel>/... . No trailing slash (one is stripped).
+#   _CHANNEL          optional. staging or prod; by default derived from the branch ($BRANCH_NAME).
+# The first step resolves and validates all three and writes them to /workspace/*.txt, before any work; a missing one
+# fails the build naming the substitution. Later steps read the files, never the substitutions.
+#
+# This file is a thin caller. The logic, and its tests, are scripts/build-release.mjs (src/build-release.test.ts) and
+# scripts/publish-release.sh (src/publish-release.test.ts). A version already published with different bytes fails
+# the publish and leaves the channel pointers untouched.
+
+substitutions:
+  _RELEASE_BUCKET: ''
+  _PUBLIC_BASE_URL: ''
+  _CHANNEL: ''
+
+steps:
+  - id: resolve
+    name: node:22-bookworm
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        BUCKET='${_RELEASE_BUCKET}'
+        BASE='${_PUBLIC_BASE_URL}'
+        [ -n "$$BUCKET" ] || { echo "_RELEASE_BUCKET is empty: pass _RELEASE_BUCKET=<bucket name> on the trigger" >&2; exit 1; }
+        [ -n "$$BASE" ] || { echo "_PUBLIC_BASE_URL is empty: pass _PUBLIC_BASE_URL=https://<host>/<path> on the trigger" >&2; exit 1; }
+        case "$$BUCKET" in gs://*|*/*) echo "_RELEASE_BUCKET must be a bare bucket name, got '$$BUCKET'" >&2; exit 1 ;; esac
+        BASE="$${BASE%/}"
+        case "$$BASE" in https://?*) ;; *) echo "_PUBLIC_BASE_URL must start with https://, got '$$BASE'" >&2; exit 1 ;; esac
+        CHANNEL='${_CHANNEL}'
+        if [ -z "$$CHANNEL" ]; then
+          case '${BRANCH_NAME}' in
+            staging) CHANNEL=staging ;;
+            prod) CHANNEL=prod ;;
+            *) echo "cannot derive the channel from branch '${BRANCH_NAME}': pass _CHANNEL=staging or _CHANNEL=prod" >&2; exit 1 ;;
+          esac
+        fi
+        case "$$CHANNEL" in staging|prod) ;; *) echo "_CHANNEL must be staging or prod, got '$$CHANNEL'" >&2; exit 1 ;; esac
+        printf '%s\n' "$$BUCKET" > /workspace/release_bucket.txt
+        printf '%s\n' "$$BASE" > /workspace/public_base_url.txt
+        printf '%s\n' "$$CHANNEL" > /workspace/channel.txt
+        echo "Publishing the $$CHANNEL release of commit ${COMMIT_SHA}"
+
+  - id: build
+    name: node:22-bookworm
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        git config --global --add safe.directory /workspace
+        [ -d .git ] || { echo "the build has no git checkout: the release zip is git archive of the commit" >&2; exit 1; }
+        # A trigger's checkout can be shallow or detached; git archive needs only the commit itself.
+        git cat-file -e '${COMMIT_SHA}^{commit}' 2>/dev/null || git fetch --quiet origin '${COMMIT_SHA}' || git fetch --quiet --unshallow || true
+        node scripts/build-release.mjs --commit '${COMMIT_SHA}' --channel "$(cat /workspace/channel.txt)" \
+          --base-url "$(cat /workspace/public_base_url.txt)" --out /workspace/release-out
+
+  - id: publish
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        bash scripts/publish-release.sh /workspace/release-out "gs://$(cat /workspace/release_bucket.txt)"
+
+timeout: 900s
+
+options:
+  logging: CLOUD_LOGGING_ONLY

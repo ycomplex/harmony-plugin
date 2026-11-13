@@ -27,6 +27,10 @@ before the key is added.
 
 `doctor-auth-hook.md` (B-1035, B-1300) is the operator reference for `harmony doctor auth-hook`: the two hook halves it prints, the before-user-created mismatch WARNs, and the access-token-only exit-code contract.
 
+`plugin-release-artefact.md` (B-1475) is the contract for the plugin's released download: the zip, `marketplace.json`
+and `release.json` every push to `staging` and `prod` publishes, the bucket layout, immutability, what Claude Code
+does with an archive marketplace (with the probe's results), and the founder's setup steps.
+
 `recorded-walk-contract.md` (B-1062) is the contract for recording a ticket's gates instead of conducting them: the
 `recorded_walk_requests` table the web's Record action writes and the plugin's walk reads.
 
