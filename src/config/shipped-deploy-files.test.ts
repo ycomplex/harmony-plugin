@@ -16,7 +16,7 @@ const MANIFESTS = [
   'container/conductor/k8s/serviceaccount.yaml',
   'container/conductor/k8s/cronjob-sweep.yaml',
 ];
-const BUILD_FILES = ['container/conductor/cloudbuild.yaml', 'container/cloudbuild.yaml'];
+const BUILD_FILES = ['container/conductor/cloudbuild.yaml', 'container/cloudbuild.yaml', 'release/cloudbuild.yaml'];
 
 // Each pattern names one way Harmony's own deployment used to leak into a shipped file.
 const FORBIDDEN: Array<[string, RegExp]> = [
