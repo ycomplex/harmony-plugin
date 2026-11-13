@@ -11,7 +11,12 @@ set -euo pipefail
 # checkout (mirrors the interactive layout — see entrypoint.sh's clone order)
 # so all three CLAUDE.md levels (workspace, plugin, web) load by ordinary file
 # ancestry, exactly as an interactive session gets.
-PLUGIN_DIR=/workspace/workspace/plugin
+# B-1478: a leg that took the plugin from the released download runs from that release instead
+# (container/entrypoint.sh exports HARMONY_PLUGIN_DIR=$HOME/harmony-plugin, read-only, and exec's ITS copy of
+# this script). The entrypoint unsets HARMONY_PLUGIN_DIR on every clone leg, so a clone leg is unchanged.
+PLUGIN_DIR="${HARMONY_PLUGIN_DIR:-/workspace/workspace/plugin}"
+# B-1478: where the plugin came from — release | clone | clone-fallback(<reason>). Unset = no setting = clone.
+PLUGIN_SOURCE_RESULT="${HARMONY_PLUGIN_SOURCE_RESULT:-clone}"
 WORKDIR="${HARMONY_WORKDIR:-/workspace/workspace}"
 mkdir -p "$WORKDIR"
 
@@ -159,7 +164,7 @@ AHEAD_OF_PROD_ACK=""
 if [ "$ACTUAL_TARGET" = "prod" ] && [ "$PLUGIN_REF" != "prod" ] && [ "$AHEAD_OF_PROD_ACKED" = "1" ]; then
   AHEAD_OF_PROD_ACK=" (ACK'd ahead-of-prod override active)"
 fi
-echo "Environment confirmed: target=$ACTUAL_TARGET plugin_ref=$PLUGIN_REF plugin_version=$PLUGIN_VERSION workdir=$WORKDIR$AHEAD_OF_PROD_ACK"
+echo "Environment confirmed: target=$ACTUAL_TARGET plugin_ref=$PLUGIN_REF plugin_version=$PLUGIN_VERSION plugin_source=$PLUGIN_SOURCE_RESULT workdir=$WORKDIR$AHEAD_OF_PROD_ACK"
 
 # --- B-1074: surface which Claude Code version this worker's image carries. -
 if [ -f /etc/harmony-claude-version ]; then
@@ -291,6 +296,24 @@ case "$MODE" in
       exit 1
     fi
 
+    # --- B-1478: a leg that fell back from the released download to the clone says so on its ticket. -----
+    # ONE comment per leg, through the plugin's own CLI. Best-effort: a failed post only warns, never stops the
+    # leg (the fallback itself is already on stderr as the entrypoint's PLUGIN-SOURCE-FALLBACK line). The ticket
+    # is the launcher's TICKET, else the one the conduct prompt names; with neither, nothing is posted.
+    if [[ "$PLUGIN_SOURCE_RESULT" == clone-fallback\(* ]]; then
+      B1478_TICKET="${TICKET:-}"
+      if [ -z "$B1478_TICKET" ] && [[ "$PROMPT" =~ harmony-conduct[[:space:]]+([A-Za-z][A-Za-z0-9]*-[0-9]+) ]]; then
+        B1478_TICKET="${BASH_REMATCH[1]}"
+      fi
+      if [ -n "$B1478_TICKET" ]; then
+        B1478_REASON="${PLUGIN_SOURCE_RESULT#clone-fallback(}"
+        B1478_REASON="${B1478_REASON%)}"
+        node "$PLUGIN_DIR/dist/bin/harmony.js" tasks comment "$B1478_TICKET" \
+          "Plugin source: this leg was set to take the plugin from the released download (plugin_source \"release\") but cloned it instead (PLUGIN-SOURCE-FALLBACK): $B1478_REASON. This leg continues from the clone of $PLUGIN_REF." \
+          >/dev/null 2>&1 || echo "B-1478: could not post the plugin-source fallback comment on $B1478_TICKET; continuing." >&2
+      fi
+    fi
+
     # B-1077: every leg launches THROUGH the agent-adapter registry (src/agents/registry.ts),
     # selected per run by run_config.agent.adapter (absent = claude-code). `harmony agent ...`
     # (src/cli/commands/agent.ts) is the only thing that knows the runtime's binary, argv and
@@ -342,7 +365,8 @@ case "$MODE" in
     if [ "$AGENT_ID" != "claude-code" ]; then
       RENDER_REPO_ARGS=()
       while IFS= read -r B1076_REPO_PATH; do
-        [ -n "$B1076_REPO_PATH" ] && RENDER_REPO_ARGS+=("$B1076_REPO_PATH")
+        # B-1478: a release leg never cloned the is_plugin entry's path; only repos on disk are rendered.
+        [ -n "$B1076_REPO_PATH" ] && [ -d "$B1076_REPO_PATH" ] && RENDER_REPO_ARGS+=("$B1076_REPO_PATH")
       done < <(b929_repo_paths)
       if [ "${#RENDER_REPO_ARGS[@]}" -gt 0 ]; then
         node "$PLUGIN_DIR/dist/bin/harmony.js" agent render --plugin-dir "$PLUGIN_DIR" --workspace "$WORKDIR" \
@@ -367,14 +391,29 @@ case "$MODE" in
     # branches, the plugin checkout's main worktree, credential shapes). docs/worker-git-guard.md.
     "$PLUGIN_DIR/container/git-guard/install.sh" "$HOME/.harmony/git-guard" "$HOME/bin" "$PLUGIN_DIR" >&2 ||
       echo "B-1451: push guard install failed; continuing without it." >&2
-    git -C "$PLUGIN_DIR" checkout -q --detach 2>/dev/null || true
-    for b1451_branch in staging prod main; do
-      git -C "$PLUGIN_DIR" branch -q -D "$b1451_branch" >/dev/null 2>&1 || true
-    done
-    echo "B-1451: plugin checkout detached at $(git -C "$PLUGIN_DIR" rev-parse --short HEAD 2>/dev/null); local staging/prod/main deleted." >&2
-    # Once, before the FIRST agent launch only (never on a relaunch, resume or handoff). Nothing
-    # between here and the launch writes into the checkout (install-worker writes $HOME/.harmony).
-    "$PLUGIN_DIR/container/git-guard/dirty-check.sh" "$PLUGIN_DIR" || exit 1
+    # B-1478: only a plugin CHECKOUT is detached and dirty-checked: PLUGIN_DIR must be its own git repository's
+    # top level. A release directory is not a repository, and these git commands run against it would reach
+    # whatever repository encloses it. The default clone path is always the entrypoint's own clone, so it is
+    # not re-checked (its commands are exactly what they were before B-1478).
+    B1478_PLUGIN_IS_CHECKOUT=1
+    if [ -n "${HARMONY_PLUGIN_DIR:-}" ]; then
+      B1478_TOPLEVEL="$(git -C "$PLUGIN_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+      if [ -z "$B1478_TOPLEVEL" ] || [ "$B1478_TOPLEVEL" != "$(cd "$PLUGIN_DIR" && pwd -P)" ]; then
+        B1478_PLUGIN_IS_CHECKOUT=0
+      fi
+    fi
+    if [ "$B1478_PLUGIN_IS_CHECKOUT" = "1" ]; then
+      git -C "$PLUGIN_DIR" checkout -q --detach 2>/dev/null || true
+      for b1451_branch in staging prod main; do
+        git -C "$PLUGIN_DIR" branch -q -D "$b1451_branch" >/dev/null 2>&1 || true
+      done
+      echo "B-1451: plugin checkout detached at $(git -C "$PLUGIN_DIR" rev-parse --short HEAD 2>/dev/null); local staging/prod/main deleted." >&2
+      # Once, before the FIRST agent launch only (never on a relaunch, resume or handoff). Nothing
+      # between here and the launch writes into the checkout (install-worker writes $HOME/.harmony).
+      "$PLUGIN_DIR/container/git-guard/dirty-check.sh" "$PLUGIN_DIR" || exit 1
+    else
+      echo "B-1451: plugin dir $PLUGIN_DIR is not a git checkout (plugin_source=$PLUGIN_SOURCE_RESULT, read-only); nothing to detach or dirty-check." >&2
+    fi
 
     # --- B-718: same-conduction resume discovery + best-effort --resume wiring (AC5). -----------
     # B-1201: a connected workspace must authenticate from mounted access token only.

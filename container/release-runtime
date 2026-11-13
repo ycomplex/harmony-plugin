@@ -1,0 +1,7 @@
+# B-1478: marks a plugin tree that a worker leg may run from when it takes the plugin from the released
+# download instead of a clone (.harmony/conductor.json "plugin_source": "release").
+#
+# container/entrypoint.sh checks that this file is present in the extracted release before it hands off to
+# that release's container/provision.sh. A release built from a commit without it predates the worker's
+# release support, so the leg falls back to cloning the plugin. The file's content is not read; only its
+# presence matters. Do not delete or move it: src/release/runtime-paths.ts lists it as a run-time path.

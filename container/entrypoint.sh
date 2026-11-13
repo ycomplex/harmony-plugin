@@ -258,6 +258,161 @@ plugin_ref_from_posture() {
   printf '%s' "${posture#ack:}"
 }
 
+# --- B-1478: take the plugin from the released download, when the project opts in. ------------
+# .harmony/conductor.json "plugin_source": "release" (-> HARMONY_PLUGIN_SOURCE) with plugin_release.base_url
+# (-> HARMONY_PLUGIN_RELEASE_URL) makes this leg fetch the channel's release from the gated download endpoint
+# instead of cloning the plugin: <base>/<channel>/release.json, then the zip it names, both with the board API
+# token as a bearer. The zip must match release.json's sha256, its own .claude-plugin/plugin.json version must
+# equal release.json's version, and the tree must carry container/release-runtime. It is then extracted to
+# $HOME/harmony-plugin, made read-only, exported as HARMONY_PLUGIN_DIR, and ITS container/provision.sh is exec'd
+# exactly as a clone's would be. The repos[] entry with is_plugin is then not cloned; every other repo still is.
+#
+# ANY failure prints exactly one stderr line, `PLUGIN-SOURCE-FALLBACK: <reason>; cloning <ref>`, and the leg
+# clones exactly as it does without the setting. The outcome reaches provision.sh as HARMONY_PLUGIN_SOURCE_RESULT
+# (release | clone | clone-fallback(<reason>)). With the setting ABSENT nothing here runs and nothing new is
+# exported: the leg is what it was before B-1478 (src/daemon/plugin-source-parity.test.ts). The token is only
+# ever written to a mode-600 header file that is removed before the hand-off; it is never in argv or output.
+B1478_RELEASE_DIR=""
+B1478_REASON=""
+B1478_WORK=""
+
+b1478_channel_from_posture() {
+  case "${HARMONY_PLUGIN_POSTURE:-prod}" in
+    prod) printf 'prod' ;;
+    ack:staging | staging) printf 'staging' ;;
+    *) return 1 ;;
+  esac
+}
+
+# $1 = url, $2 = output file, $3 = max bytes. Sets B1478_CODE to the HTTP status; fails (and sets B1478_REASON)
+# on a transport error. Redirects are followed over https only; curl drops the bearer on a redirect to another
+# host. The bearer is read from a mode-600 header file, never from argv.
+B1478_CODE=""
+b1478_get() {
+  local rc=0
+  B1478_CODE="$(curl -sS -L --proto '=https' --proto-redir '=https' --max-redirs 3 --connect-timeout 10 --max-time 300 \
+    --max-filesize "$3" -H "@$B1478_WORK/auth-header" -o "$2" -w '%{http_code}' "$1" 2>"$B1478_WORK/curl-err")" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    B1478_REASON="$(basename "$2") request failed (curl exit $rc: $(head -c 200 "$B1478_WORK/curl-err" | tr -d '\r\n'))"
+    return 1
+  fi
+  return 0
+}
+
+# $1 = what was fetched, $2 = HTTP code. Sets B1478_REASON for a non-200.
+b1478_http_ok() {
+  case "$2" in
+    200) return 0 ;;
+    401 | 403) B1478_REASON="$1: token refused (HTTP $2)" ;;
+    *) B1478_REASON="$1: HTTP $2" ;;
+  esac
+  return 1
+}
+
+b1478_fetch_release() {
+  local base channel tool release version object sha bytes rest zip_url actual tree zip_version dest
+  base="${HARMONY_PLUGIN_RELEASE_URL:-}"
+  base="${base%/}"
+  if [ -z "$base" ]; then B1478_REASON="plugin_release.base_url (HARMONY_PLUGIN_RELEASE_URL) is not set"; return 1; fi
+  if ! [[ "$base" =~ ^https://[A-Za-z0-9._~:/%@-]+$ ]]; then B1478_REASON="plugin_release.base_url is not a plain https:// URL"; return 1; fi
+  if ! channel="$(b1478_channel_from_posture)"; then
+    B1478_REASON="posture '${HARMONY_PLUGIN_POSTURE//[^A-Za-z0-9:._-]/?}' has no published release channel (only prod and staging do)"
+    return 1
+  fi
+  if [ -z "${HARMONY_API_TOKEN:-}" ]; then B1478_REASON="HARMONY_API_TOKEN is not set"; return 1; fi
+  for tool in curl jq sha256sum unzip; do
+    command -v "$tool" >/dev/null 2>&1 || { B1478_REASON="$tool is not available in this image"; return 1; }
+  done
+  mkdir -p "$HOME" 2>/dev/null || true
+  B1478_WORK="$(mktemp -d "$HOME/.harmony-plugin-release.XXXXXX" 2>/dev/null)" || { B1478_REASON="could not create a work directory under \$HOME"; return 1; }
+  ( umask 077; printf 'Authorization: Bearer %s\n' "$HARMONY_API_TOKEN" >"$B1478_WORK/auth-header" ) || { B1478_REASON="could not write the request header"; return 1; }
+
+  b1478_get "$base/$channel/release.json" "$B1478_WORK/release.json" 1048576 || return 1
+  b1478_http_ok release.json "$B1478_CODE" || return 1
+  release="$B1478_WORK/release.json"
+  if ! jq -e '.schema == 1 and (.version | type == "string") and (.zip.object | type == "string") and (.zip.sha256 | type == "string")' "$release" >/dev/null 2>&1; then
+    B1478_REASON="release.json is not a schema-1 release record"
+    return 1
+  fi
+  version="$(jq -r '.version' "$release")"
+  object="$(jq -r '.zip.object' "$release")"
+  sha="$(jq -r '.zip.sha256' "$release")"
+  bytes="$(jq -r '.zip.bytes // 0' "$release")"
+  if ! [[ "$version" =~ ^[0-9A-Za-z.+-]+$ ]]; then B1478_REASON="release.json version is malformed"; return 1; fi
+  if ! [[ "$sha" =~ ^[0-9a-f]{64}$ ]]; then B1478_REASON="release.json zip.sha256 is malformed"; return 1; fi
+  case "$object" in
+    "channels/$channel/"*) rest="${object#"channels/$channel/"}" ;;
+    *) B1478_REASON="release.json zip.object is not under channels/$channel/"; return 1 ;;
+  esac
+  if ! [[ "$rest" =~ ^[A-Za-z0-9._/+-]+$ ]] || [[ "$rest" == *..* ]]; then B1478_REASON="release.json zip.object is malformed"; return 1; fi
+  if ! [[ "$bytes" =~ ^[0-9]+$ ]]; then bytes=0; fi
+  zip_url="$base/$channel/$rest"
+
+  b1478_get "$zip_url" "$B1478_WORK/plugin.zip" 268435456 || return 1
+  b1478_http_ok "the release zip" "$B1478_CODE" || return 1
+  rm -f "$B1478_WORK/auth-header"
+  actual="$(sha256sum "$B1478_WORK/plugin.zip" | cut -d' ' -f1)"
+  if [ "$actual" != "$sha" ]; then B1478_REASON="checksum mismatch (zip sha256 $actual, release.json says $sha)"; return 1; fi
+
+  tree="$B1478_WORK/tree"
+  local unzip_rc=0
+  unzip -q "$B1478_WORK/plugin.zip" -d "$tree" >/dev/null 2>&1 || unzip_rc=$?
+  if [ "$unzip_rc" -ne 0 ]; then
+    B1478_REASON="extract failed (unzip exit $unzip_rc)"
+    return 1
+  fi
+  zip_version="$(jq -r '.version // empty' "$tree/.claude-plugin/plugin.json" 2>/dev/null || true)"
+  if [ "$zip_version" != "$version" ]; then
+    B1478_REASON="version mismatch (the zip's plugin.json says '${zip_version//[^0-9A-Za-z.+-]/?}', release.json says '$version')"
+    return 1
+  fi
+  if [ ! -f "$tree/container/release-runtime" ]; then
+    B1478_REASON="release $version has no container/release-runtime marker (it predates worker release support)"
+    return 1
+  fi
+  if [ ! -x "$tree/container/provision.sh" ]; then
+    B1478_REASON="release $version has no executable container/provision.sh"
+    return 1
+  fi
+
+  dest="$HOME/harmony-plugin"
+  if [ -e "$dest" ]; then
+    chmod -R u+w "$dest" 2>/dev/null || true
+    rm -rf "$dest" || { B1478_REASON="could not replace an existing $dest"; return 1; }
+  fi
+  mv "$tree" "$dest" || { B1478_REASON="could not install the release at $dest"; return 1; }
+  chmod -R a-w "$dest" || { B1478_REASON="could not make $dest read-only"; return 1; }
+  B1478_RELEASE_DIR="$dest"
+  echo "entrypoint: B-1478 plugin from the $channel release $version (sha256 $sha, $(stat -c %s "$B1478_WORK/plugin.zip" 2>/dev/null || echo "$bytes") bytes) at $dest" >&2
+  return 0
+}
+
+case "${HARMONY_PLUGIN_SOURCE:-}" in
+  "") ;; # absent: the clone, exactly as before B-1478 — nothing exported
+  clone) export HARMONY_PLUGIN_SOURCE_RESULT=clone ;;
+  release)
+    b1478_ok=0
+    b1478_fetch_release && b1478_ok=1
+    if [ -n "$B1478_WORK" ]; then rm -rf "$B1478_WORK"; fi
+    if [ "$b1478_ok" = "1" ]; then
+      export HARMONY_PLUGIN_DIR="$B1478_RELEASE_DIR"
+      export HARMONY_PLUGIN_SOURCE_RESULT=release
+    else
+      B1478_RELEASE_DIR=""
+      echo "PLUGIN-SOURCE-FALLBACK: $B1478_REASON; cloning $(plugin_ref_from_posture)" >&2
+      export HARMONY_PLUGIN_SOURCE_RESULT="clone-fallback($B1478_REASON)"
+    fi
+    ;;
+  *)
+    B1478_REASON="plugin_source '${HARMONY_PLUGIN_SOURCE//[^A-Za-z0-9_-]/?}' is neither clone nor release"
+    echo "PLUGIN-SOURCE-FALLBACK: $B1478_REASON; cloning $(plugin_ref_from_posture)" >&2
+    export HARMONY_PLUGIN_SOURCE_RESULT="clone-fallback($B1478_REASON)"
+    ;;
+esac
+# A clone leg's provision.sh runs from the clone; HARMONY_PLUGIN_DIR is the release's alone and never leaks in
+# from the launch env (it is the conductor host's own plugin knob). Unsetting an unset variable changes nothing.
+if [ -z "$B1478_RELEASE_DIR" ]; then unset HARMONY_PLUGIN_DIR; fi
+
 if [ -n "${HARMONY_REPOS_JSON:-}" ]; then
   # B-814: this deployment declares its own arbitrary, ordered repo set — a `repos` section in
   # deployment.json, transported here as base64-encoded JSON (see scripts/mint-installation-token.mjs's
@@ -281,6 +436,8 @@ if [ -n "${HARMONY_REPOS_JSON:-}" ]; then
     echo "entrypoint: no repos[] entry has is_plugin:true — provisioning is plugin code, there is no plugin-less route" >&2
     exit 1
   fi
+  # B-1478: a release leg runs the release's provision.sh and does not clone the is_plugin entry.
+  if [ -n "$B1478_RELEASE_DIR" ]; then PLUGIN_DIR="$B1478_RELEASE_DIR"; fi
 
   # B-726 (a/a1) preserved: when one entry declares meta_repo_role, clone it FIRST — every other
   # entry then clones nested inside it (when its own path falls inside the meta entry's path) or as
@@ -305,6 +462,8 @@ if [ -n "${HARMONY_REPOS_JSON:-}" ]; then
     # The meta entry, if any, was already cloned above.
     [ "$meta_flag" = "true" ] && continue
     if [ "$is_plugin_flag" = "true" ]; then
+      # B-1478: the plugin came from the released download (above); nothing to clone for this entry.
+      [ -n "$B1478_RELEASE_DIR" ] && continue
       # B-803/B-814 ref precedence (see plugin_ref_from_posture's own comment above): the posture
       # knob wins for the is_plugin entry — this entry's own `ref` (already read into $ref below,
       # from the deployment config) is deliberately discarded here, never consulted.
@@ -336,6 +495,11 @@ WORKSPACE_REF="${WORKSPACE_REF:-main}"
 # .gitignore) precisely for this.
 clone "$WORKSPACE_REPO" "$WORKSPACE_REF" /workspace/workspace
 clone "$WEB_REPO" "$WEB_REF" /workspace/workspace/web
+if [ -n "$B1478_RELEASE_DIR" ]; then
+  # B-1478: the plugin came from the released download (above); it is not cloned.
+  b772_finish_cross_conduction_resume "$B1478_RELEASE_DIR"
+  exec "$B1478_RELEASE_DIR/container/provision.sh" "$@"
+fi
 clone "$PLUGIN_REPO" "$PLUGIN_REF" /workspace/workspace/plugin
 
 b772_finish_cross_conduction_resume /workspace/workspace/plugin
