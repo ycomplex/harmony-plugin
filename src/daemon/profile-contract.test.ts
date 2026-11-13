@@ -2231,6 +2231,9 @@ describe.skipIf(!SUBPROCESS_CAPABLE)('cloud-worker-launch.sh + cloud-worker-reap
       // B-1020: leg seam acquisition line — same extraction discipline as GIT_TOKEN/posture/
       // run-config/model above, so drift in the real acquisition line breaks this EXECUTED test too.
       const legAcquisition = extractLine(launchScript, 'HARMONY_LEG="$(grep -m1');
+      // B-1478: the plugin source seam, extracted the same way.
+      const pluginSourceAcquisition = extractLine(launchScript, 'HARMONY_PLUGIN_SOURCE="$(grep -m1');
+      const pluginReleaseUrlAcquisition = extractLine(launchScript, 'HARMONY_PLUGIN_RELEASE_URL="$(grep -m1');
       const fnBody = extractFunctionBody(launchScript);
 
       const harness = [
@@ -2250,6 +2253,8 @@ describe.skipIf(!SUBPROCESS_CAPABLE)('cloud-worker-launch.sh + cloud-worker-reap
         modelAcquisition,
         expiresAtAcquisition,
         legAcquisition,
+        pluginSourceAcquisition,
+        pluginReleaseUrlAcquisition,
         fnBody,
         `write_exec_env_file "${outFile}"`,
         '',
@@ -2260,6 +2265,25 @@ describe.skipIf(!SUBPROCESS_CAPABLE)('cloud-worker-launch.sh + cloud-worker-reap
 
       return readFileSync(outFile, 'utf8');
     }
+
+    it('B-1478: plugin_source / plugin_release reach the Cloud Run worker env through config and mint', () => {
+      const url = 'https://abcdefghijklmnop.supabase.co/functions/v1/plugin-download';
+      const output = runWriteExecEnvFile(channelEnv('cloud', 'prod', { plugin_source: 'release', plugin_release: { base_url: url } }));
+      expect(output).toContain('HARMONY_PLUGIN_SOURCE: "release"\n');
+      expect(output).toContain(`HARMONY_PLUGIN_RELEASE_URL: "${url}"\n`);
+      expect(output).toContain('HARMONY_PLUGIN_POSTURE: "prod"');
+    });
+
+    it('B-1478: absent setting forwards neither variable (the env file is what it was)', () => {
+      const output = runWriteExecEnvFile(channelEnv('cloud', 'prod'));
+      expect(output).not.toMatch(/HARMONY_PLUGIN_(SOURCE|RELEASE_URL)/);
+    });
+
+    it('B-1478: a value that could break the quoted YAML line is dropped, never forwarded', () => {
+      const output = runWriteExecEnvFile(['GIT_TOKEN=ghs_dummytoken', 'HARMONY_PLUGIN_SOURCE=release', 'HARMONY_PLUGIN_RELEASE_URL=https://x.test/a"b', ''].join('\n'));
+      expect(output).toContain('HARMONY_PLUGIN_SOURCE: "release"');
+      expect(output).not.toContain('HARMONY_PLUGIN_RELEASE_URL');
+    });
 
     it('a staging project explicitly reaches the Cloud Run worker env through config and mint', () => {
       const output = runWriteExecEnvFile(channelEnv('cloud'));

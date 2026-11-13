@@ -305,6 +305,12 @@ fi
 # come through empty.
 HARMONY_PLUGIN_POSTURE="$(grep -m1 '^HARMONY_PLUGIN_POSTURE=' "$ENV_FILE" | cut -d= -f2- || true)"
 
+# B-1478: where the leg takes the plugin from (.harmony/conductor.json's plugin_source / plugin_release.base_url,
+# merged into the base env and minted into the SAME $ENV_FILE). Read the same grep+cut way; absent = the clone,
+# exactly as before, and write_exec_env_file() below then forwards nothing.
+HARMONY_PLUGIN_SOURCE="$(grep -m1 '^HARMONY_PLUGIN_SOURCE=' "$ENV_FILE" | cut -d= -f2- || true)"
+HARMONY_PLUGIN_RELEASE_URL="$(grep -m1 '^HARMONY_PLUGIN_RELEASE_URL=' "$ENV_FILE" | cut -d= -f2- || true)"
+
 # B-846: run-config seam — HARMONY_RUN_CONFIG_JSON is written into the SAME minted $ENV_FILE as
 # GIT_TOKEN/HARMONY_PLUGIN_POSTURE above (this profile's mint invocation passes --run-config with no
 # --run-config-path, so mint-installation-token.mjs takes the inline-delivery branch — see
@@ -394,6 +400,16 @@ write_exec_env_file() {
       # this is deliberately conditional, never unconditional.
       if [ -n "${HARMONY_PLUGIN_POSTURE:-}" ]; then
         printf 'HARMONY_PLUGIN_POSTURE: "%s"\n' "$HARMONY_PLUGIN_POSTURE"
+      fi
+      # B-1478: the plugin source and the release endpoint, forwarded ONLY when set (the same conditional
+      # convention as HARMONY_PLUGIN_POSTURE): absent, the leg clones exactly as before. Each is forwarded only
+      # when it holds plain URL characters, so the value can never break this quoted YAML line; anything else
+      # is dropped and the leg's entrypoint falls back to the clone, saying why.
+      if [[ "${HARMONY_PLUGIN_SOURCE:-}" =~ ^[A-Za-z0-9_-]+$ ]]; then
+        printf 'HARMONY_PLUGIN_SOURCE: "%s"\n' "$HARMONY_PLUGIN_SOURCE"
+      fi
+      if [[ "${HARMONY_PLUGIN_RELEASE_URL:-}" =~ ^[A-Za-z0-9._~:/%@-]+$ ]]; then
+        printf 'HARMONY_PLUGIN_RELEASE_URL: "%s"\n' "$HARMONY_PLUGIN_RELEASE_URL"
       fi
       # B-814: this deployment's ordered repos[] list, forwarded ONLY when the host's deployment
       # config actually declares one (the same conditional-forward convention as

@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { renderTemplate } from './config.js';
 import { LEGACY_LOCAL_DOCKER_LAUNCH } from './local-docker-legacy-launch.js';
+import { channelEnv } from './fixtures/channel-env.js';
 
 const REPO = fileURLToPath(new URL('../../', import.meta.url)).replace(/\/$/, '');
 const profile = JSON.parse(readFileSync(join(REPO, 'container/daemon-profile.example.json'), 'utf8')) as { launch: string; required_tools: Record<string, string[]> };
@@ -53,7 +54,7 @@ function makeWorld(): World {
     '  *mint-installation-token.mjs*)',
     '    out=""; prev=""',
     '    for a in "$@"; do [ "$prev" = "--out" ] && out="$a"; prev="$a"; done',
-    '    printf \'GIT_TOKEN=ghs_stub\\n\' > "$out"; printf \'{}\' > "$(dirname "$out")/run-config.json" ;;',
+    '    printf \'GIT_TOKEN=ghs_stub\\n%s\' "${STUB_MINT_EXTRA:-}" > "$out"; printf \'{}\' > "$(dirname "$out")/run-config.json" ;;',
     'esac',
   ]);
   stub('docker', ['{ printf \'%s\\n\' "$@"; echo "--END--"; } >> "$STUB_LOGS/docker.log"', 'exit "${STUB_DOCKER_EXIT:-0}"']);
@@ -122,6 +123,33 @@ describe.skipIf(!BASH)('docker-worker-launch.sh — Claude parity with the pre-B
     const argv = calls(w, 'docker.log')[0].join('\n');
     expect(argv).not.toContain('codex');
     expect(argv).not.toContain('HARMONY_CODEX_AUTH_FILE');
+  });
+});
+
+// B-1478: the local docker profile hands the worker the WHOLE minted env file, so the plugin source needs no
+// launcher change: the mint composes it from the merged config (channelEnv runs the real composition) and
+// `docker run --env-file` carries it.
+describe.skipIf(!BASH)('B-1478: the plugin source reaches a local docker worker through the minted env file', () => {
+  const minted = (extra: Record<string, unknown>) =>
+    channelEnv('cloud', 'prod', extra).split('\n').filter((l) => l.startsWith('HARMONY_')).map((l) => `${l}\n`).join('');
+  const envFileAtRun = (w: World): string => {
+    const argv = calls(w, 'docker.log')[0];
+    return readFileSync(argv[argv.indexOf('--env-file') + 1], 'utf8');
+  };
+
+  it('release + base_url: both lines are in the env file docker run is given', () => {
+    const extra = minted({ plugin_source: 'release', plugin_release: { base_url: 'https://abcdefghijklmnop.supabase.co/functions/v1/plugin-download' } });
+    expect(extra).toContain('HARMONY_PLUGIN_SOURCE=release');
+    const w = makeWorld();
+    expect(runTemplate(w, profile.launch, CLAUDE_VARS, { STUB_MINT_EXTRA: extra }).status).toBe(0);
+    expect(envFileAtRun(w)).toContain('HARMONY_PLUGIN_SOURCE=release\n');
+    expect(envFileAtRun(w)).toContain('HARMONY_PLUGIN_RELEASE_URL=https://abcdefghijklmnop.supabase.co/functions/v1/plugin-download\n');
+  });
+
+  it('absent: the composed env carries neither line', () => {
+    const w = makeWorld();
+    expect(runTemplate(w, profile.launch, CLAUDE_VARS, { STUB_MINT_EXTRA: minted({}) }).status).toBe(0);
+    expect(envFileAtRun(w)).not.toMatch(/HARMONY_PLUGIN_(SOURCE|RELEASE_URL)/);
   });
 });
 
