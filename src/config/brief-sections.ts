@@ -260,8 +260,10 @@ export async function readBriefSectionDeclarations(
     const warnings: string[] = [];
     const repos: DeclaredRepository[] = [];
     let readable = 0;
-    for (const candidate of candidates) {
-      const r = await readRepo(io, candidate);
+    // Read every repository at once (each fetch may wait up to its limit), then fold the results in
+    // the conductor file's order so repositories and warnings keep that order.
+    const reads = await Promise.all(candidates.map((candidate) => readRepo(io, candidate)));
+    for (const r of reads) {
       if (r.kind === 'skipped') {
         warnings.push(r.warning);
         continue;

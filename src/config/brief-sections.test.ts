@@ -225,6 +225,52 @@ describe('readBriefSectionDeclarations — what is read', () => {
     ]);
   });
 
+  it('reads the repositories concurrently and keeps the conductor file order for repos and warnings', async () => {
+    const root = tmp('b1305-parallel-');
+    const a = repoWithRemote(root, 'acme-co', 'widget-web', DECLARED);
+    const b = repoWithRemote(root, 'acme-co', 'widget-api', DECLARED);
+    const ws = join(root, 'ws');
+    mkdirSync(join(ws, '.harmony'), { recursive: true });
+    const missing1 = join(root, 'missing-one');
+    const missing2 = join(root, 'missing-two');
+    writeFileSync(
+      join(ws, '.harmony', 'conductor.json'),
+      JSON.stringify({ repos: [{ url: 'u', path: a.clone }, { url: 'm', path: missing1 }, { url: 'v', path: b.clone }, { url: 'n', path: missing2 }] }),
+    );
+    // Each fetch resolves only once BOTH have started: a sequential reader would never start the second,
+    // so it falls through the timeout and is recorded as not concurrent. The first repository's fetch is
+    // also made to finish last, so the result order cannot come from completion order.
+    const base = defaultBriefSectionsIO();
+    const started: string[] = [];
+    let release!: () => void;
+    const bothStarted = new Promise<void>((r) => (release = r));
+    let concurrent = true;
+    const io = ioAt(ws, {
+      git: async (args, opts) => {
+        if (args[0] === 'fetch') {
+          started.push(opts.cwd);
+          if (started.length === 2) release();
+          const timedOut = await Promise.race([
+            bothStarted.then(() => false),
+            new Promise<boolean>((r) => setTimeout(() => r(true), 3000)),
+          ]);
+          if (timedOut) concurrent = false;
+          if (opts.cwd.endsWith('widget-web')) await new Promise((r) => setTimeout(r, 50));
+        }
+        return base.git(args, opts);
+      },
+    });
+    const r = await readBriefSectionDeclarations('clarify', io);
+    expect(concurrent).toBe(true);
+    expect(started).toHaveLength(2);
+    expect(r.kind).toBe('declared');
+    if (r.kind !== 'declared') return;
+    expect(r.repos.map((x) => x.repository)).toEqual(['acme-co/widget-web', 'acme-co/widget-api']);
+    expect(r.warnings).toHaveLength(2);
+    expect(r.warnings[0]).toContain(missing1);
+    expect(r.warnings[1]).toContain(missing2);
+  });
+
   it('maps a container-absolute repos[].path under the conductor file directory via the meta repository', async () => {
     const root = tmp('b1305-meta-');
     const meta = repoWithRemote(root, 'acme-co', 'widget-workspace', null);

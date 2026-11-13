@@ -6613,15 +6613,55 @@ describe('composeBrief — B-1305 project sections', () => {
     expect(written.content).not.toContain('Project sections');
   });
 
-  it('mechanical composes skip the check and say why no sections were produced', async () => {
+  it('a mechanical compose for a gate with enforced sections skips the check and says why none were produced', async () => {
     const reader = declaredReader();
     const client = firstCompose();
-    await composeBrief(client, PROJECT_ID, USER_ID, args({}), { mechanical: true, readSectionDeclarations: reader });
-    expect(reader).not.toHaveBeenCalled();
+    const res = await composeBrief(client, PROJECT_ID, USER_ID, args({}), { mechanical: true, readSectionDeclarations: reader });
+    expect(reader).toHaveBeenCalledTimes(1);
     expect(insertedDoc(client).sections_omitted).toEqual({ reason: 'mechanical' });
     expect(insertedContent(client).endsWith(
       "\n\n---\n\n_This project's brief sections were not produced: this brief was composed with no agent writing it._",
     )).toBe(true);
+    expect(res.lint.warnings.some((w) => /brief sections|doc\.sections/.test(w))).toBe(false);
+  });
+
+  it('a mechanical compose for a project declaring nothing leaves the doc and content byte for byte as today', async () => {
+    const a = firstCompose();
+    const resA = await composeBrief(a, PROJECT_ID, USER_ID, args({}), { mechanical: true, readSectionDeclarations: async () => ({ kind: 'none' }) });
+    const b = firstCompose();
+    const resB = await composeBrief(b, PROJECT_ID, USER_ID, args({}));
+    expect(insertedContent(a)).toBe(insertedContent(b));
+    expect(insertedDoc(a)).toEqual(insertedDoc(b));
+    expect('sections' in insertedDoc(a)).toBe(false);
+    expect('sections_omitted' in insertedDoc(a)).toBe(false);
+    expect(resA.lint.warnings).toEqual(resB.lint.warnings);
+  });
+
+  it('a mechanical compose with unreadable declarations stays silent: today\'s bytes, no warning', async () => {
+    const a = firstCompose();
+    const resA = await composeBrief(a, PROJECT_ID, USER_ID, args({}), {
+      mechanical: true,
+      readSectionDeclarations: async () => ({ kind: 'unreadable', detail: 'no repository could be read' }),
+    });
+    const b = firstCompose();
+    const resB = await composeBrief(b, PROJECT_ID, USER_ID, args({}));
+    expect(insertedContent(a)).toBe(insertedContent(b));
+    expect(insertedDoc(a)).toEqual(insertedDoc(b));
+    expect(insertedContent(a)).not.toContain('could not be read');
+    expect(resA.lint.warnings).toEqual(resB.lint.warnings);
+  });
+
+  it('a mechanical compose with declarations that enforce nothing for this gate stays silent', async () => {
+    const a = firstCompose();
+    const resA = await composeBrief(a, PROJECT_ID, USER_ID, args({}), {
+      mechanical: true,
+      readSectionDeclarations: async () => ({ kind: 'declared', repos: [], warnings: ['acme-co/widget-app:.harmony/project.yml: bad id; not enforced'] }),
+    });
+    const b = firstCompose();
+    const resB = await composeBrief(b, PROJECT_ID, USER_ID, args({}));
+    expect(insertedContent(a)).toBe(insertedContent(b));
+    expect(insertedDoc(a)).toEqual(insertedDoc(b));
+    expect(resA.lint.warnings).toEqual(resB.lint.warnings);
   });
 
   it('a normal compose in a fast-track run is NOT exempt (only the internal flag exempts)', async () => {

@@ -8,6 +8,7 @@ import {
   readBriefSections,
   readBriefSectionsTool,
   renderProjectSectionsArea,
+  resolveSectionsForCompose,
   setDefaultBriefSectionReader,
 } from './brief-project-sections.js';
 import { handleToolCall, registerTools } from './index.js';
@@ -73,6 +74,18 @@ describe('harmony brief sections <gate>', () => {
     registerBriefCommands(p2);
     await p2.parseAsync(['node', 'harmony', 'brief', 'sections', 'verify']);
     expect(log.mock.calls[0][0]).toContain('ears: Requirements in EARS form');
+  });
+});
+
+describe('resolveSectionsForCompose — mechanical composes', () => {
+  const run = (d: unknown) => resolveSectionsForCompose({ gate: 'clarify', supplied: undefined, mechanical: true, reader: async () => d as never });
+  it('marks the brief only when this gate positively enforces a section', async () => {
+    expect(await run(declared)).toEqual({ kind: 'set', sections: null, omitted: { reason: 'mechanical' }, warnings: [] });
+  });
+  it('says nothing when nothing is declared, the declarations are unreadable, or nothing is enforced', async () => {
+    expect(await run({ kind: 'none' })).toEqual({ kind: 'clear', warnings: [] });
+    expect(await run({ kind: 'unreadable', detail: 'no repository could be read' })).toEqual({ kind: 'clear', warnings: [] });
+    expect(await run({ kind: 'declared', repos: [], warnings: ['x: bad; not enforced'] })).toEqual({ kind: 'clear', warnings: [] });
   });
 });
 

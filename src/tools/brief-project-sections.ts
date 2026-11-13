@@ -178,8 +178,16 @@ export async function resolveSectionsForCompose(opts: {
   env?: Record<string, string | undefined>;
 }): Promise<SectionsOutcome> {
   if (!opts.gate) return { kind: 'clear', warnings: [] };
-  if (opts.mechanical) return { kind: 'set', sections: null, omitted: { reason: 'mechanical' }, warnings: [] };
   const declarations = await (opts.reader ?? defaultReader)(opts.gate);
+  if (opts.mechanical) {
+    // A mechanical compose is marked only when this gate positively enforces a section. With nothing
+    // declared, nothing enforced, or declarations that cannot be read (normal where no repository
+    // exists, e.g. the conductor's own process), the brief stays exactly as today: no line, no warning.
+    if (hasEnforcedSections(declarations)) {
+      return { kind: 'set', sections: null, omitted: { reason: 'mechanical' }, warnings: [] };
+    }
+    return { kind: 'clear', warnings: [] };
+  }
   if (declarations.kind === 'unreadable') {
     return {
       kind: 'set',
