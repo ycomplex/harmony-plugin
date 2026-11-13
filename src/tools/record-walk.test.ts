@@ -1227,3 +1227,13 @@ describe('B-1472 handoff-aware recording', () => {
   expect(composeBrief.mock.calls.at(-1)?.[3].reason).toBe('verification-ack-pending');
  });
 });
+
+
+it('B-1472: recovers after verify composition without replaying or dismissing verify', async () => {
+ const ref={kind:'fast-track-merge',pr_url:'https://github.com/example/atlas/pull/72',head_sha:'abc'};
+ const row={workflow_state:'Deployed',awaiting_human_reason:'verification-ack-pending',field_values:{fast_track_handoff:ref,gate_slots:{release:{ratified_by:'recorded'}}}};
+ const c={from:()=>({select:()=>({eq:()=>({eq:()=>({single:async()=>({data:row,error:null})})})})}),rpc:vi.fn(async()=>({data:{applied:true},error:null}))} as any;
+ const result=await runRecordedWalk(c,PROJECT_ID,USER_ID,eligibleArgs());
+ expect(result.refused).toBe(false);expect(result.gates).toEqual([]);expect(composeBrief).not.toHaveBeenCalled();
+ expect(c.rpc).toHaveBeenCalledWith('fasttrack_handoff',expect.objectContaining({p_action:'clear',p_expected:ref}));
+});

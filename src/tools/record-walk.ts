@@ -624,6 +624,17 @@ export async function runRecordedWalk(client: SupabaseClient, projectId: string,
   const marker = data?.field_values?.fast_track_handoff as HandoffRef | undefined;
   if (!marker) return runRecordedWalkCore(client, projectId, userId, args);
   let ref: HandoffRef = marker;
+  // The walk can finish composing verify and be interrupted before its final cleanup.
+  // The recorded release slot proves this is recovery, not a second walk or a new accept.
+  if (data?.workflow_state === 'Deployed' && data?.awaiting_human_reason === 'verification-ack-pending' &&
+      data?.field_values?.gate_slots?.release?.ratified_by === RATIFIED_BY_RECORDED) {
+    const cleared = await handoffOperation(client, id, 'clear', ref);
+    return { task_id: id, refused: !cleared.applied,
+      ...(!cleared.applied ? { refusal_reason: `Handoff cleanup preserved a newer owner: ${cleared.reason}.` } : {}),
+      eligibility: evaluateEligibility({summary:args.summary,evidence:args.evidence,attestWalk:args.attest_walk}),
+      gates: [], attestation_recorded: false };
+  }
+
   if (ref.recording_until && Date.parse(ref.recording_until) > Date.now()) return { task_id: id, refused: true, refusal_reason: 'Recording is already in progress. If it was interrupted, retry after the fifteen-minute claim expires.', eligibility: evaluateEligibility({ summary: args.summary, evidence: args.evidence, attestWalk: args.attest_walk }), gates: [], attestation_recorded: false };
   const refuse = async (message: string): Promise<RecordWalkResult> => {
     const restored = await handoffOperation(client, id, 'refuse', ref, message);
