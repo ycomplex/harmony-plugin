@@ -36,6 +36,9 @@ case "$CHANNEL" in
 esac
 BASE="${BASE%/}"
 case "$BASE" in https://*) ;; *) echo "--base must be an https:// address" >&2; exit 2 ;; esac
+# Every usage check runs before the tool check, so a usage error is reported the same on a machine without
+# Claude Code (CI) as on one with it.
+tr -d '\r' < "$TOKEN_FILE" | grep -q -v '^[[:space:]]*$' || { echo "token file holds only blank lines" >&2; exit 2; }
 for tool in claude node timeout; do command -v "$tool" >/dev/null || { echo "check: $tool is not on PATH" >&2; exit 2; }; done
 
 WORK="$(mktemp -d)"
