@@ -118,8 +118,8 @@ Do not duplicate that prose here. This skill adds exactly **two deltas** on top 
   next branches on the SAME conductor-detection signal step 2 just used
   (`environment.conduction_id !== null && environment.fast_track === true`):
 
-  - **Interactive (unchanged)** — whenever either condition is false (no conduction, or `fast_track`
-    not set): then **STOP** — never merge, never record, in the same invocation (per AC4). The merge
+  - **Interactive** — whenever either condition is false (no conduction, or `fast_track`
+    not set): call `flag_fasttrack_handoff({task_id})` (CLI: `harmony fasttrack handoff <ticket>`) after recording `build_pr`. Confirm `applied:true`; a refusal is not a saved handoff. Missing-function fallback explicitly reports that the pending state could not be saved. Then **STOP** — never merge, never record, in the same invocation (per AC4). The merge
     is the human's; recording is this skill's own separate, later invocation (step 4).
 
   - **Conductor (B-1073 fast-track-daemon-ending round) — land clarify..build, then compose the ordinary
@@ -180,8 +180,7 @@ Do not duplicate that prose here. This skill adds exactly **two deltas** on top 
     the conductor falls through to an ordinary worker leg (finish-work), which handles approval/merge
     waiting. See `docs/recorded-walk-contract.md` §1/§3.
 
-    This also means the turn-end stop gate sees a sanctioned stopping point: see "No conduct-session
-    breadcrumb" below.
+    This also means the turn-end stop gate sees a sanctioned stopping point: see "Conduct-session breadcrumb" below.
 
 ### 4. Record phase
 
@@ -221,21 +220,9 @@ This skill does **not** decide on its own whether to proceed — it surfaces the
 human's go-ahead in-session before calling `runRecordedWalk` against either of those two targets. The
 workspace repo itself carries no such pause.
 
-## No conduct-session breadcrumb
+## Conduct-session breadcrumb
 
-This skill **deliberately does not write** a `~/.harmony/conduct-sessions/<session>.json` breadcrumb,
-unlike `harmony-conduct`. At PR-open the ticket sits in a state (`Captured`-adjacent-shape — no
-children, flag down) that the B-870 turn-end stop gate's `isCleanRowShape` does not recognize as a
-sanctioned stop point for a *conducted* ticket. Writing a breadcrumb here would make the stop gate
-treat this skill's own correct, deliberate stopping point (end of Build, end of Record) as an
-incomplete conduct session and incorrectly block it. **Do not "fix" this by adding a breadcrumb** — a
-future reader who notices the absence should read this paragraph, not add one back.
+After the standalone interactive handoff returns `applied:true`, write this ticket/session's conduct breadcrumb with `harmony conduct breadcrumb`. The true awaiting-human flag is now a sanctioned B-870 stop. Do not claim a saved pause or write a new breadcrumb on the missing-function fallback; explain that only the PR and comment were saved. A conductor invocation keeps the conduct loop's existing breadcrumb and its Built plus release-brief ending. Never merge or record in the first interactive invocation.
 
-This "don't write a breadcrumb" rule is about a **standalone interactive invocation** of this skill —
-no conduction, no conduct loop session around it. When this skill's logic instead runs **inline inside a
-`harmony-conduct` session** (the conductor case detected in steps 2/3 above), `harmony-conduct`'s own
-breadcrumb is already in effect (written at its own step 0) — this file writes none of its own, on top
-of that one. The conductor branch added to the Build phase above is written specifically so that
-breadcrumb's turn-end gate sees a sanctioned stopping point (`Built` + an active, freshly-composed
-release brief) at the end of this leg, rather than blocking the leg or forcing it through to a merge it
-should not perform.
+### Interactive recording handoff (B-1472)
+The first invocation opens the PR and visibly waits for the human. The human merges it in the repository host, then invokes this skill again (or harmony record) with their own attestation sentence. Recording refuses an unmerged PR, missing attestation or missing build_pr and keeps the handoff visible with the named reason. On success it removes only this handoff, preserving any next verify brief. Never merge or invent the human’s attestation.

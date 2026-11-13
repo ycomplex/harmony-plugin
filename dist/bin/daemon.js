@@ -37780,6 +37780,13 @@ async function recordLegOutput(client, args) {
   }
 }
 
+// src/tools/fasttrack-handoff.ts
+async function handoffOperation(client, taskId, action, expected, refusal) {
+  const { data, error } = await client.rpc("fasttrack_handoff", { p_task_id: taskId, p_action: action, p_expected: expected, p_refusal: refusal ?? null });
+  if (error) throw error;
+  return data;
+}
+
 // src/tools/acceptance-criteria.ts
 async function listAcceptanceCriteria(client, projectId, args) {
   const resolvedId = await resolveTaskId(client, projectId, args.task_id);
@@ -38277,6 +38284,54 @@ async function coupleDecomposeNoSplitConvention(client, projectId, userId, taskI
   await referenceKnowledge(client, projectId, { task_id: taskId, decision_id: entryId });
 }
 async function runRecordedWalk(client, projectId, userId, args) {
+  const id = await resolveTaskId(client, projectId, args.task_id);
+  const { data, error } = await client.from("tasks").select("field_values, awaiting_human_reason, workflow_state").eq("id", id).eq("project_id", projectId).single();
+  if (error) throw error;
+  const marker = data?.field_values?.fast_track_handoff;
+  if (!marker) return runRecordedWalkCore(client, projectId, userId, args);
+  let ref = marker;
+  if (data?.workflow_state === "Deployed" && data?.awaiting_human_reason === "verification-ack-pending" && data?.field_values?.gate_slots?.release?.ratified_by === RATIFIED_BY_RECORDED) {
+    const cleared = await handoffOperation(client, id, "clear", ref);
+    return {
+      task_id: id,
+      refused: !cleared.applied,
+      ...!cleared.applied ? { refusal_reason: `Handoff cleanup preserved a newer owner: ${cleared.reason}.` } : {},
+      eligibility: evaluateEligibility({ summary: args.summary, evidence: args.evidence, attestWalk: args.attest_walk }),
+      gates: [],
+      attestation_recorded: false
+    };
+  }
+  if (ref.recording_until && Date.parse(ref.recording_until) > Date.now()) return { task_id: id, refused: true, refusal_reason: "Recording is already in progress. If it was interrupted, retry after the fifteen-minute claim expires.", eligibility: evaluateEligibility({ summary: args.summary, evidence: args.evidence, attestWalk: args.attest_walk }), gates: [], attestation_recorded: false };
+  const refuse = async (message) => {
+    const restored = await handoffOperation(client, id, "refuse", ref, message);
+    await addComment(client, projectId, userId, { task_id: id, content: `Recording refused: ${message}${restored.applied ? " The merge-and-record handoff remains pending." : " A newer decision owns the ticket; it was preserved."}` });
+    return { task_id: id, refused: true, refusal_reason: message, eligibility: evaluateEligibility({ summary: args.summary, evidence: args.evidence, attestWalk: args.attest_walk }), gates: [], attestation_recorded: false };
+  };
+  if (args.to_gate && recordWalkGateIndex(args.to_gate) < recordWalkGateIndex("deploy")) return refuse("Complete the merge-and-record walk through deployment before clearing this handoff.");
+  const pr = data?.field_values?.build_pr;
+  if (!pr?.pr_url) return refuse("The ticket\u2019s PR reference is missing. Restore it before recording.");
+  if (!args.attest_walk?.trim()) return refuse("An attestation sentence is required.");
+  if (!args.evidence.some((e) => e.url === ref.pr_url)) return refuse("Recording evidence must include the handoff\u2019s recorded PR.");
+  const info = await fetchEvidencePrReleaseInfo({ url: ref.pr_url, repo: ref.repo });
+  if (!info || !info.merged) return refuse(`PR #${ref.pr_number ?? "?"} is not merged or its merge could not be confirmed.`);
+  const started = await handoffOperation(client, id, "begin", ref);
+  if (!started.applied) return { task_id: id, refused: true, refusal_reason: `Recording could not claim the handoff: ${started.reason}.`, eligibility: evaluateEligibility({ summary: args.summary, evidence: args.evidence, attestWalk: args.attest_walk }), gates: [], attestation_recorded: false };
+  ref = started.ref ?? ref;
+  try {
+    const resumeFrom = { Clarified: "decompose", Decomposed: "design", Designed: "plan", Planned: "build", Built: "release", Deployed: "verify" };
+    const result = await runRecordedWalkCore(client, projectId, userId, { ...args, from_gate: args.from_gate ?? resumeFrom[data?.workflow_state] });
+    if (result.refused || result.error) {
+      await refuse(result.refusal_reason ?? result.error ?? "Recording did not complete.");
+      return result;
+    }
+    await handoffOperation(client, id, "clear", ref);
+    return result;
+  } catch (error2) {
+    await refuse(error2 instanceof Error ? error2.message : "Recording failed.");
+    throw error2;
+  }
+}
+async function runRecordedWalkCore(client, projectId, userId, args) {
   const scope = args.scope ?? "product";
   const eligibility = evaluateEligibility({
     summary: args.summary,

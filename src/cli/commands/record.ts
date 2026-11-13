@@ -114,7 +114,7 @@ export function registerRecordCommand(program: Command): void {
             from_gate: opts.fromGate as RecordWalkGateName | undefined,
             to_gate: opts.toGate as RecordWalkGateName | undefined,
           });
-          if (result.refused) throw new Error(describeIneligibility(result.eligibility));
+          if (result.refused) throw new Error(result.refusal_reason ?? describeIneligibility(result.eligibility));
           if (result.error) throw new Error(result.error);
           return result;
         },

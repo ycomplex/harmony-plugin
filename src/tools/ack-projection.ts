@@ -380,6 +380,8 @@ export const ACK_PASS_THROUGH: Record<string, string> = {
     'ids, never an echo of the caller-sent entity_names strings, so there is no record body to strip.',
   manage_labels:
     'Already id-lists only: { added: [label ids], removed: [label ids] } — no record echo to strip.',
+  flag_fasttrack_handoff:
+    'Compact guarded handoff result: applied/refusal plus the PR identity; no larger object to project.',
   flag_release_approval_pending:
     'Already a compact confirmation of the flag triple it just wrote ({task_id, awaiting_human_input, awaiting_human_reason, awaiting_human_ref}). The ref echoes the caller\'s pr_url (and, since B-745, review_decision when the caller passed it) deliberately: it IS the pause\'s identity, and reading it back is how the caller confirms WHICH PR — and its current GitHub review state — the human was queued against.',
   consume_pending_acceptance_event:

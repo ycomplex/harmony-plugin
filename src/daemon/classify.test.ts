@@ -683,3 +683,9 @@ describe.each(['claude-code', 'codex'])('B-1251: %s question-only classifier con
     expect(exitClass(outcome, a)).toBe('clean-pause');
   });
 });
+
+
+it('B-1472: a Captured interactive handoff is a sanctioned stop', () => {
+ expect(isCleanRowShape({workflow_state:'Captured',awaiting_human_input:true},0)).toBe(true);
+ expect(isCleanRowShape({workflow_state:'Captured',awaiting_human_input:false},0)).toBe(false);
+});

@@ -43622,421 +43622,6 @@ async function createAuthenticatedClient(auth2) {
   });
 }
 
-// src/tools/decision-only.ts
-function resolveDeliverableMarker(labels) {
-  const names = labels.map((label) => typeof label === "string" ? label : label.name);
-  const capture = names.includes("capture-only");
-  const decision = names.includes("decision-only");
-  if (capture && decision) return { kind: "conflict", intended_gate: null };
-  if (capture) return { kind: "capture", intended_gate: "clarify" };
-  if (decision) return { kind: "decision", intended_gate: "design" };
-  return { kind: "none", intended_gate: null };
-}
-function isMissingCompletionCapability(error2) {
-  return error2.code === "42883" || error2.code === "PGRST202";
-}
-async function readDeliverableStatus(client, taskId, labels) {
-  const marker = resolveDeliverableMarker(labels);
-  if (marker.kind === "none") return { ...marker, guard_available: false };
-  const { data, error: error2 } = await client.rpc("decision_only_completion_status", { _task_id: taskId });
-  if (error2) {
-    if (isMissingCompletionCapability(error2)) return { ...marker, guard_available: false };
-    throw error2;
-  }
-  const row = Array.isArray(data) ? data[0] : data;
-  if (!row || row.contract_version !== 1 || typeof row.conflicting_markers !== "boolean" || ![null, "clarify", "design"].includes(row.intended_gate)) {
-    throw new Error("Malformed guarded deliverable-completion capability response");
-  }
-  if (row.conflicting_markers !== (marker.kind === "conflict") || row.intended_gate !== marker.intended_gate) {
-    throw new Error("Deliverable markers changed during capability read; re-read the ticket");
-  }
-  return { ...marker, guard_available: true };
-}
-function assertCaptureAvailable(status) {
-  if (status.kind === "capture" && !status.guard_available) {
-    throw new Error("Capture-only completion guard unavailable: file a worker-question; do not stamp, exempt or advance this ticket");
-  }
-  if (status.kind === "conflict") throw new Error("Conflicting capture-only and decision-only markers: correct the labels before completion");
-}
-async function requireCaptureCompletionCapability(client, taskId) {
-  const { data, error: error2 } = await client.rpc("decision_only_completion_status", { _task_id: taskId });
-  if (error2) {
-    if (isMissingCompletionCapability(error2)) throw new Error("Capture-only guarded completion unavailable; file a worker-question");
-    throw error2;
-  }
-  const row = Array.isArray(data) ? data[0] : data;
-  if (!row || row.contract_version !== 1 || typeof row.conflicting_markers !== "boolean" || ![null, "clarify", "design"].includes(row.intended_gate)) throw new Error("Malformed guarded deliverable-completion capability response");
-  if (row.conflicting_markers) throw new Error("Conflicting deliverable markers");
-}
-
-// src/tools/project-context-completion.ts
-function isContextCompletingAccept(input) {
-  const marker = resolveDeliverableMarker(input.labels);
-  return input.workflow_state === "Verified" && marker.intended_gate !== null && ["human-in-session", "human-in-browser"].includes(input.provenance) && input.reason === (marker.intended_gate === "clarify" ? "clarification-draft" : "design-decision-draft") && (input.completion ? input.completion.gate === marker.intended_gate && input.completion.to_state === "Verified" : marker.intended_gate === "design" && input.legacy_design_completion === true);
-}
-function completingContextReferences(task, events2, briefs) {
-  const sorted = [...events2].sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
-  const result = /* @__PURE__ */ new Map();
-  for (const event of sorted) {
-    const meta = event.metadata;
-    if (event.event_type !== "brief_resolved" || meta?.command !== "accept") continue;
-    const brief = briefs.find((b) => b.id === meta.brief_id);
-    if (!brief) continue;
-    const acceptedAt = Date.parse(event.created_at);
-    const completionEdge = sorted.find((e) => Date.parse(e.created_at) > acceptedAt && e.event_type === "field_change" && e.field_name === "workflow_state" && e.old_value === "Designed" && e.new_value === "Verified");
-    const intervening = completionEdge ? sorted.filter((e) => Date.parse(e.created_at) >= acceptedAt && Date.parse(e.created_at) < Date.parse(completionEdge.created_at)) : [];
-    const legacy = completionEdge !== void 0 && !intervening.some((e) => e.event_type === "brief_resolved" && e.metadata?.command === "accept" && e.metadata.brief_id !== brief.id || e.field_name === "workflow_state" && (!["field_change", "acceptance_event_consumed"].includes(e.event_type) || e.new_value !== "Designed"));
-    if (!isContextCompletingAccept({
-      ...task,
-      reason: brief.reason,
-      provenance: String(meta.provenance ?? ""),
-      completion: brief.doc?.frame?.completion,
-      legacy_design_completion: legacy
-    })) continue;
-    const payloadIds = (brief.doc?.payload ?? []).flatMap((item) => {
-      const id = item.write_kind === "knowledge_entry_content" ? item.entry_id : item.write_kind === "rule_bundle" ? item.decision_id : null;
-      return typeof id === "string" && id ? [id] : [];
-    });
-    const ref = brief.decision_ref;
-    const decisionId = typeof ref === "string" ? ref : ref && typeof ref === "object" && "id" in ref ? ref.id : null;
-    result.set(brief.id, {
-      brief_id: brief.id,
-      source_ids: typeof decisionId === "string" && decisionId.trim() ? [decisionId] : [...new Set(payloadIds)].sort()
-    });
-  }
-  return [...result.values()];
-}
-function lastAcceptedDesignReferences(events2, briefs) {
-  const accepted = [...events2].sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
-  for (const event of accepted) {
-    if (event.event_type !== "brief_resolved" || event.metadata?.command !== "accept") continue;
-    const brief = briefs.find((b) => b.id === event.metadata?.brief_id);
-    if (brief?.reason !== "design-decision-draft") continue;
-    return [...new Set((brief.doc?.payload ?? []).flatMap((item) => {
-      const id = item.write_kind === "knowledge_entry_content" ? item.entry_id : item.write_kind === "rule_bundle" ? item.decision_id : null;
-      return typeof id === "string" && id.trim() ? [id] : [];
-    }))];
-  }
-  return [];
-}
-async function readContextAuthority(client, projectId, task) {
-  if (task.workflow_state !== "Verified") return { completions: [], last_design_ids: [] };
-  const events2 = [], briefs = [];
-  for (let offset = 0; ; offset += 500) {
-    const result = await client.from("activity_events").select("created_at,event_type,field_name,old_value,new_value,metadata").eq("project_id", projectId).eq("task_id", task.id).order("created_at").order("id").range(offset, offset + 499);
-    if (result.error) throw result.error;
-    events2.push(...result.data ?? []);
-    if ((result.data ?? []).length < 500) break;
-  }
-  for (const id of new Set(events2.filter((e) => e.event_type === "brief_resolved" && e.metadata?.command === "accept").flatMap((e) => typeof e.metadata?.brief_id === "string" ? [e.metadata.brief_id] : []))) {
-    const result = await client.from("briefs").select("id,reason,decision_ref,doc").eq("task_id", task.id).eq("id", id).maybeSingle();
-    if (result.error) throw result.error;
-    if (result.data) briefs.push(result.data);
-  }
-  return {
-    completions: completingContextReferences(task, events2, briefs),
-    last_design_ids: lastAcceptedDesignReferences(events2, briefs)
-  };
-}
-
-// src/tools/knowledge-claim.ts
-var ENVELOPE = /^\*\*Claim:\*\* ([^\n]+)\n\n\*\*Claim source:\*\* (authored|derived)\n\n/;
-function isSingleSentenceShaped(value) {
-  const text3 = value.trim();
-  if (!text3 || text3.split(/\s+/).length > 50) return false;
-  const neutral = text3.replace(/(`+)[\s\S]*?\1/g, "code").replace(/(\d)\.(?=\d)/g, "$1").replace(/\be\.g\.|\bi\.e\./gi, (m) => m.replace(/\./g, ""));
-  return !/[.!?]+(?=\s|$)/.test(neutral.replace(/[.!?]+\s*$/, ""));
-}
-function validateClaimEntry(title, claim) {
-  for (const [field, value] of [["title", title], ["claim", claim]]) {
-    if (!isSingleSentenceShaped(value)) throw new Error(`${field} must be one sentence of at most 50 words`);
-  }
-}
-function decodeClaim(content = "") {
-  const match = ENVELOPE.exec(content);
-  return { claim: match?.[1] ?? null, claim_source: match?.[2] ?? null };
-}
-function claimFields(row) {
-  const decoded = decodeClaim(row.content ?? "");
-  return row.claim && (row.claim_source === "authored" || row.claim_source === "derived") ? { claim: row.claim, claim_source: row.claim_source } : decoded;
-}
-function stripClaim(content = "") {
-  return content.replace(ENVELOPE, "");
-}
-function encodeClaim(content, claim, source = "authored") {
-  return `**Claim:** ${claim.trim().replace(/\s+/g, " ")}
-
-**Claim source:** ${source}
-
-${stripClaim(content)}`;
-}
-function claimContent(title, content, claim) {
-  if (claim !== void 0) {
-    validateClaimEntry(title, claim);
-    return encodeClaim(content, claim);
-  }
-  const proposed = proposeClaim(stripClaim(content)) ?? proposeClaim(title);
-  console.warn("Knowledge claim omitted; using a derived proposal when available. Supply claim to author it.");
-  return proposed ? encodeClaim(content, proposed, "derived") : stripClaim(content);
-}
-function editedClaimContent(current, updates) {
-  const prior = claimFields(current);
-  const title = updates.title ?? current.title;
-  const content = updates.content ?? current.content;
-  if (updates.claim !== void 0) return claimContent(title, content, updates.claim);
-  if (prior.claim_source === "authored" && prior.claim) {
-    return encodeClaim(content, prior.claim);
-  }
-  return claimContent(title, content);
-}
-function plainText(content, preserveCode = false) {
-  return stripClaim(content).replace(/<[^>]*>/g, " ").replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1").replace(preserveCode ? /[*_#>|~]/g : /[`*_#>|~]/g, "").replace(/\s+/g, " ").trim();
-}
-function matchedPassage(content, query) {
-  const text3 = [decodeClaim(content).claim, plainText(content)].filter(Boolean).join(" ");
-  const terms = query.toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
-  const indexes = terms.map((term) => text3.toLocaleLowerCase().indexOf(term)).filter((i) => i >= 0);
-  if (!indexes.length) return null;
-  const at = Math.min(...indexes), start = Math.max(0, at - 60), end = Math.min(text3.length, start + 240);
-  return `${start ? "\u2026" : ""}${text3.slice(start, end)}${end < text3.length ? "\u2026" : ""}`;
-}
-function proposeClaim(content, completeOnly = false) {
-  if (decodeClaim(content).claim) return null;
-  const lines = content.split("\n").filter((line) => !/^\s*(?:_?Derived from|#{1,6}\s|\*\*(?:Question put to the human|Track|Reach|On accept|Context|Ratified asks):)/i.test(line));
-  const text3 = plainText(lines.join("\n"), true).replace(/^Decision:\s*/i, "");
-  const neutral = text3.replace(/(`+)[\s\S]*?\1/g, (value2) => " ".repeat(value2.length)).replace(/\be\.g\.|\bi\.e\./gi, (value2) => " ".repeat(value2.length));
-  const boundary = /[.!?]+(?=\s|$)/.exec(neutral);
-  if (!boundary && completeOnly) return null;
-  const value = (boundary ? text3.slice(0, boundary.index + boundary[0].length) : text3).trim();
-  return isSingleSentenceShaped(value) ? value : null;
-}
-
-// src/tools/project-context.ts
-var CONTEXT_CATEGORIES = [
-  ["architecture", "Architecture", "Decide the architecture"],
-  ["repo", "Repo & workspace topology", "Decide the repo & workspace topology"],
-  ["environments", "Environment topology & deploy triggers", "Decide the environment topology & deploy triggers"],
-  ["data", "Data & migration tooling", "Decide the data & migration tooling"],
-  ["ci", "CI/CD", "Decide the CI/CD approach"],
-  ["testing", "Testing", "Decide the testing approach"],
-  ["standards", "Coding standards", "Decide the coding standards"],
-  ["identity", "Authentication & identity", "Decide the authentication & identity approach"],
-  ["design", "Design system", "Decide the design system"]
-];
-var bounded = (value) => typeof value === "string" && !!value.trim() && value.length <= 1200 && value.trim().split(/\s+/).length <= 160 && !/[\r\n]|<!--/.test(value);
-function sourceSummary(source, proposition) {
-  const structured = source.madr?.project_context;
-  if (structured && typeof structured === "object") {
-    const fields = structured;
-    if (proposition) {
-      if (["purpose", "personas", "features"].every((key) => bounded(fields[key]))) {
-        return `Purpose: ${String(fields.purpose).trim()} Personas: ${String(fields.personas).trim()} Features: ${String(fields.features).trim()}`;
-      }
-      return null;
-    }
-    if (bounded(fields.summary)) return fields.summary.trim();
-  }
-  const named = (name) => {
-    const matches = source.content.split("\n").filter((line) => line.startsWith(`- Project context ${name}: `)).map((line) => line.slice(`- Project context ${name}: `.length));
-    return matches.length === 1 && bounded(matches[0]) ? matches[0].trim() : null;
-  };
-  if (proposition) {
-    const purpose = named("purpose"), personas = named("personas"), features = named("features");
-    if (purpose && personas && features) return `Purpose: ${purpose} Personas: ${personas} Features: ${features}`;
-  } else {
-    const summary2 = named("summary");
-    if (summary2) return summary2;
-  }
-  const claim = claimFields(source);
-  return !proposition && claim.claim_source === "authored" && bounded(claim.claim) ? claim.claim.trim() : null;
-}
-function resolveContextBlock(projectId, key, title, tasks, sources, references, projectKey, completions = [], ruleIds = /* @__PURE__ */ new Set(), lastDesignIds = []) {
-  const block = { key, title, ticket: null, source_ids: [], state: "unresolved", summary: null, diagnostics: [] };
-  if (tasks.length !== 1) {
-    block.diagnostics.push(tasks.length ? "Multiple matching scaffold tickets." : "Scaffold ticket not found.");
-    return block;
-  }
-  const task = tasks[0];
-  block.ticket = `${projectKey}-${task.task_number}`;
-  if (task.workflow_state !== "Verified") {
-    block.state = "undecided";
-    return block;
-  }
-  const linked = new Set(references.get(task.id) ?? []);
-  const authoritative = completions.length > 0;
-  const completionIds = [...new Set(completions.flatMap((c) => c.source_ids))];
-  if (authoritative && (completionIds.length !== 1 || completions.some((c) => c.source_ids.length !== 1))) {
-    block.source_ids = completionIds.sort();
-    block.diagnostics.push("Completing brief has missing or conflicting decision references.");
-    return block;
-  }
-  const eligible = sources.filter((s) => s.project_id === projectId && (authoritative ? completionIds.includes(s.id) : (s.source_task_id === task.id || linked.has(s.id)) && (key === "proposition" ? s.type === "specification" : s.source_activity === "design-decide" && !s.tags?.includes("rule") && !ruleIds.has(s.id))));
-  if (authoritative && !eligible.length) {
-    block.source_ids = completionIds;
-    block.diagnostics.push(`Unreadable completing source ${completionIds[0]}.`);
-    return block;
-  }
-  const byId = new Map(sources.filter((s) => s.project_id === projectId).map((s) => [s.id, s]));
-  const current = /* @__PURE__ */ new Map();
-  for (const initial of eligible) {
-    let source2 = initial;
-    const seen = /* @__PURE__ */ new Set();
-    while (source2.superseded_by) {
-      if (seen.has(source2.id)) {
-        block.diagnostics.push(`Supersession cycle at ${source2.id}.`);
-        break;
-      }
-      seen.add(source2.id);
-      const successor = byId.get(source2.superseded_by);
-      if (!successor) {
-        block.diagnostics.push(`Unreadable successor ${source2.superseded_by} of ${source2.id}.`);
-        break;
-      }
-      source2 = successor;
-    }
-    if (!source2.superseded_by && source2.status === "Accepted") current.set(source2.id, source2);
-  }
-  if (!authoritative && key !== "proposition" && current.size > 1) {
-    const named = [...current.keys()].filter((id) => lastDesignIds.includes(id));
-    if (named.length) {
-      for (const id of current.keys()) if (!named.includes(id)) current.delete(id);
-    }
-  }
-  block.source_ids = (current.size ? [...current.keys()] : eligible.map((source2) => source2.id)).sort();
-  if (block.diagnostics.length) return block;
-  if (!current.size) {
-    if (task.workflow_state === "Verified") block.diagnostics.push("Completed ticket has no readable Accepted substantive source.");
-    else block.state = "undecided";
-    return block;
-  }
-  if (current.size !== 1) {
-    block.diagnostics.push("Competing Accepted sources; confirm the authoritative context source.");
-    return block;
-  }
-  const source = [...current.values()][0];
-  const summary2 = sourceSummary(source, key === "proposition");
-  if (!summary2) {
-    block.diagnostics.push(`Source ${source.id} needs a bounded authored project_context summary${key === "proposition" ? " with purpose, personas and features" : " or authored claim"}.`);
-    return block;
-  }
-  block.state = "accepted";
-  block.summary = summary2;
-  return block;
-}
-var PAGE = 500;
-async function readProjectContext(client, projectId) {
-  const { data: project, error: error2 } = await client.from("projects").select("id,name,key").eq("id", projectId).single();
-  if (error2) throw error2;
-  const tasks = [];
-  for (let offset = 0; ; offset += PAGE) {
-    const result = await client.from("tasks").select("id,title,task_number,workflow_state,task_labels!inner(labels!inner(name)),all_labels:task_labels(labels(name))").eq("project_id", projectId).eq("archived", false).is("subsumed_by_task_id", null).eq("task_labels.labels.name", "inception-scaffold").order("id").range(offset, offset + PAGE - 1);
-    if (result.error) throw result.error;
-    tasks.push(...result.data ?? []);
-    if ((result.data ?? []).length < PAGE) break;
-  }
-  if (!tasks.length) return {
-    version: 1,
-    project_id: projectId,
-    project_name: project.name,
-    applicability: "not_applicable",
-    blocks: [],
-    diagnostics: []
-  };
-  const authority = /* @__PURE__ */ new Map();
-  for (const task of tasks) authority.set(task.id, await readContextAuthority(client, projectId, {
-    ...task,
-    labels: task.all_labels?.flatMap((row) => row.labels) ?? task.labels ?? []
-  }));
-  const sources = [];
-  for (let offset = 0; ; offset += PAGE) {
-    const result = await client.from("knowledge_decisions").select("id,project_id,source_task_id,type,status,superseded_by,content,madr,source_activity,tags,underwriting_brief_id").eq("project_id", projectId).order("id").range(offset, offset + PAGE - 1);
-    if (result.error) throw result.error;
-    sources.push(...result.data ?? []);
-    if ((result.data ?? []).length < PAGE) break;
-  }
-  const ruleIds = /* @__PURE__ */ new Set();
-  for (let offset = 0; ; offset += PAGE) {
-    const result = await client.from("decision_rule_citations").select("rule_entry_id").eq("project_id", projectId).order("id").range(offset, offset + PAGE - 1);
-    if (result.error) {
-      if (["42P01", "PGRST205"].includes(result.error.code)) break;
-      throw result.error;
-    }
-    for (const row of result.data ?? []) ruleIds.add(row.rule_entry_id);
-    if ((result.data ?? []).length < PAGE) break;
-  }
-  const references = /* @__PURE__ */ new Map();
-  for (const task of tasks) {
-    const ids2 = [];
-    for (let offset = 0; ; offset += PAGE) {
-      const result = await client.from("ticket_references_knowledge").select("decision_id").eq("task_id", task.id).order("decision_id").range(offset, offset + PAGE - 1);
-      if (result.error) throw result.error;
-      ids2.push(...(result.data ?? []).map((row) => row.decision_id));
-      if ((result.data ?? []).length < PAGE) break;
-    }
-    references.set(task.id, ids2);
-  }
-  const definitions = [["proposition", "What this project is", "Founding proposition \u2014 "], ...CONTEXT_CATEGORIES];
-  const blocks = definitions.map(([key, title, ticketTitle]) => {
-    const matching = tasks.filter((task) => key === "proposition" ? task.title.startsWith(ticketTitle) : task.title === ticketTitle);
-    return resolveContextBlock(
-      projectId,
-      key,
-      title,
-      matching,
-      sources,
-      references,
-      project.key,
-      matching.flatMap((task) => authority.get(task.id)?.completions ?? []),
-      ruleIds,
-      matching.flatMap((task) => authority.get(task.id)?.last_design_ids ?? [])
-    );
-  });
-  return {
-    version: 1,
-    applicability: "applicable",
-    project_id: projectId,
-    project_name: project.name,
-    blocks,
-    diagnostics: blocks.flatMap((block) => block.diagnostics.map((message) => `${block.title}: ${message}`))
-  };
-}
-var readProjectContextTool = {
-  name: "read_project_context",
-  description: "Read source-linked project CLAUDE.md context from project-local inception scaffold tickets and Accepted knowledge. Read-only; reports unresolved and undecided categories without inventing summaries.",
-  inputSchema: { type: "object", properties: {} }
-};
-
-// src/tools/knowledge-prose.ts
-function proseLink(p) {
-  if (!p.repository || !/^https:\/\//.test(p.repository)) return void 0;
-  return `${p.repository.replace(/\.git$|\/$/g, "")}/blob/${encodeURIComponent(p.commit)}/${p.path.split("/").map(encodeURIComponent).join("/")}#${encodeURIComponent(p.anchor)}`;
-}
-async function proseOperation(client, name, args) {
-  const { data, error: error2 } = await client.rpc(name, args);
-  if (error2) throw new Error(["PGRST202", "42883"].includes(error2.code) ? "Prose indexing capability is unavailable; nothing was saved." : error2.message);
-  return data;
-}
-async function readProse(client, projectId, ids2 = []) {
-  const { data, error: error2 } = await client.rpc("read_knowledge_prose", { p_project_id: projectId, p_entry_ids: ids2 });
-  if (error2) {
-    if (["PGRST202", "42883"].includes(error2.code)) return { available: false, sources: [], pointers: [] };
-    throw new Error(error2.message);
-  }
-  if (data?.available !== true || !Array.isArray(data.sources) || !Array.isArray(data.pointers)) throw new Error("Invalid prose capability response");
-  return data;
-}
-async function setDefinedIn(client, projectId, args) {
-  return proseOperation(client, "set_knowledge_defined_in", { p_project_id: projectId, p_entry_id: args.entry_id, p_pointer: args.pointer });
-}
-async function configureProse(client, projectId, args) {
-  return proseOperation(client, "configure_knowledge_prose", { p_project_id: projectId, p_key: args.key, p_repository: args.repository, p_ref: args.ref, p_config: args.config, p_expected_revision: args.expected_revision, p_enabled: args.enabled !== false });
-}
-var proseTools = [
-  { name: "read_prose_sources", description: "Read configured source coverage and exact defined-in resolution. Missing indexing is explicit; no source is ratified by indexing.", inputSchema: { type: "object", properties: { entry_ids: { type: "array", items: { type: "string" } } } } },
-  { name: "configure_prose_source", description: "Register, update or disable one project source. Supply revision read before changing configuration. Selectors declare include/exclude, document/skill kind, explicit scope, domains, registered tags and bookkeeping. Configuration changes invalidate the old index until refresh.", inputSchema: { type: "object", properties: { key: { type: "string" }, repository: { type: "string" }, ref: { type: "string" }, config: { type: "object" }, expected_revision: { type: ["string", "null"] }, enabled: { type: "boolean" } }, required: ["key", "repository", "ref", "config", "expected_revision"] } },
-  { name: "set_defined_in", description: "Attach or explicitly remove an entry\u2019s source-heading pointer. Target must be current and in this project. Refresh never silently retargets renamed/deleted headings.", inputSchema: { type: "object", properties: { entry_id: { type: "string" }, pointer: { type: ["object", "null"], properties: { source_id: { type: "string" }, path: { type: "string" }, anchor: { type: "string" }, commit: { type: "string" } }, required: ["source_id", "path", "anchor", "commit"] } }, required: ["entry_id", "pointer"] } }
-];
-
 // src/tools/environment.ts
 import { readFileSync as readFileSync3 } from "node:fs";
 import { dirname as dirname2, join as join4 } from "node:path";
@@ -45017,6 +44602,106 @@ function resolveGatePhase(workflow_state, workflow_activity) {
   return GATE_BY_WORKFLOW_STATE[workflow_state] ?? null;
 }
 
+// src/tools/decision-only.ts
+function resolveDeliverableMarker(labels) {
+  const names = labels.map((label) => typeof label === "string" ? label : label.name);
+  const capture = names.includes("capture-only");
+  const decision = names.includes("decision-only");
+  if (capture && decision) return { kind: "conflict", intended_gate: null };
+  if (capture) return { kind: "capture", intended_gate: "clarify" };
+  if (decision) return { kind: "decision", intended_gate: "design" };
+  return { kind: "none", intended_gate: null };
+}
+function isMissingCompletionCapability(error2) {
+  return error2.code === "42883" || error2.code === "PGRST202";
+}
+async function readDeliverableStatus(client, taskId, labels) {
+  const marker = resolveDeliverableMarker(labels);
+  if (marker.kind === "none") return { ...marker, guard_available: false };
+  const { data, error: error2 } = await client.rpc("decision_only_completion_status", { _task_id: taskId });
+  if (error2) {
+    if (isMissingCompletionCapability(error2)) return { ...marker, guard_available: false };
+    throw error2;
+  }
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row || row.contract_version !== 1 || typeof row.conflicting_markers !== "boolean" || ![null, "clarify", "design"].includes(row.intended_gate)) {
+    throw new Error("Malformed guarded deliverable-completion capability response");
+  }
+  if (row.conflicting_markers !== (marker.kind === "conflict") || row.intended_gate !== marker.intended_gate) {
+    throw new Error("Deliverable markers changed during capability read; re-read the ticket");
+  }
+  return { ...marker, guard_available: true };
+}
+function assertCaptureAvailable(status) {
+  if (status.kind === "capture" && !status.guard_available) {
+    throw new Error("Capture-only completion guard unavailable: file a worker-question; do not stamp, exempt or advance this ticket");
+  }
+  if (status.kind === "conflict") throw new Error("Conflicting capture-only and decision-only markers: correct the labels before completion");
+}
+async function requireCaptureCompletionCapability(client, taskId) {
+  const { data, error: error2 } = await client.rpc("decision_only_completion_status", { _task_id: taskId });
+  if (error2) {
+    if (isMissingCompletionCapability(error2)) throw new Error("Capture-only guarded completion unavailable; file a worker-question");
+    throw error2;
+  }
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row || row.contract_version !== 1 || typeof row.conflicting_markers !== "boolean" || ![null, "clarify", "design"].includes(row.intended_gate)) throw new Error("Malformed guarded deliverable-completion capability response");
+  if (row.conflicting_markers) throw new Error("Conflicting deliverable markers");
+}
+
+// src/tools/knowledge-names.ts
+function missing(error2, operation2) {
+  return ["PGRST202", "42883"].includes(error2.code ?? "") && error2.message.includes(operation2);
+}
+async function invoke(client, operation2, args, optional2 = false) {
+  const { data, error: error2 } = await client.rpc(operation2, args);
+  if (error2) {
+    if (missing(error2, operation2)) {
+      if (optional2) return void 0;
+      throw new Error("Name history is not available in this environment yet.");
+    }
+    throw new Error(`Concept name operation failed: ${error2.message}`);
+  }
+  if (data === null || data === void 0) throw new Error("Invalid concept name capability response");
+  return data;
+}
+async function readKnowledgeNames(client, projectId, args = {}) {
+  const data = await invoke(client, "read_knowledge_names", { p_project_id: projectId, p_search: args.search ?? null, p_entry_ids: args.entry_ids ?? [], p_entity_ids: args.entity_ids ?? [] }, true);
+  if (data === void 0) return { available: false, matches: [], entries: [], identities: [] };
+  if (data?.available !== true || !Array.isArray(data.matches) || !Array.isArray(data.entries) || !Array.isArray(data.identities)) throw new Error("Invalid concept name capability response");
+  return data;
+}
+async function renameKnowledgeConcept(client, projectId, args) {
+  return invoke(client, "rename_knowledge_concept", { p_project_id: projectId, p_entity_id: args.concept_id, p_expected_name: args.expected_name, p_new_name: args.new_name, p_source_task_id: await resolveTaskId(client, projectId, args.source_task_id), p_operation_key: args.operation_key });
+}
+async function previewKnowledgeMerge(client, projectId, args) {
+  return invoke(client, "preview_knowledge_merge", { p_project_id: projectId, p_source: args.source_id, p_target: args.target_id, p_source_task_id: await resolveTaskId(client, projectId, args.source_task_id) });
+}
+async function mergeKnowledgeConcepts(client, projectId, args) {
+  if (!args.confirmation?.trim()) throw new Error("An explicit preview confirmation is required");
+  return invoke(client, "merge_knowledge_concepts", { p_project_id: projectId, p_source: args.source_id, p_target: args.target_id, p_source_task_id: await resolveTaskId(client, projectId, args.source_task_id), p_confirmation: args.confirmation });
+}
+var property = (description) => ({ type: "string", description });
+var mergeProperties = { source_id: property("Source identity UUID to retire in place"), target_id: property("Surviving current identity UUID"), source_task_id: property("Authorizing ticket UUID or visual ID in this project") };
+var knowledgeNameTools = [
+  { name: "read_concept_names", description: "Exact current/retired name lookup, bounded retired-word scans and transitive historical identity resolution. Missing capability is explicit, never a clean scan. At most 500 entry or entity UUIDs per call.", inputSchema: { type: "object", properties: { search: property("Exact name, ignoring case and surrounding whitespace"), entry_ids: { type: "array", items: { type: "string" } }, entity_ids: { type: "array", items: { type: "string" } } } } },
+  { name: "rename_concept", description: "Explicit atomic rename with expected current name, source ticket and idempotency key. Collisions never merge identities.", inputSchema: { type: "object", properties: { concept_id: property("Concept UUID"), expected_name: property("Exact current name"), new_name: property("New canonical name"), source_task_id: property("Authorizing ticket UUID or visual ID"), operation_key: property("Unique idempotency key; never reuse with different inputs") }, required: ["concept_id", "expected_name", "new_name", "source_task_id", "operation_key"] } },
+  { name: "preview_concept_merge", description: "Inventory every mutable reference and immutable historical event before an explicit merge. Returns blockers and a confirmation bound to this inventory and source ticket.", inputSchema: { type: "object", properties: mergeProperties, required: Object.keys(mergeProperties) } },
+  { name: "merge_concepts", description: "Execute a reviewed preview using its confirmation; stale inventories and conflicts refuse atomically. Retains source row and original event ids; resolves retired identity transitively. Never use as an implicit rename collision fallback.", inputSchema: { type: "object", properties: { ...mergeProperties, confirmation: property("Exact reviewed preview confirmation") }, required: [...Object.keys(mergeProperties), "confirmation"] } }
+];
+async function withRetiredWording(client, projectId, entries) {
+  const result = [];
+  for (let i = 0; i < entries.length; i += 500) {
+    const page = entries.slice(i, i + 500);
+    const read = await readKnowledgeNames(client, projectId, { entry_ids: page.map((e) => e.id) });
+    for (const entry of page) {
+      const scan = read.entries.find((s) => s.entry_id === entry.id);
+      result.push(Object.assign({}, entry, { name_history_available: read.available }, scan ? { uses_retired_term: scan.uses_retired_term, retired_term_matches: scan.matches } : {}));
+    }
+  }
+  return result;
+}
+
 // src/tools/text-normalize.ts
 var ENTITY_MAP = {
   "&amp;": "&",
@@ -45114,6 +44799,78 @@ async function selectEntity(client, workspaceId, projectId, selector) {
   if (candidates.length > 1) throw new AmbiguousEntitySelectionError(candidates);
   if (selector.entity_id && !candidates.length) throw new Error("Entity identity is unavailable in this project, retired, or conflicts with the supplied name/kind");
   return candidates[0] ?? null;
+}
+
+// src/tools/knowledge-claim.ts
+var ENVELOPE = /^\*\*Claim:\*\* ([^\n]+)\n\n\*\*Claim source:\*\* (authored|derived)\n\n/;
+function isSingleSentenceShaped(value) {
+  const text3 = value.trim();
+  if (!text3 || text3.split(/\s+/).length > 50) return false;
+  const neutral = text3.replace(/(`+)[\s\S]*?\1/g, "code").replace(/(\d)\.(?=\d)/g, "$1").replace(/\be\.g\.|\bi\.e\./gi, (m) => m.replace(/\./g, ""));
+  return !/[.!?]+(?=\s|$)/.test(neutral.replace(/[.!?]+\s*$/, ""));
+}
+function validateClaimEntry(title, claim) {
+  for (const [field, value] of [["title", title], ["claim", claim]]) {
+    if (!isSingleSentenceShaped(value)) throw new Error(`${field} must be one sentence of at most 50 words`);
+  }
+}
+function decodeClaim(content = "") {
+  const match = ENVELOPE.exec(content);
+  return { claim: match?.[1] ?? null, claim_source: match?.[2] ?? null };
+}
+function claimFields(row) {
+  const decoded = decodeClaim(row.content ?? "");
+  return row.claim && (row.claim_source === "authored" || row.claim_source === "derived") ? { claim: row.claim, claim_source: row.claim_source } : decoded;
+}
+function stripClaim(content = "") {
+  return content.replace(ENVELOPE, "");
+}
+function encodeClaim(content, claim, source = "authored") {
+  return `**Claim:** ${claim.trim().replace(/\s+/g, " ")}
+
+**Claim source:** ${source}
+
+${stripClaim(content)}`;
+}
+function claimContent(title, content, claim) {
+  if (claim !== void 0) {
+    validateClaimEntry(title, claim);
+    return encodeClaim(content, claim);
+  }
+  const proposed = proposeClaim(stripClaim(content)) ?? proposeClaim(title);
+  console.warn("Knowledge claim omitted; using a derived proposal when available. Supply claim to author it.");
+  return proposed ? encodeClaim(content, proposed, "derived") : stripClaim(content);
+}
+function editedClaimContent(current, updates) {
+  const prior = claimFields(current);
+  const title = updates.title ?? current.title;
+  const content = updates.content ?? current.content;
+  if (updates.claim !== void 0) return claimContent(title, content, updates.claim);
+  if (prior.claim_source === "authored" && prior.claim) {
+    return encodeClaim(content, prior.claim);
+  }
+  return claimContent(title, content);
+}
+function plainText(content, preserveCode = false) {
+  return stripClaim(content).replace(/<[^>]*>/g, " ").replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1").replace(preserveCode ? /[*_#>|~]/g : /[`*_#>|~]/g, "").replace(/\s+/g, " ").trim();
+}
+function matchedPassage(content, query) {
+  const text3 = [decodeClaim(content).claim, plainText(content)].filter(Boolean).join(" ");
+  const terms = query.toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+  const indexes = terms.map((term) => text3.toLocaleLowerCase().indexOf(term)).filter((i) => i >= 0);
+  if (!indexes.length) return null;
+  const at = Math.min(...indexes), start = Math.max(0, at - 60), end = Math.min(text3.length, start + 240);
+  return `${start ? "\u2026" : ""}${text3.slice(start, end)}${end < text3.length ? "\u2026" : ""}`;
+}
+function proposeClaim(content, completeOnly = false) {
+  if (decodeClaim(content).claim) return null;
+  const lines = content.split("\n").filter((line) => !/^\s*(?:_?Derived from|#{1,6}\s|\*\*(?:Question put to the human|Track|Reach|On accept|Context|Ratified asks):)/i.test(line));
+  const text3 = plainText(lines.join("\n"), true).replace(/^Decision:\s*/i, "");
+  const neutral = text3.replace(/(`+)[\s\S]*?\1/g, (value2) => " ".repeat(value2.length)).replace(/\be\.g\.|\bi\.e\./gi, (value2) => " ".repeat(value2.length));
+  const boundary = /[.!?]+(?=\s|$)/.exec(neutral);
+  if (!boundary && completeOnly) return null;
+  const value = (boundary ? text3.slice(0, boundary.index + boundary[0].length) : text3).trim();
+  return isSingleSentenceShaped(value) ? value : null;
 }
 
 // src/tools/knowledge-metadata.ts
@@ -45673,6 +45430,37 @@ var publishDefinitionTool = {
   }, required: ["concept_id", "expected_revision", "source_decision_id", "wording"] }
 };
 
+// src/tools/knowledge-prose.ts
+function proseLink(p) {
+  if (!p.repository || !/^https:\/\//.test(p.repository)) return void 0;
+  return `${p.repository.replace(/\.git$|\/$/g, "")}/blob/${encodeURIComponent(p.commit)}/${p.path.split("/").map(encodeURIComponent).join("/")}#${encodeURIComponent(p.anchor)}`;
+}
+async function proseOperation(client, name, args) {
+  const { data, error: error2 } = await client.rpc(name, args);
+  if (error2) throw new Error(["PGRST202", "42883"].includes(error2.code) ? "Prose indexing capability is unavailable; nothing was saved." : error2.message);
+  return data;
+}
+async function readProse(client, projectId, ids2 = []) {
+  const { data, error: error2 } = await client.rpc("read_knowledge_prose", { p_project_id: projectId, p_entry_ids: ids2 });
+  if (error2) {
+    if (["PGRST202", "42883"].includes(error2.code)) return { available: false, sources: [], pointers: [] };
+    throw new Error(error2.message);
+  }
+  if (data?.available !== true || !Array.isArray(data.sources) || !Array.isArray(data.pointers)) throw new Error("Invalid prose capability response");
+  return data;
+}
+async function setDefinedIn(client, projectId, args) {
+  return proseOperation(client, "set_knowledge_defined_in", { p_project_id: projectId, p_entry_id: args.entry_id, p_pointer: args.pointer });
+}
+async function configureProse(client, projectId, args) {
+  return proseOperation(client, "configure_knowledge_prose", { p_project_id: projectId, p_key: args.key, p_repository: args.repository, p_ref: args.ref, p_config: args.config, p_expected_revision: args.expected_revision, p_enabled: args.enabled !== false });
+}
+var proseTools = [
+  { name: "read_prose_sources", description: "Read configured source coverage and exact defined-in resolution. Missing indexing is explicit; no source is ratified by indexing.", inputSchema: { type: "object", properties: { entry_ids: { type: "array", items: { type: "string" } } } } },
+  { name: "configure_prose_source", description: "Register, update or disable one project source. Supply revision read before changing configuration. Selectors declare include/exclude, document/skill kind, explicit scope, domains, registered tags and bookkeeping. Configuration changes invalidate the old index until refresh.", inputSchema: { type: "object", properties: { key: { type: "string" }, repository: { type: "string" }, ref: { type: "string" }, config: { type: "object" }, expected_revision: { type: ["string", "null"] }, enabled: { type: "boolean" } }, required: ["key", "repository", "ref", "config", "expected_revision"] } },
+  { name: "set_defined_in", description: "Attach or explicitly remove an entry\u2019s source-heading pointer. Target must be current and in this project. Refresh never silently retargets renamed/deleted headings.", inputSchema: { type: "object", properties: { entry_id: { type: "string" }, pointer: { type: ["object", "null"], properties: { source_id: { type: "string" }, path: { type: "string" }, anchor: { type: "string" }, commit: { type: "string" } }, required: ["source_id", "path", "anchor", "commit"] } }, required: ["entry_id", "pointer"] } }
+];
+
 // src/tools/knowledge-bookkeeping.ts
 var BOOKKEEPING_TAG = "harmony:bookkeeping";
 function bookkeepingTags(tags = []) {
@@ -45720,7 +45508,7 @@ var SCORE_CUTOFF = 0.0125;
 var RRF_K = 60;
 var normalizeTags = (tags = []) => [...new Set(tags.map((t) => t.trim().toLowerCase()).filter(Boolean))];
 var authError = (e) => ["401", "403", "42501", "PGRST301", "PGRST302", "PGRST303"].some((v) => [e?.code, e?.status, e?.context?.status].map(String).includes(v));
-var missing = (e) => ["PGRST202", "42883"].includes(e?.code);
+var missing2 = (e) => ["PGRST202", "42883"].includes(e?.code);
 var summary = (d, query) => ({
   ...sourceFields(d),
   id: d.id,
@@ -45840,7 +45628,7 @@ async function searchKnowledge(client, projectId, args, started = performance.no
       if (response.error) {
         if (authError(response.error) || authError({ status: response.status })) auth2 = response.error;
         incomplete = true;
-        record2(missing(response.error) ? "unsupported" : "failed", missing(response.error) ? "missing-capability" : "request-failed");
+        record2(missing2(response.error) ? "unsupported" : "failed", missing2(response.error) ? "missing-capability" : "request-failed");
         return void 0;
       }
       record2("completed");
@@ -46215,7 +46003,7 @@ function decisionRows(result) {
   const rows = Array.isArray(result) ? result : [...result?.matches ?? [], ...result?.unscored_matches ?? []];
   return rows.filter((r) => typeof r?.id === "string" && UUID.test(r.id) && r.kind !== "concept" && r.type !== "definition" && r.source_type !== "generated" && (r.source_kind === void 0 || r.source_kind === "knowledge"));
 }
-async function resolveTaskId(client, explicit) {
+async function resolveTaskId2(client, explicit) {
   if (explicit) {
     if (UUID.test(explicit)) return explicit;
     const n = /^[A-Za-z]*-?(\d+)$/.exec(explicit.trim());
@@ -46232,7 +46020,7 @@ async function logKnowledgeRetrieval(client, projectId, args, result) {
   try {
     const rows = decisionRows(result).slice(0, RETRIEVAL_LOG_CAP);
     if (!rows.length) return;
-    const taskId = await resolveTaskId(client, args.task_id);
+    const taskId = await resolveTaskId2(client, args.task_id);
     if (!taskId) return;
     const { data: project } = await client.from("projects").select("workspace_id").eq("id", projectId).single();
     const workspaceId = project?.workspace_id;
@@ -47291,7 +47079,7 @@ var advanceWorkflowTool = {
   }
 };
 async function advanceWorkflow(client, projectId, args) {
-  const id = await resolveTaskId2(client, projectId, args.task_id);
+  const id = await resolveTaskId(client, projectId, args.task_id);
   const { data: task, error: e1 } = await client.from("tasks").select("workflow_state, stale, parked_from, pending_acceptance_event_id").eq("id", id).eq("project_id", projectId).single();
   if (e1) throw e1;
   const taskRow = task;
@@ -47350,7 +47138,7 @@ var referenceKnowledgeTool = {
   }
 };
 async function referenceKnowledge(client, projectId, args) {
-  const id = await resolveTaskId2(client, projectId, args.task_id);
+  const id = await resolveTaskId(client, projectId, args.task_id);
   const { error: error2 } = await client.from("ticket_references_knowledge").upsert({ task_id: id, decision_id: args.decision_id }, { onConflict: "task_id,decision_id", ignoreDuplicates: true });
   if (error2) throw error2;
   return { task_id: id, decision_id: args.decision_id, linked: true };
@@ -47377,7 +47165,7 @@ async function listTicketKnowledge(client, projectId, args) {
   if (!Array.isArray(inputs) || inputs.length < 1 || inputs.length > 20 || inputs.some((input) => typeof input !== "string" || !input.trim())) {
     throw new Error("Provide a non-blank task_id or task_ids containing 1\u201320 non-blank ticket identifiers.");
   }
-  const resolved = single ? [await resolveTaskId2(client, projectId, inputs[0])] : await resolveTaskIds(client, projectId, inputs);
+  const resolved = single ? [await resolveTaskId(client, projectId, inputs[0])] : await resolveTaskIds(client, projectId, inputs);
   const ids2 = [...new Set(resolved.map((id) => id.toLowerCase()))];
   const { data: tasks, error: taskError } = await client.from("tasks").select("id").eq("project_id", projectId).in("id", ids2);
   if (taskError) throw taskError;
@@ -47478,7 +47266,7 @@ async function linkTicketEntities(client, projectId, args) {
   const names = (args.entity_names ?? []).map((n) => n.trim()).filter(Boolean);
   const refs = [...names.map((name) => ({ name, kind: args.kind ?? args.entity_kind })), ...args.entities ?? [], ...args.entity_id ? [{ entity_id: args.entity_id, kind: args.kind ?? args.entity_kind }] : []];
   if (!refs.length || refs.some((ref) => !ref.entity_id && !ref.name?.trim())) throw new Error("entity_names or entities must identify at least one entity");
-  const id = await resolveTaskId2(client, projectId, args.task_id);
+  const id = await resolveTaskId(client, projectId, args.task_id);
   const workspaceId = await getWorkspaceId(client, projectId);
   const entityIds = [];
   for (const ref of refs) {
@@ -47510,7 +47298,7 @@ var listCommentsTool = {
   }
 };
 async function listComments(client, projectId, args) {
-  const taskId = await resolveTaskId2(client, projectId, args.task_id);
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
   const { data, error: error2 } = await client.from("task_comments").select("id, content, user_id, created_at, updated_at").eq("task_id", taskId).order("created_at", { ascending: true });
   if (error2) throw error2;
   return data;
@@ -47534,7 +47322,7 @@ var addCommentTool = {
   }
 };
 async function addComment(client, projectId, userId, args) {
-  const taskId = await resolveTaskId2(client, projectId, args.task_id);
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
   const { data, error: error2 } = await client.from("task_comments").insert({
     task_id: taskId,
     user_id: userId,
@@ -48122,7 +47910,7 @@ var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 var BARE_NUMBER_RE = /^\d+$/;
 var VISUAL_ID_RE = /^([A-Za-z][A-Za-z0-9]*)-(\d+)$/;
 var PG_INT_MAX = 2147483647;
-async function resolveTaskId2(client, projectId, input) {
+async function resolveTaskId(client, projectId, input) {
   if (UUID_RE.test(input)) {
     return input;
   }
@@ -48207,58 +47995,297 @@ async function resolveTaskIds(client, projectId, inputs) {
   return classified.map((c) => c.kind === "uuid" ? c.id : idByNumber.get(c.taskNumber));
 }
 
-// src/tools/knowledge-names.ts
-function missing2(error2, operation2) {
-  return ["PGRST202", "42883"].includes(error2.code ?? "") && error2.message.includes(operation2);
+// src/tools/fasttrack-handoff.ts
+async function handoffOperation(client, taskId, action, expected, refusal) {
+  const { data, error: error2 } = await client.rpc("fasttrack_handoff", { p_task_id: taskId, p_action: action, p_expected: expected, p_refusal: refusal ?? null });
+  if (error2) throw error2;
+  return data;
 }
-async function invoke(client, operation2, args, optional2 = false) {
-  const { data, error: error2 } = await client.rpc(operation2, args);
-  if (error2) {
-    if (missing2(error2, operation2)) {
-      if (optional2) return void 0;
-      throw new Error("Name history is not available in this environment yet.");
-    }
-    throw new Error(`Concept name operation failed: ${error2.message}`);
+async function flagFasttrackHandoff(client, projectId, userId, args) {
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
+  const { data, error: error2 } = await client.from("tasks").select("field_values").eq("id", taskId).eq("project_id", projectId).single();
+  if (error2) throw error2;
+  const pr = data?.field_values?.build_pr;
+  try {
+    return await handoffOperation(client, taskId, "set", pr);
+  } catch (error3) {
+    const code = error3.code;
+    if (code !== "42883" && code !== "PGRST202") throw error3;
+    const message = "The PR is recorded, but the pending state could not be saved: the board does not yet have the handoff function. Merge the PR, then re-run fast-track or harmony record with your own attestation sentence.";
+    await addComment(client, projectId, userId, { task_id: taskId, content: message });
+    return { applied: false, reason: "function-unavailable", message };
   }
-  if (data === null || data === void 0) throw new Error("Invalid concept name capability response");
-  return data;
 }
-async function readKnowledgeNames(client, projectId, args = {}) {
-  const data = await invoke(client, "read_knowledge_names", { p_project_id: projectId, p_search: args.search ?? null, p_entry_ids: args.entry_ids ?? [], p_entity_ids: args.entity_ids ?? [] }, true);
-  if (data === void 0) return { available: false, matches: [], entries: [], identities: [] };
-  if (data?.available !== true || !Array.isArray(data.matches) || !Array.isArray(data.entries) || !Array.isArray(data.identities)) throw new Error("Invalid concept name capability response");
-  return data;
+var flagFasttrackHandoffTool = {
+  name: "flag_fasttrack_handoff",
+  description: "Mark a standalone interactive fast-track PR as waiting for the human to merge and record. Preserves workflow state and refuses other pause owners.",
+  inputSchema: { type: "object", properties: { task_id: { type: "string" } }, required: ["task_id"] }
+};
+
+// src/tools/project-context-completion.ts
+function isContextCompletingAccept(input) {
+  const marker = resolveDeliverableMarker(input.labels);
+  return input.workflow_state === "Verified" && marker.intended_gate !== null && ["human-in-session", "human-in-browser"].includes(input.provenance) && input.reason === (marker.intended_gate === "clarify" ? "clarification-draft" : "design-decision-draft") && (input.completion ? input.completion.gate === marker.intended_gate && input.completion.to_state === "Verified" : marker.intended_gate === "design" && input.legacy_design_completion === true);
 }
-async function renameKnowledgeConcept(client, projectId, args) {
-  return invoke(client, "rename_knowledge_concept", { p_project_id: projectId, p_entity_id: args.concept_id, p_expected_name: args.expected_name, p_new_name: args.new_name, p_source_task_id: await resolveTaskId2(client, projectId, args.source_task_id), p_operation_key: args.operation_key });
+function completingContextReferences(task, events2, briefs) {
+  const sorted = [...events2].sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
+  const result = /* @__PURE__ */ new Map();
+  for (const event of sorted) {
+    const meta = event.metadata;
+    if (event.event_type !== "brief_resolved" || meta?.command !== "accept") continue;
+    const brief = briefs.find((b) => b.id === meta.brief_id);
+    if (!brief) continue;
+    const acceptedAt = Date.parse(event.created_at);
+    const completionEdge = sorted.find((e) => Date.parse(e.created_at) > acceptedAt && e.event_type === "field_change" && e.field_name === "workflow_state" && e.old_value === "Designed" && e.new_value === "Verified");
+    const intervening = completionEdge ? sorted.filter((e) => Date.parse(e.created_at) >= acceptedAt && Date.parse(e.created_at) < Date.parse(completionEdge.created_at)) : [];
+    const legacy = completionEdge !== void 0 && !intervening.some((e) => e.event_type === "brief_resolved" && e.metadata?.command === "accept" && e.metadata.brief_id !== brief.id || e.field_name === "workflow_state" && (!["field_change", "acceptance_event_consumed"].includes(e.event_type) || e.new_value !== "Designed"));
+    if (!isContextCompletingAccept({
+      ...task,
+      reason: brief.reason,
+      provenance: String(meta.provenance ?? ""),
+      completion: brief.doc?.frame?.completion,
+      legacy_design_completion: legacy
+    })) continue;
+    const payloadIds = (brief.doc?.payload ?? []).flatMap((item) => {
+      const id = item.write_kind === "knowledge_entry_content" ? item.entry_id : item.write_kind === "rule_bundle" ? item.decision_id : null;
+      return typeof id === "string" && id ? [id] : [];
+    });
+    const ref = brief.decision_ref;
+    const decisionId = typeof ref === "string" ? ref : ref && typeof ref === "object" && "id" in ref ? ref.id : null;
+    result.set(brief.id, {
+      brief_id: brief.id,
+      source_ids: typeof decisionId === "string" && decisionId.trim() ? [decisionId] : [...new Set(payloadIds)].sort()
+    });
+  }
+  return [...result.values()];
 }
-async function previewKnowledgeMerge(client, projectId, args) {
-  return invoke(client, "preview_knowledge_merge", { p_project_id: projectId, p_source: args.source_id, p_target: args.target_id, p_source_task_id: await resolveTaskId2(client, projectId, args.source_task_id) });
+function lastAcceptedDesignReferences(events2, briefs) {
+  const accepted = [...events2].sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+  for (const event of accepted) {
+    if (event.event_type !== "brief_resolved" || event.metadata?.command !== "accept") continue;
+    const brief = briefs.find((b) => b.id === event.metadata?.brief_id);
+    if (brief?.reason !== "design-decision-draft") continue;
+    return [...new Set((brief.doc?.payload ?? []).flatMap((item) => {
+      const id = item.write_kind === "knowledge_entry_content" ? item.entry_id : item.write_kind === "rule_bundle" ? item.decision_id : null;
+      return typeof id === "string" && id.trim() ? [id] : [];
+    }))];
+  }
+  return [];
 }
-async function mergeKnowledgeConcepts(client, projectId, args) {
-  if (!args.confirmation?.trim()) throw new Error("An explicit preview confirmation is required");
-  return invoke(client, "merge_knowledge_concepts", { p_project_id: projectId, p_source: args.source_id, p_target: args.target_id, p_source_task_id: await resolveTaskId2(client, projectId, args.source_task_id), p_confirmation: args.confirmation });
+async function readContextAuthority(client, projectId, task) {
+  if (task.workflow_state !== "Verified") return { completions: [], last_design_ids: [] };
+  const events2 = [], briefs = [];
+  for (let offset = 0; ; offset += 500) {
+    const result = await client.from("activity_events").select("created_at,event_type,field_name,old_value,new_value,metadata").eq("project_id", projectId).eq("task_id", task.id).order("created_at").order("id").range(offset, offset + 499);
+    if (result.error) throw result.error;
+    events2.push(...result.data ?? []);
+    if ((result.data ?? []).length < 500) break;
+  }
+  for (const id of new Set(events2.filter((e) => e.event_type === "brief_resolved" && e.metadata?.command === "accept").flatMap((e) => typeof e.metadata?.brief_id === "string" ? [e.metadata.brief_id] : []))) {
+    const result = await client.from("briefs").select("id,reason,decision_ref,doc").eq("task_id", task.id).eq("id", id).maybeSingle();
+    if (result.error) throw result.error;
+    if (result.data) briefs.push(result.data);
+  }
+  return {
+    completions: completingContextReferences(task, events2, briefs),
+    last_design_ids: lastAcceptedDesignReferences(events2, briefs)
+  };
 }
-var property = (description) => ({ type: "string", description });
-var mergeProperties = { source_id: property("Source identity UUID to retire in place"), target_id: property("Surviving current identity UUID"), source_task_id: property("Authorizing ticket UUID or visual ID in this project") };
-var knowledgeNameTools = [
-  { name: "read_concept_names", description: "Exact current/retired name lookup, bounded retired-word scans and transitive historical identity resolution. Missing capability is explicit, never a clean scan. At most 500 entry or entity UUIDs per call.", inputSchema: { type: "object", properties: { search: property("Exact name, ignoring case and surrounding whitespace"), entry_ids: { type: "array", items: { type: "string" } }, entity_ids: { type: "array", items: { type: "string" } } } } },
-  { name: "rename_concept", description: "Explicit atomic rename with expected current name, source ticket and idempotency key. Collisions never merge identities.", inputSchema: { type: "object", properties: { concept_id: property("Concept UUID"), expected_name: property("Exact current name"), new_name: property("New canonical name"), source_task_id: property("Authorizing ticket UUID or visual ID"), operation_key: property("Unique idempotency key; never reuse with different inputs") }, required: ["concept_id", "expected_name", "new_name", "source_task_id", "operation_key"] } },
-  { name: "preview_concept_merge", description: "Inventory every mutable reference and immutable historical event before an explicit merge. Returns blockers and a confirmation bound to this inventory and source ticket.", inputSchema: { type: "object", properties: mergeProperties, required: Object.keys(mergeProperties) } },
-  { name: "merge_concepts", description: "Execute a reviewed preview using its confirmation; stale inventories and conflicts refuse atomically. Retains source row and original event ids; resolves retired identity transitively. Never use as an implicit rename collision fallback.", inputSchema: { type: "object", properties: { ...mergeProperties, confirmation: property("Exact reviewed preview confirmation") }, required: [...Object.keys(mergeProperties), "confirmation"] } }
+
+// src/tools/project-context.ts
+var CONTEXT_CATEGORIES = [
+  ["architecture", "Architecture", "Decide the architecture"],
+  ["repo", "Repo & workspace topology", "Decide the repo & workspace topology"],
+  ["environments", "Environment topology & deploy triggers", "Decide the environment topology & deploy triggers"],
+  ["data", "Data & migration tooling", "Decide the data & migration tooling"],
+  ["ci", "CI/CD", "Decide the CI/CD approach"],
+  ["testing", "Testing", "Decide the testing approach"],
+  ["standards", "Coding standards", "Decide the coding standards"],
+  ["identity", "Authentication & identity", "Decide the authentication & identity approach"],
+  ["design", "Design system", "Decide the design system"]
 ];
-async function withRetiredWording(client, projectId, entries) {
-  const result = [];
-  for (let i = 0; i < entries.length; i += 500) {
-    const page = entries.slice(i, i + 500);
-    const read = await readKnowledgeNames(client, projectId, { entry_ids: page.map((e) => e.id) });
-    for (const entry of page) {
-      const scan = read.entries.find((s) => s.entry_id === entry.id);
-      result.push(Object.assign({}, entry, { name_history_available: read.available }, scan ? { uses_retired_term: scan.uses_retired_term, retired_term_matches: scan.matches } : {}));
+var bounded = (value) => typeof value === "string" && !!value.trim() && value.length <= 1200 && value.trim().split(/\s+/).length <= 160 && !/[\r\n]|<!--/.test(value);
+function sourceSummary(source, proposition) {
+  const structured = source.madr?.project_context;
+  if (structured && typeof structured === "object") {
+    const fields = structured;
+    if (proposition) {
+      if (["purpose", "personas", "features"].every((key) => bounded(fields[key]))) {
+        return `Purpose: ${String(fields.purpose).trim()} Personas: ${String(fields.personas).trim()} Features: ${String(fields.features).trim()}`;
+      }
+      return null;
+    }
+    if (bounded(fields.summary)) return fields.summary.trim();
+  }
+  const named = (name) => {
+    const matches = source.content.split("\n").filter((line) => line.startsWith(`- Project context ${name}: `)).map((line) => line.slice(`- Project context ${name}: `.length));
+    return matches.length === 1 && bounded(matches[0]) ? matches[0].trim() : null;
+  };
+  if (proposition) {
+    const purpose = named("purpose"), personas = named("personas"), features = named("features");
+    if (purpose && personas && features) return `Purpose: ${purpose} Personas: ${personas} Features: ${features}`;
+  } else {
+    const summary2 = named("summary");
+    if (summary2) return summary2;
+  }
+  const claim = claimFields(source);
+  return !proposition && claim.claim_source === "authored" && bounded(claim.claim) ? claim.claim.trim() : null;
+}
+function resolveContextBlock(projectId, key, title, tasks, sources, references, projectKey, completions = [], ruleIds = /* @__PURE__ */ new Set(), lastDesignIds = []) {
+  const block = { key, title, ticket: null, source_ids: [], state: "unresolved", summary: null, diagnostics: [] };
+  if (tasks.length !== 1) {
+    block.diagnostics.push(tasks.length ? "Multiple matching scaffold tickets." : "Scaffold ticket not found.");
+    return block;
+  }
+  const task = tasks[0];
+  block.ticket = `${projectKey}-${task.task_number}`;
+  if (task.workflow_state !== "Verified") {
+    block.state = "undecided";
+    return block;
+  }
+  const linked = new Set(references.get(task.id) ?? []);
+  const authoritative = completions.length > 0;
+  const completionIds = [...new Set(completions.flatMap((c) => c.source_ids))];
+  if (authoritative && (completionIds.length !== 1 || completions.some((c) => c.source_ids.length !== 1))) {
+    block.source_ids = completionIds.sort();
+    block.diagnostics.push("Completing brief has missing or conflicting decision references.");
+    return block;
+  }
+  const eligible = sources.filter((s) => s.project_id === projectId && (authoritative ? completionIds.includes(s.id) : (s.source_task_id === task.id || linked.has(s.id)) && (key === "proposition" ? s.type === "specification" : s.source_activity === "design-decide" && !s.tags?.includes("rule") && !ruleIds.has(s.id))));
+  if (authoritative && !eligible.length) {
+    block.source_ids = completionIds;
+    block.diagnostics.push(`Unreadable completing source ${completionIds[0]}.`);
+    return block;
+  }
+  const byId = new Map(sources.filter((s) => s.project_id === projectId).map((s) => [s.id, s]));
+  const current = /* @__PURE__ */ new Map();
+  for (const initial of eligible) {
+    let source2 = initial;
+    const seen = /* @__PURE__ */ new Set();
+    while (source2.superseded_by) {
+      if (seen.has(source2.id)) {
+        block.diagnostics.push(`Supersession cycle at ${source2.id}.`);
+        break;
+      }
+      seen.add(source2.id);
+      const successor = byId.get(source2.superseded_by);
+      if (!successor) {
+        block.diagnostics.push(`Unreadable successor ${source2.superseded_by} of ${source2.id}.`);
+        break;
+      }
+      source2 = successor;
+    }
+    if (!source2.superseded_by && source2.status === "Accepted") current.set(source2.id, source2);
+  }
+  if (!authoritative && key !== "proposition" && current.size > 1) {
+    const named = [...current.keys()].filter((id) => lastDesignIds.includes(id));
+    if (named.length) {
+      for (const id of current.keys()) if (!named.includes(id)) current.delete(id);
     }
   }
-  return result;
+  block.source_ids = (current.size ? [...current.keys()] : eligible.map((source2) => source2.id)).sort();
+  if (block.diagnostics.length) return block;
+  if (!current.size) {
+    if (task.workflow_state === "Verified") block.diagnostics.push("Completed ticket has no readable Accepted substantive source.");
+    else block.state = "undecided";
+    return block;
+  }
+  if (current.size !== 1) {
+    block.diagnostics.push("Competing Accepted sources; confirm the authoritative context source.");
+    return block;
+  }
+  const source = [...current.values()][0];
+  const summary2 = sourceSummary(source, key === "proposition");
+  if (!summary2) {
+    block.diagnostics.push(`Source ${source.id} needs a bounded authored project_context summary${key === "proposition" ? " with purpose, personas and features" : " or authored claim"}.`);
+    return block;
+  }
+  block.state = "accepted";
+  block.summary = summary2;
+  return block;
 }
+var PAGE = 500;
+async function readProjectContext(client, projectId) {
+  const { data: project, error: error2 } = await client.from("projects").select("id,name,key").eq("id", projectId).single();
+  if (error2) throw error2;
+  const tasks = [];
+  for (let offset = 0; ; offset += PAGE) {
+    const result = await client.from("tasks").select("id,title,task_number,workflow_state,task_labels!inner(labels!inner(name)),all_labels:task_labels(labels(name))").eq("project_id", projectId).eq("archived", false).is("subsumed_by_task_id", null).eq("task_labels.labels.name", "inception-scaffold").order("id").range(offset, offset + PAGE - 1);
+    if (result.error) throw result.error;
+    tasks.push(...result.data ?? []);
+    if ((result.data ?? []).length < PAGE) break;
+  }
+  if (!tasks.length) return {
+    version: 1,
+    project_id: projectId,
+    project_name: project.name,
+    applicability: "not_applicable",
+    blocks: [],
+    diagnostics: []
+  };
+  const authority = /* @__PURE__ */ new Map();
+  for (const task of tasks) authority.set(task.id, await readContextAuthority(client, projectId, {
+    ...task,
+    labels: task.all_labels?.flatMap((row) => row.labels) ?? task.labels ?? []
+  }));
+  const sources = [];
+  for (let offset = 0; ; offset += PAGE) {
+    const result = await client.from("knowledge_decisions").select("id,project_id,source_task_id,type,status,superseded_by,content,madr,source_activity,tags,underwriting_brief_id").eq("project_id", projectId).order("id").range(offset, offset + PAGE - 1);
+    if (result.error) throw result.error;
+    sources.push(...result.data ?? []);
+    if ((result.data ?? []).length < PAGE) break;
+  }
+  const ruleIds = /* @__PURE__ */ new Set();
+  for (let offset = 0; ; offset += PAGE) {
+    const result = await client.from("decision_rule_citations").select("rule_entry_id").eq("project_id", projectId).order("id").range(offset, offset + PAGE - 1);
+    if (result.error) {
+      if (["42P01", "PGRST205"].includes(result.error.code)) break;
+      throw result.error;
+    }
+    for (const row of result.data ?? []) ruleIds.add(row.rule_entry_id);
+    if ((result.data ?? []).length < PAGE) break;
+  }
+  const references = /* @__PURE__ */ new Map();
+  for (const task of tasks) {
+    const ids2 = [];
+    for (let offset = 0; ; offset += PAGE) {
+      const result = await client.from("ticket_references_knowledge").select("decision_id").eq("task_id", task.id).order("decision_id").range(offset, offset + PAGE - 1);
+      if (result.error) throw result.error;
+      ids2.push(...(result.data ?? []).map((row) => row.decision_id));
+      if ((result.data ?? []).length < PAGE) break;
+    }
+    references.set(task.id, ids2);
+  }
+  const definitions = [["proposition", "What this project is", "Founding proposition \u2014 "], ...CONTEXT_CATEGORIES];
+  const blocks = definitions.map(([key, title, ticketTitle]) => {
+    const matching = tasks.filter((task) => key === "proposition" ? task.title.startsWith(ticketTitle) : task.title === ticketTitle);
+    return resolveContextBlock(
+      projectId,
+      key,
+      title,
+      matching,
+      sources,
+      references,
+      project.key,
+      matching.flatMap((task) => authority.get(task.id)?.completions ?? []),
+      ruleIds,
+      matching.flatMap((task) => authority.get(task.id)?.last_design_ids ?? [])
+    );
+  });
+  return {
+    version: 1,
+    applicability: "applicable",
+    project_id: projectId,
+    project_name: project.name,
+    blocks,
+    diagnostics: blocks.flatMap((block) => block.diagnostics.map((message) => `${block.title}: ${message}`))
+  };
+}
+var readProjectContextTool = {
+  name: "read_project_context",
+  description: "Read source-linked project CLAUDE.md context from project-local inception scaffold tickets and Accepted knowledge. Read-only; reports unresolved and undecided categories without inventing summaries.",
+  inputSchema: { type: "object", properties: {} }
+};
 
 // src/tools/surface-records.ts
 var text2 = external_exports.string().trim().min(1);
@@ -48530,7 +48557,7 @@ async function resolveExchange(client, projectId, args) {
     return data;
   }
   if (!args.task_id) throw new Error("either exchange_id or task_id is required");
-  const taskId = await resolveTaskId2(client, projectId, args.task_id);
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
   const active = await findActiveExchange(client, taskId);
   if (!active) throw new Error(`no active elicitation exchange for task ${args.task_id}`);
   return active;
@@ -48540,7 +48567,7 @@ async function startElicitation(client, projectId, userId, args) {
   if (!args.trigger || !VALID_TRIGGERS.includes(args.trigger)) {
     throw new Error(`trigger must be one of: ${VALID_TRIGGERS.join(", ")}`);
   }
-  const taskId = await resolveTaskId2(client, projectId, args.task_id);
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
   const existing = await findActiveExchange(client, taskId);
   if (existing) return existing;
   const { data, error: error2 } = await client.from("elicitation_exchanges").insert({
@@ -48664,7 +48691,7 @@ var fileElicitationRoundTool = {
 };
 async function getElicitation(client, projectId, args) {
   if (!args.task_id) throw new Error("task_id is required");
-  const taskId = await resolveTaskId2(client, projectId, args.task_id);
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
   const active = await findActiveExchange(client, taskId);
   if (active) return active;
   const { data, error: error2 } = await client.from("elicitation_exchanges").select(EXCHANGE_COLS).eq("task_id", taskId).order("created_at", { ascending: false }).limit(1).maybeSingle();
@@ -48739,7 +48766,7 @@ async function findLatestExchange(client, taskId) {
 }
 async function submitElicitationAnswers(client, projectId, args) {
   if (!args.task_id) throw new Error("task_id is required");
-  const taskId = await resolveTaskId2(client, projectId, args.task_id);
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
   const exchange = await findActiveExchange(client, taskId);
   if (!exchange) {
     const latest = await findLatestExchange(client, taskId);
@@ -51301,7 +51328,7 @@ async function composeBrief(client, projectId, userId, args) {
   if (args.revision_cause !== void 0 && !isRevisionCause(args.revision_cause)) {
     throw new Error(`compose_brief: revision_cause must be { source: <one of ${REVISION_CAUSE_SOURCES.join(" | ")}>, lines: string[] }`);
   }
-  const taskId = await resolveTaskId2(client, projectId, args.task_id);
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
   let buildPr;
   let buildPrRefs;
   if (args.reason === "release-decision-pending") {
@@ -51829,7 +51856,7 @@ var consumeAcceptRemarkTool = {
 };
 async function getBrief(client, projectId, args) {
   if (!args.task_id) throw new Error("task_id is required");
-  const taskId = await resolveTaskId2(client, projectId, args.task_id);
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
   const { data, error: error2 } = await client.from("briefs").select(BRIEF_COLS).eq("task_id", taskId).eq("status", "active").maybeSingle();
   if (error2) throw new Error(error2.message);
   if (!data) return null;
@@ -51852,7 +51879,7 @@ var isMissingBriefHistorySubstrate = (err) => {
 var namesRevisionCauseColumn = (err) => /revision_cause/.test(err?.message ?? "");
 async function listBriefs(client, projectId, args) {
   if (!args.task_id) throw new Error("task_id is required");
-  const taskId = await resolveTaskId2(client, projectId, args.task_id);
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
   let revision_columns = "present";
   let revision_cause = "present";
   let rows = [];
@@ -52052,7 +52079,7 @@ async function resolveBrief(client, projectId, args, userId) {
       "a remark cannot accompany 'defer': the remark channel rides on accept, and a deferred ticket parks, so the remark would never be consumed. Drop the remark, or accept instead \u2014 for a defer reason use `detail`."
     );
   }
-  const taskId = await resolveTaskId2(client, projectId, args.task_id);
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
   const expectedId = pinnedId(args.expected_brief_id);
   if (expectedId) return resolvePinnedBrief(client, taskId, expectedId, args, provenance, remark);
   const { data: active, error: lookupErr } = await client.from("briefs").select("id, doc").eq("task_id", taskId).eq("status", "active").maybeSingle();
@@ -52161,7 +52188,7 @@ async function reshapeBrief(client, projectId, args, userId) {
       "feedback is required to reshape a brief \u2014 a reshape sends the brief back for rework, and blank feedback tells the agent nothing about what to change. Nothing was written."
     );
   }
-  const taskId = await resolveTaskId2(client, projectId, args.task_id);
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
   const { data: active, error: lookupErr } = await client.from("briefs").select("id, reason").eq("task_id", taskId).eq("status", "active").maybeSingle();
   if (lookupErr) throw new Error(lookupErr.message);
   const expectedId = pinnedId(args.expected_brief_id);
@@ -52448,7 +52475,7 @@ async function writeGateSlotToolHandler(client, projectId, args) {
   if (!isGateSlotName(gate)) {
     throw new Error(`gate must be one of: ${GATE_SLOT_NAMES.join(", ")} \u2014 got '${gate}'`);
   }
-  const taskId = await resolveTaskId2(client, projectId, args.task_id);
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
   const reason = REASON_FOR_GATE_SLOT[gate];
   const { data: briefRows, error: briefErr } = await client.from("briefs").select("id, doc, reason, created_at").eq("task_id", taskId).eq("reason", reason).order("created_at", { ascending: false }).limit(1);
   if (briefErr) throw new Error(briefErr.message);
@@ -52534,7 +52561,7 @@ async function probeAcceptanceEventSubstrate(client) {
   throw new Error(`acceptance-event substrate probe failed (not a schema-absence error \u2014 do not degrade): ${error2.message}`);
 }
 async function getPendingAcceptanceEvent(client, projectId, taskId) {
-  const resolvedId = await resolveTaskId2(client, projectId, taskId);
+  const resolvedId = await resolveTaskId(client, projectId, taskId);
   const { data: task, error: taskErr } = await client.from("tasks").select("pending_acceptance_event_id").eq("id", resolvedId).maybeSingle();
   if (taskErr) {
     if (isMissingRelationOrFunction(taskErr)) return null;
@@ -53672,7 +53699,7 @@ var getTaskTool = {
 };
 async function getTask(client, projectId, args) {
   const meta = args.view === "meta";
-  const resolvedId = await resolveTaskId2(client, projectId, args.task_id);
+  const resolvedId = await resolveTaskId(client, projectId, args.task_id);
   const { data, error: error2 } = await client.from("tasks").select("*, task_labels(labels(id, name, color)), checklist_items(id, title, completed, position)").eq("id", resolvedId).eq("project_id", projectId).single();
   if (error2) throw error2;
   const labels = (data.task_labels ?? []).map((tl) => tl.labels).filter(Boolean);
@@ -53820,7 +53847,7 @@ var CREATE_TASK_ARGUMENT_HINTS = {
 async function createTask(client, projectId, userId, args) {
   assertKnownArguments(createTaskTool, args, CREATE_TASK_ARGUMENT_HINTS);
   const assigneeId = args.assignee_id ? await resolveAssignee(client, projectId, args.assignee_id) : null;
-  const parentTaskId = args.parent_task_id ? await resolveTaskId2(client, projectId, args.parent_task_id) : null;
+  const parentTaskId = args.parent_task_id ? await resolveTaskId(client, projectId, args.parent_task_id) : null;
   let epicId = args.epic_id ?? null;
   if (args.epic_id === void 0 && parentTaskId) {
     const { data: parent, error: parentErr } = await client.from("tasks").select("project_id, epic_id").eq("id", parentTaskId).single();
@@ -53892,7 +53919,7 @@ var updateTaskTool = {
   }
 };
 async function updateTask(client, projectId, args) {
-  const resolvedId = await resolveTaskId2(client, projectId, args.task_id);
+  const resolvedId = await resolveTaskId(client, projectId, args.task_id);
   const { task_id: _discarded, field_values, label_ids, ...updates } = args;
   if (updates.epic_id === "null") updates.epic_id = null;
   if (updates.epic_id) {
@@ -53906,10 +53933,10 @@ async function updateTask(client, projectId, args) {
     updates.assignee_id = null;
   }
   if (updates.parent_task_id !== void 0) {
-    updates.parent_task_id = updates.parent_task_id === null ? null : await resolveTaskId2(client, projectId, updates.parent_task_id);
+    updates.parent_task_id = updates.parent_task_id === null ? null : await resolveTaskId(client, projectId, updates.parent_task_id);
   }
   if (updates.subsumed_by_task_id !== void 0) {
-    updates.subsumed_by_task_id = updates.subsumed_by_task_id === null ? null : await resolveTaskId2(client, projectId, updates.subsumed_by_task_id);
+    updates.subsumed_by_task_id = updates.subsumed_by_task_id === null ? null : await resolveTaskId(client, projectId, updates.subsumed_by_task_id);
   }
   if (typeof updates.title === "string") {
     validateTitle(updates.title);
@@ -54112,7 +54139,7 @@ var listChecklistItemsTool = {
   }
 };
 async function listChecklistItems(client, projectId, args) {
-  const resolvedId = await resolveTaskId2(client, projectId, args.task_id);
+  const resolvedId = await resolveTaskId(client, projectId, args.task_id);
   const { data, error: error2 } = await client.from("checklist_items").select("id, title, completed, position, created_by, created_at").eq("task_id", resolvedId).order("position", { ascending: true });
   if (error2) throw error2;
   return data;
@@ -54161,7 +54188,7 @@ var manageChecklistItemsTool = {
   }
 };
 async function manageChecklistItems(client, projectId, userId, args) {
-  const resolvedTaskId = await resolveTaskId2(client, projectId, args.task_id);
+  const resolvedTaskId = await resolveTaskId(client, projectId, args.task_id);
   const results = {
     added: [],
     updated: [],
@@ -54633,7 +54660,7 @@ var manageTaskLabelsTool = {
   }
 };
 async function manageTaskLabels(client, projectId, args) {
-  const taskId = await resolveTaskId2(client, projectId, args.task_id);
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
   const results = {
     added: [],
     removed: []
@@ -54721,7 +54748,7 @@ var listActivityTool = {
   }
 };
 async function listActivity(client, projectId, args) {
-  const taskId = await resolveTaskId2(client, projectId, args.task_id);
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
   const [eventsResult, commentsResult] = await Promise.all([
     client.from("activity_events").select("*, author:profiles!activity_events_user_id_fkey(display_name, email)").eq("task_id", taskId).order("created_at", { ascending: true }),
     client.from("task_comments").select("id, content, created_at, updated_at, author:profiles!task_comments_user_id_fkey(display_name, email)").eq("task_id", taskId).order("created_at", { ascending: true })
@@ -55140,7 +55167,7 @@ var listAcceptanceCriteriaTool = {
   }
 };
 async function listAcceptanceCriteria(client, projectId, args) {
-  const resolvedId = await resolveTaskId2(client, projectId, args.task_id);
+  const resolvedId = await resolveTaskId(client, projectId, args.task_id);
   const { data, error: error2 } = await client.from("acceptance_criteria").select("id, content, checked, position, created_by, created_at").eq("task_id", resolvedId).order("position", { ascending: true });
   if (error2) throw error2;
   return data;
@@ -55191,7 +55218,7 @@ var manageAcceptanceCriteriaTool = {
 };
 async function manageAcceptanceCriteria(client, projectId, userId, args) {
   assertKnownArguments(manageAcceptanceCriteriaTool, args);
-  const resolvedTaskId = await resolveTaskId2(client, projectId, args.task_id);
+  const resolvedTaskId = await resolveTaskId(client, projectId, args.task_id);
   const results = {
     added: [],
     updated: [],
@@ -55310,7 +55337,7 @@ async function settleAcceptanceCriterion(client, projectId, args) {
     };
   }
   if (args.task_id) {
-    const sourceId = await resolveTaskId2(client, projectId, args.task_id);
+    const sourceId = await resolveTaskId(client, projectId, args.task_id);
     const { data: data2, error: error3 } = await client.from("acceptance_criteria").select("id").eq("id", args.criterion_id).eq("task_id", sourceId).maybeSingle();
     if (error3) throw error3;
     if (!data2) {
@@ -55321,7 +55348,7 @@ async function settleAcceptanceCriterion(client, projectId, args) {
       };
     }
   }
-  const destination = args.action === "carry" && args.destination_task_id ? await resolveTaskId2(client, projectId, args.destination_task_id) : null;
+  const destination = args.action === "carry" && args.destination_task_id ? await resolveTaskId(client, projectId, args.destination_task_id) : null;
   const params = {
     p_criterion_id: args.criterion_id,
     p_action: args.action,
@@ -55356,7 +55383,7 @@ var getVerifyReadinessTool = {
 };
 async function getVerifyReadiness(client, projectId, args) {
   assertKnownArguments(getVerifyReadinessTool, args);
-  const taskId = await resolveTaskId2(client, projectId, args.task_id);
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
   const { data, error: error2 } = await client.rpc("task_verify_readiness", { p_task_id: taskId });
   if (error2) {
     if (isMissingFunction(error2)) return { status: "unavailable", message: READINESS_UNAVAILABLE_MESSAGE };
@@ -55382,7 +55409,7 @@ var listTestCasesTool = {
   }
 };
 async function listTestCases(client, projectId, args) {
-  const resolvedId = await resolveTaskId2(client, projectId, args.task_id);
+  const resolvedId = await resolveTaskId(client, projectId, args.task_id);
   const { data, error: error2 } = await client.from("test_cases").select("id, name, type, position, created_by, created_at").eq("task_id", resolvedId).order("position", { ascending: true });
   if (error2) throw error2;
   return data;
@@ -55450,7 +55477,7 @@ async function manageTestCases(client, projectId, userId, args) {
   if (args.add) {
     for (const item of args.add) assertValidType(item.type);
   }
-  const resolvedTaskId = await resolveTaskId2(client, projectId, args.task_id);
+  const resolvedTaskId = await resolveTaskId(client, projectId, args.task_id);
   const results = {
     added: [],
     updated: [],
@@ -55512,7 +55539,7 @@ var listDependenciesTool = {
   }
 };
 async function listDependencies(client, projectId, args) {
-  const resolvedId = await resolveTaskId2(client, projectId, args.task_id);
+  const resolvedId = await resolveTaskId(client, projectId, args.task_id);
   const [dependsOnRes, blocksRes] = await Promise.all([
     client.from("task_dependencies").select("id, task_id, blocked_by_task_id, created_at, created_by, dependency:blocked_by_task_id(id, task_number, title, status, workflow_state, awaiting_human_input, awaiting_human_reason, stale)").eq("task_id", resolvedId).order("created_at", { ascending: true }),
     client.from("task_dependencies").select("id, task_id, blocked_by_task_id, created_at, created_by, dependent:task_id(id, task_number, title, status, workflow_state, awaiting_human_input, awaiting_human_reason, stale)").eq("blocked_by_task_id", resolvedId).order("created_at", { ascending: true })
@@ -55549,7 +55576,7 @@ var manageDependenciesTool = {
   }
 };
 async function manageDependencies(client, projectId, userId, args) {
-  const resolvedTaskId = await resolveTaskId2(client, projectId, args.task_id);
+  const resolvedTaskId = await resolveTaskId(client, projectId, args.task_id);
   const result = { added: [], removed: [] };
   if (args.add && args.add.length > 0) {
     const dependencyIds = await resolveTaskIds(client, projectId, args.add);
@@ -55589,7 +55616,7 @@ var listSubtasksTool = {
   }
 };
 async function listSubtasks(client, projectId, args) {
-  const rootId = await resolveTaskId2(client, projectId, args.task_id);
+  const rootId = await resolveTaskId(client, projectId, args.task_id);
   const depth = args.depth ?? 1;
   const all = [];
   let frontier = [rootId];
@@ -55617,7 +55644,7 @@ var listParentTool = {
   }
 };
 async function listParent(client, projectId, args) {
-  const resolvedId = await resolveTaskId2(client, projectId, args.task_id);
+  const resolvedId = await resolveTaskId(client, projectId, args.task_id);
   const { data: task, error: taskErr } = await client.from("tasks").select("parent_task_id").eq("id", resolvedId).single();
   if (taskErr) throw taskErr;
   if (!task?.parent_task_id) return null;
@@ -55667,7 +55694,7 @@ var manageSubtasksTool = {
   }
 };
 async function manageSubtasks(client, projectId, userId, args) {
-  const parentId = await resolveTaskId2(client, projectId, args.task_id);
+  const parentId = await resolveTaskId(client, projectId, args.task_id);
   const result = {
     attached: [],
     created: [],
@@ -55676,7 +55703,7 @@ async function manageSubtasks(client, projectId, userId, args) {
   const { data: parent, error: parentErr } = await client.from("tasks").select("project_id, epic_id, milestone_id").eq("id", parentId).single();
   if (parentErr) throw parentErr;
   if (args.add && args.add.length > 0) {
-    const childIds = await Promise.all(args.add.map((id) => resolveTaskId2(client, projectId, id)));
+    const childIds = await Promise.all(args.add.map((id) => resolveTaskId(client, projectId, id)));
     for (const cid of childIds) {
       if (cid === parentId) throw new Error("A task cannot be its own subtask.");
     }
@@ -55711,7 +55738,7 @@ async function manageSubtasks(client, projectId, userId, args) {
     result.created = data ?? [];
   }
   if (args.remove && args.remove.length > 0) {
-    const childIds = await Promise.all(args.remove.map((id) => resolveTaskId2(client, projectId, id)));
+    const childIds = await Promise.all(args.remove.map((id) => resolveTaskId(client, projectId, id)));
     const { error: error2 } = await client.from("tasks").update({ parent_task_id: null }).in("id", childIds);
     if (error2) throw error2;
     result.detached = childIds;
@@ -55723,7 +55750,7 @@ async function manageSubtasks(client, projectId, userId, args) {
 var RELEASE_APPROVAL_REASON = "release-approval-pending";
 async function flagReleaseApprovalPending(client, projectId, args) {
   if (!args.pr_url) throw new Error("pr_url is required \u2014 the pause must name the PR to approve");
-  const taskId = await resolveTaskId2(client, projectId, args.task_id);
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
   const { data: activeBrief, error: briefErr } = await client.from("briefs").select("id, reason, iteration").eq("task_id", taskId).eq("status", "active").maybeSingle();
   if (briefErr) throw new Error(briefErr.message);
   if (activeBrief) {
@@ -55827,7 +55854,7 @@ var toSummary = (row) => ({
 });
 async function listConductions2(client, projectId, args) {
   if (!args.task_id) throw new Error("task_id is required");
-  const taskId = await resolveTaskId2(client, projectId, args.task_id);
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
   const rows = await listConductions(client, { task_id: taskId, order: "desc" });
   return { conductions: rows.map(toSummary) };
 }
@@ -55966,7 +55993,7 @@ async function attachFile(client, projectId, args) {
   const bytes = await fs.readFile(absPath);
   const filename = args.filename ?? path.basename(absPath);
   const contentType = contentTypeForFilename(filename);
-  const resolvedId = await resolveTaskId2(client, projectId, args.task_id);
+  const resolvedId = await resolveTaskId(client, projectId, args.task_id);
   const created = await invokeFn(client, "attachments-create-upload", {
     task_id: resolvedId,
     filename,
@@ -56035,7 +56062,7 @@ var getBuildEvidenceStatusTool = {
   }
 };
 async function getBuildEvidenceStatus(client, projectId, args) {
-  const resolvedId = await resolveTaskId2(client, projectId, args.task_id);
+  const resolvedId = await resolveTaskId(client, projectId, args.task_id);
   const [childrenRes, taskRowRes, testCasesRes, acsRes, commentsRes, labelsRes] = await Promise.all([
     client.from("tasks").select("id, archived").eq("parent_task_id", resolvedId),
     client.from("tasks").select("field_values").eq("id", resolvedId),
@@ -57350,7 +57377,7 @@ async function raiseIncident(client, projectId, userId, args) {
     throw new Error(`${missing3.join(", ")} ${missing3.length === 1 ? "is" : "are"} required (never the secret itself). Nothing was written.`);
   }
   const scrubbed = what !== String(args.what ?? "").replace(/\\n/g, "\n").trim() || where !== String(args.where ?? "").replace(/\\n/g, "\n").trim() || humanSteps !== String(args.human_steps ?? "").replace(/\\n/g, "\n").trim();
-  const taskId = await resolveTaskId2(client, projectId, args.task_id);
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
   let workflowState = null;
   let fieldValues = null;
   try {
@@ -57492,7 +57519,7 @@ var HANDOFF_CONTRACT_NOTE = "the duplicate-guard can only detect an active condu
 async function createConduction2(client, projectId, userId, args) {
   if (!args.task_id) throw new Error("task_id is required");
   const explicitRunConfig = normalizeExplicitModelRuntime(args.run_config !== void 0 ? RunConfigSchema.parse(args.run_config) : void 0);
-  const taskId = await resolveTaskId2(client, projectId, args.task_id);
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
   const runConfig = await resolveUnparkRunConfig(client, taskId, {
     unpark: args.unpark,
     explicit: explicitRunConfig
@@ -58196,6 +58223,54 @@ async function coupleDecomposeNoSplitConvention(client, projectId, userId, taskI
   await referenceKnowledge(client, projectId, { task_id: taskId, decision_id: entryId });
 }
 async function runRecordedWalk(client, projectId, userId, args) {
+  const id = await resolveTaskId(client, projectId, args.task_id);
+  const { data, error: error2 } = await client.from("tasks").select("field_values, awaiting_human_reason, workflow_state").eq("id", id).eq("project_id", projectId).single();
+  if (error2) throw error2;
+  const marker = data?.field_values?.fast_track_handoff;
+  if (!marker) return runRecordedWalkCore(client, projectId, userId, args);
+  let ref = marker;
+  if (data?.workflow_state === "Deployed" && data?.awaiting_human_reason === "verification-ack-pending" && data?.field_values?.gate_slots?.release?.ratified_by === RATIFIED_BY_RECORDED) {
+    const cleared = await handoffOperation(client, id, "clear", ref);
+    return {
+      task_id: id,
+      refused: !cleared.applied,
+      ...!cleared.applied ? { refusal_reason: `Handoff cleanup preserved a newer owner: ${cleared.reason}.` } : {},
+      eligibility: evaluateEligibility({ summary: args.summary, evidence: args.evidence, attestWalk: args.attest_walk }),
+      gates: [],
+      attestation_recorded: false
+    };
+  }
+  if (ref.recording_until && Date.parse(ref.recording_until) > Date.now()) return { task_id: id, refused: true, refusal_reason: "Recording is already in progress. If it was interrupted, retry after the fifteen-minute claim expires.", eligibility: evaluateEligibility({ summary: args.summary, evidence: args.evidence, attestWalk: args.attest_walk }), gates: [], attestation_recorded: false };
+  const refuse = async (message) => {
+    const restored = await handoffOperation(client, id, "refuse", ref, message);
+    await addComment(client, projectId, userId, { task_id: id, content: `Recording refused: ${message}${restored.applied ? " The merge-and-record handoff remains pending." : " A newer decision owns the ticket; it was preserved."}` });
+    return { task_id: id, refused: true, refusal_reason: message, eligibility: evaluateEligibility({ summary: args.summary, evidence: args.evidence, attestWalk: args.attest_walk }), gates: [], attestation_recorded: false };
+  };
+  if (args.to_gate && recordWalkGateIndex(args.to_gate) < recordWalkGateIndex("deploy")) return refuse("Complete the merge-and-record walk through deployment before clearing this handoff.");
+  const pr = data?.field_values?.build_pr;
+  if (!pr?.pr_url) return refuse("The ticket\u2019s PR reference is missing. Restore it before recording.");
+  if (!args.attest_walk?.trim()) return refuse("An attestation sentence is required.");
+  if (!args.evidence.some((e) => e.url === ref.pr_url)) return refuse("Recording evidence must include the handoff\u2019s recorded PR.");
+  const info = await fetchEvidencePrReleaseInfo({ url: ref.pr_url, repo: ref.repo });
+  if (!info || !info.merged) return refuse(`PR #${ref.pr_number ?? "?"} is not merged or its merge could not be confirmed.`);
+  const started = await handoffOperation(client, id, "begin", ref);
+  if (!started.applied) return { task_id: id, refused: true, refusal_reason: `Recording could not claim the handoff: ${started.reason}.`, eligibility: evaluateEligibility({ summary: args.summary, evidence: args.evidence, attestWalk: args.attest_walk }), gates: [], attestation_recorded: false };
+  ref = started.ref ?? ref;
+  try {
+    const resumeFrom = { Clarified: "decompose", Decomposed: "design", Designed: "plan", Planned: "build", Built: "release", Deployed: "verify" };
+    const result = await runRecordedWalkCore(client, projectId, userId, { ...args, from_gate: args.from_gate ?? resumeFrom[data?.workflow_state] });
+    if (result.refused || result.error) {
+      await refuse(result.refusal_reason ?? result.error ?? "Recording did not complete.");
+      return result;
+    }
+    await handoffOperation(client, id, "clear", ref);
+    return result;
+  } catch (error3) {
+    await refuse(error3 instanceof Error ? error3.message : "Recording failed.");
+    throw error3;
+  }
+}
+async function runRecordedWalkCore(client, projectId, userId, args) {
   const scope = args.scope ?? "product";
   const eligibility = evaluateEligibility({
     summary: args.summary,
@@ -58219,7 +58294,7 @@ async function runRecordedWalk(client, projectId, userId, args) {
       attestation_recorded: false
     };
   }
-  const taskId = await resolveTaskId2(client, projectId, args.task_id);
+  const taskId = await resolveTaskId(client, projectId, args.task_id);
   const gates = [];
   let attestationRecorded = false;
   let summaryCriterionFiled = false;
@@ -58665,6 +58740,7 @@ function registerTools(disabledFeatures) {
     reshapeBriefTool,
     consumeAcceptRemarkTool,
     flagReleaseApprovalPendingTool,
+    flagFasttrackHandoffTool,
     startElicitationTool,
     fileElicitationRoundTool,
     getElicitationTool,
@@ -58980,6 +59056,9 @@ async function handleToolCall(name, args, client, projectId, userId) {
         break;
       case "record":
         result = await recordToolHandler(client, projectId, userId, args);
+        break;
+      case "flag_fasttrack_handoff":
+        result = await flagFasttrackHandoff(client, projectId, userId, args);
         break;
       case "flag_release_approval_pending":
         result = await flagReleaseApprovalPending(client, projectId, args);
