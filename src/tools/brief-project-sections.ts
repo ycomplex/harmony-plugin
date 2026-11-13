@@ -13,7 +13,7 @@ import {
   readBriefSectionDeclarations,
   type BriefSectionDeclarations,
 } from '../config/brief-sections.js';
-import { BRIEF_SECTION_LIMITS, type BriefSectionGate } from '../config/project-manifest.js';
+import { BRIEF_SECTION_GATES, BRIEF_SECTION_LIMITS, type BriefSectionGate } from '../config/project-manifest.js';
 import { describeScanFinding, scanSectionText } from './brief-section-scan.js';
 
 /** One filled section as stored on the brief. Title, commit and freshness come from the declaration. */
@@ -260,3 +260,52 @@ export function renderProjectSectionsArea(doc: { sections?: BriefProjectSection[
   }
   return parts.join('');
 }
+
+// ——— the read surface: read_brief_sections (MCP) and `harmony brief sections <gate>` (CLI) ———————————
+
+export interface ReadBriefSectionsArgs {
+  gate: string;
+}
+
+export type ReadBriefSectionsResult = { gate: BriefSectionGate } & BriefSectionDeclarations;
+
+/** The one core both surfaces call: the declarations for a gate, with repository, commit and freshness,
+ *  or the none / unreadable result. Read-only; never touches the board. */
+export async function readBriefSections(
+  args: ReadBriefSectionsArgs,
+  reader: BriefSectionReader = defaultReader,
+): Promise<ReadBriefSectionsResult> {
+  const gate = args?.gate;
+  if (!(BRIEF_SECTION_GATES as readonly string[]).includes(gate)) {
+    throw new Error(`gate must be one of: ${BRIEF_SECTION_GATES.join(', ')}`);
+  }
+  const declarations = await reader(gate as BriefSectionGate);
+  return { gate: gate as BriefSectionGate, ...declarations };
+}
+
+/** Human-readable form of the read, for the CLI. */
+export function formatBriefSections(r: ReadBriefSectionsResult): string {
+  if (r.kind === 'none') return `No brief sections are declared for the ${r.gate} gate.`;
+  if (r.kind === 'unreadable') return `The brief section declarations could not be read: ${r.detail}`;
+  const lines: string[] = [];
+  if (r.repos.length === 0) lines.push(`No brief sections are enforced for the ${r.gate} gate.`);
+  for (const repo of r.repos) {
+    lines.push(`${repo.repository} — declared at ${repo.commit.slice(0, 7)}${repo.fresh ? '' : ' (may be out of date: the default branch could not be fetched)'}`);
+    for (const s of repo.sections) lines.push(`  ${s.id}: ${s.title}`, `    ${s.instruction}`);
+  }
+  for (const w of r.warnings) lines.push(`warning: ${w}`);
+  return lines.join('\n');
+}
+
+export const readBriefSectionsTool = {
+  name: 'read_brief_sections',
+  description:
+    "B-1305 — read the extra brief sections this project declares for a gate (`brief_sections` in each repository's .harmony/project.yml, read from the repository's DEFAULT BRANCH, never the working tree). Call it before composing a brief at clarify, decompose, design, plan, release or verify. Returns { gate, kind: 'none' } (nothing declared — compose as usual), { gate, kind: 'unreadable', detail } (compose as usual; the brief notes it), or { gate, kind: 'declared', repos: [{ repository, commit, fresh, sections: [{ id, title, instruction }] }], warnings } — then fill every section as compose_brief doc.sections items { repository, id, markdown }. Read-only.",
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      gate: { type: 'string', enum: [...BRIEF_SECTION_GATES], description: 'The gate whose brief you are about to compose' },
+    },
+    required: ['gate'],
+  },
+};

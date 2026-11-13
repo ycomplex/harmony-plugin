@@ -57,6 +57,7 @@ import {
 import { listCyclesTool, listCycles, createCycleTool, createCycle, updateCycleTool, updateCycle } from './cycles.js';
 import { listAcceptanceCriteriaTool, listAcceptanceCriteria, manageAcceptanceCriteriaTool, manageAcceptanceCriteria } from './acceptance-criteria.js';
 import { settleAcceptanceCriterionTool, settleAcceptanceCriterion, getVerifyReadinessTool, getVerifyReadiness } from './settle-criteria.js';
+import { readBriefSectionsTool, readBriefSections } from './brief-project-sections.js';
 import { listTestCasesTool, listTestCases, manageTestCasesTool, manageTestCases } from './test-cases.js';
 import { listDependenciesTool, listDependencies, manageDependenciesTool, manageDependencies } from './dependencies.js';
 import { listSubtasksTool, listSubtasks, listParentTool, listParent, manageSubtasksTool, manageSubtasks } from './decomposition.js';
@@ -194,6 +195,8 @@ export function registerTools(disabledFeatures?: Record<string, boolean>) {
     recordDecisionTool, supersedeDecisionTool, queryFactsTool, assertFactTool, invalidateFactTool, queryEntitiesTool,
     createEntityTool, updateEntityTool, reconcileEntityTool,
     composeBriefTool, getBriefTool, listBriefsTool, resolveBriefTool, reshapeBriefTool, consumeAcceptRemarkTool,
+    // B-1305 — the project's brief section declarations for a gate (read before compose_brief).
+    readBriefSectionsTool,
     flagReleaseApprovalPendingTool,
     startElicitationTool, fileElicitationRoundTool, getElicitationTool, concludeElicitationTool,
     submitElicitationAnswersTool,
@@ -469,6 +472,9 @@ export async function handleToolCall(
       case 'compose_brief':
         // B-1305: four arguments only — the internal `mechanical` option is never reachable from MCP.
         result = await composeBrief(client, projectId, userId, args as any);
+        break;
+      case 'read_brief_sections':
+        result = await readBriefSections(args as any);
         break;
       case 'get_brief':
         result = await getBrief(client, projectId, args as any);
