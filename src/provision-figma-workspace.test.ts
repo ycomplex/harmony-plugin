@@ -105,7 +105,7 @@ describe('provision-figma-workspace.sh: a real (stubbed) run', () => {
   it('skips a slot that already exists', () => {
     const r = run([WS, CONDUCTOR_EMAIL], [slot('pat')]);
     expect(r.status, r.stderr).toBe(0);
-    expect(r.stdout).toContain(`exists:  ${slot('pat')}`);
+    expect(r.stdout).toContain(`exists: ${slot('pat')}`);
     const created = r.calls.filter((c) => c[0] === 'secrets' && c[1] === 'create').map((c) => c[2]);
     expect(created).toEqual([slot('grant'), slot('access')]);
     expect(r.calls.filter((c) => c[1] === 'add-iam-policy-binding')).toHaveLength(9);

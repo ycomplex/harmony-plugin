@@ -1,127 +1,83 @@
 #!/usr/bin/env bash
-# provision-figma-workspace.sh — the vendor operator's one step for connecting a new workspace to Figma (B-1310).
+# Provision the Figma credential slots and per-slot IAM bindings for ONE workspace
+# in the harmony-conductor GCP project. Mirrors the live shape of Harmony's own
+# workspace as documented in plugin/docs/figma-connection-rollout.md
+# ("Staging preparation" steps 1, 2 and 5) and docs/project/harmony-deployment-values.md
+# ("Figma connection"). Creates no keys, reads no payloads, touches no project-level role.
 #
-# Creates a workspace's three Figma secret slots in the vendor's Secret Manager project and binds
-# exactly the accounts that use them, each on the slot itself:
+# The slots ALWAYS live in harmony-conductor: the figma-connect function, the activate and
+# refresh RPCs and container/figma/launch-context.sh all hard-code that project. What differs
+# per customer is the CONDUCTOR identity that reads -access and -pat at leg launch: the gke
+# launcher runs inside the conductor pod (container/gke/gke-worker-launch.sh) as that pod's
+# Workload Identity account, so a conductor in another GCP project needs a cross-project
+# binding on the two slots. The leg itself never reads Secret Manager for Figma: the launcher
+# copies both values into the per-leg Kubernetes Secret <job>-figma.
 #
-#   harmony-figma-ws-<workspace-uuid>-grant   the full Figma sign-in (refresh job only)
-#   harmony-figma-ws-<workspace-uuid>-pat     the REST personal access token
-#   harmony-figma-ws-<workspace-uuid>-access  the short-lived access token the legs use
-#
-# The slots always live in the vendor's project (harmony-conductor): the figma-connect edge function,
-# the activate and refresh RPCs and container/figma/launch-context.sh all hard-code it. A conductor in
-# another GCP project therefore needs a cross-project binding on the two slots it reads (-access, -pat);
-# that is what the third argument names. The conductor's launcher (container/gke/gke-worker-launch.sh)
-# reads those two and copies them into the per-leg Kubernetes Secret, so a leg never reads Secret Manager.
-#
-# It never grants a project-level role, never creates a key and never reads a secret payload. Reads
-# are limited to `secrets describe` (does the slot exist?) and `secrets get-iam-policy` (the read-back).
-# Re-running is safe: an existing slot is skipped and IAM bindings are idempotent.
-#
-# Usage:
-#   scripts/provision-figma-workspace.sh <workspace-uuid> <conductor-gsa-email> [--dry-run]
-#
-#   <workspace-uuid>       the workspace id, from the board URL /w/<workspace-id>/...
-#   <conductor-gsa-email>  the conductor pod's Workload Identity service account, printed by
-#                          container/gke/setup-cluster.sh as "conductor GSA:" (the pod's, not the leg's)
-#   --dry-run              print every mutating gcloud command instead of running it
+# Usage:   ./provision-figma-workspace.sh <workspace-uuid> <conductor-gsa-email> [--dry-run]
+# Vendor:  ./provision-figma-workspace.sh <workspace-uuid> harmony-conductor@harmony-conductor.iam.gserviceaccount.com --dry-run
+# Other:   ./provision-figma-workspace.sh <workspace-uuid> harmony-conductor@<conductor-gcp-project>.iam.gserviceaccount.com --dry-run   (a conductor in another GCP project)
 set -euo pipefail
 
-PROJECT="harmony-conductor"
-CONNECT="serviceAccount:harmony-figma-connect@harmony-conductor.iam.gserviceaccount.com"
-REFRESH="serviceAccount:harmony-figma-refresh@harmony-conductor.iam.gserviceaccount.com"
+WS="${1:?workspace uuid required}"
+CONDUCTOR_GSA="${2:?conductor service-account email required (the conductor pod's Workload Identity account, not the leg's)}"
+DRY="${3:-}"
+PROJECT=harmony-conductor
+[[ "$WS" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || { echo "not a uuid: $WS" >&2; exit 2; }
+[[ "$CONDUCTOR_GSA" =~ ^[a-z0-9-]+@[a-z0-9-]+\.iam\.gserviceaccount\.com$ ]] || { echo "not a service-account email: $CONDUCTOR_GSA" >&2; exit 2; }
+[[ -z "$DRY" || "$DRY" == "--dry-run" ]] || { echo "third argument must be --dry-run or absent" >&2; exit 2; }
 
-usage() {
-  echo "usage: $0 <workspace-uuid> <conductor-gsa-email> [--dry-run]" >&2
-  exit 2
-}
+CONNECT=serviceAccount:harmony-figma-connect@harmony-conductor.iam.gserviceaccount.com   # the figma-connect edge function's key (fixed; hard-coded in core.ts)
+REFRESH=serviceAccount:harmony-figma-refresh@harmony-conductor.iam.gserviceaccount.com   # the hourly refresh CronJobs in Harmony's cluster (project-wide on the prod board)
+CONDUCTOR="serviceAccount:${CONDUCTOR_GSA}"                                              # the customer's conductor pod; reads -access and -pat per leg
 
-[ "$#" -ge 2 ] && [ "$#" -le 3 ] || usage
-WORKSPACE="$1"
-CONDUCTOR_EMAIL="$2"
-DRY_RUN=0
-if [ "$#" -eq 3 ]; then
-  [ "$3" = "--dry-run" ] || usage
-  DRY_RUN=1
-fi
+ADDER=roles/secretmanager.secretVersionAdder
+ACCESSOR=roles/secretmanager.secretAccessor
 
-if ! printf '%s' "$WORKSPACE" | grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
-  echo "error: workspace id must be a lower-case UUID (from the board URL /w/<workspace-id>/...)" >&2
-  exit 2
-fi
-if ! printf '%s' "$CONDUCTOR_EMAIL" | grep -Eq '^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com$'; then
-  echo "error: conductor account must be a service-account email (<name>@<project>.iam.gserviceaccount.com)" >&2
-  exit 2
-fi
-CONDUCTOR="serviceAccount:$CONDUCTOR_EMAIL"
+run() { if [[ "$DRY" == "--dry-run" ]]; then printf '[dry-run]'; printf ' %q' "$@"; echo; else "$@"; fi; }
 
-PREFIX="harmony-figma-ws-$WORKSPACE"
-GRANT="$PREFIX-grant"
-PAT="$PREFIX-pat"
-ACCESS="$PREFIX-access"
-
-# A mutation: printed in --dry-run, run otherwise.
-run() {
-  if [ "$DRY_RUN" -eq 1 ]; then
-    echo "[dry-run] gcloud $*"
+# 1. The three slots (idempotent: skip any that already exists).
+for kind in grant pat access; do
+  name="harmony-figma-ws-${WS}-${kind}"
+  if gcloud secrets describe "$name" --project "$PROJECT" --format='value(name)' >/dev/null 2>&1; then
+    echo "exists: $name"
   else
-    gcloud "$@"
+    run gcloud secrets create "$name" --project "$PROJECT" --replication-policy automatic
   fi
-}
+done
 
-create_slot() {
-  local slot="$1"
-  if gcloud secrets describe "$slot" --project "$PROJECT" >/dev/null 2>&1; then
-    echo "exists:  $slot"
-    return
-  fi
-  run secrets create "$slot" --project "$PROJECT" --replication-policy automatic
-  if [ "$DRY_RUN" -eq 1 ]; then
-    echo "would create: $slot"
-  else
-    echo "created: $slot"
-  fi
-}
-
-# bind <slot> <kind> <member> <role>
+# 2. Per-slot bindings (add-iam-policy-binding is idempotent). No conditions, matching the vendor workspace.
+# In --dry-run the command is printed (never silenced) and nothing is bound; only a real run hides gcloud's output.
 bind() {
-  local slot="$1" kind="$2" member="$3" role="$4"
-  if [ "$DRY_RUN" -eq 1 ]; then
-    run secrets add-iam-policy-binding "$slot" --project "$PROJECT" --member "$member" --role "$role"
-    echo "would bind: $kind  $role  $member"
+  if [[ "$DRY" == "--dry-run" ]]; then
+    run gcloud secrets add-iam-policy-binding "harmony-figma-ws-${WS}-$1" --project "$PROJECT" --member "$2" --role "$3" --quiet
+    echo "would bind: $1  $3  $2"
   else
-    run secrets add-iam-policy-binding "$slot" --project "$PROJECT" --member "$member" --role "$role" >/dev/null
-    echo "bound: $kind  $role  $member"
+    run gcloud secrets add-iam-policy-binding "harmony-figma-ws-${WS}-$1" --project "$PROJECT" --member "$2" --role "$3" --quiet >/dev/null
+    echo "bound: $1  $3  $2"
   fi
 }
 
-echo "Provisioning Figma slots for workspace $WORKSPACE in project $PROJECT"
-[ "$DRY_RUN" -eq 1 ] && echo "(dry run: nothing is created or bound)"
+# connect handler: add versions to all three (what the failed save needed)
+bind grant  "$CONNECT" "$ADDER"
+bind pat    "$CONNECT" "$ADDER"
+bind access "$CONNECT" "$ADDER"
 
-create_slot "$GRANT"
-create_slot "$PAT"
-create_slot "$ACCESS"
+# refresh job: read the grant and the PAT; publish new grant and access versions
+bind grant  "$REFRESH" "$ACCESSOR"
+bind pat    "$REFRESH" "$ACCESSOR"
+bind grant  "$REFRESH" "$ADDER"
+bind access "$REFRESH" "$ADDER"
 
-# The connect function adds new versions to all three slots.
-bind "$GRANT" grant "$CONNECT" roles/secretmanager.secretVersionAdder
-bind "$PAT" pat "$CONNECT" roles/secretmanager.secretVersionAdder
-bind "$ACCESS" access "$CONNECT" roles/secretmanager.secretVersionAdder
-# The refresh job reads the grant (and the PAT for a library refresh) and writes the grant and access.
-bind "$GRANT" grant "$REFRESH" roles/secretmanager.secretAccessor
-bind "$PAT" pat "$REFRESH" roles/secretmanager.secretAccessor
-bind "$GRANT" grant "$REFRESH" roles/secretmanager.secretVersionAdder
-bind "$ACCESS" access "$REFRESH" roles/secretmanager.secretVersionAdder
-# The conductor reads only the access token and the PAT, to copy them into each leg's Secret.
-bind "$ACCESS" access "$CONDUCTOR" roles/secretmanager.secretAccessor
-bind "$PAT" pat "$CONDUCTOR" roles/secretmanager.secretAccessor
+# conductor pod: read access token and PAT only, never the grant
+bind access "$CONDUCTOR" "$ACCESSOR"
+bind pat    "$CONDUCTOR" "$ACCESSOR"
 
-echo
-echo "Read-back (send these policies to the workspace owner):"
-for slot in "$GRANT" "$PAT" "$ACCESS"; do
-  echo "--- $slot"
-  if [ "$DRY_RUN" -eq 1 ]; then
-    echo "[dry-run] gcloud secrets get-iam-policy $slot --project $PROJECT --format=yaml(bindings)"
+# 3. Read back: the resulting policy per slot (members and roles only).
+for kind in grant pat access; do
+  echo "== harmony-figma-ws-${WS}-${kind}"
+  if [[ "$DRY" == "--dry-run" ]]; then
+    run gcloud secrets get-iam-policy "harmony-figma-ws-${WS}-${kind}" --project "$PROJECT" --format='table(bindings.role,bindings.members)'
   else
-    gcloud secrets get-iam-policy "$slot" --project "$PROJECT" --format='yaml(bindings)'
+    gcloud secrets get-iam-policy "harmony-figma-ws-${WS}-${kind}" --project "$PROJECT" --format='table(bindings.role,bindings.members)'
   fi
 done
