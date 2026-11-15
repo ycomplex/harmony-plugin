@@ -3,6 +3,7 @@ import { Command } from "commander";
 import { getAuthenticatedContext } from "../auth.js";
 import { registerFigmaCommands } from "./figma.js";
 import { auth } from "@modelcontextprotocol/sdk/client/auth.js";
+import { FunctionsFetchError, FunctionsHttpError, FunctionsRelayError } from "@supabase/supabase-js";
 vi.mock("../auth.js",()=>({getAuthenticatedContext:vi.fn()}));
 vi.mock("@modelcontextprotocol/sdk/client/auth.js",()=>({auth:vi.fn()}));
 const mcp=vi.hoisted(()=>({connect:vi.fn(),callTool:vi.fn(),close:vi.fn()}));
@@ -109,6 +110,56 @@ it("retains the library confirmation reason",async()=>{
 it("retains our credential-free handler fallback without an upstream body",async()=>{
  invoke.mockResolvedValue({error:{message:"SYNTHETIC-SECRET"}});
  await run(["--claude-credentials","private"]);
- expect(out).toContain("Reason: Figma validation/publication failed; previous connection remains active. Check identity/library/seat. Operator: provision workspace grant, PAT and access slots with gcloud secrets create and the conditioned secretVersionAdder binding.");
+ expect(out).toContain("Reason: Figma validation/publication failed; previous connection remains active. Check identity/library/seat. If this workspace was never connected, its Figma slots may not be provisioned yet: see the operator step in docs/figma-connection-rollout.md (\"Connecting a new workspace: the operator step\").");
+ expect(out).not.toContain("gcloud secrets create");
  expect(out).not.toContain("SYNTHETIC");
+});
+
+// B-1310: the save call's failure is classified. Only an HTTP 4xx with a JSON string `error` is a definite refusal.
+const PAT="SYNTHETIC-PAT-SENTINEL";
+const WORKSPACE="00000000-0000-4000-8000-000000000000";
+const UNCERTAIN="Could not confirm whether the connection was saved. Do not retry this import yet.";
+function savePorts(){const p=ports();p.prompt.mockImplementation(async prompt=>prompt.startsWith("REST personal")?PAT:"yes");return p;}
+const json=(body:unknown,status:number)=>new Response(JSON.stringify(body),{status,headers:{"Content-Type":"application/json"}});
+function failSave(error:unknown){
+  invoke.mockReset();
+  invoke.mockResolvedValueOnce({data:{metadata:{handle:"Designer",seat:"Full",tier:"Pro"},lowBudget:false}})
+    .mockResolvedValueOnce({data:null,error});
+}
+async function runSave(error:unknown){
+  vi.mocked(getAuthenticatedContext).mockResolvedValue({projectId:"project",userId:"user",client:{
+    from:(table:string)=>({select:()=>({eq(){return this;},single:async()=>({data:table==="projects"?{workspace_id:WORKSPACE}:{role}})})}),
+    rpc:async()=>({data:{connections_enabled:true,generation:7}}),functions:{invoke},
+  }} as never);
+  failSave(error);
+  await run(["--claude-credentials","/tmp/private"],savePorts());
+  expect(invoke).toHaveBeenCalledTimes(2);
+  expect(out).not.toContain(PAT);expect(out).not.toContain("SYNTHETIC");
+  expect(process.exitCode).toBe(1);
+}
+it.each([400,409])("a %i save rejection with a JSON reason reports the reason and that nothing changed",async status=>{
+  await runSave(new FunctionsHttpError(json({error:`Library plan mismatch for ${PAT} and ${grant.refresh_token}`},status)));
+  expect(out).toContain("The connection was not saved: Library plan mismatch for [redacted] and [redacted]");
+  expect(out).toContain("No connection was changed; your existing connection is unchanged.");
+  expect(out).not.toContain(UNCERTAIN);
+});
+it("an unprovisioned-slots rejection tells the owner what to send the operator",async()=>{
+  await runSave(new FunctionsHttpError(json({error:"Operator: provision workspace grant, PAT and access-token slots and their per-slot bindings before running harmony figma connect."},400)));
+  expect(out).toContain("The connection was not saved: Operator: provision workspace grant, PAT and access-token slots");
+  expect(out).toContain("No connection was changed; your existing connection is unchanged.");
+  expect(out).toContain(`this workspace's id: ${WORKSPACE}`);
+  expect(out).toContain("conductor GSA:");
+  expect(out).toContain("Connecting a new workspace: the operator step");
+  expect(out).not.toContain(UNCERTAIN);
+});
+it.each([
+  ["a 4xx with a non-JSON body",()=>new FunctionsHttpError(new Response("SYNTHETIC upstream text",{status:400}))],
+  ["a 4xx JSON body without a string error",()=>new FunctionsHttpError(json({error:{code:"SYNTHETIC"},message:"nope"},400))],
+  ["a relay error",()=>new FunctionsRelayError(json({error:"relay could not reach the function"},400))],
+  ["a fetch error",()=>new FunctionsFetchError(new TypeError("fetch failed"))],
+  ["a 503 with a JSON error",()=>new FunctionsHttpError(json({error:"Temporarily unavailable"},503))],
+])("%s on save is reported as unconfirmed",async(_name,make)=>{
+  await runSave(make());
+  expect(out).toContain(UNCERTAIN);
+  expect(out).not.toContain("was not saved:");expect(out).not.toContain("unchanged");
 });

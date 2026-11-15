@@ -123,14 +123,13 @@ Record environment, proof outcomes and enabling time on B-1201. Do not unsuspend
 1. Create `harmony-figma-connect@harmony-conductor.iam.gserviceaccount.com`:
    `gcloud iam service-accounts create harmony-figma-connect --project harmony-conductor`.
    Bind `roles/secretmanager.secretVersionAdder` on **each workspace slot**, not on the project, once step 2
-   has created it: `gcloud secrets add-iam-policy-binding <SLOT> --project harmony-conductor
+   has created it (the provisioning script makes this binding too): `gcloud secrets add-iam-policy-binding <SLOT> --project harmony-conductor
    --member serviceAccount:<CONNECT_GSA> --role roles/secretmanager.secretVersionAdder` for each of `-grant`,
    `-pat` and `-access`. That is Harmony's live shape (read 2026-10-30): every slot carries the binding, and
    the account has no project-level role.
    **No secretAccessor, secrets.create, Secret Manager Admin, Editor or IAM mutation permission.**
-2. Provision the v1.11 slots for each workspace with `gcloud secrets create <NAME> --replication-policy automatic`:
-   `harmony-figma-ws-<workspace-uuid>-grant`, `-pat`, `-access`. Customers never do this.
-   This is the operator step named by an unprovisioned-slots error. Self-service is B-1310.
+2. Provision each workspace's three slots and their bindings with the provisioning script. See
+   [Connecting a new workspace: the operator step](#connecting-a-new-workspace-the-operator-step).
 3. Create a handler key with `gcloud iam service-accounts keys create <PRIVATE_KEY_FILE>
    --iam-account <CONNECT_GSA>`. Put the JSON in `FIGMA_CONNECT_GCP_KEY_JSON` in a private env file;
    run `supabase secrets set --project-ref <STAGING_REF> --env-file <PRIVATE_ENV_FILE>`.
@@ -212,6 +211,62 @@ Record environment, proof outcomes and enabling time on B-1201. Do not unsuspend
 9. Complete the live proofs below, then unsuspend the refresh CronJob. Explicitly Update the conductor
    to the tested image before enabling connections: launch scripts are baked into its image. Worker
    provision code arrives from regenerated plugin staging; wait for that generation and worker image too.
+
+## Connecting a new workspace: the operator step
+
+A workspace cannot connect Figma until its three secret slots exist and are bound. Self-serve slot
+creation is not available yet. Running the script below is the vendor operator's step. The owner sees
+this as `The connection was not saved: … provision workspace grant, PAT and access-token slots …`.
+
+The owner sends the operator two inputs:
+
+- **The workspace id.** It is the id in the board URL: `/w/<workspace-id>/…`.
+- **The conductor pod's Workload Identity service-account email.** `setup-cluster.sh` prints it as
+  `conductor GSA:`. It is the pod's account, not the leg's. When the conductor runs in another GCP project,
+  this account lives there, for example `harmony-conductor@<conductor-gcp-project>.iam.gserviceaccount.com`.
+
+The operator previews, then runs:
+
+```sh
+plugin/scripts/provision-figma-workspace.sh <workspace-uuid> <conductor-gsa-email> --dry-run
+plugin/scripts/provision-figma-workspace.sh <workspace-uuid> <conductor-gsa-email>
+```
+
+The dry run prints every command and runs none that changes anything. A rerun is safe: an existing slot is
+skipped, and bindings are idempotent.
+
+It creates three slots in `harmony-conductor`:
+
+- `harmony-figma-ws-<workspace-uuid>-grant`
+- `harmony-figma-ws-<workspace-uuid>-pat`
+- `harmony-figma-ws-<workspace-uuid>-access`
+
+It makes nine bindings, each on one slot, with no conditions:
+
+| Account | Role | Slots |
+|---|---|---|
+| `harmony-figma-connect@harmony-conductor.iam.gserviceaccount.com` | `roles/secretmanager.secretVersionAdder` | `-grant`, `-pat`, `-access` |
+| `harmony-figma-refresh@harmony-conductor.iam.gserviceaccount.com` | `roles/secretmanager.secretAccessor` | `-grant`, `-pat` |
+| `harmony-figma-refresh@harmony-conductor.iam.gserviceaccount.com` | `roles/secretmanager.secretVersionAdder` | `-grant`, `-access` |
+| the conductor account given | `roles/secretmanager.secretAccessor` | `-access`, `-pat` |
+
+It never grants a project-level role. It never creates a key. It never reads a secret payload.
+
+The slots always live in the vendor's project, `harmony-conductor`. The figma-connect function, the activate
+and refresh RPCs and `container/figma/launch-context.sh` all hard-code it. So a conductor in another GCP
+project needs a cross-project binding on its two slots, `-access` and `-pat`. The script makes it.
+
+The leg never reads Secret Manager. The conductor's launcher reads the access token and the PAT and copies
+them into the per-leg Kubernetes Secret.
+
+The operator sends back confirmation that the three slots exist and are bound: the policies the script
+prints at the end. No secret value is in them.
+
+The owner then connects:
+
+```sh
+harmony figma connect --claude-sign-in
+```
 
 ## Production, after staging proof
 

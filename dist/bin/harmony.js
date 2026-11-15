@@ -29755,6 +29755,9 @@ var source_default = chalk;
 // src/cli/figma-errors.ts
 var FigmaSetupError = class extends Error {
 };
+var FigmaSaveRejected = class extends FigmaSetupError {
+};
+var UNPROVISIONED_SLOTS_REASON = "provision workspace grant, PAT and access-token slots";
 function redactFigmaMessage(message, secrets = []) {
   let safe = message;
   for (const secret of secrets.filter(Boolean).sort((a3, b) => b.length - a3.length)) safe = safe.split(secret).join("[redacted]");
@@ -62949,6 +62952,7 @@ function registerFigmaCommands(program3, ports = {
     let saveAttempted = false;
     let saved = false;
     let imported = false;
+    let workspaceId;
     try {
       if (opts.claudeCredentials && opts.claudeSignIn) throw new Error("Choose one Claude Code sign-in mode.");
       const ctx = await getAuthenticatedContext();
@@ -62956,6 +62960,7 @@ function registerFigmaCommands(program3, ports = {
       if (projectError || !project) {
         throw new Error("Project workspace unavailable");
       }
+      workspaceId = project.workspace_id;
       const { data: membership } = await ctx.client.from("workspace_members").select("role").eq("workspace_id", project.workspace_id).eq("user_id", ctx.userId).single();
       if (membership?.role !== "owner") {
         throw new Error("Workspace owner required");
@@ -63045,22 +63050,34 @@ function registerFigmaCommands(program3, ports = {
           confirm_library_plan: true,
           component_map: current?.component_map ?? {}
         };
-        const invoke2 = async (body) => {
+        const invoke2 = async (body, save = false) => {
           const { data, error: error2 } = await ctx.client.functions.invoke(
             "figma-connect",
             { body }
           );
           if (error2 || data?.error) {
             let message = data?.error;
+            let definite = false;
             if (!message && error2 && "context" in error2 && error2.context instanceof Response) {
+              let parsed;
               try {
-                message = (await error2.context.json()).error;
+                parsed = JSON.parse(await error2.context.clone().text());
               } catch {
               }
+              const reason = parsed && typeof parsed === "object" ? parsed.error : void 0;
+              if (typeof reason === "string") {
+                message = reason;
+                const status = error2.context.status;
+                definite = error2 instanceof import_functions_js.FunctionsHttpError && status >= 400 && status <= 499;
+              }
             }
-            if (typeof message === "string") throw new FigmaSetupError(redactFigmaMessage(message, [pat, ...Object.values(grant).filter((v2) => typeof v2 === "string")]));
+            if (typeof message === "string") {
+              const safe = redactFigmaMessage(message, [pat, ...Object.values(grant).filter((v2) => typeof v2 === "string")]);
+              if (save && definite) throw new FigmaSaveRejected(safe);
+              throw new FigmaSetupError(safe);
+            }
             throw new FigmaSetupError(
-              "Figma validation/publication failed; previous connection remains active. Check identity/library/seat. Operator: provision workspace grant, PAT and access slots with gcloud secrets create and the conditioned secretVersionAdder binding."
+              'Figma validation/publication failed; previous connection remains active. Check identity/library/seat. If this workspace was never connected, its Figma slots may not be provisioned yet: see the operator step in docs/figma-connection-rollout.md ("Connecting a new workspace: the operator step").'
             );
           }
           return data;
@@ -63086,7 +63103,7 @@ Library: ${fileKey}; seat: ${candidate.metadata.seat}; tier: ${candidate.metadat
         }
         signal?.throwIfAborted();
         saveAttempted = true;
-        await invoke2({ ...input, confirm_low_budget: candidate.lowBudget });
+        await invoke2({ ...input, confirm_low_budget: candidate.lowBudget }, true);
         saved = true;
         return candidate.metadata.handle;
       };
@@ -63124,7 +63141,18 @@ Library: ${fileKey}; seat: ${candidate.metadata.seat}; tier: ${candidate.metadat
       }
     } catch (error2) {
       let message = error2 instanceof Error ? error2.message : "Figma connect failed";
-      if (saveAttempted && !saved) {
+      if (saveAttempted && !saved && error2 instanceof FigmaSaveRejected) {
+        message = `The connection was not saved: ${error2.message}
+No connection was changed; your existing connection is unchanged.`;
+        if (error2.message.includes(UNPROVISIONED_SLOTS_REASON)) {
+          message += `
+This workspace's Figma slots are not provisioned yet. Send the vendor operator:
+  - this workspace's id: ${workspaceId ?? "<workspace-id>"} (the id in the board URL /w/<workspace-id>/...)
+  - the conductor pod's Workload Identity service-account email (setup-cluster.sh prints it as "conductor GSA:"; the pod's account, not the leg's)
+The operator step: docs/figma-connection-rollout.md, "Connecting a new workspace: the operator step".
+When they confirm, run \`harmony figma connect --claude-sign-in\` again.`;
+        }
+      } else if (saveAttempted && !saved) {
         message = "Could not confirm whether the connection was saved. Do not retry this import yet.\nCheck `harmony figma health` and the workspace connection before reconnecting.";
       } else if (imported && !saved) {
         if (message === INVALID_CLAUDE_GRANT) message += "\nNo connection was saved. Your existing connection is unchanged.\nCreate a fresh isolated sign-in and try again.";
