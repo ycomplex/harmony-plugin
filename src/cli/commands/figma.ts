@@ -1,4 +1,5 @@
-import { FigmaSetupError, redactFigmaMessage } from "../figma-errors.js";
+import { FigmaSaveRejected, FigmaSetupError, redactFigmaMessage, UNPROVISIONED_SLOTS_REASON } from "../figma-errors.js";
+import { FunctionsHttpError } from "@supabase/supabase-js";
 import { Command } from "commander";
 import { readClaudeFigmaGrant, INVALID_CLAUDE_GRANT } from "../figma-claude-grant.js";
 import { withClaudeFigmaSignIn } from "../figma-claude-sign-in.js";
@@ -532,6 +533,7 @@ export function registerFigmaCommands(program: Command, ports = {
       let saveAttempted = false;
       let saved = false;
       let imported = false;
+      let workspaceId: string | undefined;
       try {
         if (opts.claudeCredentials && opts.claudeSignIn) throw new Error("Choose one Claude Code sign-in mode.");
         const ctx = await getAuthenticatedContext();
@@ -543,6 +545,7 @@ export function registerFigmaCommands(program: Command, ports = {
         if (projectError || !project) {
           throw new Error("Project workspace unavailable");
         }
+        workspaceId = project.workspace_id;
         const { data: membership } = await ctx.client
           .from("workspace_members")
           .select("role")
@@ -650,24 +653,36 @@ export function registerFigmaCommands(program: Command, ports = {
             confirm_library_plan: true,
             component_map: current?.component_map ?? {},
           };
-          const invoke = async (body: Record<string, unknown>) => {
+          const invoke = async (body: Record<string, unknown>, save = false) => {
             const { data, error } = await ctx.client.functions.invoke(
               "figma-connect",
               { body },
             );
             if (error || data?.error) {
               let message = data?.error;
+              let definite = false;
               if (
                 !message && error && "context" in error &&
                 error.context instanceof Response
               ) {
-                try {
-                  message = (await error.context.json()).error;
-                } catch { /* use safe fallback */ }
+                // Read the body once, from a clone; an unreadable or non-JSON body is never a definite answer.
+                let parsed: unknown;
+                try { parsed = JSON.parse(await error.context.clone().text()); } catch { /* use safe fallback */ }
+                const reason = parsed && typeof parsed === "object" ? (parsed as { error?: unknown }).error : undefined;
+                if (typeof reason === "string") {
+                  message = reason;
+                  // B-1310: only an HTTP 4xx carrying a string `error` is a definite refusal.
+                  const status = error.context.status;
+                  definite = error instanceof FunctionsHttpError && status >= 400 && status <= 499;
+                }
               }
-              if (typeof message === "string") throw new FigmaSetupError(redactFigmaMessage(message, [pat, ...Object.values(grant).filter((v): v is string => typeof v === "string")]));
+              if (typeof message === "string") {
+                const safe = redactFigmaMessage(message, [pat, ...Object.values(grant).filter((v): v is string => typeof v === "string")]);
+                if (save && definite) throw new FigmaSaveRejected(safe);
+                throw new FigmaSetupError(safe);
+              }
               throw new FigmaSetupError(
-                "Figma validation/publication failed; previous connection remains active. Check identity/library/seat. Operator: provision workspace grant, PAT and access slots with gcloud secrets create and the conditioned secretVersionAdder binding.",
+                "Figma validation/publication failed; previous connection remains active. Check identity/library/seat. If this workspace was never connected, its Figma slots may not be provisioned yet: see the operator step in docs/figma-connection-rollout.md (\"Connecting a new workspace: the operator step\").",
               );
             }
             return data;
@@ -694,7 +709,7 @@ export function registerFigmaCommands(program: Command, ports = {
           }
           signal?.throwIfAborted();
           saveAttempted = true;
-          await invoke({ ...input, confirm_low_budget: candidate.lowBudget });
+          await invoke({ ...input, confirm_low_budget: candidate.lowBudget }, true);
           saved = true;
           return candidate.metadata.handle as string;
         };
@@ -728,7 +743,16 @@ export function registerFigmaCommands(program: Command, ports = {
         }
       } catch (error) {
         let message = error instanceof Error ? error.message : "Figma connect failed";
-        if (saveAttempted && !saved) {
+        if (saveAttempted && !saved && error instanceof FigmaSaveRejected) {
+          message = `The connection was not saved: ${error.message}\nNo connection was changed; your existing connection is unchanged.`;
+          if (error.message.includes(UNPROVISIONED_SLOTS_REASON)) {
+            message += "\nThis workspace's Figma slots are not provisioned yet. Send the vendor operator:" +
+              `\n  - this workspace's id: ${workspaceId ?? "<workspace-id>"} (the id in the board URL /w/<workspace-id>/...)` +
+              "\n  - the conductor pod's Workload Identity service-account email (setup-cluster.sh prints it as \"conductor GSA:\"; the pod's account, not the leg's)" +
+              "\nThe operator step: docs/figma-connection-rollout.md, \"Connecting a new workspace: the operator step\"." +
+              "\nWhen they confirm, run `harmony figma connect --claude-sign-in` again.";
+          }
+        } else if (saveAttempted && !saved) {
           message = "Could not confirm whether the connection was saved. Do not retry this import yet.\nCheck `harmony figma health` and the workspace connection before reconnecting.";
         } else if (imported && !saved) {
           if (message === INVALID_CLAUDE_GRANT) message += "\nNo connection was saved. Your existing connection is unchanged.\nCreate a fresh isolated sign-in and try again.";
