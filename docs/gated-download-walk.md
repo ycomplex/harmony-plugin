@@ -9,7 +9,9 @@ The gated download is described in [`plugin-release-artefact.md`](plugin-release
 
 Every step says what to type and what to expect. Values are placeholders:
 
-- `<BASE>` is the gated download's base address. Harmony's own value is in the workspace's
+- `<BASE>` is the gated download's public address: the stable proxy address customers register (B-1497; see
+  "Public addresses" in [`plugin-release-artefact.md`](plugin-release-artefact.md)). The function address also
+  works, and a copy registered there keeps updating. Harmony's own values are in the workspace's
   `docs/project/harmony-deployment-values.md`, never in this repository.
 - `<VERSION>` is the plugin version you installed.
 

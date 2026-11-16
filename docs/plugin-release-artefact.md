@@ -114,11 +114,36 @@ byte-identical.
 
 `<PUBLIC_BASE_URL>/<channel>/...` maps one to one onto the bucket's `channels/<channel>/...`. For example,
 `<base>/prod/marketplace.json` is the object `channels/prod/marketplace.json`. B-1476 serves and gates these
-addresses through the edge function `plugin-download` on the production Supabase project, so the base address has
-the form `https://<PROD_REF>.supabase.co/functions/v1/plugin-download`. That is the value for `_PUBLIC_BASE_URL` on
-both release triggers, and for `plugin_release.base_url` in a project file that opts its worker legs into the
-release (B-1478). Every request carries `Authorization: Bearer <Harmony API token>`. Whether customers later get a
-stable address on Harmony's own domain is decided before B-1479's migration guide.
+addresses through the edge function `plugin-download` on the production Supabase project. Every request carries
+`Authorization: Bearer <Harmony API token>`.
+
+The download has two addresses (B-1497):
+
+- `<PUBLIC_BASE>` is the **public address**, the one customers register. It is a stable address on the operator's
+  own domain, served by a Cloudflare Worker proxy in front of the edge function (web repository:
+  `workers/plugin-proxy`). The proxy forwards only the function's allowlisted paths and the `Authorization`
+  header, adds no check of its own, caches nothing, never logs `Authorization`, and sends
+  `X-Harmony-Public-Base: <its origin>`. If the backend moves, only the proxy's upstream changes; `<PUBLIC_BASE>`
+  stays the same.
+- `<FUNCTION_BASE>` is the **function address**, of the form
+  `https://<PROD_REF>.supabase.co/functions/v1/plugin-download`. It is the proxy's upstream and is still served
+  directly.
+
+The function rewrites the archive URL (`plugins[].source.url`) in every `marketplace.json` it serves to the address
+the request arrived on: `<PUBLIC_BASE>` when the `X-Harmony-Public-Base` header is present, `<FUNCTION_BASE>`
+otherwise. Only that URL changes. The pinned `sha256` covers the zip's bytes, which are never altered, so it still
+holds. A copy registered at either address therefore gets a same-origin zip for every release, published before or
+after the switch, and keeps updating.
+
+`_PUBLIC_BASE_URL` on both release triggers is `<PUBLIC_BASE>` from now on. Published versions are immutable (a
+re-run of a trigger for an existing version fails by design), so the change takes effect from the next **new**
+version. Because clients always see the rewritten URL, the stored value no longer decides which origin a client
+sees; it records the permanent address. A versioned `marketplace.json` published before the change still names
+`<FUNCTION_BASE>` in the bucket and is rewritten on the way out like any other.
+
+`plugin_release.base_url` in a project file that opts its worker legs into the release (B-1478) may name either
+address. The founder's order for the switch, with the full commands, is in the web repository's
+`docs/deployment/plugin-download.md` ("Public address through a proxy (B-1497)").
 
 ## What a consumer may rely on
 
