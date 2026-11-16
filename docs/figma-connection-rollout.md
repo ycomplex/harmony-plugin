@@ -225,6 +225,17 @@ The owner sends the operator two inputs:
   `conductor GSA:`. It is the pod's account, not the leg's. When the conductor runs in another GCP project,
   this account lives there, for example `harmony-conductor@<conductor-gcp-project>.iam.gserviceaccount.com`.
 
+  The owner can read it again with a dry run of the cluster setup, which makes no `gcloud` or `kubectl` call
+  and still prints the closing summary:
+
+  ```sh
+  bash container/gke/setup-cluster.sh --project <conductor-gcp-project> \
+    --daemon-sa <daemon-service-account-email> --dry-run | grep 'conductor GSA:'
+  ```
+
+  The line is built from the arguments, not read from the cluster. Pass the same `--project` as the real
+  run, and `--conductor-gsa-name` too if it was used then. A run with `--no-conductor` prints no such line.
+
 The operator previews, then runs:
 
 ```sh
