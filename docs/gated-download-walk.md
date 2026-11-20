@@ -1,7 +1,8 @@
 # The founder's walk: installing the plugin from the gated download (B-1477)
 
-**Status:** written 2026-11-13 for B-1477. The founder runs it first, then a second person repeats it on another
-machine. It sits **beside** today's install, `harmony-plugin@ycomplex`, which stays installed (only disabled for
+**Status:** written 2026-11-13 for B-1477; corrected 2026-11-20 from the founder's two walks (2026-11-16 against
+the function address, 2026-11-20 against the public address). The founder runs it first, then a second person
+repeats it on another machine. It sits **beside** today's install, `harmony-plugin@ycomplex`, which stays installed (only disabled for
 the walk) and comes back in step 8.
 
 The gated download is described in [`plugin-release-artefact.md`](plugin-release-artefact.md). This walk installs
@@ -122,10 +123,22 @@ Expect `harmony` with `Source: URL (<BASE>/prod/marketplace.json)`. The helper l
 
 ```bash
 claude plugin install harmony-plugin@harmony
-claude plugin disable harmony-plugin@ycomplex
+claude plugin disable harmony-plugin@ycomplex --scope user
 ```
 
-Expect `Successfully installed plugin: harmony-plugin@harmony (scope: user)`, then the disable to succeed.
+Expect a line confirming `harmony-plugin@harmony` is installed at `scope: user`, then one confirming
+`harmony-plugin` is disabled at `scope: user` (the exact wording varies by Claude Code version).
+
+Name the scope. Without `--scope`, Claude Code picks one itself: run inside a project whose own
+`.claude/settings.json` enables `harmony-plugin@ycomplex`, it disables the copy for that project only (and edits
+that tracked file), and the copy stays enabled everywhere else. If you work in such a project, disable it there
+too, and do not commit the change it makes to the project's settings file:
+
+```bash
+claude plugin disable harmony-plugin@ycomplex --scope project
+```
+
+Check with `claude plugin list`: `harmony-plugin@harmony` enabled, every `harmony-plugin@ycomplex` line disabled.
 
 Keep only one copy enabled. Both copies are named `harmony-plugin`. With both enabled, Claude Code drops one
 copy's hooks, and you cannot tell which copy's tools and skills you are running.
@@ -184,14 +197,17 @@ This step waits for the next promote (`./promote-prod.sh`) to publish a newer ve
    `FORCE_AUTOUPDATE_PLUGINS=1` is also set.
 3. Note the time. Open a session and send one message (anything). Leave the session open for up to about
    10 minutes: the background check runs after the first message, after a random delay of up to 10 minutes.
-4. Expect the notice `Plugin updated: harmony-plugin · Run /reload-plugins to apply`. The running session keeps the
-   old version.
-5. (**TEST ONLY**) `cat ~/.harmony/download-headers.log`. Expect a line at about the time of the notice: that is
-   the header going out on the background check.
+4. Check whether the update has landed: `claude plugin list` shows the new version for `harmony-plugin@harmony`.
+   Claude Code may show `Plugin updated: harmony-plugin · Run /reload-plugins to apply`, but do not wait for it:
+   on the founder's walk the update landed three minutes after the first message with no notice shown. The
+   running session keeps the old version either way.
+5. (**TEST ONLY**) `cat ~/.harmony/download-headers.log`. Expect a new line a few minutes after your message:
+   that is the header going out on the background check.
 6. Quit and start a fresh session. Check `get_project`'s `environment.plugin_version` and `harmony --version`
    both show the new version.
 
-If no notice comes, update by hand and record that the background update did not happen:
+If `claude plugin list` still shows the old version after about 15 minutes, update by hand and record that the
+background update did not happen:
 
 ```bash
 claude plugin marketplace update harmony
@@ -247,14 +263,20 @@ Each check downloads the whole zip (about 6 MB). An update lands only when the z
 claude plugin marketplace remove harmony
 ```
 
-This also uninstalls `harmony-plugin@harmony`. Then:
+This also uninstalls `harmony-plugin@harmony` and removes the `harmony` entry from `extraKnownMarketplaces` in
+`~/.claude/settings.json`. Then:
 
-1. Remove the `harmony` entry from `extraKnownMarketplaces` in `~/.claude/settings.json`, and check the file is
-   valid JSON (the command in step 2). If you leave the entry, the next session fetches the marketplace again.
-2. ```bash
-   claude plugin enable harmony-plugin@ycomplex
+1. Check the entry is gone and the file is valid JSON (the command in step 2). If the entry is still there,
+   remove it by hand: while it is declared, the next session fetches the marketplace again.
+2. Enable today's copy at each scope you disabled it in step 4, then remove the walk's files:
+
+   ```bash
+   claude plugin enable harmony-plugin@ycomplex --scope user
+   claude plugin enable harmony-plugin@ycomplex --scope project   # only if you disabled it for a project
    rm -f ~/.harmony/download-token ~/.harmony/download-token.good ~/.harmony/download-headers.sh ~/.harmony/download-headers.log
    ```
+
+   In a project whose settings file the disable changed, `git status` should now show that file unchanged.
 
 3. Start a fresh session. Expect `claude plugin list` to show only `harmony-plugin@ycomplex`, enabled;
    `harmony --version` to print the `ycomplex` copy's version; and a skill such as
