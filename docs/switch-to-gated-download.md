@@ -8,6 +8,9 @@ needs your Harmony API token. If you do not have today's plugin installed, this 
 
 One command, `harmony download switch`, does the work. It can be undone with `harmony download switch --undo`.
 
+The plugin then comes from Harmony's download address, `https://plugin.harmony.ad`. Claude Code fetches the
+marketplace file from `https://plugin.harmony.ad/prod/marketplace.json` and the plugin itself from the same address.
+
 ## Before you start
 
 1. Claude Code **2.1.238 or newer**:
