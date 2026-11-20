@@ -140,6 +140,11 @@ This package also serves as a Claude Code plugin, providing an MCP server and wo
 
 To receive automatic updates, run `/plugin`, go to the **Marketplaces** tab, select **ycomplex**, and enable **auto-update**.
 
+**Switching to Harmony's own download.** If you already have `harmony-plugin@ycomplex` installed, you can move to
+Harmony's gated download (`harmony-plugin@harmony`, which needs your API token) with one command,
+`harmony download switch`, and back with `harmony download switch --undo`. macOS and Linux only. Step by step:
+[`docs/switch-to-gated-download.md`](docs/switch-to-gated-download.md).
+
 ### Manual token configuration
 
 If you prefer to set the token without `/harmony-setup`:
