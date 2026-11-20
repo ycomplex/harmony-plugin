@@ -16,6 +16,8 @@ Every step says what to type and what to expect. Values are placeholders:
   `docs/project/harmony-deployment-values.md`, never in this repository.
 - `<VERSION>` is the plugin version you installed.
 
+The customer guide is [`switch-to-gated-download.md`](switch-to-gated-download.md).
+
 Some steps exist only to prove the download works. They are marked **TEST ONLY** and listed at the end. The
 customer guide (B-1479) must not copy them.
 
