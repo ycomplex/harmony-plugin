@@ -7,6 +7,49 @@ import { addProject, removeProject, listProjects } from '../config.js';
 import { formatTable } from '../formatter.js';
 import { resolveSupabaseTarget } from '../resolve-supabase-target.js';
 
+export interface LoginFlags {
+  name?: string;
+  supabaseUrl?: string;
+  supabaseAnonKey?: string;
+  supabasePublishableKey?: string;
+}
+
+/** Exchange the token against Harmony (so a bad one is refused before anything is stored), name the
+ *  project, and store it as the active project. Shared by `harmony login` and, since B-1479,
+ *  `harmony download switch` (which saves a token in-process, never passing it as a subprocess argument). */
+export async function verifyAndStoreToken(
+  token: string,
+  target: { url: string; anonKey: string },
+  flags: LoginFlags = {},
+): Promise<string> {
+  const auth = new HarmonyAuth(token, target.url, target.anonKey);
+  const client = await createAuthenticatedClient(auth);
+  const projectId = auth.getProjectId();
+
+  let name = flags.name;
+  if (!name) {
+    const project = await getProject(client, projectId);
+    name = project.name.toLowerCase().replace(/\s+/g, '-');
+  }
+
+  // B-1025: store the FLAGS, not the resolved pair. A project registered without flags
+  // keeps working off the environment (the documented env-var route), and a project
+  // registered WITH flags carries the pair the founder typed — never a default URL
+  // silently recorded as if they had chosen it.
+  addProject(name, token, {
+    supabaseUrl: flags.supabaseUrl,
+    supabaseAnonKey: flags.supabaseAnonKey,
+    supabasePublishableKey: flags.supabasePublishableKey,
+  });
+  return name;
+}
+
+/** `harmony login --token <t>` with no flags, in-process (B-1479). */
+export async function loginWithToken(token: string): Promise<string> {
+  const target = resolveSupabaseTarget({ flags: {}, project: undefined });
+  return verifyAndStoreToken(token, target);
+}
+
 export function registerAuthCommands(program: Command): void {
   program
     .command('login')
@@ -53,25 +96,7 @@ export function registerAuthCommands(program: Command): void {
           console.error(`harmony login: --supabase-publishable-key was overridden by ${target.source}. Pass --supabase-url and --supabase-publishable-key together.`);
         }
 
-        const auth = new HarmonyAuth(opts.token, target.url, target.anonKey);
-        const client = await createAuthenticatedClient(auth);
-        const projectId = auth.getProjectId();
-
-        let name = opts.name;
-        if (!name) {
-          const project = await getProject(client, projectId);
-          name = project.name.toLowerCase().replace(/\s+/g, '-');
-        }
-
-        // B-1025: store the FLAGS, not the resolved pair. A project registered without flags
-        // keeps working off the environment (the documented env-var route), and a project
-        // registered WITH flags carries the pair the founder typed — never a default URL
-        // silently recorded as if they had chosen it.
-        addProject(name, opts.token, {
-          supabaseUrl: opts.supabaseUrl,
-          supabaseAnonKey: opts.supabaseAnonKey,
-          supabasePublishableKey: opts.supabasePublishableKey,
-        });
+        const name = await verifyAndStoreToken(opts.token, target, opts);
 
         if (json) {
           console.log(JSON.stringify({ name, status: 'logged_in' }));
