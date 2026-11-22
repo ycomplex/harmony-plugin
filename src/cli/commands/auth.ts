@@ -80,7 +80,7 @@ export function describeStored(s: StoredToken): string[] {
 /** B-1501 fix 6: a non-activating save never sets the active project. When there is none, say how
  *  to set one (a terminal outside any session uses it). Names only. */
 export function noActiveHint(key: string): string[] {
-  let active: string | null = null;
+  let active: string | null;
   try {
     const c = loadConfig();
     active = c.activeProject && c.projects[c.activeProject] ? c.activeProject : null;
@@ -299,12 +299,18 @@ export function describeTargetSource(t: Pick<ResolvedSupabaseTarget, 'source'>, 
  *  when present, travel with it as the stored pair (explicit flags win). The file is not changed:
  *  /harmony-setup removes the copy only after proving the stored one works. */
 export async function adoptSettingsToken(file: string, flags: LoginFlags = {}): Promise<StoredToken> {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(file, 'utf-8');
+  } catch (e) {
+    throw new Error(`${file} cannot be read (${(e as NodeJS.ErrnoException).code ?? 'error'}).`, { cause: e });
+  }
   let parsed: any;
   try {
-    parsed = JSON.parse(fs.readFileSync(file, 'utf-8'));
-  } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code;
-    throw new Error(code ? `${file} cannot be read (${code}).` : `${file} is not valid JSON.`);
+    parsed = JSON.parse(raw);
+  } catch {
+    // No cause: a JSON.parse message quotes part of the file, which may be the token.
+    throw new Error(`${file} is not valid JSON.`);
   }
   const env = parsed && typeof parsed === 'object' ? parsed.env : undefined;
   const token = env && typeof env.HARMONY_API_TOKEN === 'string' ? env.HARMONY_API_TOKEN.trim() : '';
@@ -321,6 +327,7 @@ export async function adoptSettingsToken(file: string, flags: LoginFlags = {}): 
   try {
     return await verifyAndStoreToken(token, target, { ...pair, name: flags.name }, { activate: false });
   } catch (e) {
+    // eslint-disable-next-line preserve-caught-error -- the cause could carry the token unredacted; only the redacted message travels
     throw new Error(String((e as Error)?.message ?? e).split(token).join('<token>'));
   }
 }

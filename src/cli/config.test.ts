@@ -245,3 +245,17 @@ describe('saveProject', () => {
     expect(loadConfig()).toEqual({ activeProject: null, projects: {} });
   });
 });
+
+describe('loadConfig on a broken file (B-1501)', () => {
+  it('names the file only, never quoting its content (JSON.parse quotes the start of the text)', () => {
+    fs.writeFileSync(path.join(tmpDir, 'config.json'), 'tok harmony_synthetic_secret_value');
+    let msg = '';
+    try {
+      loadConfig();
+    } catch (e) {
+      msg = (e as Error).message;
+    }
+    expect(msg).toBe(`${path.join(tmpDir, 'config.json')} is not valid JSON.`);
+    expect(msg).not.toContain('harmony_');
+  });
+});

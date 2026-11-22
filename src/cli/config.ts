@@ -40,7 +40,14 @@ export function loadConfig(): HarmonyConfig {
     return { activeProject: null, projects: {} };
   }
   const raw = fs.readFileSync(file, 'utf-8');
-  const parsed = JSON.parse(raw) as Partial<HarmonyConfig> | null;
+  let parsed: Partial<HarmonyConfig> | null;
+  try {
+    parsed = JSON.parse(raw) as Partial<HarmonyConfig> | null;
+  } catch {
+    // B-1501: no cause and not JSON.parse's own message: that quotes the start of the file, which
+    // can be a token. Name the file only.
+    throw new Error(`${file} is not valid JSON.`);
+  }
   // B-1501: read an entry written by any earlier version tolerantly (no projectId, no pin).
   return {
     ...(parsed ?? {}),
