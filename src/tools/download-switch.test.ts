@@ -711,6 +711,11 @@ describe('--undo', () => {
     expect(await runDownloadSwitch({ undo: true }, h.deps)).toBe(0);
   });
 
+  it("B-1501: a machine that never had today's copy (a first install) undoes cleanly", async () => {
+    h.responses.set(`plugin enable ${TODAYS_ID} --scope user`, { code: 1, stdout: '', stderr: `✘ Plugin "${TODAYS_ID}" not found in installed plugins` });
+    expect(await runDownloadSwitch({ undo: true }, h.deps)).toBe(0);
+  });
+
   it('a failing enable exits 1 naming the command', async () => {
     h.responses.set(`plugin enable ${TODAYS_ID} --scope user`, { code: 1, stdout: '', stderr: 'boom' });
     expect(await runDownloadSwitch({ undo: true }, h.deps)).toBe(1);

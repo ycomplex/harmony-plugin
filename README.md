@@ -8,15 +8,8 @@ Manage your Harmony tasks, epics, milestones, and more from the terminal.
 
 ### Install
 
-```bash
-npm install -g @harmony-ad/harmony
-```
-
-Or run directly with npx:
-
-```bash
-npx @harmony-ad/harmony --help
-```
+The CLI comes with the Claude Code plugin: installing the plugin (see [Installation](#installation)
+below) puts `harmony` on your PATH. It is not published to npm.
 
 ### Quick start
 
@@ -71,11 +64,15 @@ Log in to multiple projects and switch between them:
 ```bash
 harmony login --token <token-a>
 harmony login --token <token-b> --name my-other-project
-harmony projects          # see all, * marks active
+harmony projects          # see all, * marks active (same as harmony project list)
 harmony project switch my-other-project
+harmony whoami            # which project this shell uses, and why
 ```
 
-Config is stored in `~/.harmony/config.json`.
+Config is stored in `~/.harmony/config.json`, one entry per project. Which project a command uses:
+`HARMONY_API_TOKEN` in the environment first, then `HARMONY_PROJECT` (the name of a stored project),
+then the active project. When the environment overrides a different active project, the CLI says so
+once on stderr.
 
 ### Output modes
 
@@ -108,62 +105,54 @@ This package also serves as a Claude Code plugin, providing an MCP server and wo
 
 ### Installation
 
-1. Inside Claude Code, add the marketplace and install the plugin:
+macOS and Linux (the installer and the download helper are POSIX `sh`; Windows is not supported). You
+need Claude Code, `node` on your PATH, `curl`, `unzip` and a SHA-256 tool (`sha256sum` or `shasum`).
 
-   ```
-   /plugin marketplace add ycomplex/plugins
-   /plugin install harmony-plugin@ycomplex
-   ```
+1. Get a Harmony API token: in Harmony, open the project's **Project Settings → Connect AI**.
 
-   The marketplace is `ycomplex/plugins`, not this repository. Its manifest pins `harmony-plugin` to the
-   `prod` branch, which is the released plugin with a built `dist/`. Adding this repository as a
-   marketplace would serve `main`, which is source only and may be ahead of the production database.
+2. Run the installer and paste the token when it asks:
 
-2. Restart Claude Code for the hooks and MCP server to take effect:
-
-   ```
-   /exit
+   ```bash
+   curl -fsSL https://plugin.harmony.ad/install.sh | sh
    ```
 
-   Then start `claude` again. The installed plugin already carries the built MCP server; nothing is
-   compiled on your machine.
+   Or download it, read it, then run it:
 
-3. Configure your API token:
-
-   ```
-   /harmony-setup
+   ```bash
+   curl -fsSLO https://plugin.harmony.ad/install.sh
+   sh install.sh
    ```
 
-   This saves the token to `.claude/settings.local.json` (gitignored) and verifies the connection.
+   It downloads the plugin from Harmony's gated download, checks your token, stores it in
+   `~/.harmony/config.json` (no copy goes into any repository), pins it for the download, and installs
+   `harmony-plugin@harmony` in Claude Code. Updates then arrive automatically.
 
-4. Restart Claude Code one more time for the MCP server to pick up the token.
+3. Start a fresh Claude Code session in your project and run `/harmony-setup` to point that project at
+   the stored token (it writes `HARMONY_PROJECT`, never a token, to `.claude/settings.local.json`).
 
-To receive automatic updates, run `/plugin`, go to the **Marketplaces** tab, select **ycomplex**, and enable **auto-update**.
+What each step does, what to do when the token changes, and what to do when Claude Code cannot find
+`node`: [`docs/install-from-gated-download.md`](docs/install-from-gated-download.md).
 
-**Switching to Harmony's own download.** If you already have `harmony-plugin@ycomplex` installed, you can move to
-Harmony's gated download (`harmony-plugin@harmony`, which needs your API token) with one command,
-`harmony download switch`, and back with `harmony download switch --undo`. macOS and Linux only. Step by step:
+**Already installed from the public `ycomplex` marketplace?** Move to the gated download with
+`harmony download switch` (and back with `harmony download switch --undo`):
 [`docs/switch-to-gated-download.md`](docs/switch-to-gated-download.md).
 
 ### Manual token configuration
 
-If you prefer to set the token without `/harmony-setup`:
+`/harmony-setup` is the usual route. By hand: store the token once with
+`harmony login --no-activate --token <token>`, which prints the name it is stored under, then name that
+project in your project's `.claude/settings.local.json` (gitignored):
 
-**direnv** — Create `.envrc` in your project root:
-```bash
-export HARMONY_API_TOKEN="hmy_your_token_here"
-```
-
-**Claude Code settings** — Create `.claude/settings.local.json` in your project root:
 ```json
 {
   "env": {
-    "HARMONY_API_TOKEN": "hmy_your_token_here"
+    "HARMONY_PROJECT": "my-project"
   }
 }
 ```
 
-**Shell profile** — Add `export HARMONY_API_TOKEN="hmy_your_token_here"` to `~/.zshrc` or `~/.bashrc`.
+`HARMONY_API_TOKEN` still works (in `.envrc`, a shell profile or that `env` block) and wins over
+`HARMONY_PROJECT` and the active project, but it puts a copy of the token where you set it.
 
 ### How it works
 

@@ -2,7 +2,12 @@
 
 **Who this is for:** people who already have today's Harmony plugin, installed from the `ycomplex` marketplace
 (`harmony-plugin@ycomplex`). This guide moves you onto Harmony's own download, `harmony-plugin@harmony`, which
-needs your Harmony API token. If you do not have today's plugin installed, this guide does not cover you.
+needs your Harmony API token. If you do not have today's plugin installed, install from the download directly
+instead: [`install-from-gated-download.md`](install-from-gated-download.md).
+
+**Already ran the switch (0.17.66)?** Nothing breaks and updates keep coming. Run
+`harmony download token use <project>` once to pin a single token for the download (recommended when you run
+sessions for several projects); `harmony download status` shows what the download uses now.
 
 **macOS and Linux only.** The switch writes a small shell script that Claude Code runs. Windows is not covered.
 
@@ -22,19 +27,23 @@ marketplace file from `https://plugin.harmony.ad/prod/marketplace.json` and the 
    Update Claude Code if yours is older.
 2. A Harmony API token whose owner is an **owner, admin or member** of the workspace. A viewer's token is
    refused.
-3. The token where the download can read it. Either:
-   - `HARMONY_API_TOKEN` set in your shell profile (for example `~/.zshrc` or `~/.bashrc`), or
-   - stored by the Harmony command line, which keeps it in `~/.harmony/config.json`:
+3. The token stored by the Harmony command line, which keeps it in `~/.harmony/config.json`. The download uses
+   ONE stored project's token, pinned for it (`downloadProject` in that file); pinning never changes which project
+   your terminal commands use. The switch pins the CLI's active project. To pin another, or a token not stored yet:
 
-     ```bash
-     harmony login --token <your token>
-     ```
+   ```bash
+   harmony download token use <project>   # a project already stored (see: harmony project list)
+   harmony download token set             # a new token: it asks for it without showing it
+   ```
 
-   If you set your token up with `/harmony-setup`, it is in your project's `.claude/settings.local.json`, which the
-   download cannot read. Use one of the two ways above. When you run the switch in a terminal and it finds a token
-   only in that project file, it asks once whether to save it with `harmony login` for you.
+   If your token is only in `HARMONY_API_TOKEN` (a shell profile), the switch asks, in a terminal, whether to save
+   it to `~/.harmony/config.json` and pin it; otherwise it stops and points at `harmony download token set`.
+   If you set your token up with `/harmony-setup` before it stored tokens in `~/.harmony`, it is in your project's
+   `.claude/settings.local.json`, which the download cannot read. When you run the switch in a terminal and it finds
+   a token only in that project file, it asks once whether to save it for you.
 
-Never paste your token into any command in this guide other than `harmony login --token`.
+Never paste your token into any command in this guide other than `harmony login --token` or the hidden prompt of
+`harmony download token set`.
 
 ## Step 0: update today's copy
 
@@ -71,9 +80,11 @@ harmony download switch
 
 It:
 
-1. Checks a token is where the download can read it (it never prints the token).
+1. Checks a token is where the download can read it (it never prints the token), and pins one stored project for
+   the download: the one already pinned, else the active project, else (in a terminal) the one you choose.
 2. Writes `~/.harmony/download-headers.sh`, readable only by you. Claude Code runs it for each download to get
-   the header that carries your token. The file holds no token; it reads it from where you keep it.
+   the header that carries your token. The file holds no token; it reads the pinned project's token from
+   `~/.harmony/config.json`, and nothing else. It needs `node` on the PATH Claude Code gives it.
 3. Adds a `harmony` entry under `extraKnownMarketplaces` in your Claude Code settings file,
    `~/.claude/settings.json` (or `settings.json` in the directory `CLAUDE_CONFIG_DIR` names, if you set it). It keeps
    everything else in the file. Before the first change it saves the original beside it as
@@ -147,8 +158,10 @@ Each check downloads the whole plugin (a few megabytes). Nothing turns auto-upda
 
 ## When your token changes or is revoked
 
-Update it where it lives: run `harmony login --token <your new token>`, or change `HARMONY_API_TOKEN` in your shell
-profile. Nothing else holds a copy, so there is nothing more to change.
+Run `harmony download token set` and give the new token, or, if the new token is already stored for another
+project, `harmony download token use <project>`. Both check the token with the download before pinning it.
+Nothing else holds a copy, so there is nothing more to change. (A machine switched before the pin existed reads
+`HARMONY_API_TOKEN`, then the active project; pinning once stops that.)
 
 While the token is refused, update checks fail, but the plugin you have installed keeps working.
 
@@ -165,7 +178,7 @@ It:
 - enables today's copy, `harmony-plugin@ycomplex`, for your user again;
 - deletes `~/.harmony/download-headers.sh` and its own record, `~/.harmony/download-switch.json`.
 
-It leaves your token and the settings backup alone. If you disabled today's copy in a project, enable it there
+It leaves your token, its pin and the settings backup alone. If you disabled today's copy in a project, enable it there
 again:
 
 ```bash

@@ -795,8 +795,9 @@ async function undo(opts: SwitchOptions, deps: SwitchDeps): Promise<number> {
   const remove = await runOrFail(deps, ['plugin', 'marketplace', 'remove', MARKETPLACE_NAME], /not found/i);
   deps.out(remove.tolerated ? `The "${MARKETPLACE_NAME}" marketplace was already removed.` : `Removed the "${MARKETPLACE_NAME}" marketplace and ${INSTALL_ID}.`);
 
-  const enable = await runOrFail(deps, ['plugin', 'enable', TODAYS_ID, '--scope', 'user'], /already enabled/i);
-  deps.out(enable.tolerated ? `Today's copy (${TODAYS_ID}) was already enabled for your user.` : `Enabled today's copy (${TODAYS_ID}) for your user.`);
+  // B-1501: a machine installed with `harmony download install` never had today's copy; that is fine.
+  const enable = await runOrFail(deps, ['plugin', 'enable', TODAYS_ID, '--scope', 'user'], /already enabled|not installed|not found/i);
+  deps.out(enable.tolerated ? `Today's copy (${TODAYS_ID}) was already enabled for your user (or is not installed).` : `Enabled today's copy (${TODAYS_ID}) for your user.`);
 
   fs.rmSync(paths.helperPath, { force: true });
   fs.rmSync(paths.recordPath, { force: true });
