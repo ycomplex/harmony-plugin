@@ -250,7 +250,8 @@ describe('harmony download install', () => {
     };
     expect(await runDownloadInstall({}, h.deps)).toBe(2);
     expect(readStoreJson().downloadProject).toBe('invented');
-    expect(h.err.join('\n')).toContain('harmony download switch');
+    // B-1501 fix 10a: a bare machine has no `harmony` command yet, so the retry is the installer.
+    expect(h.err.join('\n')).toContain('run the installer again');
   });
 });
 
@@ -488,5 +489,18 @@ describe('fix 6: the non-activating save leaves no active project and says how t
     store({ activeProject: 'other', projects: { other: { name: 'other', token: 'other-fixture' } } });
     expect(await runDownloadInstall({}, h.deps)).toBe(0);
     expect(h.out.join('\n')).not.toContain('harmony project switch');
+  });
+});
+
+describe('fix 10a: install stopping before the plugin is installed names a step that works without `harmony` on PATH', () => {
+  it('says to start Claude Code once and run the installer again, not `harmony download switch`', async () => {
+    h.responses.set(START_ARGS.join(' '), { code: 0, stdout: '', stderr: '' });
+    // the start never makes the marketplace known
+    const run = h.deps.runClaude;
+    h.deps.runClaude = async (a, o) => (a.join(' ') === START_ARGS.join(' ') ? { code: 0, stdout: '', stderr: '' } : run(a, o));
+    expect(await runDownloadInstall({}, h.deps)).toBe(2);
+    const msg = h.err.join('\n');
+    expect(msg).toContain('run the installer again');
+    expect(msg).not.toContain('harmony download switch');
   });
 });

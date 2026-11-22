@@ -42,8 +42,9 @@ marketplace file from `https://plugin.harmony.ad/prod/marketplace.json` and the 
    `.claude/settings.local.json`, which the download cannot read. When you run the switch in a terminal and it finds
    a token only in that project file, it asks once whether to save it for you.
 
-Never paste your token into any command in this guide other than `harmony login --token` or the hidden prompt of
-`harmony download token set`.
+Never put your token in a command line: it is then in your shell history and visible to other processes. Give it
+only at a hidden prompt, which shows nothing as you paste: `harmony download token set`, or
+`harmony login --token-stdin` run in a terminal (from a pipe it reads standard input instead).
 
 ## Step 0: update today's copy
 

@@ -26,12 +26,36 @@ commands (mode 600). A project's `.claude/settings.local.json` names the stored 
 `HARMONY_API_TOKEN` in the environment, then `HARMONY_PROJECT`, then (terminal commands only) the
 CLI's active project.
 
+**A token never passes through you.** You never see, type, echo or copy a token: not in a command
+line (your shell commands and their arguments are in this session's transcript), not in a message,
+not in a file you write. `.claude/settings.local.json` may hold one (an older setup), so **never open
+it with the Read tool and never print it**: inspect and edit it only with the `node -e` commands
+below, which print key names and non-secret values only.
+
+**Saving a token never changes the CLI's active project**, even on a machine that has none. Terminal
+commands outside a session use the active project; if the user wants them to use this project, tell
+them to run `harmony project switch <key>` themselves.
+
+Inspect the file (names, and values only for the non-secret variables):
+
+```bash
+node -e 'const fs=require("fs"),f=".claude/settings.local.json";if(!fs.existsSync(f)){console.log("(no .claude/settings.local.json)");process.exit(0)}let s;try{s=JSON.parse(fs.readFileSync(f,"utf8"))}catch(e){console.log("(not valid JSON)");process.exit(1)}const e=(s&&s.env)||{};for(const k of Object.keys(e))console.log(/TOKEN|SECRET|KEY/.test(k)?k+" (set; value not shown)":k+"="+e[k])'
+```
+
+Set `env.HARMONY_PROJECT` (and, only when step 3 says so, the Supabase pair), keeping every other setting:
+
+```bash
+node -e 'const fs=require("fs"),f=".claude/settings.local.json";const s=fs.existsSync(f)?JSON.parse(fs.readFileSync(f,"utf8")):{};const [p,u,k]=process.argv.slice(1);s.env=Object.assign({},s.env,{HARMONY_PROJECT:p},u?{HARMONY_SUPABASE_URL:u,HARMONY_SUPABASE_ANON_KEY:k}:{});fs.mkdirSync(".claude",{recursive:true});fs.writeFileSync(f,JSON.stringify(s,null,2)+"\n")' '<key>' # [ '<supabase-url>' '<anon-key>' ]
+```
+
+Then ensure `.claude/settings.local.json` is in `.gitignore` (check and add if missing).
+
 ### 1. Check for existing configuration
 
-Read `.claude/settings.local.json` if it exists.
+Run the inspect command above.
 
-- If `env.HARMONY_PROJECT` is set, tell the user which stored project it names and ask if they want to change it.
-- If `env.HARMONY_API_TOKEN` is set, tell the user this project keeps a copy of its token in that file, and **offer** to move it into `~/.harmony` (step 3b). Move it only on a clear yes; a no keeps the file as it is.
+- If `HARMONY_PROJECT` is set, tell the user which stored project it names and ask if they want to change it.
+- If `HARMONY_API_TOKEN` is set, tell the user this project keeps a copy of its token in that file, and **offer** to move it into `~/.harmony` (step 3b). Move it only on a clear yes; a no keeps the file as it is.
 - If either is set and the user wants no change, confirm that this session was started in this directory after the latest configuration edit. Only then skip to step 5 (verify). If that restart has not happened or is uncertain, go to step 4. Declining an update does not make an old session's connection proof of the saved configuration.
 
 ### 2. Ask for the target
@@ -43,7 +67,7 @@ Ask the user which Harmony target this project should talk to:
   a self-hosted/scratch Supabase project). Also ask for (unless step 3 finds a stored project that carries them):
   - The Supabase URL (`HARMONY_SUPABASE_URL`)
   - The Supabase anon key (`HARMONY_SUPABASE_ANON_KEY`) — required for staging/custom (prod has a
-    baked-in default and does not need one)
+    baked-in default and does not need one). It is a public key, not a token.
 
 ### 3. Pick a stored project, or save a new token
 
@@ -53,29 +77,57 @@ one of them.
 
 If they pick one, say `<key>`:
 
-- Read `.claude/settings.local.json` if it exists (to preserve other settings), or start with `{}`
-- Set `env.HARMONY_PROJECT` to `<key>`. Write **no** token.
-- Prefer the stored project's own Supabase pair. Only when the target is non-prod **and** that stored project carries no pair of its own, also set `env.HARMONY_SUPABASE_URL` and `env.HARMONY_SUPABASE_ANON_KEY`. Never set them for prod, and never set a pair that differs from the one the project is stored with: the plugin refuses that combination by name rather than send the token to another backend.
-- Write the updated JSON back to `.claude/settings.local.json`, and ensure `.claude/settings.local.json` is in `.gitignore` (check and add if missing)
+- Find out whether that stored project carries its own Supabase pair: run
+  `env -u HARMONY_API_TOKEN HARMONY_PROJECT=<key> harmony whoami`. Its `Supabase:` line prints the
+  address and where it comes from: `(the pair stored with the project)`, or `(...; the project stores
+  no pair)`. It prints names and the URL only, never a key or a token.
+- Set `HARMONY_PROJECT` to `<key>` with the set command above. Write **no** token.
+- Prefer the stored project's own pair. Only when the target is non-prod **and** whoami says the project
+  stores no pair, also pass the URL and anon key to the set command. Never set them for prod, and never
+  set a pair that differs from the one the project is stored with: the plugin refuses that combination
+  by name rather than send the token to another backend.
 
-**3b. A project not held yet** (or the user said yes to moving the old copy in step 1). Ask the user
-for their Harmony API token for the chosen target, unless you are moving the one already in
-`settings.local.json`. They can get one from the project's settings in Harmony — Project Settings →
-Connect AI (tokens are minted per project, and a token reaches only that project).
+**3b. Moving the copy in `settings.local.json`** (the user said yes in step 1). You do not read the
+token; the command reads it from the file itself:
 
-- Save it with the non-activating save, which checks it against Harmony first and never changes the
-  CLI's active project. Pipe the token in on stdin from a here-string you write, for example
-  `harmony login --no-activate --token-stdin <<<'<token>'` (for a non-prod target add
-  `--supabase-url <url> --supabase-anon-key <key>`). The token is never passed as a command
-  argument: never use `--token <token>` here. Never echo it back to the user, and never write it into
-  any file of this repository.
-- The command prints the key it stored the project under (when a different project already holds
-  that name, it says so and prints another key). Use that key.
-- Set `env.HARMONY_PROJECT` to the key in `.claude/settings.local.json`, as in 3a, and ensure the file is
-  in `.gitignore`.
-- When moving an old copy: leave `env.HARMONY_API_TOKEN` in place for now — while it is there it
-  still wins over `HARMONY_PROJECT`. Tell the user the old copy is deleted only after the restarted
-  session verifies with the new configuration (step 5).
+- Run `harmony project adopt-settings-token --file .claude/settings.local.json`. It checks the token with
+  Harmony and saves it in `~/.harmony/config.json` without changing the active project, and leaves the
+  file unchanged. When the file also holds `HARMONY_SUPABASE_URL` and its key, that pair is stored with
+  the project; to give another, add `--supabase-url <url> --supabase-anon-key <key>`. It prints the key
+  it stored the project under (when a different project already holds that name, it says so and prints
+  another key). Use that key.
+- Set `HARMONY_PROJECT` to that key with the set command above. `HARMONY_API_TOKEN` is still in the
+  file and still wins over `HARMONY_PROJECT`; leave it for now.
+- **Prove the stored copy works without the file's copy, before removing anything:**
+  `env -u HARMONY_API_TOKEN HARMONY_PROJECT=<key> harmony whoami` must say
+  `HARMONY_PROJECT=<key> in the environment` and print the intended Supabase address, and
+  `env -u HARMONY_API_TOKEN HARMONY_PROJECT=<key> harmony project info` must print the intended project
+  (it exchanges the stored token with Harmony). If either fails or names another project or address,
+  stop: remove nothing, report the output, and tell the user the file still holds its working copy.
+- Only when both pass, remove the file's copy, keeping everything else:
+
+  ```bash
+  node -e 'const fs=require("fs"),f=".claude/settings.local.json";const s=JSON.parse(fs.readFileSync(f,"utf8"));if(s.env)delete s.env.HARMONY_API_TOKEN;fs.writeFileSync(f,JSON.stringify(s,null,2)+"\n")'
+  ```
+
+  Run the inspect command once more: `HARMONY_API_TOKEN` must no longer be listed. If the file held a
+  pair the stored project now carries, you may remove `HARMONY_SUPABASE_URL` / `_ANON_KEY` the same way
+  (only after whoami says `(the pair stored with the project)`).
+
+**3c. A project not held yet.** You do not handle a new token at all. Tell the user to run, **in a
+terminal of their own** (not through this session, and not with `!`):
+
+```bash
+harmony login --no-activate --token-stdin
+```
+
+adding `--supabase-url <url> --supabase-anon-key <key>` for a non-prod target. At a terminal it asks for
+the token without showing what they paste, checks it with Harmony, stores it without changing the active
+project, and prints the key it stored the project under. They get the token from the project's
+settings in Harmony — Project Settings → Connect AI (tokens are minted per project, and a token reaches
+only that project). Never ask them to paste the token into this session. Wait until they say it is
+done, then run `harmony project list`; continue only once it shows the project. Then set
+`HARMONY_PROJECT` to that key as in 3a.
 
 ### 4. Save now, verify after restart
 
@@ -88,12 +140,5 @@ Stop here in this session. The MCP server loads configuration at startup; a call
 Only after confirming that this session started after the latest configuration edit, call `mcp__harmony__get_project`. Do not substitute a CLI call or task-list result: the CLI can select a credential stored for another project, and neither proves which configuration the restarted MCP server loaded.
 
 Show the project name and key, and the Supabase target from the returned `environment` block. Show the workspace name/identity if the response includes it; otherwise explicitly say: "Workspace identity is not returned by this check and remains unconfirmed." Never infer a workspace from an old session, task, or project name.
-
-If an old `env.HARMONY_API_TOKEN` copy is waiting to be removed (step 3b), the session that just
-verified still used that copy, because it wins over `HARMONY_PROJECT`. In that case, after the user
-confirms the match below: remove `env.HARMONY_API_TOKEN` from `.claude/settings.local.json` (keep
-`HARMONY_PROJECT`), go to step 4, and verify once more after the restart; only that second
-verification proves the stored project works. If the second check fails, put nothing back
-automatically: report it, and tell the user the token is still stored in `~/.harmony/config.json`.
 
 Ask the user to compare the returned project and target with the board they intended. If they match, report that the restarted project connection was verified, keeping any workspace limitation visible; do not claim full workspace verification when its identity is unavailable. If they differ, report the mismatch without a success verdict. If the call fails or required project/target identity is missing, report the error or incomplete verification and ask the user to check the saved configuration. If the MCP tool is unavailable, verification remains pending. Any subsequent edit returns to step 4 and requires another restart.

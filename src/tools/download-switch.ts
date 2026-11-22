@@ -56,7 +56,7 @@ export const PIN_FIX = 'Run `harmony download token use <project>` (a project al
 
 export const NO_TOKEN_HELP = [
   'Harmony needs your API token where the download can read it. Do one of these, then run `harmony download switch` again:',
-  '  harmony login --token <your token>        (stores it in ~/.harmony/config.json)',
+  '  harmony download token set               (asks for it without showing it, stores it in ~/.harmony/config.json and pins it)',
   '  or set HARMONY_API_TOKEN in your shell profile (for example ~/.zshrc or ~/.bashrc) and open a new terminal.',
 ];
 
@@ -714,11 +714,18 @@ async function applySteps(
     await startOnce(deps, fs);
     if (!(await marketplaceKnown(deps))) {
       deps.err(
-        [
-          'Claude Code has not fetched the Harmony marketplace yet. The settings and helper are in place, and your token is pinned.',
-          'Start Claude Code once (open it, wait for the prompt, then /exit), then run `harmony download switch` again.',
-          'If it still fails, check your token works: run `harmony download status`, then `harmony download token use <project>` or `harmony download token set`.',
-        ].join('\n'),
+        (ctx.mode === 'install'
+          ? [
+              // A bare machine: the plugin (and so the `harmony` command) is not installed yet.
+              'Claude Code has not fetched the Harmony marketplace yet. The settings and helper are in place, and your token is stored and pinned.',
+              'Start Claude Code once (open it, wait for the prompt, then /exit), then run the installer again (curl -fsSL https://plugin.harmony.ad/install.sh | sh); it finds everything in place and finishes.',
+            ]
+          : [
+              'Claude Code has not fetched the Harmony marketplace yet. The settings and helper are in place, and your token is pinned.',
+              'Start Claude Code once (open it, wait for the prompt, then /exit), then run `harmony download switch` again.',
+              'If it still fails, check your token works: run `harmony download status`, then `harmony download token use <project>` or `harmony download token set`.',
+            ]
+        ).join('\n'),
       );
       return 2;
     }

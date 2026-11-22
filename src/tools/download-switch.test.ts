@@ -214,7 +214,9 @@ describe('token lookup', () => {
     writeStore(null);
     expect(await runDownloadSwitch({}, h.deps)).toBe(2);
     const msg = h.err.join('\n');
-    expect(msg).toContain('harmony login --token <your token>');
+    // B-1501 fix 3: never steer the token onto a command line.
+    expect(msg).toContain('harmony download token set');
+    expect(msg).not.toContain('--token <');
     expect(msg).toContain('HARMONY_API_TOKEN in your shell profile');
     expect(fs.existsSync(h.helper)).toBe(false);
     expect(fs.existsSync(h.settings)).toBe(false);

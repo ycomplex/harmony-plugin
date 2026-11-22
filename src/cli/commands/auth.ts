@@ -336,7 +336,7 @@ export function printProjectList(json: boolean): void {
   }
 
   if (projects.length === 0) {
-    console.log('No projects configured. Run `harmony login --token <token>` to add one.');
+    console.log('No projects configured. Run `harmony login --token-stdin` to add one (it asks for the token without showing it).');
   } else {
     console.log(
       formatTable(

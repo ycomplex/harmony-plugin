@@ -14,8 +14,8 @@ below) puts `harmony` on your PATH. It is not published to npm.
 ### Quick start
 
 ```bash
-# Log in with your API token
-harmony login --token <your-api-token>
+# Log in with your API token (it asks for it without showing it; never put a token in a command line)
+harmony login --token-stdin
 
 # List tasks
 harmony tasks list
@@ -62,8 +62,8 @@ harmony tasks list --json
 Log in to multiple projects and switch between them:
 
 ```bash
-harmony login --token <token-a>
-harmony login --token <token-b> --name my-other-project
+harmony login --token-stdin                            # asks for token A, hidden
+harmony login --token-stdin --name my-other-project    # asks for token B, hidden
 harmony projects          # see all, * marks active (same as harmony project list)
 harmony project switch my-other-project
 harmony whoami            # which project this shell uses, and why
@@ -140,8 +140,10 @@ What each step does, what to do when the token changes, and what to do when Clau
 ### Manual token configuration
 
 `/harmony-setup` is the usual route. By hand: store the token once with
-`harmony login --no-activate --token-stdin` (paste the token, then Ctrl-D; it is never an argument), which prints the name it is stored under, then name that
-project in your project's `.claude/settings.local.json` (gitignored):
+`harmony login --no-activate --token-stdin`, run in your own terminal: it asks for the token without
+showing what you paste (from a pipe it reads standard input instead), and the token is never an argument.
+It prints the name it is stored under; name that project in your project's `.claude/settings.local.json`
+(gitignored):
 
 ```json
 {
@@ -151,8 +153,14 @@ project in your project's `.claude/settings.local.json` (gitignored):
 }
 ```
 
+`--no-activate` never changes the active project, even when there is none yet; terminal commands outside a
+session use the active project, so run `harmony project switch <name>` if you want one.
+
 `HARMONY_API_TOKEN` still works (in `.envrc`, a shell profile or that `env` block) and wins over
-`HARMONY_PROJECT` and the active project, but it puts a copy of the token where you set it.
+`HARMONY_PROJECT` and the active project, but it puts a copy of the token where you set it. To move a copy
+out of a project's `.claude/settings.local.json`, run `/harmony-setup`, or
+`harmony project adopt-settings-token --file .claude/settings.local.json` (it reads the token from the file
+itself and leaves the file unchanged).
 
 ### How it works
 

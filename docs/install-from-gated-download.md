@@ -43,8 +43,9 @@ sh install.sh
    2. checks the token with the download (`GET https://plugin.harmony.ad/prod/marketplace.json`, expecting 200), and
       stops, changing nothing, if the download refuses it;
    3. checks the token with Harmony and stores it in `~/.harmony/config.json` under the project's name. It never
-      overwrites a different project stored under the same name: it picks another name and tells you which. It does
-      not change which project your terminal commands use, unless no project was stored before;
+      overwrites a different project stored under the same name: it picks another name and tells you which. It
+      never changes which project your terminal commands use (the active project), even on a machine with none:
+      it tells you to run `harmony project switch <name>` if you want terminal commands outside a session to use it;
    4. pins that project for the download (`downloadProject` in the same file);
    5. writes the helper `~/.harmony/download-headers.sh` (readable only by you). Claude Code runs it for each
       download to get the header that carries your token. It holds no token; it reads the pinned project's token
@@ -58,13 +59,29 @@ sh install.sh
 
    It exits 0 when done, 1 when it refused or failed (the message says which), and 2 when you need to act first. On 2
    after "Claude Code has not fetched the Harmony marketplace yet": open Claude Code once, wait for the prompt,
-   `/exit`, then run `harmony download switch` (your token is already stored and pinned).
+   `/exit`, then run the one command again (your token is already stored and pinned; it asks for it again, finds
+   everything in place and finishes). The `harmony` command does not exist yet at that point: the plugin is not
+   installed.
 4. Then start a **fresh** Claude Code session in a project and run `/harmony-setup`. It points that project at a
    stored project by writing `HARMONY_PROJECT` to the project's `.claude/settings.local.json`; it never writes the
    token there.
 
 Check it: `claude plugin list` shows `harmony-plugin@harmony` enabled, and in a fresh session `harmony --version`
 prints the version it lists. `harmony download status` shows which project the download uses (names only).
+
+## Running `harmony` before a session has started
+
+The `harmony` command reaches your PATH when a Claude Code session starts with the plugin installed (the plugin's
+start-up hook links it). Right after the installer finishes, before you have started a session, a terminal does not
+know `harmony` yet. For the commands in the sections below, either start Claude Code once (open it, wait for the
+prompt, `/exit`) and open a new terminal, or run the plugin's own copy by its full path:
+
+```bash
+ls ~/.claude/plugins/cache/harmony/harmony-plugin/          # the installed version, e.g. 0.17.70
+node ~/.claude/plugins/cache/harmony/harmony-plugin/<version>/dist/bin/harmony.js download status
+```
+
+With `CLAUDE_CONFIG_DIR` set, read `~/.claude` above as that directory.
 
 ## Where your token lives
 
