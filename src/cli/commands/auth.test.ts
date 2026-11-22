@@ -8,7 +8,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { Command } from 'commander';
-import { registerAuthCommands } from './auth.js';
+import { Readable } from 'node:stream';
+import { loginInput, readTokenFromStdin, registerAuthCommands } from './auth.js';
 
 // Mocks live at the top so the SUT imports them.
 const supabaseMock = vi.hoisted(() => ({
@@ -253,5 +254,54 @@ describe('B-1501 — login --no-activate, whoami, project list / switch', () => 
     await program.parseAsync(['project', 'switch', 'second'], { from: 'user' });
     expect(stored().activeProject).toBe('second');
     expect(errored()).toContain('HARMONY_PROJECT=first is set in this shell and wins over the active project');
+  });
+});
+
+// B-1501: `harmony login --token-stdin`, so /harmony-setup never puts a token in an argv.
+describe('B-1501 — login --token-stdin', () => {
+  const original = loginInput.stdin;
+  beforeEach(() => {
+    for (const v of ['HARMONY_API_TOKEN', 'HARMONY_PROJECT', 'HARMONY_SUPABASE_URL', 'HARMONY_SUPABASE_ANON_KEY']) vi.stubEnv(v, '');
+  });
+  afterEach(() => {
+    loginInput.stdin = original;
+  });
+  const pipe = (text: string) => {
+    loginInput.stdin = () => Readable.from([text]);
+  };
+  const stored = () => JSON.parse(fs.readFileSync(path.join(tmpDir, 'config.json'), 'utf8'));
+  const printed = () => [...logSpy.mock.calls.flat(), ...errSpy.mock.calls.flat()].join('\n');
+
+  it('reads the token from stdin, trimming one trailing newline, and never echoes it', async () => {
+    pipe('synthetic-stdin-token\n');
+    await run(['login', '--token-stdin', '--name', 'piped', '--no-activate']);
+    expect(stored().projects.piped.token).toBe('synthetic-stdin-token');
+    expect(printed()).not.toContain('synthetic-stdin-token');
+  });
+
+  it('trims only one trailing newline', async () => {
+    expect(await readTokenFromStdin(Readable.from(['abc\r\n']))).toBe('abc');
+    expect(await readTokenFromStdin(Readable.from(['abc\n\n']))).toBe('abc\n');
+  });
+
+  it('--token and --token-stdin together are refused, storing nothing and printing neither', async () => {
+    pipe('synthetic-stdin-token\n');
+    await expect(run(['login', '--token', 'synthetic-arg-token', '--token-stdin', '--name', 'both'])).rejects.toThrow(ExitSentinel);
+    expect(printed()).toContain('Pass either --token or --token-stdin, not both.');
+    expect(printed()).not.toMatch(/synthetic-(stdin|arg)-token/);
+    expect(fs.existsSync(path.join(tmpDir, 'config.json'))).toBe(false);
+  });
+
+  it('empty stdin is refused before any exchange', async () => {
+    pipe('\n');
+    const before = supabaseMock.createAuthenticatedClient.mock.calls.length;
+    await expect(run(['login', '--token-stdin', '--name', 'empty'])).rejects.toThrow(ExitSentinel);
+    expect(printed()).toContain('--token-stdin read no token from stdin.');
+    expect(supabaseMock.createAuthenticatedClient.mock.calls.length).toBe(before);
+  });
+
+  it('neither flag is refused', async () => {
+    await expect(run(['login', '--name', 'none'])).rejects.toThrow(ExitSentinel);
+    expect(printed()).toContain('--token-stdin');
   });
 });

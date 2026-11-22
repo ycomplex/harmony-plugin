@@ -176,7 +176,7 @@ export class HarmonyAuth {
     if (this.expected && reached !== this.expected.projectId) {
       throw new Error(
         `${this.expected.label} was saved for project ${this.expected.projectId}, but its token now reaches project ${reached}; refusing to use it. ` +
-          'Save the right token again with `harmony download token set` or `harmony login --no-activate --token <token>`.',
+          'Save the right token again with `harmony download token set` or `harmony login --no-activate --token-stdin`.',
       );
     }
 

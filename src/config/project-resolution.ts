@@ -170,7 +170,7 @@ export function resolveProject(opts: ResolveOptions): ResolvedProject {
       throw new ProjectResolutionError(
         `HARMONY_PROJECT=${wanted} names no project stored in ${getConfigFile()}` +
           (stored.length ? ` (stored: ${stored.join(', ')})` : ' (none is stored)') +
-          '. Run `harmony project list`, or save its token with `harmony login --no-activate --token <token>`.',
+          '. Run `harmony project list`, or save its token with `harmony login --no-activate --token-stdin`.',
       );
     }
     const target = checkStoredPair(wanted, p, env);

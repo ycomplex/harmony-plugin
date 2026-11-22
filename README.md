@@ -140,7 +140,7 @@ What each step does, what to do when the token changes, and what to do when Clau
 ### Manual token configuration
 
 `/harmony-setup` is the usual route. By hand: store the token once with
-`harmony login --no-activate --token <token>`, which prints the name it is stored under, then name that
+`harmony login --no-activate --token-stdin` (paste the token, then Ctrl-D; it is never an argument), which prints the name it is stored under, then name that
 project in your project's `.claude/settings.local.json` (gitignored):
 
 ```json

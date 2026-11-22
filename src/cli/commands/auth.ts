@@ -89,11 +89,37 @@ export function currentSource(): { resolved: ResolvedProject | null; error: stri
   }
 }
 
+/** Where `harmony login --token-stdin` reads from. A test swaps the stream. */
+export const loginInput: { stdin: () => NodeJS.ReadableStream } = { stdin: () => process.stdin };
+
+/** B-1501: read a token piped to `harmony login --token-stdin`. One trailing newline is trimmed; the
+ *  token is never echoed and never appears in any argv. */
+export async function readTokenFromStdin(input: NodeJS.ReadableStream = loginInput.stdin()): Promise<string> {
+  let data = '';
+  for await (const chunk of input) data += String(chunk);
+  const token = data.replace(/\r?\n$/, '');
+  if (token.trim() === '') throw new Error('--token-stdin read no token from stdin.');
+  return token;
+}
+
+/** The token for `harmony login`: exactly one of --token and --token-stdin. */
+async function loginToken(opts: { token?: string; tokenStdin?: boolean }): Promise<string> {
+  if (opts.token !== undefined && opts.tokenStdin) {
+    throw new Error('Pass either --token or --token-stdin, not both.');
+  }
+  if (opts.tokenStdin) return readTokenFromStdin();
+  if (opts.token === undefined || opts.token === '') {
+    throw new Error('Pass --token <token>, or pipe the token in with --token-stdin.');
+  }
+  return opts.token;
+}
+
 export function registerAuthCommands(program: Command): void {
   program
     .command('login')
     .description('Add a project by providing an API token')
-    .requiredOption('--token <token>', 'Harmony API token')
+    .option('--token <token>', 'Harmony API token (prefer --token-stdin: an argument can be seen by other processes)')
+    .option('--token-stdin', 'Read the Harmony API token from stdin (one trailing newline is trimmed)', false)
     .option('--name <name>', 'Project name (auto-detected if not provided)')
     .option('--supabase-url <url>', 'Custom Supabase URL (advanced)')
     .option('--supabase-anon-key <key>', 'Custom Supabase anon key (advanced)')
@@ -136,7 +162,8 @@ export function registerAuthCommands(program: Command): void {
           console.error(`harmony login: --supabase-publishable-key was overridden by ${target.source}. Pass --supabase-url and --supabase-publishable-key together.`);
         }
 
-        const stored = await verifyAndStoreToken(opts.token, target, opts, { activate: opts.activate !== false });
+        const token = await loginToken(opts);
+        const stored = await verifyAndStoreToken(token, target, opts, { activate: opts.activate !== false });
 
         if (json) {
           console.log(JSON.stringify({ name: stored.key, status: 'logged_in', active: stored.activated, collided_with: stored.collidedWith ?? null }));

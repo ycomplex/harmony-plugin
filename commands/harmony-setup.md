@@ -64,9 +64,11 @@ for their Harmony API token for the chosen target, unless you are moving the one
 Connect AI (tokens are minted per project, and a token reaches only that project).
 
 - Save it with the non-activating save, which checks it against Harmony first and never changes the
-  CLI's active project: `harmony login --no-activate --token <token>` (for a non-prod target add
-  `--supabase-url <url> --supabase-anon-key <key>`). Run it yourself so the token is not shown back to
-  the user; never echo it, and never write it into any file of this repository.
+  CLI's active project. Pipe the token in on stdin from a here-string you write, for example
+  `harmony login --no-activate --token-stdin <<<'<token>'` (for a non-prod target add
+  `--supabase-url <url> --supabase-anon-key <key>`). The token is never passed as a command
+  argument: never use `--token <token>` here. Never echo it back to the user, and never write it into
+  any file of this repository.
 - The command prints the key it stored the project under (when a different project already holds
   that name, it says so and prints another key). Use that key.
 - Set `env.HARMONY_PROJECT` to the key in `.claude/settings.local.json`, as in 3a, and ensure the file is
