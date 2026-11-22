@@ -36,6 +36,12 @@ today's install: the token file and header helper, the settings entry, install, 
 token, and rolling back. It holds the recorded run of `scripts/gated-install-check.sh` and lists the test-only steps
 the customer guide must not copy.
 
+`install-from-gated-download.md` (B-1501) is the customer guide for a first install from the gated download: the
+one installer command, what `harmony download install` does in order, where the token lives and its download pin,
+`harmony download token use|set`, the project precedence (`HARMONY_API_TOKEN`, `HARMONY_PROJECT`, the active
+project) and what to do when Claude Code cannot find `node`. `switch-to-gated-download.md` (B-1479) is its
+counterpart for a machine that has today's copy installed.
+
 `recorded-walk-contract.md` (B-1062) is the contract for recording a ticket's gates instead of conducting them: the
 `recorded_walk_requests` table the web's Record action writes and the plugin's walk reads.
 

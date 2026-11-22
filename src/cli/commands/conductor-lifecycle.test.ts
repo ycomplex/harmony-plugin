@@ -2,6 +2,7 @@
 // table, a launchctl/systemctl/git/kubectl/gcloud that record every call, a board that follows the process
 // table, and a fake clock that sleep() advances. Nothing here runs launchctl, systemctl, git or a signal.
 
+import { OPERATOR_MISSING_MESSAGE } from '../../config/project-resolution.js';
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -51,6 +52,8 @@ interface Opts {
   keyMissing?: boolean;
   branch?: string;
   registry?: RegistryClient;
+  /** B-1501: what the operator-side resolver says (null: a project resolves). Default: only an env token resolves, else the real resolver's "neither variable" stop. */
+  operatorReason?: string | null;
 }
 
 /** A registry whose functions are not on the database (the pre-promote state). */
@@ -189,6 +192,7 @@ function makeWorld(o: Opts = {}) {
     rmSync: (p) => { vfs.delete(p); },
     readBoard: async () => board.map((b) => ({ ...b })),
     registryClient: async () => (o.registry ?? unavailableRegistry()),
+    operatorCredential: (e) => (o.operatorReason !== undefined ? o.operatorReason : e.HARMONY_API_TOKEN ? null : OPERATOR_MISSING_MESSAGE),
   };
   return { deps, calls, order, written, vfs, board, w, addProc };
 }
@@ -1081,5 +1085,37 @@ describe('pre-flight gke-gcloud-auth-plugin hint (B-808)', () => {
   it('gcloud info failing is tolerated: install hint', async () => {
     const m = makeWorld({ failExec: (f, a) => (f === 'gcloud' ? { code: 1, stdout: '', stderr: '' } : missing(f, a)) });
     expect((await check(m)).fix).toContain('gcloud components install gke-gcloud-auth-plugin');
+  });
+});
+
+// B-1501 fix 8: the operator-side reads (status's board, the registry) resolve the project through the
+// shared resolver, so a session set up with HARMONY_PROJECT only is not told "HARMONY_API_TOKEN is not set".
+describe('operator-side reads resolve through resolveProject (B-1501)', () => {
+  it('status with HARMONY_PROJECT only (no HARMONY_API_TOKEN): reads the board and opens the registry', async () => {
+    const m = makeWorld({ noToken: true, operatorReason: null, env: { HARMONY_PROJECT: 'invented' }, held: HELD });
+    const opened: unknown[] = [];
+    const real = m.deps.registryClient;
+    m.deps.registryClient = async (e) => {
+      opened.push(e.HARMONY_PROJECT);
+      return real(e);
+    };
+    const r = await runStatus(m.deps);
+    expect(opened).toEqual(['invented']);
+    const text = [...r.lines, ...r.errLines].join('\n');
+    expect(text).not.toContain('HARMONY_API_TOKEN is not set');
+    expect(text).toContain('B-1001  conduction c-111');
+  });
+
+  it('a HARMONY_PROJECT that does not resolve says why, by name, not "HARMONY_API_TOKEN is not set"', async () => {
+    const m = makeWorld({ noToken: true, operatorReason: 'HARMONY_PROJECT=nope names no project stored in /x/config.json (none is stored).', env: { HARMONY_PROJECT: 'nope' } });
+    const r = await runRestart(m.deps, {});
+    const text = [...r.lines, ...r.errLines].join('\n');
+    expect(text).toContain('HARMONY_PROJECT=nope names no project stored');
+  });
+
+  it('the pre-flight still requires the DAEMON\'s HARMONY_API_TOKEN (the daemon stays environment-only)', async () => {
+    const m = makeWorld({ noToken: true, operatorReason: null, env: { HARMONY_PROJECT: 'invented' } });
+    const pre = await runPreflight(m.deps, await loadSettings(m.deps, {}), {});
+    expect(pre.checks.find((c) => c.name === 'cred:HARMONY_API_TOKEN')!.ok).toBe(false);
   });
 });

@@ -67,7 +67,7 @@ function makeHarness(over: Partial<SwitchDeps> = {}): Harness {
     deps: undefined as unknown as SwitchDeps,
   };
   hh.deps = {
-    env: { HARMONY_API_TOKEN: 'fixture-token' },
+    env: {},
     homedir: home,
     cwd,
     tmpdir: tmp,
@@ -91,8 +91,14 @@ function makeHarness(over: Partial<SwitchDeps> = {}): Harness {
     },
     saveToken: async (t) => {
       hh.saved.push(t);
-      return 'invented-project';
+      // like the real non-activating save: the entry lands in the store, the active project is untouched.
+      fs.mkdirSync(hh.harmonyDir, { recursive: true });
+      const c = fs.existsSync(hh.store) ? JSON.parse(fs.readFileSync(hh.store, 'utf-8')) : { activeProject: null, projects: {} };
+      c.projects['invented-project'] = { name: 'invented-project', token: t, projectId: 'proj-invented' };
+      fs.writeFileSync(hh.store, JSON.stringify(c));
+      return { key: 'invented-project' };
     },
+    fetch: async () => ({ status: 200 }),
     now: () => new Date('2026-11-20T10:00:00Z'),
     pid: 4242,
     ...over,
@@ -129,6 +135,8 @@ function runHelper(env: NodeJS.ProcessEnv) {
 
 beforeEach(() => {
   h = makeHarness();
+  // B-1501: the switch pins a stored project, so the default machine has one active project stored.
+  writeStore('fixture-token');
 });
 
 afterEach(() => {
@@ -136,17 +144,69 @@ afterEach(() => {
 });
 
 describe('token lookup', () => {
-  it('takes HARMONY_API_TOKEN first, without reading the store', async () => {
-    fs.mkdirSync(h.harmonyDir, { recursive: true });
+  it('B-1501: HARMONY_API_TOKEN alone (nothing stored) cannot be pinned: with no person, exits 2 naming `harmony download token set`, changes nothing', async () => {
+    h.deps.env = { HARMONY_API_TOKEN: 'fixture-token' };
     fs.writeFileSync(h.store, '{ not json');
-    expect(await runDownloadSwitch({}, h.deps)).toBe(0);
-    expect(args()).toContain(`plugin install ${INSTALL_ID}`);
+    expect(await runDownloadSwitch({}, h.deps)).toBe(2);
+    expect(h.err.join('\n')).toContain('harmony download token set');
+    expect(h.err.join('\n')).not.toContain('fixture-token');
+    expect(fs.existsSync(h.helper)).toBe(false);
+    expect(fs.existsSync(h.settings)).toBe(false);
+    expect(h.calls).toEqual([]);
   });
 
-  it('falls back to the active project token in the store', async () => {
-    h.deps.env = {};
+  it('B-1501: HARMONY_API_TOKEN alone with a person: offers to save it, and pins the saved project on yes', async () => {
+    h.deps.env = { HARMONY_API_TOKEN: 'env-only-token' };
+    h.deps.isTTY = true;
+    writeStore(null);
+    expect(await runDownloadSwitch({}, h.deps)).toBe(0);
+    expect(h.asked).toHaveLength(1);
+    expect(h.asked[0]).toContain('Save HARMONY_API_TOKEN to the harmony store');
+    expect(h.saved).toEqual(['env-only-token']);
+    const c = JSON.parse(fs.readFileSync(h.store, 'utf-8'));
+    expect(c.downloadProject).toBe('invented-project');
+    expect(c.activeProject).toBeNull();
+    expect(h.out.join('\n') + h.err.join('\n')).not.toContain('env-only-token');
+  });
+
+  it('pins the active project when nothing is pinned, leaving activeProject alone; mode 600', async () => {
     writeStore('store-token');
     expect(await runDownloadSwitch({}, h.deps)).toBe(0);
+    const c = JSON.parse(fs.readFileSync(h.store, 'utf-8'));
+    expect(c.downloadProject).toBe('invented');
+    expect(c.activeProject).toBe('invented');
+    expect(fs.statSync(h.store).mode & 0o777).toBe(0o600);
+    expect(h.out.join('\n')).toContain('Pinned the download to project "invented"');
+  });
+
+  it('keeps an existing usable pin, even when HARMONY_API_TOKEN is set and another project is active', async () => {
+    fs.writeFileSync(h.store, JSON.stringify({ activeProject: 'a', downloadProject: 'b', projects: { a: { name: 'a', token: 'ta' }, b: { name: 'b', token: 'tb' } } }));
+    h.deps.env = { HARMONY_API_TOKEN: 'env-token' };
+    expect(await runDownloadSwitch({}, h.deps)).toBe(0);
+    expect(JSON.parse(fs.readFileSync(h.store, 'utf-8')).downloadProject).toBe('b');
+    expect(h.out.join('\n')).toContain('The download stays pinned to project "b"');
+  });
+
+  it('no active project but stored projects: asks which on a terminal, and pins the one chosen', async () => {
+    fs.writeFileSync(h.store, JSON.stringify({ activeProject: null, projects: { a: { name: 'a', token: 'ta' }, b: { name: 'b', token: 'tb' } } }));
+    h.deps.isTTY = true;
+    h.deps.ask = async (q) => {
+      h.asked.push(q);
+      return '2';
+    };
+    expect(await runDownloadSwitch({}, h.deps)).toBe(0);
+    expect(h.asked[0]).toContain('1. a');
+    expect(h.asked[0]).toContain('2. b');
+    const c = JSON.parse(fs.readFileSync(h.store, 'utf-8'));
+    expect(c.downloadProject).toBe('b');
+    expect(c.activeProject).toBeNull();
+  });
+
+  it('no active project but stored projects, no person: exits 2 naming `harmony download token use`', async () => {
+    fs.writeFileSync(h.store, JSON.stringify({ activeProject: null, projects: { a: { name: 'a', token: 'ta' } } }));
+    expect(await runDownloadSwitch({}, h.deps)).toBe(2);
+    expect(h.err.join('\n')).toContain('harmony download token use <project>');
+    expect(fs.existsSync(h.helper)).toBe(false);
   });
 
   it('with no token anywhere, exits 2 with instructions and changes nothing', async () => {
@@ -154,7 +214,9 @@ describe('token lookup', () => {
     writeStore(null);
     expect(await runDownloadSwitch({}, h.deps)).toBe(2);
     const msg = h.err.join('\n');
-    expect(msg).toContain('harmony login --token <your token>');
+    // B-1501 fix 3: never steer the token onto a command line.
+    expect(msg).toContain('harmony download token set');
+    expect(msg).not.toContain('--token <');
     expect(msg).toContain('HARMONY_API_TOKEN in your shell profile');
     expect(fs.existsSync(h.helper)).toBe(false);
     expect(fs.existsSync(h.settings)).toBe(false);
@@ -163,6 +225,7 @@ describe('token lookup', () => {
 
   it("a project file token with no person present: exits 2, never asks, never reads or saves it", async () => {
     h.deps.env = {};
+    writeStore(null);
     fs.mkdirSync(path.join(h.cwd, '.claude'), { recursive: true });
     const local = path.join(h.cwd, '.claude', 'settings.local.json');
     fs.writeFileSync(local, JSON.stringify({ env: { HARMONY_API_TOKEN: 'project-file-token' } }));
@@ -179,12 +242,14 @@ describe('token lookup', () => {
   it('a project file token with a person present: asks once, and saves it in-process on yes', async () => {
     h.deps.env = {};
     h.deps.isTTY = true;
+    writeStore(null);
     fs.mkdirSync(path.join(h.cwd, '.claude'), { recursive: true });
     fs.writeFileSync(path.join(h.cwd, '.claude', 'settings.local.json'), JSON.stringify({ env: { HARMONY_API_TOKEN: 'project-file-token' } }));
     expect(await runDownloadSwitch({}, h.deps)).toBe(0);
     expect(h.asked).toHaveLength(1);
     expect(h.asked[0]).toContain('Save this token to the harmony store (~/.harmony/config.json) so the download can use it? [y/N]');
     expect(h.saved).toEqual(['project-file-token']);
+    expect(JSON.parse(fs.readFileSync(h.store, 'utf-8')).downloadProject).toBe('invented-project');
     expect(h.out.join('\n')).not.toContain('project-file-token');
     expect(h.err.join('\n')).not.toContain('project-file-token');
   });
@@ -192,6 +257,7 @@ describe('token lookup', () => {
   it('a project file token with a person who says no: exits 2, nothing saved', async () => {
     h.deps.env = {};
     h.deps.isTTY = true;
+    writeStore(null);
     h.deps.ask = async (q) => {
       h.asked.push(q);
       return '';
@@ -206,6 +272,7 @@ describe('token lookup', () => {
   it('a token that fails verification: exits 1, and the message never carries the token', async () => {
     h.deps.env = {};
     h.deps.isTTY = true;
+    writeStore(null);
     h.deps.saveToken = async (t) => {
       throw new Error(`Token exchange failed (401) for ${t}`);
     };
@@ -234,6 +301,7 @@ describe('--dry-run', () => {
   it('writes nothing, runs no claude, and never reads the project token', async () => {
     h.deps.env = {};
     h.deps.isTTY = true;
+    writeStore(null);
     fs.mkdirSync(path.join(h.cwd, '.claude'), { recursive: true });
     const local = path.join(h.cwd, '.claude', 'settings.local.json');
     fs.writeFileSync(local, JSON.stringify({ env: { HARMONY_API_TOKEN: 'project-file-token' } }));
@@ -255,11 +323,21 @@ describe('--dry-run', () => {
     expect(plan).toContain(URL_);
   });
 
-  it('with a token, prints the plan and exits 0, changing nothing', async () => {
+  it('with a token, prints the plan (including the pin) and exits 0, changing nothing', async () => {
+    const store = fs.readFileSync(h.store, 'utf-8');
     expect(await runDownloadSwitch({ dryRun: true }, h.deps)).toBe(0);
     expect(h.calls).toEqual([]);
-    expect(fs.existsSync(h.harmonyDir)).toBe(false);
+    expect(fs.readdirSync(h.harmonyDir)).toEqual(['config.json']);
+    expect(fs.readFileSync(h.store, 'utf-8')).toBe(store);
     expect(fs.existsSync(h.claudeDir)).toBe(false);
+    expect(h.out.join('\n')).toContain('would pin the download to the active project "invented"');
+  });
+
+  it('an env token alone with no person: the dry run says a real run would stop, exit 2', async () => {
+    writeStore(null);
+    h.deps.env = { HARMONY_API_TOKEN: 'x' };
+    expect(await runDownloadSwitch({ dryRun: true }, h.deps)).toBe(2);
+    expect(h.err.join('\n')).toContain('harmony download token set');
   });
 });
 
@@ -336,7 +414,10 @@ describe('settings', () => {
     h.deps.fs = wrapped;
     expect(await runDownloadSwitch({}, h.deps)).toBe(0);
     const tmp = `${h.settings}.tmp-4242`;
-    expect(ops).toEqual([`open ${tmp}`, 'fsync', `rename ${tmp} -> ${h.settings}`]);
+    const storeTmp = `${h.store}.tmp-4242`;
+    // the pin is written the same way, first.
+    expect(ops).toEqual([`open ${storeTmp}`, 'fsync', `rename ${storeTmp} -> ${h.store}`, `open ${tmp}`, 'fsync', `rename ${tmp} -> ${h.settings}`]);
+    expect(fs.readdirSync(h.harmonyDir).filter((f) => f.includes('.tmp-'))).toEqual([]);
     expect(fs.readdirSync(h.claudeDir).filter((f) => f.includes('.tmp-'))).toEqual([]);
   });
 
@@ -396,14 +477,34 @@ describe('the helper', () => {
     expect(fs.readFileSync(h.helper, 'utf-8')).toBe(helperScript());
   });
 
-  it('prints only the header on stdout with the env token', () => {
+  it('B-1501 pinned: prints the pinned project\'s token and consults nothing else (not HARMONY_API_TOKEN, not the active project)', () => {
+    fs.writeFileSync(h.store, JSON.stringify({ activeProject: 'a', downloadProject: 'b', projects: { a: { name: 'a', token: 'active-fixture' }, b: { name: 'b', token: 'pinned-fixture' } } }));
+    const r = runHelper({ HARMONY_API_TOKEN: 'env-fixture-token' });
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('{"Authorization":"Bearer pinned-fixture"}');
+    expect(r.stderr).toBe('');
+  });
+
+  it('B-1501 pinned to a project with no token: fails naming the fix, never falling back', () => {
+    fs.writeFileSync(h.store, JSON.stringify({ activeProject: 'a', downloadProject: 'gone', projects: { a: { name: 'a', token: 'active-fixture' } } }));
+    const r = runHelper({ HARMONY_API_TOKEN: 'env-fixture-token' });
+    expect(r.status).toBe(1);
+    expect(r.stdout).toBe('');
+    expect(r.stderr).toContain('pinned to project "gone"');
+    expect(r.stderr).toContain('harmony download token use <project>');
+    expect(r.stderr).toContain('harmony download token set');
+    expect(r.stderr).not.toContain('fixture');
+  });
+
+  it('unpinned (a machine switched before B-1501): the env token first', () => {
+    writeStore('store-fixture-token');
     const r = runHelper({ HARMONY_API_TOKEN: 'env-fixture-token' });
     expect(r.status).toBe(0);
     expect(r.stdout).toBe('{"Authorization":"Bearer env-fixture-token"}');
     expect(r.stderr).toBe('');
   });
 
-  it('prints only the header with the store token beside it', () => {
+  it('unpinned: then the active project in the store beside it', () => {
     writeStore('store-fixture-token');
     const r = runHelper({});
     expect(r.status).toBe(0);
@@ -411,17 +512,35 @@ describe('the helper', () => {
     expect(r.stderr).toBe('');
   });
 
-  it('prefers the env token over the store', () => {
-    writeStore('store-fixture-token');
-    expect(runHelper({ HARMONY_API_TOKEN: 'env-fixture-token' }).stdout).toContain('env-fixture-token');
-  });
-
-  it('with no token, exits 1 with a stderr message and prints no header', () => {
+  it('with no token, exits 1 with a stderr message naming the fix and prints no header', () => {
     writeStore(null);
     const r = runHelper({});
     expect(r.status).toBe(1);
     expect(r.stdout).toBe('');
-    expect(r.stderr.trim()).toBe('harmony: no Harmony token found');
+    expect(r.stderr.trim()).toBe('harmony: no Harmony token found. Run `harmony download token use <project>` or `harmony download token set`.');
+  });
+
+  it('escapes a token with a quote or backslash into valid JSON', () => {
+    fs.writeFileSync(h.store, JSON.stringify({ activeProject: null, downloadProject: 'b', projects: { b: { name: 'b', token: 'a"b\\c' } } }));
+    expect(JSON.parse(runHelper({}).stdout)).toEqual({ Authorization: 'Bearer a"b\\c' });
+  });
+
+  it('without node on PATH: a pinned machine is told node is missing and how to retry', () => {
+    const bin = path.join(h.root, 'bin-no-node');
+    fs.mkdirSync(bin);
+    for (const tool of ['dirname', 'grep', 'tr', 'sed', 'printf']) {
+      const found = spawnSync('sh', ['-c', `command -v ${tool}`], { encoding: 'utf-8' }).stdout.trim();
+      if (found.startsWith('/')) fs.symlinkSync(found, path.join(bin, tool));
+    }
+    const r = spawnSync('/bin/sh', [h.helper], { env: { PATH: bin, HARMONY_API_TOKEN: 'env-fixture-token' }, encoding: 'utf-8' });
+    expect(r.status).toBe(1);
+    expect(r.stdout).toBe('');
+    expect(r.stderr).toContain('node is not on the PATH');
+    expect(r.stderr).toContain('claude plugin marketplace update harmony');
+    // unpinned and no node: the env token still serves, as before.
+    writeStore('store-fixture-token');
+    const u = spawnSync('/bin/sh', [h.helper], { env: { PATH: bin, HARMONY_API_TOKEN: 'env-fixture-token' }, encoding: 'utf-8' });
+    expect(u.stdout).toBe('{"Authorization":"Bearer env-fixture-token"}');
   });
 
   it('writes no file of its own', () => {
@@ -521,6 +640,8 @@ describe('claude commands', () => {
       settings_path: h.settings,
       backup_path: h.settings + BACKUP_SUFFIX,
       disabled_ycomplex_user_scope: true,
+      download_project: 'invented',
+      via: 'switch',
       switched_at: '2026-11-20T10:00:00.000Z',
     });
     const out = h.out.join('\n');
@@ -539,8 +660,11 @@ describe('claude commands', () => {
   it('honours CLAUDE_CONFIG_DIR and HARMONY_CONFIG_DIR', async () => {
     const cdir = path.join(h.root, 'cc');
     const hdir = path.join(h.root, 'hh');
-    h.deps.env = { HARMONY_API_TOKEN: 'fixture-token', CLAUDE_CONFIG_DIR: cdir, HARMONY_CONFIG_DIR: hdir };
+    h.deps.env = { CLAUDE_CONFIG_DIR: cdir, HARMONY_CONFIG_DIR: hdir };
+    fs.mkdirSync(hdir, { recursive: true });
+    fs.writeFileSync(path.join(hdir, 'config.json'), JSON.stringify({ activeProject: 'p', projects: { p: { name: 'p', token: 'tp' } } }));
     expect(await runDownloadSwitch({}, h.deps)).toBe(0);
+    expect(JSON.parse(fs.readFileSync(path.join(hdir, 'config.json'), 'utf-8')).downloadProject).toBe('p');
     const s = JSON.parse(fs.readFileSync(path.join(cdir, 'settings.json'), 'utf-8'));
     expect(s.extraKnownMarketplaces.harmony.source.headersHelper).toBe(path.join(hdir, 'download-headers.sh'));
     expect(fs.existsSync(path.join(hdir, 'download-switch.json'))).toBe(true);
@@ -586,6 +710,11 @@ describe('--undo', () => {
   it('is idempotent: an already-removed marketplace and missing files are fine', async () => {
     h.responses.set('plugin marketplace remove harmony', { code: 1, stdout: '', stderr: "✘ Failed to remove marketplace: Marketplace 'harmony' not found" });
     expect(await runDownloadSwitch({ undo: true }, h.deps)).toBe(0);
+    expect(await runDownloadSwitch({ undo: true }, h.deps)).toBe(0);
+  });
+
+  it("B-1501: a machine that never had today's copy (a first install) undoes cleanly", async () => {
+    h.responses.set(`plugin enable ${TODAYS_ID} --scope user`, { code: 1, stdout: '', stderr: `✘ Plugin "${TODAYS_ID}" not found in installed plugins` });
     expect(await runDownloadSwitch({ undo: true }, h.deps)).toBe(0);
   });
 

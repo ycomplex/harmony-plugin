@@ -23354,10 +23354,16 @@ var HarmonyAuth = class {
   // pair": the environment (then the built-in default) supplies it, exactly as before B-1025.
   supabaseUrl;
   supabaseAnonKey;
-  constructor(apiToken, supabaseUrl, supabaseAnonKey) {
+  // B-1501: the project id a stored entry was saved with. When set, an exchange that reaches a
+  // different project is refused, naming both — the token in that entry is not the one that was saved.
+  expected;
+  constructor(apiToken, supabaseUrl, supabaseAnonKey, opts) {
     this.apiToken = apiToken;
     this.supabaseUrl = supabaseUrl;
     this.supabaseAnonKey = supabaseAnonKey;
+    if (opts?.expectedProjectId) {
+      this.expected = { projectId: opts.expectedProjectId, label: opts.expectedLabel ?? "the stored project" };
+    }
   }
   /** B-1025: the Supabase URL for THIS call — an explicit pair wins, then the environment (read
    *  per call, so a later change is honoured), then the built-in default. */
@@ -23434,8 +23440,14 @@ var HarmonyAuth = class {
         `Token exchange returned a JWT scoped to project ${claimedProject} but a body naming project ${data.project_id}; refusing to use either.`
       );
     }
+    const reached = claimedProject ?? data.project_id;
+    if (this.expected && reached !== this.expected.projectId) {
+      throw new Error(
+        `${this.expected.label} was saved for project ${this.expected.projectId}, but its token now reaches project ${reached}; refusing to use it. Save the right token again with \`harmony download token set\` or \`harmony login --no-activate --token-stdin\`.`
+      );
+    }
     this.accessToken = data.access_token;
-    this.projectId = claimedProject ?? data.project_id;
+    this.projectId = reached;
     this.expiresAt = Date.now() + data.expires_in * 1e3;
     this.userId = payload.sub;
   }
@@ -31667,27 +31679,6 @@ async function createAuthenticatedClient(auth) {
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-function getConfigDir() {
-  return process.env.HARMONY_CONFIG_DIR ?? path.join(os.homedir(), ".harmony");
-}
-function getConfigFile() {
-  return path.join(getConfigDir(), "config.json");
-}
-function loadConfig() {
-  const file = getConfigFile();
-  if (!fs.existsSync(file)) {
-    return { activeProject: null, projects: {} };
-  }
-  const raw = fs.readFileSync(file, "utf-8");
-  return JSON.parse(raw);
-}
-function getActiveProject() {
-  const config = loadConfig();
-  if (!config.activeProject || !config.projects[config.activeProject]) {
-    throw new Error("No active project. Run `harmony login` to add one.");
-  }
-  return config.projects[config.activeProject];
-}
 
 // src/cli/resolve-supabase-target.ts
 var SOURCE_LABEL = {
@@ -31698,7 +31689,7 @@ var SOURCE_LABEL = {
 };
 var SOURCE_REMEDY = {
   flags: "Pass --supabase-anon-key <key> or --supabase-publishable-key <key> alongside --supabase-url \u2014 the URL and its key travel together.",
-  project: "This project has a URL without a public key. Re-run `harmony login --supabase-url <url> --supabase-publishable-key <key> --token <token> --name <name>` (or --supabase-anon-key) to register the key.",
+  project: "This project has a URL without a public key. Re-run `harmony login --supabase-url <url> --supabase-publishable-key <key> --token-stdin --name <name>` (or --supabase-anon-key) to register the key.",
   env: "Set HARMONY_SUPABASE_ANON_KEY or HARMONY_SUPABASE_PUBLISHABLE_KEY in the environment \u2014 it must sit beside HARMONY_SUPABASE_URL.",
   default: "Supply the anon key with the URL."
 };
@@ -31764,37 +31755,207 @@ function normalize(source) {
   return resolvePublicKey(source.anonKey, source.publishableKey, names[source.source]);
 }
 
+// src/cli/config.ts
+function getConfigDir() {
+  return process.env.HARMONY_CONFIG_DIR ?? path.join(os.homedir(), ".harmony");
+}
+function getConfigFile() {
+  return path.join(getConfigDir(), "config.json");
+}
+function loadConfig() {
+  const file = getConfigFile();
+  if (!fs.existsSync(file)) {
+    return { activeProject: null, projects: {} };
+  }
+  const raw = fs.readFileSync(file, "utf-8");
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(`${file} is not valid JSON.`);
+  }
+  return {
+    ...parsed ?? {},
+    activeProject: parsed?.activeProject ?? null,
+    projects: parsed?.projects && typeof parsed.projects === "object" ? parsed.projects : {}
+  };
+}
+
+// src/config/project-resolution.ts
+var ProjectResolutionError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "ProjectResolutionError";
+  }
+};
+var MCP_MISSING_MESSAGE = "HARMONY_API_TOKEN environment variable is required (or set HARMONY_PROJECT to a project stored in ~/.harmony/config.json; `harmony project list` names them)";
+var OPERATOR_MISSING_MESSAGE = "Neither HARMONY_API_TOKEN nor HARMONY_PROJECT is set in the conductor's environment; `harmony conductor` never falls back to the active project. Set HARMONY_API_TOKEN (the conductor's token), or HARMONY_PROJECT to a project stored in ~/.harmony/config.json (`harmony project list` names them).";
+function trimUrl(u) {
+  return u.trim().replace(/\/+$/, "");
+}
+function readConfigOrNull(load) {
+  try {
+    return load();
+  } catch {
+    return null;
+  }
+}
+function usableActive(config) {
+  const name = config?.activeProject;
+  return name && config?.projects?.[name] ? name : null;
+}
+function storedKey(p) {
+  const k = resolvePublicKey(p.supabaseAnonKey, p.supabasePublishableKey, ["supabaseAnonKey", "supabasePublishableKey"]);
+  if (k) return k;
+  if (p.supabaseUrl && trimUrl(p.supabaseUrl) === DEFAULT_SUPABASE_URL2) return DEFAULT_SUPABASE_ANON_KEY;
+  return void 0;
+}
+function checkStoredPair(key, p, env) {
+  const envUrl = harmonyEnv("HARMONY_SUPABASE_URL", env);
+  const envAnon = harmonyEnv("HARMONY_SUPABASE_ANON_KEY", env);
+  const envPub = harmonyEnv("HARMONY_SUPABASE_PUBLISHABLE_KEY", env);
+  if (p.supabaseUrl) {
+    const stored = trimUrl(p.supabaseUrl);
+    if (envUrl && trimUrl(envUrl) !== stored) {
+      throw new ProjectResolutionError(
+        `HARMONY_PROJECT=${key} is stored for ${stored} but HARMONY_SUPABASE_URL says ${trimUrl(envUrl)}; refusing to send its token to another backend. Unset HARMONY_SUPABASE_URL (the stored project carries its own pair), or name the project stored for that backend.`
+      );
+    }
+    const sk = storedKey(p);
+    for (const [name, value] of [["HARMONY_SUPABASE_ANON_KEY", envAnon], ["HARMONY_SUPABASE_PUBLISHABLE_KEY", envPub]]) {
+      if (value && sk && value !== sk) {
+        throw new ProjectResolutionError(
+          `HARMONY_PROJECT=${key} is stored for ${stored} with its own public key, but ${name} in the environment is a different key; refusing. Unset ${name} (the stored project carries its own pair).`
+        );
+      }
+    }
+  }
+  const target = resolveSupabaseTarget({ flags: {}, project: p, env });
+  if (p.verifiedUrl && trimUrl(target.url) !== trimUrl(p.verifiedUrl)) {
+    const from = target.source === "env" ? "HARMONY_SUPABASE_URL" : target.source === "default" ? "the built-in default" : "its stored Supabase settings";
+    throw new ProjectResolutionError(
+      `HARMONY_PROJECT=${key} was saved against ${trimUrl(p.verifiedUrl)} but this session would use ${trimUrl(target.url)} (from ${from}); refusing to send its token to another backend. Set HARMONY_SUPABASE_URL (and its key) for ${trimUrl(p.verifiedUrl)}, or name the project stored for this backend.`
+    );
+  }
+  return target;
+}
+function resolveProject(opts) {
+  const env = opts.env ?? process.env;
+  const load = opts.loadConfig ?? loadConfig;
+  const envToken = harmonyEnv("HARMONY_API_TOKEN", env);
+  if (envToken) {
+    const config2 = opts.surface === "cli" ? readConfigOrNull(load) : null;
+    const pairHere = opts.surface !== "mcp";
+    const active2 = usableActive(config2);
+    const activeToken = active2 ? config2?.projects[active2]?.token : void 0;
+    return {
+      source: "env-token",
+      key: null,
+      token: envToken,
+      project: null,
+      target: pairHere ? resolveSupabaseTarget({ flags: {}, project: void 0, env }) : null,
+      activeProject: active2,
+      overridesActive: Boolean(active2 && activeToken !== envToken)
+    };
+  }
+  const wanted = harmonyEnv("HARMONY_PROJECT", env)?.trim();
+  if (wanted) {
+    let config2;
+    try {
+      config2 = load();
+    } catch (e) {
+      throw new ProjectResolutionError(
+        `HARMONY_PROJECT=${wanted} is set but ${getConfigFile()} cannot be read: ${e.message}`
+      );
+    }
+    const p2 = config2.projects[wanted];
+    if (!p2 || typeof p2.token !== "string" || p2.token.length === 0) {
+      const stored = Object.keys(config2.projects);
+      throw new ProjectResolutionError(
+        `HARMONY_PROJECT=${wanted} names no project stored in ${getConfigFile()}` + (stored.length ? ` (stored: ${stored.join(", ")})` : " (none is stored)") + ". Run `harmony project list`, or save its token with `harmony login --no-activate --token-stdin`."
+      );
+    }
+    const target2 = checkStoredPair(wanted, p2, env);
+    const active2 = usableActive(config2);
+    return {
+      source: "harmony-project",
+      key: wanted,
+      token: p2.token,
+      project: p2,
+      target: target2,
+      expectedProjectId: p2.projectId,
+      expectedLabel: `HARMONY_PROJECT=${wanted}`,
+      activeProject: active2,
+      overridesActive: Boolean(active2 && active2 !== wanted)
+    };
+  }
+  if (opts.surface === "mcp") {
+    throw new ProjectResolutionError(MCP_MISSING_MESSAGE);
+  }
+  if (opts.surface === "conductor-operator") {
+    resolveSupabaseTarget({ flags: {}, project: void 0, env });
+    throw new ProjectResolutionError(OPERATOR_MISSING_MESSAGE);
+  }
+  const config = load();
+  const active = usableActive(config);
+  if (!active) {
+    const stored = Object.keys(config.projects);
+    if (stored.length > 0) {
+      throw new Error(`No active project. Run \`harmony project switch <name>\` to pick one of the stored projects: ${stored.join(", ")}.`);
+    }
+    throw new Error("No active project. Run `harmony login` to add one.");
+  }
+  const p = config.projects[active];
+  const target = resolveSupabaseTarget({ flags: {}, project: p, env });
+  if (p.verifiedUrl && trimUrl(target.url) !== trimUrl(p.verifiedUrl)) {
+    const from = target.source === "env" ? "HARMONY_SUPABASE_URL" : target.source === "default" ? "the built-in default" : "its stored Supabase settings";
+    throw new ProjectResolutionError(
+      `The active project "${active}" was saved against ${trimUrl(p.verifiedUrl)} but this call would use ${trimUrl(target.url)} (from ${from}); refusing to send its token to another backend. Unset HARMONY_SUPABASE_URL (and its key), or switch to the project stored for that backend.`
+    );
+  }
+  return {
+    source: "active-project",
+    key: active,
+    token: p.token,
+    project: p,
+    target,
+    activeProject: active,
+    overridesActive: false
+  };
+}
+function overrideNotice2(r) {
+  if (!r.overridesActive) return null;
+  if (r.source === "env-token") {
+    return `harmony: using HARMONY_API_TOKEN from the environment, not the active project "${r.activeProject}" (the environment wins; unset HARMONY_API_TOKEN to use "${r.activeProject}")`;
+  }
+  return `harmony: using HARMONY_PROJECT=${r.key} from the environment, not the active project "${r.activeProject}" (the environment wins; unset HARMONY_PROJECT to use "${r.activeProject}")`;
+}
+
 // src/cli/auth.ts
 var fallbackNoticePrinted = false;
 async function getAuthenticatedContext(projectConfig) {
   let project;
   let usedFallback = false;
+  let target;
+  let expected = {};
   if (projectConfig) {
     project = projectConfig;
+    target = resolveSupabaseTarget({ flags: {}, project });
   } else {
-    try {
-      project = getActiveProject();
-    } catch (configErr) {
-      const token = harmonyEnv("HARMONY_API_TOKEN");
-      if (!token) {
-        throw configErr;
+    const resolved = resolveProject({ surface: "cli" });
+    usedFallback = resolved.source === "env-token";
+    project = resolved.project ?? { name: "(env token)", token: resolved.token };
+    target = resolved.target ?? resolveSupabaseTarget({ flags: {}, project: void 0 });
+    expected = { expectedProjectId: resolved.expectedProjectId, expectedLabel: resolved.expectedLabel };
+    if (!fallbackNoticePrinted) {
+      const notice = overrideNotice2(resolved) ?? (usedFallback && !resolved.activeProject ? "harmony: using HARMONY_API_TOKEN (no active project configured)" : null);
+      if (notice) {
+        console.error(notice);
+        fallbackNoticePrinted = true;
       }
-      project = {
-        name: "(env token)",
-        token
-      };
-      usedFallback = true;
     }
   }
-  const target = resolveSupabaseTarget({
-    flags: {},
-    project: usedFallback ? void 0 : project
-  });
-  if (usedFallback && !fallbackNoticePrinted) {
-    console.error("harmony: using HARMONY_API_TOKEN (no active project configured)");
-    fallbackNoticePrinted = true;
-  }
-  const auth = new HarmonyAuth(project.token, target.url, target.anonKey);
+  const auth = new HarmonyAuth(project.token, target.url, target.anonKey, expected);
   let client;
   try {
     client = await createAuthenticatedClient(auth);

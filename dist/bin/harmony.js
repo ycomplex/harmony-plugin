@@ -16941,14 +16941,14 @@ var require_parser = __commonJS({
             case "scalar":
             case "single-quoted-scalar":
             case "double-quoted-scalar": {
-              const fs2 = this.flowScalar(this.type);
+              const fs3 = this.flowScalar(this.type);
               if (atNextItem || it2.value) {
-                map.items.push({ start, key: fs2, sep: [] });
+                map.items.push({ start, key: fs3, sep: [] });
                 this.onKeyLine = true;
               } else if (it2.sep) {
-                this.stack.push(fs2);
+                this.stack.push(fs3);
               } else {
-                Object.assign(it2, { key: fs2, sep: [] });
+                Object.assign(it2, { key: fs3, sep: [] });
                 this.onKeyLine = true;
               }
               return;
@@ -17076,13 +17076,13 @@ var require_parser = __commonJS({
             case "scalar":
             case "single-quoted-scalar":
             case "double-quoted-scalar": {
-              const fs2 = this.flowScalar(this.type);
+              const fs3 = this.flowScalar(this.type);
               if (!it2 || it2.value)
-                fc.items.push({ start: [], key: fs2, sep: [] });
+                fc.items.push({ start: [], key: fs3, sep: [] });
               else if (it2.sep)
-                this.stack.push(fs2);
+                this.stack.push(fs3);
               else
-                Object.assign(it2, { key: fs2, sep: [] });
+                Object.assign(it2, { key: fs3, sep: [] });
               return;
             }
             case "flow-map-end":
@@ -18508,7 +18508,7 @@ var require_command = __commonJS({
     var EventEmitter = __require("node:events").EventEmitter;
     var childProcess = __require("node:child_process");
     var path5 = __require("node:path");
-    var fs2 = __require("node:fs");
+    var fs3 = __require("node:fs");
     var process3 = __require("node:process");
     var { Argument: Argument2, humanReadableArgName } = require_argument();
     var { CommanderError: CommanderError2 } = require_error();
@@ -19489,7 +19489,7 @@ Expecting one of '${allowedValues.join("', '")}'`);
        * @param {string} subcommandName
        */
       _checkForMissingExecutable(executableFile, executableDir, subcommandName) {
-        if (fs2.existsSync(executableFile)) return;
+        if (fs3.existsSync(executableFile)) return;
         const executableDirMessage = executableDir ? `searched for local subcommand relative to directory '${executableDir}'` : "no directory for search for local subcommand, use .executableDir() to supply a custom directory";
         const executableMissing = `'${executableFile}' does not exist
  - if '${subcommandName}' is not meant to be an executable command, remove description parameter from '.command()' and use '.description()' instead
@@ -19508,10 +19508,10 @@ Expecting one of '${allowedValues.join("', '")}'`);
         const sourceExt = [".js", ".ts", ".tsx", ".mjs", ".cjs"];
         function findFile(baseDir, baseName) {
           const localBin = path5.resolve(baseDir, baseName);
-          if (fs2.existsSync(localBin)) return localBin;
+          if (fs3.existsSync(localBin)) return localBin;
           if (sourceExt.includes(path5.extname(baseName))) return void 0;
           const foundExt = sourceExt.find(
-            (ext2) => fs2.existsSync(`${localBin}${ext2}`)
+            (ext2) => fs3.existsSync(`${localBin}${ext2}`)
           );
           if (foundExt) return `${localBin}${foundExt}`;
           return void 0;
@@ -19523,7 +19523,7 @@ Expecting one of '${allowedValues.join("', '")}'`);
         if (this._scriptPath) {
           let resolvedScriptPath;
           try {
-            resolvedScriptPath = fs2.realpathSync(this._scriptPath);
+            resolvedScriptPath = fs3.realpathSync(this._scriptPath);
           } catch {
             resolvedScriptPath = this._scriptPath;
           }
@@ -29244,12 +29244,12 @@ var require_dist2 = __commonJS({
         throw new Error(`Unknown format "${name}"`);
       return f2;
     };
-    function addFormats(ajv, list, fs2, exportName) {
+    function addFormats(ajv, list, fs3, exportName) {
       var _a2;
       var _b;
       (_a2 = (_b = ajv.opts.code).formats) !== null && _a2 !== void 0 ? _a2 : _b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`;
       for (const f2 of list)
-        ajv.addFormat(f2, fs2[f2]);
+        ajv.addFormat(f2, fs3[f2]);
     }
     module.exports = exports = formatsPlugin;
     Object.defineProperty(exports, "__esModule", { value: true });
@@ -29808,10 +29808,16 @@ var HarmonyAuth = class {
   // pair": the environment (then the built-in default) supplies it, exactly as before B-1025.
   supabaseUrl;
   supabaseAnonKey;
-  constructor(apiToken, supabaseUrl, supabaseAnonKey) {
+  // B-1501: the project id a stored entry was saved with. When set, an exchange that reaches a
+  // different project is refused, naming both — the token in that entry is not the one that was saved.
+  expected;
+  constructor(apiToken, supabaseUrl, supabaseAnonKey, opts) {
     this.apiToken = apiToken;
     this.supabaseUrl = supabaseUrl;
     this.supabaseAnonKey = supabaseAnonKey;
+    if (opts?.expectedProjectId) {
+      this.expected = { projectId: opts.expectedProjectId, label: opts.expectedLabel ?? "the stored project" };
+    }
   }
   /** B-1025: the Supabase URL for THIS call — an explicit pair wins, then the environment (read
    *  per call, so a later change is honoured), then the built-in default. */
@@ -29888,8 +29894,14 @@ var HarmonyAuth = class {
         `Token exchange returned a JWT scoped to project ${claimedProject} but a body naming project ${data.project_id}; refusing to use either.`
       );
     }
+    const reached = claimedProject ?? data.project_id;
+    if (this.expected && reached !== this.expected.projectId) {
+      throw new Error(
+        `${this.expected.label} was saved for project ${this.expected.projectId}, but its token now reaches project ${reached}; refusing to use it. Save the right token again with \`harmony download token set\` or \`harmony login --no-activate --token-stdin\`.`
+      );
+    }
     this.accessToken = data.access_token;
-    this.projectId = claimedProject ?? data.project_id;
+    this.projectId = reached;
     this.expiresAt = Date.now() + data.expires_in * 1e3;
     this.userId = payload2.sub;
   }
@@ -38121,69 +38133,6 @@ async function createAuthenticatedClient(auth2) {
 import fs from "node:fs";
 import path from "node:path";
 import os2 from "node:os";
-function getConfigDir() {
-  return process.env.HARMONY_CONFIG_DIR ?? path.join(os2.homedir(), ".harmony");
-}
-function getConfigFile() {
-  return path.join(getConfigDir(), "config.json");
-}
-function loadConfig() {
-  const file = getConfigFile();
-  if (!fs.existsSync(file)) {
-    return { activeProject: null, projects: {} };
-  }
-  const raw = fs.readFileSync(file, "utf-8");
-  return JSON.parse(raw);
-}
-function saveConfig(config2) {
-  const dir = getConfigDir();
-  fs.mkdirSync(dir, { recursive: true, mode: 448 });
-  fs.writeFileSync(
-    path.join(dir, "config.json"),
-    JSON.stringify(config2, null, 2) + "\n",
-    { mode: 384 }
-  );
-}
-function addProject(name, token, opts) {
-  const config2 = loadConfig();
-  config2.projects[name] = { name, token, ...opts };
-  config2.activeProject = name;
-  saveConfig(config2);
-}
-function removeProject(name) {
-  const config2 = loadConfig();
-  if (!config2.projects[name]) {
-    throw new Error(`Project "${name}" not found in config.`);
-  }
-  delete config2.projects[name];
-  if (config2.activeProject === name) {
-    const remaining = Object.keys(config2.projects);
-    config2.activeProject = remaining.length > 0 ? remaining[0] : null;
-  }
-  saveConfig(config2);
-}
-function switchProject(name) {
-  const config2 = loadConfig();
-  if (!config2.projects[name]) {
-    throw new Error(`Project "${name}" not found in config. Run \`harmony login\` first.`);
-  }
-  config2.activeProject = name;
-  saveConfig(config2);
-}
-function getActiveProject() {
-  const config2 = loadConfig();
-  if (!config2.activeProject || !config2.projects[config2.activeProject]) {
-    throw new Error("No active project. Run `harmony login` to add one.");
-  }
-  return config2.projects[config2.activeProject];
-}
-function listProjects() {
-  const config2 = loadConfig();
-  return Object.keys(config2.projects).map((name) => ({
-    name,
-    active: name === config2.activeProject
-  }));
-}
 
 // src/cli/resolve-supabase-target.ts
 var SOURCE_LABEL = {
@@ -38194,7 +38143,7 @@ var SOURCE_LABEL = {
 };
 var SOURCE_REMEDY = {
   flags: "Pass --supabase-anon-key <key> or --supabase-publishable-key <key> alongside --supabase-url \u2014 the URL and its key travel together.",
-  project: "This project has a URL without a public key. Re-run `harmony login --supabase-url <url> --supabase-publishable-key <key> --token <token> --name <name>` (or --supabase-anon-key) to register the key.",
+  project: "This project has a URL without a public key. Re-run `harmony login --supabase-url <url> --supabase-publishable-key <key> --token-stdin --name <name>` (or --supabase-anon-key) to register the key.",
   env: "Set HARMONY_SUPABASE_ANON_KEY or HARMONY_SUPABASE_PUBLISHABLE_KEY in the environment \u2014 it must sit beside HARMONY_SUPABASE_URL.",
   default: "Supply the anon key with the URL."
 };
@@ -38260,37 +38209,334 @@ function normalize(source) {
   return resolvePublicKey(source.anonKey, source.publishableKey, names[source.source]);
 }
 
+// src/config/legacy-update.ts
+function legacyUpdateLine(key, projectId) {
+  return `Updated the entry "${key}" in place: it was saved before project ids were recorded, and it now holds project ${projectId}.`;
+}
+
+// src/cli/config.ts
+function getConfigDir() {
+  return process.env.HARMONY_CONFIG_DIR ?? path.join(os2.homedir(), ".harmony");
+}
+function getConfigFile() {
+  return path.join(getConfigDir(), "config.json");
+}
+function loadConfig() {
+  const file = getConfigFile();
+  if (!fs.existsSync(file)) {
+    return { activeProject: null, projects: {} };
+  }
+  const raw = fs.readFileSync(file, "utf-8");
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(`${file} is not valid JSON.`);
+  }
+  return {
+    ...parsed ?? {},
+    activeProject: parsed?.activeProject ?? null,
+    projects: parsed?.projects && typeof parsed.projects === "object" ? parsed.projects : {}
+  };
+}
+function saveConfig(config2) {
+  const dir = getConfigDir();
+  fs.mkdirSync(dir, { recursive: true, mode: 448 });
+  const file = path.join(dir, "config.json");
+  let target = file;
+  try {
+    target = fs.realpathSync(file);
+  } catch {
+  }
+  const tmp = path.join(path.dirname(target), `.config.json.tmp-${process.pid}-${Math.random().toString(36).slice(2, 10)}`);
+  const fd = fs.openSync(tmp, "wx", 384);
+  try {
+    try {
+      fs.writeSync(fd, JSON.stringify(config2, null, 2) + "\n");
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.chmodSync(tmp, 384);
+    fs.renameSync(tmp, target);
+  } catch (e) {
+    fs.rmSync(tmp, { force: true });
+    throw e;
+  }
+}
+function trimUrl(u) {
+  return u.trim().replace(/\/+$/, "");
+}
+function backendOf(p) {
+  if (p.verifiedUrl) return trimUrl(p.verifiedUrl);
+  if (p.supabaseUrl) return trimUrl(p.supabaseUrl);
+  try {
+    return trimUrl(resolveSupabaseTarget({ flags: {}, project: void 0 }).url);
+  } catch {
+    return null;
+  }
+}
+function sameProject(existing, key, input) {
+  if (existing.projectId && input.projectId) return existing.projectId === input.projectId;
+  if (!input.projectId) return true;
+  if (existing.token === input.token) return true;
+  if (key !== input.name || !input.verifiedUrl) return false;
+  return backendOf(existing) === trimUrl(input.verifiedUrl);
+}
+function saveProject(input) {
+  const config2 = loadConfig();
+  let key = input.name;
+  if (!input.explicitName && input.projectId) {
+    const byId = Object.keys(config2.projects).find((k) => config2.projects[k]?.projectId === input.projectId);
+    if (byId) key = byId;
+  }
+  let collidedWith;
+  const existing = config2.projects[key];
+  if (existing && !sameProject(existing, key, input)) {
+    collidedWith = key;
+    const base2 = input.projectId ? `${input.name}-${input.projectId.replace(/[^A-Za-z0-9]/g, "").slice(0, 8)}` : `${input.name}-2`;
+    key = base2;
+    for (let n = 2; config2.projects[key] && !sameProject(config2.projects[key], key, input); n++) key = `${base2}-${n}`;
+  }
+  const previous = config2.projects[key];
+  const entry = { name: key, token: input.token };
+  const flagsGiven = input.supabaseUrl !== void 0 || input.supabaseAnonKey !== void 0 || input.supabasePublishableKey !== void 0;
+  const pair = flagsGiven ? input : previous ?? {};
+  if (pair.supabaseUrl !== void 0) entry.supabaseUrl = pair.supabaseUrl;
+  if (pair.supabaseAnonKey !== void 0) entry.supabaseAnonKey = pair.supabaseAnonKey;
+  if (pair.supabasePublishableKey !== void 0) entry.supabasePublishableKey = pair.supabasePublishableKey;
+  if (input.projectId) entry.projectId = input.projectId;
+  if (input.verifiedUrl) entry.verifiedUrl = input.verifiedUrl;
+  config2.projects[key] = entry;
+  const activated = input.activate;
+  if (activated) config2.activeProject = key;
+  saveConfig(config2);
+  const updatedLegacyFor = previous && !previous.projectId && input.projectId ? input.projectId : void 0;
+  return updatedLegacyFor ? { key, collidedWith, activated, updatedLegacyFor } : { key, collidedWith, activated };
+}
+function removeProject(name) {
+  const config2 = loadConfig();
+  if (!config2.projects[name]) {
+    throw new Error(`Project "${name}" not found in config.`);
+  }
+  delete config2.projects[name];
+  if (config2.activeProject === name) {
+    const remaining = Object.keys(config2.projects);
+    config2.activeProject = remaining.length > 0 ? remaining[0] : null;
+  }
+  saveConfig(config2);
+}
+function switchProject(name) {
+  const config2 = loadConfig();
+  if (!config2.projects[name]) {
+    throw new Error(`Project "${name}" not found in config. Run \`harmony login\` first.`);
+  }
+  config2.activeProject = name;
+  saveConfig(config2);
+}
+function listProjects() {
+  const config2 = loadConfig();
+  return Object.keys(config2.projects).map((name) => ({
+    name,
+    active: name === config2.activeProject,
+    download: name === config2.downloadProject
+  }));
+}
+
+// src/config/project-resolution.ts
+var ProjectResolutionError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "ProjectResolutionError";
+  }
+};
+var MCP_MISSING_MESSAGE = "HARMONY_API_TOKEN environment variable is required (or set HARMONY_PROJECT to a project stored in ~/.harmony/config.json; `harmony project list` names them)";
+var OPERATOR_MISSING_MESSAGE = "Neither HARMONY_API_TOKEN nor HARMONY_PROJECT is set in the conductor's environment; `harmony conductor` never falls back to the active project. Set HARMONY_API_TOKEN (the conductor's token), or HARMONY_PROJECT to a project stored in ~/.harmony/config.json (`harmony project list` names them).";
+function trimUrl2(u) {
+  return u.trim().replace(/\/+$/, "");
+}
+function readConfigOrNull(load) {
+  try {
+    return load();
+  } catch {
+    return null;
+  }
+}
+function usableActive(config2) {
+  const name = config2?.activeProject;
+  return name && config2?.projects?.[name] ? name : null;
+}
+function storedKey(p) {
+  const k = resolvePublicKey(p.supabaseAnonKey, p.supabasePublishableKey, ["supabaseAnonKey", "supabasePublishableKey"]);
+  if (k) return k;
+  if (p.supabaseUrl && trimUrl2(p.supabaseUrl) === DEFAULT_SUPABASE_URL) return DEFAULT_SUPABASE_ANON_KEY;
+  return void 0;
+}
+function checkStoredPair(key, p, env2) {
+  const envUrl = harmonyEnv("HARMONY_SUPABASE_URL", env2);
+  const envAnon = harmonyEnv("HARMONY_SUPABASE_ANON_KEY", env2);
+  const envPub = harmonyEnv("HARMONY_SUPABASE_PUBLISHABLE_KEY", env2);
+  if (p.supabaseUrl) {
+    const stored = trimUrl2(p.supabaseUrl);
+    if (envUrl && trimUrl2(envUrl) !== stored) {
+      throw new ProjectResolutionError(
+        `HARMONY_PROJECT=${key} is stored for ${stored} but HARMONY_SUPABASE_URL says ${trimUrl2(envUrl)}; refusing to send its token to another backend. Unset HARMONY_SUPABASE_URL (the stored project carries its own pair), or name the project stored for that backend.`
+      );
+    }
+    const sk = storedKey(p);
+    for (const [name, value] of [["HARMONY_SUPABASE_ANON_KEY", envAnon], ["HARMONY_SUPABASE_PUBLISHABLE_KEY", envPub]]) {
+      if (value && sk && value !== sk) {
+        throw new ProjectResolutionError(
+          `HARMONY_PROJECT=${key} is stored for ${stored} with its own public key, but ${name} in the environment is a different key; refusing. Unset ${name} (the stored project carries its own pair).`
+        );
+      }
+    }
+  }
+  const target = resolveSupabaseTarget({ flags: {}, project: p, env: env2 });
+  if (p.verifiedUrl && trimUrl2(target.url) !== trimUrl2(p.verifiedUrl)) {
+    const from = target.source === "env" ? "HARMONY_SUPABASE_URL" : target.source === "default" ? "the built-in default" : "its stored Supabase settings";
+    throw new ProjectResolutionError(
+      `HARMONY_PROJECT=${key} was saved against ${trimUrl2(p.verifiedUrl)} but this session would use ${trimUrl2(target.url)} (from ${from}); refusing to send its token to another backend. Set HARMONY_SUPABASE_URL (and its key) for ${trimUrl2(p.verifiedUrl)}, or name the project stored for this backend.`
+    );
+  }
+  return target;
+}
+function resolveProject(opts) {
+  const env2 = opts.env ?? process.env;
+  const load = opts.loadConfig ?? loadConfig;
+  const envToken = harmonyEnv("HARMONY_API_TOKEN", env2);
+  if (envToken) {
+    const config3 = opts.surface === "cli" ? readConfigOrNull(load) : null;
+    const pairHere = opts.surface !== "mcp";
+    const active2 = usableActive(config3);
+    const activeToken = active2 ? config3?.projects[active2]?.token : void 0;
+    return {
+      source: "env-token",
+      key: null,
+      token: envToken,
+      project: null,
+      target: pairHere ? resolveSupabaseTarget({ flags: {}, project: void 0, env: env2 }) : null,
+      activeProject: active2,
+      overridesActive: Boolean(active2 && activeToken !== envToken)
+    };
+  }
+  const wanted = harmonyEnv("HARMONY_PROJECT", env2)?.trim();
+  if (wanted) {
+    let config3;
+    try {
+      config3 = load();
+    } catch (e) {
+      throw new ProjectResolutionError(
+        `HARMONY_PROJECT=${wanted} is set but ${getConfigFile()} cannot be read: ${e.message}`
+      );
+    }
+    const p2 = config3.projects[wanted];
+    if (!p2 || typeof p2.token !== "string" || p2.token.length === 0) {
+      const stored = Object.keys(config3.projects);
+      throw new ProjectResolutionError(
+        `HARMONY_PROJECT=${wanted} names no project stored in ${getConfigFile()}` + (stored.length ? ` (stored: ${stored.join(", ")})` : " (none is stored)") + ". Run `harmony project list`, or save its token with `harmony login --no-activate --token-stdin`."
+      );
+    }
+    const target2 = checkStoredPair(wanted, p2, env2);
+    const active2 = usableActive(config3);
+    return {
+      source: "harmony-project",
+      key: wanted,
+      token: p2.token,
+      project: p2,
+      target: target2,
+      expectedProjectId: p2.projectId,
+      expectedLabel: `HARMONY_PROJECT=${wanted}`,
+      activeProject: active2,
+      overridesActive: Boolean(active2 && active2 !== wanted)
+    };
+  }
+  if (opts.surface === "mcp") {
+    throw new ProjectResolutionError(MCP_MISSING_MESSAGE);
+  }
+  if (opts.surface === "conductor-operator") {
+    resolveSupabaseTarget({ flags: {}, project: void 0, env: env2 });
+    throw new ProjectResolutionError(OPERATOR_MISSING_MESSAGE);
+  }
+  const config2 = load();
+  const active = usableActive(config2);
+  if (!active) {
+    const stored = Object.keys(config2.projects);
+    if (stored.length > 0) {
+      throw new Error(`No active project. Run \`harmony project switch <name>\` to pick one of the stored projects: ${stored.join(", ")}.`);
+    }
+    throw new Error("No active project. Run `harmony login` to add one.");
+  }
+  const p = config2.projects[active];
+  const target = resolveSupabaseTarget({ flags: {}, project: p, env: env2 });
+  if (p.verifiedUrl && trimUrl2(target.url) !== trimUrl2(p.verifiedUrl)) {
+    const from = target.source === "env" ? "HARMONY_SUPABASE_URL" : target.source === "default" ? "the built-in default" : "its stored Supabase settings";
+    throw new ProjectResolutionError(
+      `The active project "${active}" was saved against ${trimUrl2(p.verifiedUrl)} but this call would use ${trimUrl2(target.url)} (from ${from}); refusing to send its token to another backend. Unset HARMONY_SUPABASE_URL (and its key), or switch to the project stored for that backend.`
+    );
+  }
+  return {
+    source: "active-project",
+    key: active,
+    token: p.token,
+    project: p,
+    target,
+    activeProject: active,
+    overridesActive: false
+  };
+}
+function describeSource(r) {
+  switch (r.source) {
+    case "env-token":
+      return r.activeProject ? `HARMONY_API_TOKEN in the environment (it wins over the active project "${r.activeProject}")` : "HARMONY_API_TOKEN in the environment (no active project is configured)";
+    case "harmony-project":
+      return r.activeProject && r.activeProject !== r.key ? `HARMONY_PROJECT=${r.key} in the environment (it wins over the active project "${r.activeProject}")` : `HARMONY_PROJECT=${r.key} in the environment`;
+    case "active-project":
+      return `the active project "${r.key}" (neither HARMONY_API_TOKEN nor HARMONY_PROJECT is set)`;
+  }
+}
+function overrideNotice(r) {
+  if (!r.overridesActive) return null;
+  if (r.source === "env-token") {
+    return `harmony: using HARMONY_API_TOKEN from the environment, not the active project "${r.activeProject}" (the environment wins; unset HARMONY_API_TOKEN to use "${r.activeProject}")`;
+  }
+  return `harmony: using HARMONY_PROJECT=${r.key} from the environment, not the active project "${r.activeProject}" (the environment wins; unset HARMONY_PROJECT to use "${r.activeProject}")`;
+}
+function resolvedCliSupabaseUrl(opts = {}) {
+  const env2 = opts.env ?? process.env;
+  try {
+    const r = resolveProject({ surface: "cli", env: env2, loadConfig: opts.loadConfig });
+    return (r.target ?? resolveSupabaseTarget({ flags: {}, project: void 0, env: env2 })).url;
+  } catch {
+    return void 0;
+  }
+}
+
 // src/cli/auth.ts
 var fallbackNoticePrinted = false;
 async function getAuthenticatedContext(projectConfig) {
   let project;
   let usedFallback = false;
+  let target;
+  let expected = {};
   if (projectConfig) {
     project = projectConfig;
+    target = resolveSupabaseTarget({ flags: {}, project });
   } else {
-    try {
-      project = getActiveProject();
-    } catch (configErr) {
-      const token = harmonyEnv("HARMONY_API_TOKEN");
-      if (!token) {
-        throw configErr;
+    const resolved = resolveProject({ surface: "cli" });
+    usedFallback = resolved.source === "env-token";
+    project = resolved.project ?? { name: "(env token)", token: resolved.token };
+    target = resolved.target ?? resolveSupabaseTarget({ flags: {}, project: void 0 });
+    expected = { expectedProjectId: resolved.expectedProjectId, expectedLabel: resolved.expectedLabel };
+    if (!fallbackNoticePrinted) {
+      const notice = overrideNotice(resolved) ?? (usedFallback && !resolved.activeProject ? "harmony: using HARMONY_API_TOKEN (no active project configured)" : null);
+      if (notice) {
+        console.error(notice);
+        fallbackNoticePrinted = true;
       }
-      project = {
-        name: "(env token)",
-        token
-      };
-      usedFallback = true;
     }
   }
-  const target = resolveSupabaseTarget({
-    flags: {},
-    project: usedFallback ? void 0 : project
-  });
-  if (usedFallback && !fallbackNoticePrinted) {
-    console.error("harmony: using HARMONY_API_TOKEN (no active project configured)");
-    fallbackNoticePrinted = true;
-  }
-  const auth2 = new HarmonyAuth(project.token, target.url, target.anonKey);
+  const auth2 = new HarmonyAuth(project.token, target.url, target.anonKey, expected);
   let client;
   try {
     client = await createAuthenticatedClient(auth2);
@@ -52629,8 +52875,28 @@ function formatDate(dateStr) {
   return d.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
 }
 
+// src/cli/hidden-prompt.ts
+import readline from "node:readline/promises";
+async function promptHidden(question) {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stderr, terminal: true });
+  const anyRl = rl;
+  let muted = false;
+  anyRl._writeToOutput = (s) => {
+    if (!muted || s.includes("\n")) anyRl.output.write(muted ? "\n" : s);
+  };
+  try {
+    const p = rl.question(question);
+    muted = true;
+    return await p;
+  } finally {
+    rl.close();
+  }
+}
+var TOKEN_PROMPT = "Harmony API token (from Project Settings \u2192 Connect AI; it is not shown): ";
+
 // src/cli/commands/auth.ts
-async function verifyAndStoreToken(token, target, flags = {}) {
+import fs2 from "node:fs";
+async function verifyAndStoreToken(token, target, flags = {}, opts = {}) {
   const auth2 = new HarmonyAuth(token, target.url, target.anonKey);
   const client = await createAuthenticatedClient(auth2);
   const projectId = auth2.getProjectId();
@@ -52639,19 +52905,82 @@ async function verifyAndStoreToken(token, target, flags = {}) {
     const project = await getProject(client, projectId);
     name = project.name.toLowerCase().replace(/\s+/g, "-");
   }
-  addProject(name, token, {
+  const saved = saveProject({
+    name,
+    token,
+    projectId,
+    verifiedUrl: target.url,
     supabaseUrl: flags.supabaseUrl,
     supabaseAnonKey: flags.supabaseAnonKey,
-    supabasePublishableKey: flags.supabasePublishableKey
+    supabasePublishableKey: flags.supabasePublishableKey,
+    explicitName: Boolean(flags.name),
+    activate: opts.activate ?? true
   });
-  return name;
+  return { ...saved, projectId };
 }
-async function loginWithToken(token) {
+function describeStored(s) {
+  const lines = [];
+  if (s.updatedLegacyFor) lines.push(legacyUpdateLine(s.key, s.updatedLegacyFor));
+  if (s.collidedWith) {
+    lines.push(`A different project is already stored as "${s.collidedWith}" and was left as it is; this one is stored as "${s.key}".`);
+  }
+  lines.push(`To use it in a project's sessions, put HARMONY_PROJECT=${s.key} in that project's .claude/settings.local.json env.`);
+  if (!s.activated) lines.push(...noActiveHint(s.key));
+  return lines;
+}
+function noActiveHint(key) {
+  let active;
+  try {
+    const c = loadConfig();
+    active = c.activeProject && c.projects[c.activeProject] ? c.activeProject : null;
+  } catch {
+    active = null;
+  }
+  return active ? [] : [`No project is active for terminal commands outside a session. To use this one there, run: harmony project switch ${key}`];
+}
+async function saveTokenNoActivate(token) {
   const target = resolveSupabaseTarget({ flags: {}, project: void 0 });
-  return verifyAndStoreToken(token, target);
+  return verifyAndStoreToken(token, target, {}, { activate: false });
+}
+function currentSource() {
+  try {
+    return { resolved: resolveProject({ surface: "cli" }), error: null };
+  } catch (e) {
+    return { resolved: null, error: e.message };
+  }
+}
+var loginInput = {
+  stdin: () => process.stdin,
+  isTTY: () => Boolean(process.stdin.isTTY),
+  promptHidden
+};
+async function readLoginToken() {
+  if (loginInput.isTTY()) {
+    const token = (await loginInput.promptHidden(TOKEN_PROMPT)).trim();
+    if (token === "") throw new Error("no token was given.");
+    return token;
+  }
+  return readTokenFromStdin();
+}
+async function readTokenFromStdin(input = loginInput.stdin()) {
+  let data = "";
+  for await (const chunk of input) data += String(chunk);
+  const token = data.replace(/\r?\n$/, "");
+  if (token.trim() === "") throw new Error("--token-stdin read no token from stdin.");
+  return token;
+}
+async function loginToken(opts) {
+  if (opts.token !== void 0 && opts.tokenStdin) {
+    throw new Error("Pass either --token or --token-stdin, not both.");
+  }
+  if (opts.tokenStdin) return readLoginToken();
+  if (opts.token === void 0 || opts.token === "") {
+    throw new Error("Pass --token-stdin: it asks for the token with echo off at a terminal, or reads it from a pipe.");
+  }
+  return opts.token;
 }
 function registerAuthCommands(program3) {
-  program3.command("login").description("Add a project by providing an API token").requiredOption("--token <token>", "Harmony API token").option("--name <name>", "Project name (auto-detected if not provided)").option("--supabase-url <url>", "Custom Supabase URL (advanced)").option("--supabase-anon-key <key>", "Custom Supabase anon key (advanced)").option("--supabase-publishable-key <key>", "Custom Supabase publishable key (advanced)").action(async (opts) => {
+  program3.command("login").description("Add a project by providing an API token").option("--token <token>", "Harmony API token (prefer --token-stdin: an argument can be seen by other processes)").option("--token-stdin", "Read the Harmony API token from stdin (one trailing newline is trimmed); at a terminal, ask for it with echo off", false).option("--name <name>", "Project name (auto-detected if not provided)").option("--supabase-url <url>", "Custom Supabase URL (advanced)").option("--supabase-anon-key <key>", "Custom Supabase anon key (advanced)").option("--supabase-publishable-key <key>", "Custom Supabase publishable key (advanced)").option("--no-activate", "Store the project without making it the active one (B-1501)").action(async (opts) => {
     const json = program3.opts().json;
     try {
       const target = resolveSupabaseTarget({
@@ -52666,11 +52995,13 @@ function registerAuthCommands(program3) {
       if (!json && opts.supabasePublishableKey !== void 0 && target.anonKey !== opts.supabasePublishableKey) {
         console.error(`harmony login: --supabase-publishable-key was overridden by ${target.source}. Pass --supabase-url and --supabase-publishable-key together.`);
       }
-      const name = await verifyAndStoreToken(opts.token, target, opts);
+      const token = await loginToken(opts);
+      const stored = await verifyAndStoreToken(token, target, opts, { activate: opts.activate !== false });
       if (json) {
-        console.log(JSON.stringify({ name, status: "logged_in" }));
+        console.log(JSON.stringify({ name: stored.key, status: "logged_in", active: stored.activated, collided_with: stored.collidedWith ?? null }));
       } else {
-        console.log(source_default.green(`Logged in to project "${name}" (now active).`));
+        console.log(source_default.green(`Logged in to project "${stored.key}"${stored.activated ? " (now active)" : " (stored; the active project is unchanged)"}.`));
+        for (const line2 of describeStored(stored)) console.log(line2);
       }
     } catch (err) {
       if (json) {
@@ -52684,7 +53015,11 @@ function registerAuthCommands(program3) {
   program3.command("logout").description("Remove a project from the CLI").argument("<name>", "Project name to remove").action(async (name) => {
     const json = program3.opts().json;
     try {
+      const pinned = loadConfig().downloadProject === name;
       removeProject(name);
+      if (pinned && !json) {
+        console.error(`Note: "${name}" was the project the plugin download uses. Pin another with \`harmony download token use <project>\` or \`harmony download token set\`.`);
+      }
       if (json) {
         console.log(JSON.stringify({ name, status: "logged_out" }));
       } else {
@@ -52699,30 +53034,99 @@ function registerAuthCommands(program3) {
       process.exit(1);
     }
   });
-  program3.command("projects").description("List all logged-in projects").action(async () => {
-    const json = program3.opts().json;
-    const projects = listProjects();
+  program3.command("projects").description("List all logged-in projects (same as `harmony project list`)").action(async () => {
+    printProjectList(Boolean(program3.opts().json));
+  });
+  program3.command("whoami").description("Say which project and token source this shell uses, and why (names only; no network call)").action(async () => {
+    const json = Boolean(program3.opts().json);
+    const { resolved, error: error2 } = currentSource();
     if (json) {
-      console.log(JSON.stringify(projects, null, 2));
+      console.log(JSON.stringify(resolved ? { source: resolved.source, project: resolved.key, active_project: resolved.activeProject, overrides_active: resolved.overridesActive, supabase_url: resolved.target?.url ?? null, supabase_source: resolved.target?.source ?? null, reason: describeSource(resolved) } : { source: null, error: error2 }, null, 2));
+      if (!resolved) process.exitCode = 1;
       return;
     }
-    if (projects.length === 0) {
-      console.log("No projects configured. Run `harmony login --token <token>` to add one.");
+    if (!resolved) {
+      console.error(source_default.red(`No project: ${error2}`));
+      process.exitCode = 1;
       return;
     }
+    console.log(`Project: ${resolved.key ?? "(the project HARMONY_API_TOKEN belongs to)"}`);
+    console.log(`Source: ${describeSource(resolved)}`);
+    if (resolved.target) console.log(`Supabase: ${resolved.target.url} (${describeTargetSource(resolved.target, resolved.source)})`);
+    console.log("Order: HARMONY_API_TOKEN, then HARMONY_PROJECT, then the active project.");
+  });
+}
+function describeTargetSource(t, source) {
+  const stored = source !== "env-token";
+  switch (t.source) {
+    case "project":
+      return "the pair stored with the project";
+    case "env":
+      return stored ? "HARMONY_SUPABASE_URL in the environment; the project stores no pair" : "HARMONY_SUPABASE_URL in the environment";
+    case "default":
+      return stored ? "the built-in default; the project stores no pair" : "the built-in default";
+    case "flags":
+      return "flags";
+  }
+}
+async function adoptSettingsToken(file, flags = {}) {
+  let raw;
+  try {
+    raw = fs2.readFileSync(file, "utf-8");
+  } catch (e) {
+    throw new Error(`${file} cannot be read (${e.code ?? "error"}).`, { cause: e });
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(`${file} is not valid JSON.`);
+  }
+  const env2 = parsed && typeof parsed === "object" ? parsed.env : void 0;
+  const token = env2 && typeof env2.HARMONY_API_TOKEN === "string" ? env2.HARMONY_API_TOKEN.trim() : "";
+  if (!token) throw new Error(`${file} has no env.HARMONY_API_TOKEN to move. Nothing was changed.`);
+  const str3 = (v2) => typeof v2 === "string" && v2 !== "" ? v2 : void 0;
+  const fromFlags = flags.supabaseUrl !== void 0 || flags.supabaseAnonKey !== void 0 || flags.supabasePublishableKey !== void 0;
+  const pair = fromFlags ? { supabaseUrl: flags.supabaseUrl, supabaseAnonKey: flags.supabaseAnonKey, supabasePublishableKey: flags.supabasePublishableKey } : { supabaseUrl: str3(env2.HARMONY_SUPABASE_URL), supabaseAnonKey: str3(env2.HARMONY_SUPABASE_ANON_KEY), supabasePublishableKey: str3(env2.HARMONY_SUPABASE_PUBLISHABLE_KEY) };
+  const target = resolveSupabaseTarget({
+    flags: { url: pair.supabaseUrl, anonKey: pair.supabaseAnonKey, publishableKey: pair.supabasePublishableKey },
+    project: void 0
+  });
+  try {
+    return await verifyAndStoreToken(token, target, { ...pair, name: flags.name }, { activate: false });
+  } catch (e) {
+    throw new Error(String(e?.message ?? e).split(token).join("<token>"));
+  }
+}
+function printProjectList(json) {
+  const projects = listProjects();
+  const { resolved, error: error2 } = currentSource();
+  if (json) {
+    console.log(JSON.stringify(projects, null, 2));
+    return;
+  }
+  if (projects.length === 0) {
+    console.log("No projects configured. Run `harmony login --token-stdin` to add one (it asks for the token without showing it).");
+  } else {
     console.log(
       formatTable(
         projects.map((p) => ({
           name: p.name,
-          active: p.active ? source_default.green("*") : ""
+          active: p.active ? source_default.green("*") : "",
+          download: p.download ? "download" : ""
         })),
         [
           { key: "active", header: "" },
-          { key: "name", header: "Project" }
+          { key: "name", header: "Project" },
+          { key: "download", header: "" }
         ]
       )
     );
-  });
+  }
+  console.log(resolved ? `In this shell: ${describeSource(resolved)}.` : `In this shell: no project (${error2})`);
+  if (resolved?.overridesActive) {
+    console.error(`harmony: the environment overrides the active project "${resolved.activeProject}" here.`);
+  }
 }
 
 // src/cli/figma-claude-grant.ts
@@ -63913,14 +64317,41 @@ function registerProjectCommands(program3) {
       ])
     );
   });
+  project.command("list").description("List stored projects (names only), the active and download marks, and the source this shell uses").action(async () => {
+    printProjectList(Boolean(program3.opts().json));
+  });
+  project.command("adopt-settings-token").description(
+    "Move the token a project keeps in its .claude/settings.local.json (env.HARMONY_API_TOKEN) into ~/.harmony/config.json: reads it from the file itself (never an argument), checks it, saves it without changing the active project, and prints the key to name with HARMONY_PROJECT. The file is left unchanged (B-1501)."
+  ).option("--file <path>", "The settings file holding env.HARMONY_API_TOKEN", ".claude/settings.local.json").option("--name <name>", "Project name (auto-detected if not provided)").option("--supabase-url <url>", "Supabase URL (default: the file's own HARMONY_SUPABASE_URL, if any)").option("--supabase-anon-key <key>", "Supabase anon key (default: the file's own, if any)").option("--supabase-publishable-key <key>", "Supabase publishable key (default: the file's own, if any)").action(async (opts) => {
+    const json = program3.opts().json;
+    try {
+      const stored = await adoptSettingsToken(opts.file, opts);
+      if (json) {
+        console.log(JSON.stringify({ name: stored.key, status: "stored", active: stored.activated, collided_with: stored.collidedWith ?? null }));
+      } else {
+        console.log(source_default.green(`Stored the token from ${opts.file} as project "${stored.key}" (the active project is unchanged; the file is unchanged).`));
+        for (const line2 of describeStored(stored)) console.log(line2);
+      }
+    } catch (err) {
+      if (json) console.error(JSON.stringify({ error: err.message }));
+      else console.error(source_default.red(`Error: ${err.message}`));
+      process.exit(1);
+    }
+  });
   project.command("switch").description("Switch the active project (local config only)").argument("<name>", "Project name to switch to").action(async (name) => {
     const json = program3.opts().json;
     try {
       switchProject(name);
+      const { resolved } = currentSource();
+      const overridden = resolved && resolved.source !== "active-project" && resolved.key !== name;
       if (json) {
-        console.log(JSON.stringify({ name, status: "switched" }));
+        console.log(JSON.stringify({ name, status: "switched", in_force: resolved?.source ?? null }));
       } else {
         console.log(source_default.green(`Switched to project "${name}".`));
+      }
+      if (overridden) {
+        const v2 = resolved.source === "env-token" ? "HARMONY_API_TOKEN" : `HARMONY_PROJECT=${resolved.key}`;
+        console.error(`harmony: ${v2} is set in this shell and wins over the active project, so commands here still use it, not "${name}". Unset it to use "${name}".`);
       }
     } catch (err) {
       if (json) {
@@ -72028,7 +72459,7 @@ function registerConfigCommands(program3) {
 // src/cli/commands/download.ts
 import { spawn as spawn2 } from "node:child_process";
 import os3 from "node:os";
-import readline from "node:readline/promises";
+import readline2 from "node:readline/promises";
 
 // src/tools/download-switch.ts
 import nodeFs from "node:fs";
@@ -72041,12 +72472,20 @@ var HELPER_FILE = "download-headers.sh";
 var RECORD_FILE = "download-switch.json";
 var BACKUP_SUFFIX = ".before-harmony-download";
 var START_ARGS = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"];
+var PIN_FIX = "Run `harmony download token use <project>` (a project already stored) or `harmony download token set` (a new token).";
 var NO_TOKEN_HELP = [
   "Harmony needs your API token where the download can read it. Do one of these, then run `harmony download switch` again:",
-  "  harmony login --token <your token>        (stores it in ~/.harmony/config.json)",
+  "  harmony download token set               (asks for it without showing it, stores it in ~/.harmony/config.json and pins it)",
   "  or set HARMONY_API_TOKEN in your shell profile (for example ~/.zshrc or ~/.bashrc) and open a new terminal."
 ];
 var PROJECT_DISABLE_HINT = "This project's own settings enable today's copy. In this project run: claude plugin disable harmony-plugin@ycomplex --scope project \u2014 and do not commit the change it makes to .claude/settings.json.";
+function writeTarget(p, fs3) {
+  try {
+    return (fs3.realpathSync ?? nodeFs.realpathSync)(p);
+  } catch {
+    return p;
+  }
+}
 function resolvePaths(deps) {
   const harmonyDir = path4.resolve(deps.cwd, deps.env.HARMONY_CONFIG_DIR || path4.join(deps.homedir, ".harmony"));
   const claudeDir = path4.resolve(deps.cwd, deps.env.CLAUDE_CONFIG_DIR || path4.join(deps.homedir, ".claude"));
@@ -72076,22 +72515,62 @@ function marketplaceUrl(base2) {
 function desiredEntry(url2, helperPath) {
   return { source: { source: "url", url: url2, headersHelper: helperPath }, autoUpdate: true };
 }
+var HELPER_JS = [
+  'const fs = require("fs"); const f = process.argv[1];',
+  'const fix = "Run `harmony download token use <project>` or `harmony download token set`.";',
+  'const fail = (m) => { process.stderr.write("harmony: " + m + " " + fix + "\\n"); process.exit(1); };',
+  // B-1501 fix 5: fail CLOSED. Only an ABSENT file (or a JSON object with no pin) means "no pin";
+  // a file that exists but cannot be read, or is empty / half-written / not JSON, stops here, so a
+  // pinned machine never falls back to HARMONY_API_TOKEN because of a bad read.
+  'let raw = null; try { raw = fs.readFileSync(f, "utf8"); } catch (e) { if (!e || e.code !== "ENOENT") fail(f + " exists but cannot be read (" + ((e && e.code) || "error") + "), so whether a token is pinned is unknown; nothing was sent. Fix its permissions (it should be yours, mode 600)."); }',
+  'let c = null; if (raw !== null) { try { c = JSON.parse(raw); } catch (e) { fail(f + " is empty or not valid JSON (it may be half-written), so whether a token is pinned is unknown; nothing was sent. Try again in a moment; if it stays broken, repair the file."); } }',
+  // B-1501 second pass, F: a file that parses to null, a number, an array or a string is not a config
+  // either: fail closed, as for a half-written file.
+  'if (raw !== null && (c === null || typeof c !== "object" || Array.isArray(c))) fail(f + " does not hold a JSON object (it may be damaged), so whether a token is pinned is unknown; nothing was sent. Repair the file.");',
+  'const ps = c && c.projects && typeof c.projects === "object" ? c.projects : {};',
+  'const has = (p) => p && typeof p.token === "string" && p.token.length > 0;',
+  'const pin = c && typeof c.downloadProject === "string" && c.downloadProject ? c.downloadProject : null;',
+  'let t = "";',
+  'if (pin) { if (!has(ps[pin])) fail("the download is pinned to project \\"" + pin + "\\", but " + f + " holds no token for it."); t = ps[pin].token; }',
+  'else { t = process.env.HARMONY_API_TOKEN || ""; if (!t && c && c.activeProject && has(ps[c.activeProject])) t = ps[c.activeProject].token; if (!t) fail("no Harmony token found."); }',
+  'process.stdout.write(JSON.stringify({ Authorization: "Bearer " + t.replace(/[\\r\\n]/g, "") }));'
+].join("\n");
 function helperScript() {
-  return `#!/bin/sh
-# Written by \`harmony download switch\`. Claude Code runs it to get the header for Harmony's plugin download.
-# It prints {"Authorization":"Bearer <token>"} and nothing else. It holds no token: it reads HARMONY_API_TOKEN,
-# or the active project's token in config.json beside it (where \`harmony login\` stores it).
-t="\${HARMONY_API_TOKEN:-}"
-if [ -z "$t" ]; then
-  t=$(node -e 'try { const c = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); const p = c && c.activeProject && c.projects && c.projects[c.activeProject]; if (p && typeof p.token === "string") process.stdout.write(p.token); } catch (e) {}' "$(dirname "$0")/config.json" 2>/dev/null) || t=""
-fi
-if [ -z "$t" ]; then
-  echo "harmony: no Harmony token found" >&2
-  exit 1
-fi
-t=$(printf '%s' "$t" | tr -d '\\r\\n' | sed -e 's/\\\\/\\\\\\\\/g' -e 's/"/\\\\"/g')
-printf '{"Authorization":"Bearer %s"}' "$t"
-`;
+  return [
+    "#!/bin/sh",
+    "# Written by `harmony download`. Claude Code runs it to get the header for Harmony's plugin download.",
+    '# It prints {"Authorization":"Bearer <token>"} and nothing else. It holds no token: it reads config.json beside it',
+    "# (where `harmony` stores tokens). A pinned download project (downloadProject) is the only source when set;",
+    "# otherwise HARMONY_API_TOKEN, then the active project. Change the pin: harmony download token use|set.",
+    'c="$(dirname "$0")/config.json"',
+    "if command -v node >/dev/null 2>&1; then",
+    `  exec node -e '${HELPER_JS}' "$c"`,
+    "fi",
+    // Fix 5, without node: an unreadable, empty or visibly truncated file stops too (fail closed).
+    'if [ -e "$c" ]; then',
+    '  if [ ! -r "$c" ] || [ ! -s "$c" ]; then',
+    '    echo "harmony: $c exists but cannot be read or is empty, so whether a token is pinned is unknown; nothing was sent. Fix the file, then run: claude plugin marketplace update harmony" >&2',
+    "    exit 1",
+    "  fi",
+    `  last=$(tr -d ' \\t\\r\\n' < "$c" | sed -e 's/^.*\\(.\\)$/\\1/')`,
+    '  if [ "$last" != "}" ]; then',
+    '    echo "harmony: $c looks half-written (it does not end in }), so whether a token is pinned is unknown; nothing was sent. Try again in a moment, then run: claude plugin marketplace update harmony" >&2',
+    "    exit 1",
+    "  fi",
+    "fi",
+    `if [ -f "$c" ] && grep -q '"downloadProject"' "$c"; then`,
+    '  echo "harmony: node is not on the PATH Claude Code gave this helper, so it cannot read the pinned token in $c. Make node available in your login shell, then run: claude plugin marketplace update harmony" >&2',
+    "  exit 1",
+    "fi",
+    't="${HARMONY_API_TOKEN:-}"',
+    'if [ -z "$t" ]; then',
+    '  echo "harmony: no Harmony token found, and node is not on PATH to read $c. Make node available in your login shell, then run: claude plugin marketplace update harmony" >&2',
+    "  exit 1",
+    "fi",
+    `t=$(printf '%s' "$t" | tr -d '\\r\\n' | sed -e 's/\\\\/\\\\\\\\/g' -e 's/"/\\\\"/g')`,
+    `printf '{"Authorization":"Bearer %s"}' "$t"`,
+    ""
+  ].join("\n");
 }
 var SwitchError = class extends Error {
   constructor(code, message) {
@@ -72100,16 +72579,81 @@ var SwitchError = class extends Error {
   }
   code;
 };
-function findToken(deps, paths, fs2) {
-  if (deps.env.HARMONY_API_TOKEN) return "env";
-  if (!fs2.existsSync(paths.storePath)) return null;
+function readStore(paths, fs3) {
+  if (!fs3.existsSync(paths.storePath)) return null;
   try {
-    const c = JSON.parse(String(fs2.readFileSync(paths.storePath, "utf-8")));
-    const p = c?.activeProject ? c?.projects?.[c.activeProject] : void 0;
-    if (p && typeof p.token === "string" && p.token.length > 0) return "store";
+    const c = JSON.parse(String(fs3.readFileSync(paths.storePath, "utf-8")));
+    return isPlainObject8(c) ? c : null;
   } catch {
+    return null;
   }
+}
+function hasToken(c, key) {
+  if (!c || !key) return false;
+  const t = c.projects?.[key]?.token;
+  return typeof t === "string" && t.length > 0;
+}
+function storedProjects(c) {
+  return Object.keys(c?.projects ?? {}).filter((k) => hasToken(c, k));
+}
+function findToken(deps, paths, fs3) {
+  const c = readStore(paths, fs3);
+  if (hasToken(c, c?.downloadProject)) return "pin";
+  if (deps.env.HARMONY_API_TOKEN) return "env";
+  if (hasToken(c, c?.activeProject)) return "store";
+  if (storedProjects(c).length > 0) return "store";
   return null;
+}
+function helperSource(env2, paths, fs3) {
+  const c = readStore(paths, fs3);
+  if (c?.downloadProject) return { kind: "pinned", key: c.downloadProject, usable: hasToken(c, c.downloadProject) };
+  if (env2.HARMONY_API_TOKEN) return { kind: "env" };
+  if (hasToken(c, c?.activeProject)) return { kind: "active", key: c.activeProject };
+  return { kind: "none" };
+}
+function pinDownloadProject(paths, key, pid, fs3) {
+  let raw;
+  try {
+    raw = String(fs3.readFileSync(paths.storePath, "utf-8"));
+  } catch {
+    throw new SwitchError(1, `${paths.storePath} does not exist, so there is no stored project "${key}" to pin.`);
+  }
+  let c;
+  try {
+    c = JSON.parse(raw);
+  } catch {
+    throw new SwitchError(1, `${paths.storePath} is not valid JSON. Nothing was changed.`);
+  }
+  if (!isPlainObject8(c) || !hasToken(c, key)) {
+    throw new SwitchError(1, `${paths.storePath} holds no token for project "${key}". Nothing was changed.`);
+  }
+  const next = { ...c, downloadProject: key };
+  atomicWrite(writeTarget(paths.storePath, fs3), JSON.stringify(next, null, 2) + "\n", 384, pid, fs3);
+}
+async function verifyDownloadToken(base2, token, fetchImpl) {
+  const url2 = marketplaceUrl(base2);
+  const f2 = fetchImpl ?? globalThis.fetch;
+  let status;
+  try {
+    const r = await f2(url2, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+      redirect: "manual",
+      signal: AbortSignal.timeout(3e4)
+    });
+    status = r.status;
+  } catch (e) {
+    const msg = String(e?.message ?? e).split(token).join("<token>");
+    throw new SwitchError(1, `could not reach ${url2} to check the token (${msg}). Nothing was changed.`);
+  }
+  if (status === 200) return;
+  if (status === 401 || status === 403) {
+    throw new SwitchError(
+      1,
+      `the download refused this token (HTTP ${status} from ${url2}). Check it is a current Harmony API token (Project Settings \u2192 Connect AI). Nothing was changed.`
+    );
+  }
+  throw new SwitchError(1, `the download answered HTTP ${status} from ${url2}, not 200. Nothing was changed.`);
 }
 function isPlainObject8(v2) {
   return typeof v2 === "object" && v2 !== null && !Array.isArray(v2);
@@ -72128,11 +72672,11 @@ function jsonEqual(a3, b) {
   }
   return false;
 }
-function planSettings(paths, entry, fs2) {
-  if (!fs2.existsSync(paths.settingsPath)) {
+function planSettings(paths, entry, fs3) {
+  if (!fs3.existsSync(paths.settingsPath)) {
     return { exists: false, merged: { extraKnownMarketplaces: { [MARKETPLACE_NAME]: entry } }, mode: null };
   }
-  const raw = String(fs2.readFileSync(paths.settingsPath, "utf-8"));
+  const raw = String(fs3.readFileSync(paths.settingsPath, "utf-8"));
   let parsed;
   try {
     parsed = raw.trim() === "" ? {} : JSON.parse(raw);
@@ -72142,7 +72686,7 @@ function planSettings(paths, entry, fs2) {
   if (!isPlainObject8(parsed)) {
     throw new SwitchError(1, `${paths.settingsPath} does not hold a JSON object. Nothing was changed.`);
   }
-  const mode = fs2.statSync(paths.settingsPath).mode & 511;
+  const mode = fs3.statSync(paths.settingsPath).mode & 511;
   const ekm = parsed.extraKnownMarketplaces;
   if (ekm !== void 0 && !isPlainObject8(ekm)) {
     throw new SwitchError(1, `extraKnownMarketplaces in ${paths.settingsPath} is not an object. Nothing was changed.`);
@@ -72161,67 +72705,72 @@ function planSettings(paths, entry, fs2) {
     mode
   };
 }
-function atomicWrite(target, content, mode, pid, fs2) {
+function atomicWrite(target, content, mode, pid, fs3) {
   const tmp = `${target}.tmp-${pid}`;
-  const fd = fs2.openSync(tmp, "w", mode);
+  const fd = fs3.openSync(tmp, "w", mode);
   try {
     try {
-      fs2.writeSync(fd, content);
-      fs2.fsyncSync(fd);
+      fs3.writeSync(fd, content);
+      fs3.fsyncSync(fd);
     } finally {
-      fs2.closeSync(fd);
+      fs3.closeSync(fd);
     }
-    fs2.chmodSync(tmp, mode);
-    fs2.renameSync(tmp, target);
+    fs3.chmodSync(tmp, mode);
+    fs3.renameSync(tmp, target);
   } catch (e) {
-    fs2.rmSync(tmp, { force: true });
+    fs3.rmSync(tmp, { force: true });
     throw e;
   }
 }
-function writeHelper(paths, fs2) {
-  fs2.mkdirSync(paths.harmonyDir, { recursive: true, mode: 448 });
-  fs2.chmodSync(paths.harmonyDir, 448);
+function writeHelper(paths, fs3) {
+  fs3.mkdirSync(paths.harmonyDir, { recursive: true, mode: 448 });
+  fs3.chmodSync(paths.harmonyDir, 448);
   const content = helperScript();
-  if (fs2.existsSync(paths.helperPath) && String(fs2.readFileSync(paths.helperPath, "utf-8")) === content) {
-    if ((fs2.statSync(paths.helperPath).mode & 511) !== 448) fs2.chmodSync(paths.helperPath, 448);
+  if (fs3.existsSync(paths.helperPath) && String(fs3.readFileSync(paths.helperPath, "utf-8")) === content) {
+    if ((fs3.statSync(paths.helperPath).mode & 511) !== 448) fs3.chmodSync(paths.helperPath, 448);
     return false;
   }
-  fs2.writeFileSync(paths.helperPath, content, { mode: 448 });
-  fs2.chmodSync(paths.helperPath, 448);
+  fs3.writeFileSync(paths.helperPath, content, { mode: 448 });
+  fs3.chmodSync(paths.helperPath, 448);
   return true;
 }
-function readJsonOrNull(file, fs2) {
+function readJsonOrNull(file, fs3) {
   try {
-    return JSON.parse(String(fs2.readFileSync(file, "utf-8")));
+    return JSON.parse(String(fs3.readFileSync(file, "utf-8")));
   } catch {
     return null;
   }
 }
-function projectEnablesTodaysCopy(paths, fs2) {
-  return projectTodaysCopySetting(paths, fs2) === true;
+function projectEnablesTodaysCopy(paths, fs3) {
+  return projectTodaysCopySetting(paths, fs3) === true;
 }
-function projectTodaysCopySetting(paths, fs2) {
+function projectTodaysCopySetting(paths, fs3) {
   if (path4.resolve(paths.projectSettingsPath) === path4.resolve(paths.settingsPath)) return void 0;
-  if (!fs2.existsSync(paths.projectSettingsPath)) return void 0;
-  const s = readJsonOrNull(paths.projectSettingsPath, fs2);
+  if (!fs3.existsSync(paths.projectSettingsPath)) return void 0;
+  const s = readJsonOrNull(paths.projectSettingsPath, fs3);
   return s?.enabledPlugins?.[TODAYS_ID];
 }
-function readProjectFileToken(paths, fs2) {
-  const s = readJsonOrNull(paths.projectLocalSettingsPath, fs2);
+function readProjectFileToken(paths, fs3) {
+  const s = readJsonOrNull(paths.projectLocalSettingsPath, fs3);
   const t = s?.env?.HARMONY_API_TOKEN;
   return typeof t === "string" && t.length > 0 ? t : null;
 }
-function describeFailure(args, r) {
+function redactOutput(text4, secrets) {
+  let out = text4;
+  for (const s of secrets) if (s && s.length >= 4) out = out.split(s).join("<token>");
+  return scrubTokenShapes(out);
+}
+function describeFailure(args, r, secrets = []) {
   const text4 = `${r.stdout}
 ${r.stderr}`.trim().split("\n").filter((l) => l.trim() !== "").slice(-3).join(" / ");
-  return `\`claude ${args.join(" ")}\` failed (exit ${r.code})${text4 ? `: ${text4}` : ""}`;
+  return `\`claude ${args.join(" ")}\` failed (exit ${r.code})${text4 ? `: ${redactOutput(text4, secrets)}` : ""}`;
 }
 async function runOrFail(deps, args, tolerate) {
   const r = await deps.runClaude(args);
   if (r.code === 0) return { ...r, tolerated: false };
   if (tolerate && tolerate.test(`${r.stdout}
 ${r.stderr}`)) return { ...r, tolerated: true };
-  throw new SwitchError(1, describeFailure(args, r));
+  throw new SwitchError(1, describeFailure(args, r, [deps.env.HARMONY_API_TOKEN]));
 }
 async function marketplaceKnown(deps) {
   const args = ["plugin", "marketplace", "list", "--json"];
@@ -72235,15 +72784,15 @@ async function marketplaceKnown(deps) {
   }
   const plain = ["plugin", "marketplace", "list"];
   const t = await deps.runClaude(plain);
-  if (t.code !== 0) throw new SwitchError(1, describeFailure(plain, t));
+  if (t.code !== 0) throw new SwitchError(1, describeFailure(plain, t, [deps.env.HARMONY_API_TOKEN]));
   return new RegExp(`(^|\\s)${MARKETPLACE_NAME}\\s*$`, "m").test(t.stdout);
 }
-async function startOnce(deps, fs2) {
-  const dir = fs2.mkdtempSync(path4.join(deps.tmpdir, "harmony-download-start-"));
+async function startOnce(deps, fs3) {
+  const dir = fs3.mkdtempSync(path4.join(deps.tmpdir, "harmony-download-start-"));
   try {
     return await deps.runClaude(START_ARGS, { cwd: dir });
   } finally {
-    fs2.rmSync(dir, { recursive: true, force: true });
+    fs3.rmSync(dir, { recursive: true, force: true });
   }
 }
 async function runDownloadSwitch(opts, deps) {
@@ -72257,25 +72806,39 @@ async function runDownloadSwitch(opts, deps) {
     throw e;
   }
 }
-async function ensureToken(paths, deps, fs2, dryRun2) {
-  const found = findToken(deps, paths, fs2);
-  if (found) return found;
-  const projectFile = fs2.existsSync(paths.projectLocalSettingsPath);
+function redact(e, token) {
+  return String(e?.message ?? e).split(token).join("<token>");
+}
+function describeSaved(saved, paths, fs3) {
+  const lines = [`Saved the token in ${paths.storePath} as project "${saved.key}".`];
+  if (saved.updatedLegacyFor) lines.push(legacyUpdateLine(saved.key, saved.updatedLegacyFor));
+  if (saved.collidedWith) {
+    lines.push(`A different project is already stored as "${saved.collidedWith}" and was left as it is. In a project's settings, name this one HARMONY_PROJECT=${saved.key}.`);
+  }
+  if (!hasToken(readStore(paths, fs3), readStore(paths, fs3)?.activeProject)) {
+    lines.push(`No project is active for terminal commands outside a session. To use this one there, run: harmony project switch ${saved.key}`);
+  }
+  return lines;
+}
+async function ensureToken(paths, deps, fs3, dryRun2) {
+  const found = findToken(deps, paths, fs3);
+  if (found) return null;
+  const projectFile = fs3.existsSync(paths.projectLocalSettingsPath);
   if (projectFile && deps.isTTY && !dryRun2) {
-    const token = readProjectFileToken(paths, fs2);
+    const token = readProjectFileToken(paths, fs3);
     if (token) {
       const answer = await deps.ask(
         "Found a Harmony token in this project's .claude/settings.local.json. Save this token to the harmony store (~/.harmony/config.json) so the download can use it? [y/N] "
       );
       if (/^\s*y(es)?\s*$/i.test(answer)) {
+        let saved;
         try {
-          const name = await deps.saveToken(token);
-          deps.out(`Saved the token to the harmony store (project "${name}", now active).`);
-          return "saved";
+          saved = await deps.saveToken(token);
         } catch (e) {
-          const msg = String(e?.message ?? e).split(token).join("<token>");
-          throw new SwitchError(1, `the token could not be verified, so it was not saved: ${msg}`);
+          throw new SwitchError(1, `the token could not be verified, so it was not saved: ${redact(e, token)}`);
         }
+        for (const l of describeSaved(saved, paths, fs3)) deps.out(l);
+        return saved;
       }
     }
   }
@@ -72287,54 +72850,127 @@ async function ensureToken(paths, deps, fs2, dryRun2) {
   }
   throw new SwitchError(2, [...lines, ...NO_TOKEN_HELP].join("\n"));
 }
+var ENV_ONLY_HELP = "The download now reads ONE pinned token from ~/.harmony/config.json, and no project is stored there (HARMONY_API_TOKEN alone cannot be pinned). Run `harmony download token set` (it reads the token, checks it, saves it and pins it), then run this again.";
+function planPin(paths, deps, fs3) {
+  const c = readStore(paths, fs3);
+  const pin = c?.downloadProject;
+  if (hasToken(c, pin)) return { kind: "keep", key: pin };
+  const dangling = pin || void 0;
+  if (hasToken(c, c?.activeProject)) return { kind: "active", key: c.activeProject, dangling };
+  const choices = storedProjects(c);
+  if (choices.length > 0) {
+    if (deps.isTTY) return { kind: "ask", choices, dangling };
+    return { kind: "stop", message: `no project is pinned for the download and there is no active project to pin. ${PIN_FIX}` };
+  }
+  if (deps.env.HARMONY_API_TOKEN && deps.isTTY) return { kind: "offer-env", dangling };
+  return { kind: "stop", message: ENV_ONLY_HELP };
+}
+async function ensurePin(paths, deps, fs3, saved) {
+  if (saved) {
+    pinDownloadProject(paths, saved.key, deps.pid, fs3);
+    deps.out(`Pinned the download to project "${saved.key}" (downloadProject in ${paths.storePath}; the active project is unchanged).`);
+    return saved.key;
+  }
+  const plan = planPin(paths, deps, fs3);
+  if (plan.kind === "stop") throw new SwitchError(2, plan.message);
+  if (plan.kind === "keep") {
+    deps.out(`The download stays pinned to project "${plan.key}".`);
+    return plan.key;
+  }
+  if (plan.dangling) deps.out(`The download was pinned to "${plan.dangling}", which ${paths.storePath} no longer holds a token for.`);
+  let key;
+  if (plan.kind === "active") {
+    key = plan.key;
+  } else if (plan.kind === "ask") {
+    const list = plan.choices.map((k, i) => `  ${i + 1}. ${k}`).join("\n");
+    const answer = (await deps.ask(`Which stored project's token should the plugin download use?
+${list}
+Number or name: `)).trim();
+    const n = Number(answer);
+    const picked = Number.isInteger(n) && n >= 1 && n <= plan.choices.length ? plan.choices[n - 1] : plan.choices.find((k) => k === answer);
+    if (!picked) throw new SwitchError(2, `"${answer}" is not one of the stored projects. Nothing was pinned. ${PIN_FIX}`);
+    key = picked;
+  } else {
+    const answer = await deps.ask(
+      "The download needs its own copy of your token. Save HARMONY_API_TOKEN to the harmony store (~/.harmony/config.json) and pin it for the download? [y/N] "
+    );
+    if (!/^\s*y(es)?\s*$/i.test(answer)) throw new SwitchError(2, ENV_ONLY_HELP);
+    const token = deps.env.HARMONY_API_TOKEN;
+    let s;
+    try {
+      s = await deps.saveToken(token);
+    } catch (e) {
+      throw new SwitchError(1, `the token could not be verified, so it was not saved: ${redact(e, token)}`);
+    }
+    for (const l of describeSaved(s, paths, fs3)) deps.out(l);
+    key = s.key;
+  }
+  pinDownloadProject(paths, key, deps.pid, fs3);
+  deps.out(`Pinned the download to project "${key}" (downloadProject in ${paths.storePath}; the active project is unchanged).`);
+  return key;
+}
 async function doSwitch(opts, deps) {
-  const fs2 = deps.fs ?? nodeFs;
+  const fs3 = deps.fs ?? nodeFs;
   const base2 = normalizeBase(opts.base);
   const url2 = marketplaceUrl(base2);
   const paths = resolvePaths(deps);
   const entry = desiredEntry(url2, paths.helperPath);
-  if (opts.dryRun) return dryRun(base2, url2, paths, entry, deps, fs2);
-  await ensureToken(paths, deps, fs2, false);
-  const settings = planSettings(paths, entry, fs2);
-  const helperWritten = writeHelper(paths, fs2);
+  if (opts.dryRun) return dryRun(base2, url2, paths, entry, deps, fs3);
+  const saved = await ensureToken(paths, deps, fs3, false);
+  planSettings(paths, entry, fs3);
+  const pinned = await ensurePin(paths, deps, fs3, saved);
+  return applySteps({ base: base2, url: url2, paths, entry, pinned, mode: "switch" }, deps, fs3);
+}
+async function applySteps(ctx, deps, fs3) {
+  const { base: base2, url: url2, paths } = ctx;
+  const helperWritten = writeHelper(paths, fs3);
   deps.out(helperWritten ? `Wrote the helper ${paths.helperPath}` : `The helper ${paths.helperPath} is already in place.`);
-  let backup = fs2.existsSync(paths.backupPath) ? paths.backupPath : null;
+  const settings = planSettings(paths, ctx.entry, fs3);
+  let backup = fs3.existsSync(paths.backupPath) ? paths.backupPath : null;
   if (settings.merged) {
-    fs2.mkdirSync(paths.claudeDir, { recursive: true });
+    fs3.mkdirSync(paths.claudeDir, { recursive: true });
     if (settings.exists && !backup) {
-      fs2.copyFileSync(paths.settingsPath, paths.backupPath);
+      fs3.copyFileSync(paths.settingsPath, paths.backupPath);
       backup = paths.backupPath;
       deps.out(`Saved your settings as ${paths.backupPath}`);
     }
-    atomicWrite(paths.settingsPath, JSON.stringify(settings.merged, null, 2) + "\n", settings.mode ?? 384, deps.pid, fs2);
+    atomicWrite(writeTarget(paths.settingsPath, fs3), JSON.stringify(settings.merged, null, 2) + "\n", settings.mode ?? 384, deps.pid, fs3);
     deps.out(`Added the "${MARKETPLACE_NAME}" marketplace to ${paths.settingsPath}`);
   } else {
     deps.out(`${paths.settingsPath} already declares the "${MARKETPLACE_NAME}" marketplace.`);
   }
   if (!await marketplaceKnown(deps)) {
     deps.out("Fetching the marketplace (one Claude Code start with no prompt, in an empty temporary directory)...");
-    await startOnce(deps, fs2);
+    await startOnce(deps, fs3);
     if (!await marketplaceKnown(deps)) {
       deps.err(
-        [
-          "Claude Code has not fetched the Harmony marketplace yet. The settings and helper are in place.",
+        (ctx.mode === "install" ? [
+          // A bare machine: the plugin (and so the `harmony` command) is not installed yet.
+          "Claude Code has not fetched the Harmony marketplace yet. The settings and helper are in place, and your token is stored and pinned.",
+          "Start Claude Code once (open it, wait for the prompt, then /exit), then run the installer again (curl -fsSL https://plugin.harmony.ad/install.sh | sh); it finds everything in place and finishes."
+        ] : [
+          "Claude Code has not fetched the Harmony marketplace yet. The settings and helper are in place, and your token is pinned.",
           "Start Claude Code once (open it, wait for the prompt, then /exit), then run `harmony download switch` again.",
-          "If it still fails, check your token works: run `harmony projects`, or check HARMONY_API_TOKEN is set."
-        ].join("\n")
+          "If it still fails, check your token works: run `harmony download status`, then `harmony download token use <project>` or `harmony download token set`."
+        ]).join("\n")
       );
       return 2;
     }
   }
   const install = await runOrFail(deps, ["plugin", "install", INSTALL_ID], /already installed/i);
   deps.out(install.tolerated ? `${INSTALL_ID} is already installed.` : `Installed ${INSTALL_ID}.`);
-  const disable = await runOrFail(
-    deps,
-    ["plugin", "disable", TODAYS_ID, "--scope", "user"],
-    /already disabled|not installed|not found/i
-  );
-  const disabledTodaysCopy = !disable.tolerated;
-  deps.out(disabledTodaysCopy ? `Disabled today's copy (${TODAYS_ID}) for your user.` : `Today's copy (${TODAYS_ID}) was already disabled for your user (or is not installed).`);
-  const projectEnables = projectEnablesTodaysCopy(paths, fs2);
+  let disabledTodaysCopy;
+  const disableArgs = ["plugin", "disable", TODAYS_ID, "--scope", "user"];
+  if (ctx.mode === "install") {
+    const r = await deps.runClaude(disableArgs);
+    disabledTodaysCopy = r.code === 0;
+    deps.out(disabledTodaysCopy ? `Disabled today's copy (${TODAYS_ID}) for your user.` : `Today's copy (${TODAYS_ID}) is not installed for your user; nothing to disable.`);
+  } else {
+    const disable = await runOrFail(deps, disableArgs, /already disabled|not installed|not found/i);
+    disabledTodaysCopy = !disable.tolerated;
+    deps.out(disabledTodaysCopy ? `Disabled today's copy (${TODAYS_ID}) for your user.` : `Today's copy (${TODAYS_ID}) was already disabled for your user (or is not installed).`);
+  }
+  const projectEnables = projectEnablesTodaysCopy(paths, fs3);
   if (projectEnables) deps.out(PROJECT_DISABLE_HINT);
   const record2 = {
     base: base2,
@@ -72343,25 +72979,27 @@ async function doSwitch(opts, deps) {
     settings_path: paths.settingsPath,
     backup_path: backup,
     disabled_ycomplex_user_scope: disabledTodaysCopy,
+    download_project: ctx.pinned,
+    via: ctx.mode,
     switched_at: deps.now().toISOString()
   };
-  fs2.writeFileSync(paths.recordPath, JSON.stringify(record2, null, 2) + "\n", { mode: 384 });
+  fs3.writeFileSync(paths.recordPath, JSON.stringify(record2, null, 2) + "\n", { mode: 384 });
   deps.out("");
-  deps.out(`Done: ${INSTALL_ID} is installed from ${url2}.`);
+  deps.out(`Done: ${INSTALL_ID} is installed from ${url2}, using project "${ctx.pinned}"'s token.`);
   deps.out("Check it: `claude plugin list` shows harmony-plugin@harmony enabled. In a FRESH Claude Code session (not /reload-plugins), run `harmony --version`.");
   deps.out(backup ? `Your original settings are saved at ${backup}` : "There was no settings file before, so there is no backup.");
   deps.out("To go back: harmony download switch --undo");
   return 0;
 }
-function dryRun(base2, url2, paths, entry, deps, fs2) {
+function dryRun(base2, url2, paths, entry, deps, fs3) {
   deps.out("Dry run: nothing is changed and no claude command is run.");
   deps.out(`Download: ${base2}`);
   deps.out(`Would write the helper ${paths.helperPath} (mode 700); it reads your token, it holds none.`);
   let settingsProblem = null;
   try {
-    const s = planSettings(paths, entry, fs2);
+    const s = planSettings(paths, entry, fs3);
     if (s.merged) {
-      if (s.exists && !fs2.existsSync(paths.backupPath)) deps.out(`Would save ${paths.settingsPath} as ${paths.backupPath}`);
+      if (s.exists && !fs3.existsSync(paths.backupPath)) deps.out(`Would save ${paths.settingsPath} as ${paths.backupPath}`);
       deps.out(`Would add to ${paths.settingsPath}:`);
       deps.out(JSON.stringify({ extraKnownMarketplaces: { [MARKETPLACE_NAME]: entry } }, null, 2));
     } else {
@@ -72377,27 +73015,43 @@ function dryRun(base2, url2, paths, entry, deps, fs2) {
   deps.out(`  claude plugin install ${INSTALL_ID}`);
   deps.out(`  claude plugin disable ${TODAYS_ID} --scope user`);
   deps.out(`Would record what it did in ${paths.recordPath}`);
-  if (projectEnablesTodaysCopy(paths, fs2)) deps.out(PROJECT_DISABLE_HINT);
+  if (projectEnablesTodaysCopy(paths, fs3)) deps.out(PROJECT_DISABLE_HINT);
   if (settingsProblem) {
     deps.err(`harmony download switch: ${settingsProblem.message}`);
     return settingsProblem.code;
   }
-  const token = findToken(deps, paths, fs2);
+  const token = findToken(deps, paths, fs3);
   if (!token) {
     const lines = ["no Harmony token found, so a real run would stop here."];
-    if (fs2.existsSync(paths.projectLocalSettingsPath)) {
+    if (fs3.existsSync(paths.projectLocalSettingsPath)) {
       lines.push("This project's .claude/settings.local.json may hold one; a real run in a terminal offers to save it.");
     }
     deps.err(`harmony download switch: ${[...lines, ...NO_TOKEN_HELP].join("\n")}`);
     return 2;
   }
-  deps.out(`Token: found (${token === "env" ? "HARMONY_API_TOKEN" : "the harmony store"}).`);
-  return 0;
+  const plan = planPin(paths, deps, fs3);
+  switch (plan.kind) {
+    case "keep":
+      deps.out(`Token: the download stays pinned to project "${plan.key}".`);
+      return 0;
+    case "active":
+      deps.out(`Token: would pin the download to the active project "${plan.key}" (the active project is unchanged).`);
+      return 0;
+    case "ask":
+      deps.out(`Token: would ask which stored project to pin (${plan.choices.join(", ")}).`);
+      return 0;
+    case "offer-env":
+      deps.out("Token: would offer to save HARMONY_API_TOKEN to the harmony store and pin it.");
+      return 0;
+    case "stop":
+      deps.err(`harmony download switch: a real run would stop here: ${plan.message}`);
+      return 2;
+  }
 }
 async function undo(opts, deps) {
-  const fs2 = deps.fs ?? nodeFs;
+  const fs3 = deps.fs ?? nodeFs;
   const paths = resolvePaths(deps);
-  const projectNamesTodaysCopy = projectTodaysCopySetting(paths, fs2) !== void 0;
+  const projectNamesTodaysCopy = projectTodaysCopySetting(paths, fs3) !== void 0;
   if (opts.dryRun) {
     deps.out("Dry run: nothing is changed and no claude command is run.");
     deps.out(`Would run: claude plugin marketplace remove ${MARKETPLACE_NAME}   (also uninstalls ${INSTALL_ID} and removes the settings entry)`);
@@ -72407,12 +73061,12 @@ async function undo(opts, deps) {
   }
   const remove2 = await runOrFail(deps, ["plugin", "marketplace", "remove", MARKETPLACE_NAME], /not found/i);
   deps.out(remove2.tolerated ? `The "${MARKETPLACE_NAME}" marketplace was already removed.` : `Removed the "${MARKETPLACE_NAME}" marketplace and ${INSTALL_ID}.`);
-  const enable = await runOrFail(deps, ["plugin", "enable", TODAYS_ID, "--scope", "user"], /already enabled/i);
-  deps.out(enable.tolerated ? `Today's copy (${TODAYS_ID}) was already enabled for your user.` : `Enabled today's copy (${TODAYS_ID}) for your user.`);
-  fs2.rmSync(paths.helperPath, { force: true });
-  fs2.rmSync(paths.recordPath, { force: true });
+  const enable = await runOrFail(deps, ["plugin", "enable", TODAYS_ID, "--scope", "user"], /already enabled|not installed|not found/i);
+  deps.out(enable.tolerated ? `Today's copy (${TODAYS_ID}) was already enabled for your user (or is not installed).` : `Enabled today's copy (${TODAYS_ID}) for your user.`);
+  fs3.rmSync(paths.helperPath, { force: true });
+  fs3.rmSync(paths.recordPath, { force: true });
   deps.out(`Deleted ${paths.helperPath} and ${paths.recordPath}.`);
-  const s = fs2.existsSync(paths.settingsPath) ? readJsonOrNull(paths.settingsPath, fs2) : null;
+  const s = fs3.existsSync(paths.settingsPath) ? readJsonOrNull(paths.settingsPath, fs3) : null;
   if (s?.extraKnownMarketplaces?.[MARKETPLACE_NAME] !== void 0) {
     deps.err(
       `Note: ${paths.settingsPath} still declares the "${MARKETPLACE_NAME}" marketplace. Remove that entry by hand: while it is there, the next session fetches the marketplace again.`
@@ -72421,9 +73075,132 @@ async function undo(opts, deps) {
   if (projectNamesTodaysCopy) {
     deps.out(`If you disabled today's copy in this project, enable it again here: claude plugin enable ${TODAYS_ID} --scope project`);
   }
-  if (fs2.existsSync(paths.backupPath)) deps.out(`Your settings backup is kept at ${paths.backupPath}`);
+  if (fs3.existsSync(paths.backupPath)) deps.out(`Your settings backup is kept at ${paths.backupPath}`);
   deps.out("Start a fresh Claude Code session to use today's copy again.");
   return 0;
+}
+async function withErrors(label, deps, run2) {
+  try {
+    return await run2();
+  } catch (e) {
+    if (e instanceof SwitchError) {
+      deps.err(`harmony download ${label}: ${e.message}`);
+      return e.code;
+    }
+    throw e;
+  }
+}
+async function readNewToken(deps) {
+  if (!deps.readToken) throw new SwitchError(1, "no way to read a token here.");
+  const token = (await deps.readToken()).trim();
+  if (!token) throw new SwitchError(1, "no token was given. Nothing was changed.");
+  if (/\s/.test(token)) throw new SwitchError(1, "the token has spaces or several lines in it. Give the one token, on one line. Nothing was changed.");
+  return token;
+}
+async function saveNew(token, deps, paths, fs3) {
+  let saved;
+  try {
+    saved = await deps.saveToken(token);
+  } catch (e) {
+    throw new SwitchError(1, `Harmony did not accept the token, so it was not saved: ${redact(e, token)}`);
+  }
+  for (const l of describeSaved(saved, paths, fs3)) deps.out(l);
+  return saved;
+}
+function settingsDeclareHarmony(paths, fs3) {
+  const s = fs3.existsSync(paths.settingsPath) ? readJsonOrNull(paths.settingsPath, fs3) : null;
+  return s?.extraKnownMarketplaces?.[MARKETPLACE_NAME] !== void 0;
+}
+function afterPin(paths, key, deps, fs3) {
+  pinDownloadProject(paths, key, deps.pid, fs3);
+  const wrote = writeHelper(paths, fs3);
+  deps.out(`The plugin download now uses project "${key}"'s token (downloadProject in ${paths.storePath}). The active project is unchanged.`);
+  deps.out(wrote ? `Wrote the helper ${paths.helperPath}` : `The helper ${paths.helperPath} is already in place.`);
+  if (!settingsDeclareHarmony(paths, fs3)) {
+    deps.out("The download is not set up in Claude Code on this machine yet: run `harmony download install` (a new machine) or `harmony download switch` (today's copy installed).");
+  }
+  return 0;
+}
+async function runDownloadTokenUse(project, opts, deps) {
+  return withErrors("token use", deps, async () => {
+    const fs3 = deps.fs ?? nodeFs;
+    const base2 = normalizeBase(opts.base);
+    const paths = resolvePaths(deps);
+    const c = readStore(paths, fs3);
+    if (!hasToken(c, project)) {
+      const stored = storedProjects(c);
+      throw new SwitchError(
+        1,
+        `"${project}" is not a project stored in ${paths.storePath}${stored.length ? ` (stored: ${stored.join(", ")})` : " (none is stored)"}. Save a new token with \`harmony download token set\`.`
+      );
+    }
+    await verifyDownloadToken(base2, c.projects[project].token, deps.fetch);
+    deps.out(`The download accepted project "${project}"'s token.`);
+    return afterPin(paths, project, deps, fs3);
+  });
+}
+async function runDownloadTokenSet(opts, deps) {
+  return withErrors("token set", deps, async () => {
+    const fs3 = deps.fs ?? nodeFs;
+    const base2 = normalizeBase(opts.base);
+    const paths = resolvePaths(deps);
+    const token = await readNewToken(deps);
+    await verifyDownloadToken(base2, token, deps.fetch);
+    deps.out("The download accepted the token.");
+    const saved = await saveNew(token, deps, paths, fs3);
+    return afterPin(paths, saved.key, deps, fs3);
+  });
+}
+function runDownloadStatus(deps) {
+  const fs3 = deps.fs ?? nodeFs;
+  const paths = resolvePaths(deps);
+  const c = readStore(paths, fs3);
+  deps.out(`Token store: ${paths.storePath}${c ? "" : " (absent or unreadable)"}`);
+  deps.out(`Pinned download project: ${c?.downloadProject ? `"${c.downloadProject}"${hasToken(c, c.downloadProject) ? "" : " (NOT stored with a token)"}` : "none"}`);
+  deps.out(`Active project: ${hasToken(c, c?.activeProject) ? `"${c.activeProject}"` : "none"}`);
+  let helper = "absent";
+  if (fs3.existsSync(paths.helperPath)) {
+    helper = String(fs3.readFileSync(paths.helperPath, "utf-8")) === helperScript() ? "current" : "an older version (run `harmony download token use <project>` to rewrite it)";
+  }
+  deps.out(`Helper: ${paths.helperPath} (${helper})`);
+  deps.out(`Claude Code settings: ${settingsDeclareHarmony(paths, fs3) ? `declare the "${MARKETPLACE_NAME}" marketplace` : `do not declare the "${MARKETPLACE_NAME}" marketplace`} (${paths.settingsPath})`);
+  const src = helperSource(deps.env, paths, fs3);
+  const line2 = src.kind === "pinned" ? src.usable ? `the pinned project "${src.key}" (nothing else is consulted)` : `nothing: it is pinned to "${src.key}", which holds no token, so the download fails. ${PIN_FIX}` : src.kind === "env" ? "HARMONY_API_TOKEN, if Claude Code sees it as this shell does (no project is pinned)" : src.kind === "active" ? `the active project "${src.key}" (no project is pinned, and HARMONY_API_TOKEN is not set here)` : `nothing: no project is pinned and no token is found. ${PIN_FIX}`;
+  deps.out(`The helper will send: ${line2}`);
+  if (src.kind !== "pinned") deps.out(`Recommended: pin one token with \`harmony download token use <project>\`.`);
+  return src.kind === "none" || src.kind === "pinned" && !src.usable ? 1 : 0;
+}
+async function runDownloadInstall(opts, deps) {
+  return withErrors("install", deps, async () => {
+    const fs3 = deps.fs ?? nodeFs;
+    const base2 = normalizeBase(opts.base);
+    const url2 = marketplaceUrl(base2);
+    const paths = resolvePaths(deps);
+    const entry = desiredEntry(url2, paths.helperPath);
+    if (opts.dryRun) {
+      deps.out("Dry run: no token is read, nothing is changed and no claude command is run.");
+      deps.out(`Download: ${base2}`);
+      deps.out(`Would read your Harmony API token (stdin, or a hidden prompt), check it with GET ${url2}, and save it in ${paths.storePath} (mode 600).`);
+      deps.out(`Would pin it for the download (downloadProject) and write the helper ${paths.helperPath} (mode 700).`);
+      const s = planSettings(paths, entry, fs3);
+      deps.out(s.merged ? `Would add the "${MARKETPLACE_NAME}" marketplace to ${paths.settingsPath}${s.exists ? `, after saving it as ${paths.backupPath}` : ""}.` : `${paths.settingsPath} already declares the "${MARKETPLACE_NAME}" marketplace.`);
+      deps.out(`Would run: claude ${START_ARGS.join(" ")} (from an empty temporary directory), claude plugin install ${INSTALL_ID}, claude plugin disable ${TODAYS_ID} --scope user (a failure there is fine).`);
+      return 0;
+    }
+    planSettings(paths, entry, fs3);
+    const token = await readNewToken(deps);
+    try {
+      await verifyDownloadToken(base2, token, deps.fetch);
+      deps.out("The download accepted the token.");
+      const saved = await saveNew(token, deps, paths, fs3);
+      pinDownloadProject(paths, saved.key, deps.pid, fs3);
+      deps.out(`Pinned the download to project "${saved.key}" (downloadProject in ${paths.storePath}).`);
+      return await applySteps({ base: base2, url: url2, paths, entry, pinned: saved.key, mode: "install" }, deps, fs3);
+    } catch (e) {
+      if (e instanceof SwitchError) throw new SwitchError(e.code, e.message.split(token).join("<token>"));
+      throw e;
+    }
+  });
 }
 
 // src/cli/commands/download.ts
@@ -72445,33 +73222,60 @@ var spawnClaude = (args, opts) => new Promise((resolve11) => {
   });
 });
 async function askOnce(question) {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const rl = readline2.createInterface({ input: process.stdin, output: process.stdout });
   try {
     return await rl.question(question);
   } finally {
     rl.close();
   }
 }
+async function readAllStdin(input = process.stdin) {
+  let data = "";
+  for await (const chunk of input) data += String(chunk);
+  return data;
+}
+function tokenReader(fromStdin) {
+  return () => fromStdin || !process.stdin.isTTY ? readAllStdin() : promptHidden(TOKEN_PROMPT);
+}
+function realDeps(over = {}) {
+  return {
+    env: process.env,
+    homedir: os3.homedir(),
+    cwd: process.cwd(),
+    tmpdir: os3.tmpdir(),
+    isTTY: Boolean(process.stdin.isTTY && process.stdout.isTTY),
+    out: (l) => console.log(l),
+    err: (l) => console.error(l),
+    ask: askOnce,
+    runClaude: spawnClaude,
+    saveToken: saveTokenNoActivate,
+    fetch: globalThis.fetch,
+    now: () => /* @__PURE__ */ new Date(),
+    pid: process.pid,
+    ...over
+  };
+}
 function registerDownloadCommands(program3) {
   const download = program3.command("download").description("Harmony's gated plugin download");
   download.command("switch").description(
     "Install the plugin from Harmony's download (harmony-plugin@harmony) and disable today's copy (harmony-plugin@ycomplex). Exit 0 done, 1 refused or failed, 2 you need to act first."
   ).option("--undo", "Go back: remove the harmony marketplace and enable today's copy again", false).option("--dry-run", "Print what it would do; change nothing and run no claude command", false).option("--base <url>", "The download address", DEFAULT_BASE).action(async (opts) => {
-    const code = await runDownloadSwitch(opts, {
-      env: process.env,
-      homedir: os3.homedir(),
-      cwd: process.cwd(),
-      tmpdir: os3.tmpdir(),
-      isTTY: Boolean(process.stdin.isTTY && process.stdout.isTTY),
-      out: (l) => console.log(l),
-      err: (l) => console.error(l),
-      ask: askOnce,
-      runClaude: spawnClaude,
-      saveToken: loginWithToken,
-      now: () => /* @__PURE__ */ new Date(),
-      pid: process.pid
-    });
-    process.exitCode = code;
+    process.exitCode = await runDownloadSwitch(opts, realDeps());
+  });
+  download.command("install").description(
+    "First install from Harmony's download on a new machine: read your token (stdin, or a hidden prompt), check it, save it in ~/.harmony/config.json, pin it for the download, then install harmony-plugin@harmony. Exit 0 done, 1 refused or failed, 2 you need to act first."
+  ).option("--base <url>", "The download address", DEFAULT_BASE).option("--dry-run", "Print what it would do; read no token, change nothing and run no claude command", false).option("--token-stdin", "Read the token from stdin (the default when stdin is not a terminal)", false).action(async (opts) => {
+    process.exitCode = await runDownloadInstall(opts, realDeps({ readToken: tokenReader(Boolean(opts.tokenStdin)) }));
+  });
+  download.command("status").description("Which project the download is pinned to and which source its helper will use (names only)").action(() => {
+    process.exitCode = runDownloadStatus(realDeps());
+  });
+  const token = download.command("token").description("Choose the one token the plugin download uses");
+  token.command("use").description("Pin a project already stored in ~/.harmony/config.json for the download, after the download accepts its token").argument("<project>", "The stored project (see `harmony project list`)").option("--base <url>", "The download address", DEFAULT_BASE).action(async (project, opts) => {
+    process.exitCode = await runDownloadTokenUse(project, opts, realDeps());
+  });
+  token.command("set").description("Read a new token (stdin, or a hidden prompt), check it, save it without changing the active project, and pin it for the download").option("--base <url>", "The download address", DEFAULT_BASE).option("--token-stdin", "Read the token from stdin (the default when stdin is not a terminal)", false).action(async (opts) => {
+    process.exitCode = await runDownloadTokenSet(opts, realDeps({ readToken: tokenReader(Boolean(opts.tokenStdin)) }));
   });
 }
 
@@ -73433,6 +74237,12 @@ async function authPluginFix(deps, env2) {
   const ext2 = basename4(env2.SHELL ?? "") === "zsh" ? "zsh" : "bash";
   return `${AUTH_PLUGIN} is installed at ${join17(root, "bin")} but is not on PATH (\`gcloud components install\` reports up to date and does not add it): run \`source ${join17(root, `path.${ext2}.inc`)}\` and add that line to your shell profile`;
 }
+function operatorTokenProblem(deps, s) {
+  const why = deps.operatorCredential(s.env);
+  if (why === null) return null;
+  if (why !== OPERATOR_MISSING_MESSAGE) return why;
+  return `${missingTokenReason(deps, s)}. Or set HARMONY_PROJECT to a project stored in ~/.harmony/config.json; \`harmony conductor\` never uses the active project`;
+}
 function missingTokenReason(deps, s) {
   const hostFile = s.paths.hostFile;
   const fix = 'create it by hand (docs/conductor-lifecycle.md, "Minimal operator-laptop host file") or export HARMONY_API_TOKEN';
@@ -73546,7 +74356,8 @@ function pluginVersion(deps, pluginDir) {
   }
 }
 async function openRegistry(deps, s) {
-  if (!s.env.HARMONY_API_TOKEN) return { error: missingTokenReason(deps, s) };
+  const problem = operatorTokenProblem(deps, s);
+  if (problem) return { error: problem };
   try {
     return { client: await deps.registryClient(s.env) };
   } catch (err) {
@@ -74214,6 +75025,12 @@ function rpcFromClient(client) {
 }
 
 // src/cli/commands/conductor-lifecycle-deps.ts
+function operatorAuth(env2) {
+  const e = env2;
+  const r = resolveProject({ surface: "conductor-operator", env: e });
+  const target = r.target ?? resolveSupabaseTarget({ flags: {}, project: void 0, env: e });
+  return new HarmonyAuth(r.token, target.url, target.anonKey, { expectedProjectId: r.expectedProjectId, expectedLabel: r.expectedLabel });
+}
 function defaultLifecycleDeps() {
   const exec = (file, args, opts = {}) => new Promise((resolvePromise) => {
     let stdout = "";
@@ -74305,16 +75122,20 @@ function defaultLifecycleDeps() {
     },
     rmSync: (p) => rmSync6(p, { force: true }),
     readBoard: async (env2) => {
-      const token = env2.HARMONY_API_TOKEN;
-      if (!token) throw new Error("HARMONY_API_TOKEN is not set");
-      const auth2 = new HarmonyAuth(token);
+      const auth2 = operatorAuth(env2);
       const client = await createAuthenticatedClient(auth2);
       return listActiveConductions(client, auth2.getProjectId());
     },
+    operatorCredential: (env2) => {
+      try {
+        resolveProject({ surface: "conductor-operator", env: env2 });
+        return null;
+      } catch (err) {
+        return err instanceof Error ? err.message : String(err);
+      }
+    },
     registryClient: async (env2) => {
-      const token = env2.HARMONY_API_TOKEN;
-      if (!token) throw new Error("HARMONY_API_TOKEN is not set");
-      const auth2 = new HarmonyAuth(token);
+      const auth2 = operatorAuth(env2);
       const client = await createAuthenticatedClient(auth2);
       return createRegistryClient({
         rpc: rpcFromClient(client),
@@ -74383,7 +75204,8 @@ function launcherArgsFrom(o) {
   return [...o.config ? ["--config", o.config] : [], ...o.profile ? ["--profile", o.profile] : []];
 }
 async function safeBoard(deps, s) {
-  if (!s.env.HARMONY_API_TOKEN) return { rows: null, error: missingTokenReason(deps, s) };
+  const problem = operatorTokenProblem(deps, s);
+  if (problem) return { rows: null, error: problem };
   try {
     return { rows: await deps.readBoard(s.env) };
   } catch (err) {
@@ -75681,14 +76503,8 @@ function registerModelCommands(program3) {
     try {
       const client = await getCatalogClient();
       const { entries } = await resolveModelCatalog(client);
-      let activeUrl;
-      try {
-        activeUrl = getActiveProject().supabaseUrl;
-      } catch {
-        activeUrl = void 0;
-      }
       console.log(
-        getPinnedDefaultModel(agent, resolveDeploymentProfile(process.env, activeUrl), entries) ?? ""
+        getPinnedDefaultModel(agent, resolveDeploymentProfile(process.env, resolvedCliSupabaseUrl()), entries) ?? ""
       );
     } catch (err) {
       console.error(`harmony model pinned-default: WARNING \u2014 ${err?.message ?? String(err)}; printing nothing`);
@@ -77352,6 +78168,12 @@ function resolveDefaultProjectRef(input) {
     return null;
   }
 }
+function defaultProjectRefForThisShell() {
+  return resolveDefaultProjectRef({
+    activeProjectSupabaseUrl: resolvedCliSupabaseUrl(),
+    envSupabaseUrl: process.env.HARMONY_SUPABASE_URL
+  });
+}
 function errMessage(err) {
   return err?.message ?? String(err);
 }
@@ -77452,9 +78274,9 @@ function parseRegprocedureExists(body) {
 }
 async function runDoctorAuthHookCommand(deps) {
   const token = deps.accessToken;
-  const redact = (line2) => token ? line2.split(token).join("<redacted>") : line2;
-  const log = (line2) => deps.log(redact(line2));
-  const error2 = (line2) => deps.error(redact(line2));
+  const redact2 = (line2) => token ? line2.split(token).join("<redacted>") : line2;
+  const log = (line2) => deps.log(redact2(line2));
+  const error2 = (line2) => deps.error(redact2(line2));
   const projectRef = deps.projectRefFlag ?? deps.resolveDefaultProjectRef() ?? void 0;
   if (!projectRef) {
     error2(
@@ -77586,18 +78408,7 @@ function registerDoctorCommands(program3) {
     let probeMemo;
     const deps = {
       projectRefFlag: opts.projectRef,
-      resolveDefaultProjectRef: () => {
-        let activeProjectSupabaseUrl;
-        try {
-          activeProjectSupabaseUrl = getActiveProject().supabaseUrl;
-        } catch {
-          activeProjectSupabaseUrl = void 0;
-        }
-        return resolveDefaultProjectRef({
-          activeProjectSupabaseUrl,
-          envSupabaseUrl: process.env.HARMONY_SUPABASE_URL
-        });
-      },
+      resolveDefaultProjectRef: defaultProjectRefForThisShell,
       accessToken,
       fetchAuthConfig: (projectRef, token) => {
         const configPromise = fetchAuthConfig(projectRef, token);
@@ -79736,9 +80547,9 @@ async function resolveBoardTarget(url2) {
     return "custom";
   }
 }
-function localActiveProjectName() {
+function describeWatchSource(env2 = process.env, loadConfig2) {
   try {
-    return getActiveProject().name;
+    return describeSource(resolveProject({ surface: "cli", env: env2, loadConfig: loadConfig2 }));
   } catch {
     return null;
   }
@@ -79755,19 +80566,16 @@ function realSleep2(ms, signal) {
     signal?.addEventListener("abort", done, { once: true });
   });
 }
-function makeCliAuth() {
-  let project;
-  let usedFallback = false;
-  try {
-    project = getActiveProject();
-  } catch (configErr) {
-    const token = harmonyEnv("HARMONY_API_TOKEN");
-    if (!token) throw configErr;
-    project = { name: "(env token)", token };
-    usedFallback = true;
-  }
-  const target = resolveSupabaseTarget({ flags: {}, project: usedFallback ? void 0 : project });
-  return new HarmonyAuth(project.token, target.url, target.anonKey);
+function makeCliAuth(env2 = process.env, loadConfig2, notice = (line2) => process.stderr.write(`${line2}
+`)) {
+  const resolved = resolveProject({ surface: "cli", env: env2, loadConfig: loadConfig2 });
+  const line2 = overrideNotice(resolved);
+  if (line2) notice(line2);
+  const target = resolved.target ?? resolveSupabaseTarget({ flags: {}, project: void 0, env: env2 });
+  return new HarmonyAuth(resolved.token, target.url, target.anonKey, {
+    expectedProjectId: resolved.expectedProjectId,
+    expectedLabel: resolved.expectedLabel
+  });
 }
 function watchStdout(stream) {
   let dead = null;
@@ -79884,7 +80692,7 @@ function defaultDeps() {
     },
     installGuards: (onHealth) => installProcessGuards(onHealth),
     resolveTarget: resolveBoardTarget,
-    activeProjectName: localActiveProjectName,
+    projectSource: () => describeWatchSource(),
     now: () => Date.now(),
     sleep: realSleep2,
     out: (line2) => {
@@ -80064,7 +80872,8 @@ async function runWatchCommand(args, deps) {
         onFailure: (err, attempt) => {
           if (isScopeError2(err)) {
             const p = bootProject;
-            fatal = `${safeErrorMessage(err)}; the CLI's active project is ${p ? `${p.name} (${p.key})` : "unknown"} on ${target} (check \`harmony project info\`, change it with \`harmony project switch <name>\`)`;
+            const source = (deps.projectSource ?? (() => describeWatchSource()))();
+            fatal = `${safeErrorMessage(err)}; this watch reached ${p ? `${p.name} (${p.key})` : "an unknown project"} on ${target}${source ? `, chosen by ${source}` : ""} (check \`harmony whoami\`; change it with \`harmony project switch <name>\`, or HARMONY_PROJECT / HARMONY_API_TOKEN when the environment chose it)`;
             return "stop";
           }
           if (isAuthError(err)) {
@@ -80217,9 +81026,9 @@ function runWatchStatus(seat, json, deps) {
   const homeOpts = deps.home ? { home: deps.home } : {};
   const profile = readSeatProfile(seat, homeOpts);
   if (profile.status === "ok" && profile.value.project) {
-    const active = (deps.activeProjectName ?? localActiveProjectName)();
+    const source = (deps.projectSource ?? (() => describeWatchSource()))();
     deps.err(
-      `harmony watch status: not checking the profile's project ${profile.value.project} against the CLI's active project${active ? ` "${active}"` : ""}: its key is known only from the board. \`harmony watch\` checks it at start (exit 2 on a mismatch).`
+      `harmony watch status: not checking the profile's project ${profile.value.project} against the project this shell uses${source ? ` (${source})` : ""}: its key is known only from the board. \`harmony watch\` checks it at start (exit 2 on a mismatch).`
     );
   }
   const projects = profile.status === "ok" && profile.value.project && isSafeName(profile.value.project) ? [profile.value.project] : listWatchProjects(homeOpts);

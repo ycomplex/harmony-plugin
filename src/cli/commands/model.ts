@@ -45,7 +45,7 @@ import {
 import { resolveGatePhase } from '../../daemon/gate-phase.js';
 import { fetchCatalogPrice } from '../../tools/catalog-pricing.js';
 import { getAuthenticatedContext } from '../auth.js';
-import { getActiveProject } from '../config.js';
+import { resolvedCliSupabaseUrl } from '../../config/project-resolution.js';
 
 /** B-892: the run_config `resolve-gate` should resolve THIS gate's model from — the live
  *  `conductions.run_config` row when it is readable, else this leg's frozen launch env, else the
@@ -166,19 +166,13 @@ export function registerModelCommands(program: Command): void {
       try {
         const client = await getCatalogClient();
         const { entries } = await resolveModelCatalog(client);
-        // B-1025: pass the active project's stored URL through, so the profile lookup matches
-        // the URL the token exchange will actually use. Without this, a registered staging
-        // project on a host with no HARMONY_SUPABASE_URL would resolve 'prod' here while the
-        // exchange talked to staging. Best-effort — getActiveProject throws when no project is
-        // configured, and that path falls through to env/default as before.
-        let activeUrl: string | undefined;
-        try {
-          activeUrl = getActiveProject().supabaseUrl;
-        } catch {
-          activeUrl = undefined;
-        }
+        // B-1025: pass the URL the token exchange will actually use, so the profile lookup matches
+        // it. B-1501 fix 8: that URL comes from the shared resolver — the environment's pair when
+        // HARMONY_API_TOKEN is in force, HARMONY_PROJECT's stored pair, else the active project's —
+        // not the active project's URL whatever is in force. undefined (no project) falls through
+        // to env/default as before.
         console.log(
-          getPinnedDefaultModel(agent, resolveDeploymentProfile(process.env, activeUrl), entries) ?? '',
+          getPinnedDefaultModel(agent, resolveDeploymentProfile(process.env, resolvedCliSupabaseUrl()), entries) ?? '',
         );
       } catch (err: any) {
         console.error(`harmony model pinned-default: WARNING — ${err?.message ?? String(err)}; printing nothing`);

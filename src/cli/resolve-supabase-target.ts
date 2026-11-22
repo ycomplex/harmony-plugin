@@ -76,7 +76,7 @@ const SOURCE_REMEDY: Record<SupabaseTargetSource, string> = {
     'Pass --supabase-anon-key <key> or --supabase-publishable-key <key> alongside --supabase-url — the URL and its key travel together.',
   project:
     'This project has a URL without a public key. ' +
-    'Re-run `harmony login --supabase-url <url> --supabase-publishable-key <key> --token <token> --name <name>` (or --supabase-anon-key) to register the key.',
+    'Re-run `harmony login --supabase-url <url> --supabase-publishable-key <key> --token-stdin --name <name>` (or --supabase-anon-key) to register the key.',
   env:
     'Set HARMONY_SUPABASE_ANON_KEY or HARMONY_SUPABASE_PUBLISHABLE_KEY in the environment — it must sit beside HARMONY_SUPABASE_URL.',
   default: 'Supply the anon key with the URL.',

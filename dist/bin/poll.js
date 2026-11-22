@@ -17434,10 +17434,16 @@ var HarmonyAuth = class {
   // pair": the environment (then the built-in default) supplies it, exactly as before B-1025.
   supabaseUrl;
   supabaseAnonKey;
-  constructor(apiToken, supabaseUrl, supabaseAnonKey) {
+  // B-1501: the project id a stored entry was saved with. When set, an exchange that reaches a
+  // different project is refused, naming both — the token in that entry is not the one that was saved.
+  expected;
+  constructor(apiToken, supabaseUrl, supabaseAnonKey, opts) {
     this.apiToken = apiToken;
     this.supabaseUrl = supabaseUrl;
     this.supabaseAnonKey = supabaseAnonKey;
+    if (opts?.expectedProjectId) {
+      this.expected = { projectId: opts.expectedProjectId, label: opts.expectedLabel ?? "the stored project" };
+    }
   }
   /** B-1025: the Supabase URL for THIS call — an explicit pair wins, then the environment (read
    *  per call, so a later change is honoured), then the built-in default. */
@@ -17514,8 +17520,14 @@ var HarmonyAuth = class {
         `Token exchange returned a JWT scoped to project ${claimedProject} but a body naming project ${data.project_id}; refusing to use either.`
       );
     }
+    const reached = claimedProject ?? data.project_id;
+    if (this.expected && reached !== this.expected.projectId) {
+      throw new Error(
+        `${this.expected.label} was saved for project ${this.expected.projectId}, but its token now reaches project ${reached}; refusing to use it. Save the right token again with \`harmony download token set\` or \`harmony login --no-activate --token-stdin\`.`
+      );
+    }
     this.accessToken = data.access_token;
-    this.projectId = claimedProject ?? data.project_id;
+    this.projectId = reached;
     this.expiresAt = Date.now() + data.expires_in * 1e3;
     this.userId = payload.sub;
   }

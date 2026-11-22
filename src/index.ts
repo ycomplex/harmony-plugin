@@ -2,18 +2,20 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { HarmonyAuth } from './auth.js';
+import type { HarmonyAuth } from './auth.js';
 import { createAuthenticatedClient } from './supabase.js';
 import { registerTools, handleToolCall } from './tools/index.js';
-import { harmonyEnv } from './env.js';
+import { resolveMcpAuth } from './mcp-auth.js';
 
-const apiToken = harmonyEnv('HARMONY_API_TOKEN');
-if (!apiToken) {
-  console.error('HARMONY_API_TOKEN environment variable is required');
+// B-1501: HARMONY_API_TOKEN, else HARMONY_PROJECT naming a project stored in ~/.harmony/config.json
+// (src/config/project-resolution.ts). With neither, the server stops as before, naming both.
+let auth: HarmonyAuth;
+try {
+  auth = resolveMcpAuth().auth;
+} catch (err) {
+  console.error(err instanceof Error ? err.message : String(err));
   process.exit(1);
 }
-
-const auth = new HarmonyAuth(apiToken);
 
 const server = new Server(
   { name: 'harmony', version: '0.1.0' },

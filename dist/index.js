@@ -2243,8 +2243,8 @@ var require_resolve = __commonJS({
       }
       return count;
     }
-    function getFullPath(resolver, id = "", normalize) {
-      if (normalize !== false)
+    function getFullPath(resolver, id = "", normalize2) {
+      if (normalize2 !== false)
         id = normalizeId(id);
       const p = resolver.parse(id);
       return _getFullPath(resolver, p);
@@ -3234,8 +3234,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path3) {
-      let input = path3;
+    function removeDotSegments(path4) {
+      let input = path4;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3434,8 +3434,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path3, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path3 && path3 !== "/" ? path3 : void 0;
+        const [path4, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path4 && path4 !== "/" ? path4 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -3584,7 +3584,7 @@ var require_fast_uri = __commonJS({
     "use strict";
     var { normalizeIPv6, removeDotSegments, recomposeAuthority, normalizeComponentEncoding, isIPv4, nonSimpleDomain } = require_utils();
     var { SCHEMES, getSchemeHandler } = require_schemes();
-    function normalize(uri, options) {
+    function normalize2(uri, options) {
       if (typeof uri === "string") {
         uri = /** @type {T} */
         serialize(parse3(uri, options), options);
@@ -3820,7 +3820,7 @@ var require_fast_uri = __commonJS({
     }
     var fastUri = {
       SCHEMES,
-      normalize,
+      normalize: normalize2,
       resolve: resolve3,
       resolveComponent,
       equal,
@@ -6797,12 +6797,12 @@ var require_dist = __commonJS({
         throw new Error(`Unknown format "${name}"`);
       return f;
     };
-    function addFormats(ajv, list, fs2, exportName) {
+    function addFormats(ajv, list, fs3, exportName) {
       var _a;
       var _b;
       (_a = (_b = ajv.opts.code).formats) !== null && _a !== void 0 ? _a : _b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`;
       for (const f of list)
-        ajv.addFormat(f, fs2[f]);
+        ajv.addFormat(f, fs3[f]);
     }
     module.exports = exports = formatsPlugin;
     Object.defineProperty(exports, "__esModule", { value: true });
@@ -7239,13 +7239,13 @@ function __disposeResources(env) {
   }
   return next();
 }
-function __rewriteRelativeImportExtension(path3, preserveJsx) {
-  if (typeof path3 === "string" && /^\.\.?\//.test(path3)) {
-    return path3.replace(/\.(tsx)$|((?:\.d)?)((?:\.[^./]+?)?)\.([cm]?)ts$/i, function(m, tsx, d, ext, cm) {
+function __rewriteRelativeImportExtension(path4, preserveJsx) {
+  if (typeof path4 === "string" && /^\.\.?\//.test(path4)) {
+    return path4.replace(/\.(tsx)$|((?:\.d)?)((?:\.[^./]+?)?)\.([cm]?)ts$/i, function(m, tsx, d, ext, cm) {
       return tsx ? preserveJsx ? ".jsx" : ".js" : d && (!ext || !cm) ? m : d + ext + "." + cm.toLowerCase() + "js";
     });
   }
-  return path3;
+  return path4;
 }
 var extendStatics, __assign, __createBinding, __setModuleDefault, ownKeys, _SuppressedError, tslib_es6_default;
 var init_tslib_es6 = __esm({
@@ -16909,17 +16909,17 @@ var require_visit = __commonJS({
     visit.BREAK = BREAK;
     visit.SKIP = SKIP;
     visit.REMOVE = REMOVE;
-    function visit_(key, node, visitor, path3) {
-      const ctrl = callVisitor(key, node, visitor, path3);
+    function visit_(key, node, visitor, path4) {
+      const ctrl = callVisitor(key, node, visitor, path4);
       if (identity2.isNode(ctrl) || identity2.isPair(ctrl)) {
-        replaceNode(key, path3, ctrl);
-        return visit_(key, ctrl, visitor, path3);
+        replaceNode(key, path4, ctrl);
+        return visit_(key, ctrl, visitor, path4);
       }
       if (typeof ctrl !== "symbol") {
         if (identity2.isCollection(node)) {
-          path3 = Object.freeze(path3.concat(node));
+          path4 = Object.freeze(path4.concat(node));
           for (let i = 0; i < node.items.length; ++i) {
-            const ci = visit_(i, node.items[i], visitor, path3);
+            const ci = visit_(i, node.items[i], visitor, path4);
             if (typeof ci === "number")
               i = ci - 1;
             else if (ci === BREAK)
@@ -16930,13 +16930,13 @@ var require_visit = __commonJS({
             }
           }
         } else if (identity2.isPair(node)) {
-          path3 = Object.freeze(path3.concat(node));
-          const ck = visit_("key", node.key, visitor, path3);
+          path4 = Object.freeze(path4.concat(node));
+          const ck = visit_("key", node.key, visitor, path4);
           if (ck === BREAK)
             return BREAK;
           else if (ck === REMOVE)
             node.key = null;
-          const cv = visit_("value", node.value, visitor, path3);
+          const cv = visit_("value", node.value, visitor, path4);
           if (cv === BREAK)
             return BREAK;
           else if (cv === REMOVE)
@@ -16957,17 +16957,17 @@ var require_visit = __commonJS({
     visitAsync.BREAK = BREAK;
     visitAsync.SKIP = SKIP;
     visitAsync.REMOVE = REMOVE;
-    async function visitAsync_(key, node, visitor, path3) {
-      const ctrl = await callVisitor(key, node, visitor, path3);
+    async function visitAsync_(key, node, visitor, path4) {
+      const ctrl = await callVisitor(key, node, visitor, path4);
       if (identity2.isNode(ctrl) || identity2.isPair(ctrl)) {
-        replaceNode(key, path3, ctrl);
-        return visitAsync_(key, ctrl, visitor, path3);
+        replaceNode(key, path4, ctrl);
+        return visitAsync_(key, ctrl, visitor, path4);
       }
       if (typeof ctrl !== "symbol") {
         if (identity2.isCollection(node)) {
-          path3 = Object.freeze(path3.concat(node));
+          path4 = Object.freeze(path4.concat(node));
           for (let i = 0; i < node.items.length; ++i) {
-            const ci = await visitAsync_(i, node.items[i], visitor, path3);
+            const ci = await visitAsync_(i, node.items[i], visitor, path4);
             if (typeof ci === "number")
               i = ci - 1;
             else if (ci === BREAK)
@@ -16978,13 +16978,13 @@ var require_visit = __commonJS({
             }
           }
         } else if (identity2.isPair(node)) {
-          path3 = Object.freeze(path3.concat(node));
-          const ck = await visitAsync_("key", node.key, visitor, path3);
+          path4 = Object.freeze(path4.concat(node));
+          const ck = await visitAsync_("key", node.key, visitor, path4);
           if (ck === BREAK)
             return BREAK;
           else if (ck === REMOVE)
             node.key = null;
-          const cv = await visitAsync_("value", node.value, visitor, path3);
+          const cv = await visitAsync_("value", node.value, visitor, path4);
           if (cv === BREAK)
             return BREAK;
           else if (cv === REMOVE)
@@ -17011,23 +17011,23 @@ var require_visit = __commonJS({
       }
       return visitor;
     }
-    function callVisitor(key, node, visitor, path3) {
+    function callVisitor(key, node, visitor, path4) {
       if (typeof visitor === "function")
-        return visitor(key, node, path3);
+        return visitor(key, node, path4);
       if (identity2.isMap(node))
-        return visitor.Map?.(key, node, path3);
+        return visitor.Map?.(key, node, path4);
       if (identity2.isSeq(node))
-        return visitor.Seq?.(key, node, path3);
+        return visitor.Seq?.(key, node, path4);
       if (identity2.isPair(node))
-        return visitor.Pair?.(key, node, path3);
+        return visitor.Pair?.(key, node, path4);
       if (identity2.isScalar(node))
-        return visitor.Scalar?.(key, node, path3);
+        return visitor.Scalar?.(key, node, path4);
       if (identity2.isAlias(node))
-        return visitor.Alias?.(key, node, path3);
+        return visitor.Alias?.(key, node, path4);
       return void 0;
     }
-    function replaceNode(key, path3, node) {
-      const parent = path3[path3.length - 1];
+    function replaceNode(key, path4, node) {
+      const parent = path4[path4.length - 1];
       if (identity2.isCollection(parent)) {
         parent.items[key] = node;
       } else if (identity2.isPair(parent)) {
@@ -17637,10 +17637,10 @@ var require_Collection = __commonJS({
     var createNode = require_createNode();
     var identity2 = require_identity();
     var Node = require_Node();
-    function collectionFromPath(schema, path3, value) {
+    function collectionFromPath(schema, path4, value) {
       let v = value;
-      for (let i = path3.length - 1; i >= 0; --i) {
-        const k = path3[i];
+      for (let i = path4.length - 1; i >= 0; --i) {
+        const k = path4[i];
         if (typeof k === "number" && Number.isInteger(k) && k >= 0) {
           const a = [];
           a[k] = v;
@@ -17659,7 +17659,7 @@ var require_Collection = __commonJS({
         sourceObjects: /* @__PURE__ */ new Map()
       });
     }
-    var isEmptyPath = (path3) => path3 == null || typeof path3 === "object" && !!path3[Symbol.iterator]().next().done;
+    var isEmptyPath = (path4) => path4 == null || typeof path4 === "object" && !!path4[Symbol.iterator]().next().done;
     var Collection = class extends Node.NodeBase {
       constructor(type, schema) {
         super(type);
@@ -17689,11 +17689,11 @@ var require_Collection = __commonJS({
        * be a Pair instance or a `{ key, value }` object, which may not have a key
        * that already exists in the map.
        */
-      addIn(path3, value) {
-        if (isEmptyPath(path3))
+      addIn(path4, value) {
+        if (isEmptyPath(path4))
           this.add(value);
         else {
-          const [key, ...rest] = path3;
+          const [key, ...rest] = path4;
           const node = this.get(key, true);
           if (identity2.isCollection(node))
             node.addIn(rest, value);
@@ -17707,8 +17707,8 @@ var require_Collection = __commonJS({
        * Removes a value from the collection.
        * @returns `true` if the item was found and removed.
        */
-      deleteIn(path3) {
-        const [key, ...rest] = path3;
+      deleteIn(path4) {
+        const [key, ...rest] = path4;
         if (rest.length === 0)
           return this.delete(key);
         const node = this.get(key, true);
@@ -17722,8 +17722,8 @@ var require_Collection = __commonJS({
        * scalar values from their surrounding node; to disable set `keepScalar` to
        * `true` (collections are always returned intact).
        */
-      getIn(path3, keepScalar) {
-        const [key, ...rest] = path3;
+      getIn(path4, keepScalar) {
+        const [key, ...rest] = path4;
         const node = this.get(key, true);
         if (rest.length === 0)
           return !keepScalar && identity2.isScalar(node) ? node.value : node;
@@ -17741,8 +17741,8 @@ var require_Collection = __commonJS({
       /**
        * Checks if the collection includes a value with the key `key`.
        */
-      hasIn(path3) {
-        const [key, ...rest] = path3;
+      hasIn(path4) {
+        const [key, ...rest] = path4;
         if (rest.length === 0)
           return this.has(key);
         const node = this.get(key, true);
@@ -17752,8 +17752,8 @@ var require_Collection = __commonJS({
        * Sets a value in this collection. For `!!set`, `value` needs to be a
        * boolean to add/remove the item from the set.
        */
-      setIn(path3, value) {
-        const [key, ...rest] = path3;
+      setIn(path4, value) {
+        const [key, ...rest] = path4;
         if (rest.length === 0) {
           this.set(key, value);
         } else {
@@ -20268,9 +20268,9 @@ var require_Document = __commonJS({
           this.contents.add(value);
       }
       /** Adds a value to the document. */
-      addIn(path3, value) {
+      addIn(path4, value) {
         if (assertCollection(this.contents))
-          this.contents.addIn(path3, value);
+          this.contents.addIn(path4, value);
       }
       /**
        * Create a new `Alias` node, ensuring that the target `node` has the required anchor.
@@ -20345,14 +20345,14 @@ var require_Document = __commonJS({
        * Removes a value from the document.
        * @returns `true` if the item was found and removed.
        */
-      deleteIn(path3) {
-        if (Collection.isEmptyPath(path3)) {
+      deleteIn(path4) {
+        if (Collection.isEmptyPath(path4)) {
           if (this.contents == null)
             return false;
           this.contents = null;
           return true;
         }
-        return assertCollection(this.contents) ? this.contents.deleteIn(path3) : false;
+        return assertCollection(this.contents) ? this.contents.deleteIn(path4) : false;
       }
       /**
        * Returns item at `key`, or `undefined` if not found. By default unwraps
@@ -20367,10 +20367,10 @@ var require_Document = __commonJS({
        * scalar values from their surrounding node; to disable set `keepScalar` to
        * `true` (collections are always returned intact).
        */
-      getIn(path3, keepScalar) {
-        if (Collection.isEmptyPath(path3))
+      getIn(path4, keepScalar) {
+        if (Collection.isEmptyPath(path4))
           return !keepScalar && identity2.isScalar(this.contents) ? this.contents.value : this.contents;
-        return identity2.isCollection(this.contents) ? this.contents.getIn(path3, keepScalar) : void 0;
+        return identity2.isCollection(this.contents) ? this.contents.getIn(path4, keepScalar) : void 0;
       }
       /**
        * Checks if the document includes a value with the key `key`.
@@ -20381,10 +20381,10 @@ var require_Document = __commonJS({
       /**
        * Checks if the document includes a value at `path`.
        */
-      hasIn(path3) {
-        if (Collection.isEmptyPath(path3))
+      hasIn(path4) {
+        if (Collection.isEmptyPath(path4))
           return this.contents !== void 0;
-        return identity2.isCollection(this.contents) ? this.contents.hasIn(path3) : false;
+        return identity2.isCollection(this.contents) ? this.contents.hasIn(path4) : false;
       }
       /**
        * Sets a value in this document. For `!!set`, `value` needs to be a
@@ -20401,13 +20401,13 @@ var require_Document = __commonJS({
        * Sets a value in this document. For `!!set`, `value` needs to be a
        * boolean to add/remove the item from the set.
        */
-      setIn(path3, value) {
-        if (Collection.isEmptyPath(path3)) {
+      setIn(path4, value) {
+        if (Collection.isEmptyPath(path4)) {
           this.contents = value;
         } else if (this.contents == null) {
-          this.contents = Collection.collectionFromPath(this.schema, Array.from(path3), value);
+          this.contents = Collection.collectionFromPath(this.schema, Array.from(path4), value);
         } else if (assertCollection(this.contents)) {
-          this.contents.setIn(path3, value);
+          this.contents.setIn(path4, value);
         }
       }
       /**
@@ -22367,9 +22367,9 @@ var require_cst_visit = __commonJS({
     visit.BREAK = BREAK;
     visit.SKIP = SKIP;
     visit.REMOVE = REMOVE;
-    visit.itemAtPath = (cst, path3) => {
+    visit.itemAtPath = (cst, path4) => {
       let item = cst;
-      for (const [field, index] of path3) {
+      for (const [field, index] of path4) {
         const tok = item?.[field];
         if (tok && "items" in tok) {
           item = tok.items[index];
@@ -22378,23 +22378,23 @@ var require_cst_visit = __commonJS({
       }
       return item;
     };
-    visit.parentCollection = (cst, path3) => {
-      const parent = visit.itemAtPath(cst, path3.slice(0, -1));
-      const field = path3[path3.length - 1][0];
+    visit.parentCollection = (cst, path4) => {
+      const parent = visit.itemAtPath(cst, path4.slice(0, -1));
+      const field = path4[path4.length - 1][0];
       const coll = parent?.[field];
       if (coll && "items" in coll)
         return coll;
       throw new Error("Parent collection not found");
     };
-    function _visit(path3, item, visitor) {
-      let ctrl = visitor(item, path3);
+    function _visit(path4, item, visitor) {
+      let ctrl = visitor(item, path4);
       if (typeof ctrl === "symbol")
         return ctrl;
       for (const field of ["key", "value"]) {
         const token = item[field];
         if (token && "items" in token) {
           for (let i = 0; i < token.items.length; ++i) {
-            const ci = _visit(Object.freeze(path3.concat([[field, i]])), token.items[i], visitor);
+            const ci = _visit(Object.freeze(path4.concat([[field, i]])), token.items[i], visitor);
             if (typeof ci === "number")
               i = ci - 1;
             else if (ci === BREAK)
@@ -22405,10 +22405,10 @@ var require_cst_visit = __commonJS({
             }
           }
           if (typeof ctrl === "function" && field === "key")
-            ctrl = ctrl(item, path3);
+            ctrl = ctrl(item, path4);
         }
       }
-      return typeof ctrl === "function" ? ctrl(item, path3) : ctrl;
+      return typeof ctrl === "function" ? ctrl(item, path4) : ctrl;
     }
     exports.visit = visit;
   }
@@ -23710,14 +23710,14 @@ var require_parser = __commonJS({
             case "scalar":
             case "single-quoted-scalar":
             case "double-quoted-scalar": {
-              const fs2 = this.flowScalar(this.type);
+              const fs3 = this.flowScalar(this.type);
               if (atNextItem || it.value) {
-                map.items.push({ start, key: fs2, sep: [] });
+                map.items.push({ start, key: fs3, sep: [] });
                 this.onKeyLine = true;
               } else if (it.sep) {
-                this.stack.push(fs2);
+                this.stack.push(fs3);
               } else {
-                Object.assign(it, { key: fs2, sep: [] });
+                Object.assign(it, { key: fs3, sep: [] });
                 this.onKeyLine = true;
               }
               return;
@@ -23845,13 +23845,13 @@ var require_parser = __commonJS({
             case "scalar":
             case "single-quoted-scalar":
             case "double-quoted-scalar": {
-              const fs2 = this.flowScalar(this.type);
+              const fs3 = this.flowScalar(this.type);
               if (!it || it.value)
-                fc.items.push({ start: [], key: fs2, sep: [] });
+                fc.items.push({ start: [], key: fs3, sep: [] });
               else if (it.sep)
-                this.stack.push(fs2);
+                this.stack.push(fs3);
               else
-                Object.assign(it, { key: fs2, sep: [] });
+                Object.assign(it, { key: fs3, sep: [] });
               return;
             }
             case "flow-map-end":
@@ -24637,8 +24637,8 @@ function getErrorMap() {
 
 // node_modules/zod/v3/helpers/parseUtil.js
 var makeIssue = (params) => {
-  const { data, path: path3, errorMaps, issueData } = params;
-  const fullPath = [...path3, ...issueData.path || []];
+  const { data, path: path4, errorMaps, issueData } = params;
+  const fullPath = [...path4, ...issueData.path || []];
   const fullIssue = {
     ...issueData,
     path: fullPath
@@ -24754,11 +24754,11 @@ var errorUtil;
 
 // node_modules/zod/v3/types.js
 var ParseInputLazyPath = class {
-  constructor(parent, value, path3, key) {
+  constructor(parent, value, path4, key) {
     this._cachedPath = [];
     this.parent = parent;
     this.data = value;
-    this._path = path3;
+    this._path = path4;
     this._key = key;
   }
   get path() {
@@ -28395,10 +28395,10 @@ function assignProp(target, prop, value) {
     configurable: true
   });
 }
-function getElementAtPath(obj, path3) {
-  if (!path3)
+function getElementAtPath(obj, path4) {
+  if (!path4)
     return obj;
-  return path3.reduce((acc, key) => acc?.[key], obj);
+  return path4.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -28718,11 +28718,11 @@ function aborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path3, issues) {
+function prefixIssues(path4, issues) {
   return issues.map((iss) => {
     var _a;
     (_a = iss).path ?? (_a.path = []);
-    iss.path.unshift(path3);
+    iss.path.unshift(path4);
     return iss;
   });
 }
@@ -35269,137 +35269,6 @@ var StdioServerTransport = class {
   }
 };
 
-// src/supabase-key.ts
-function resolvePublicKey(anonKey, publishableKey, names) {
-  if (anonKey && publishableKey && anonKey !== publishableKey) {
-    throw new Error(`Conflicting Supabase public key aliases: ${names[0]} and ${names[1]}. Supply one or identical values.`);
-  }
-  return anonKey || publishableKey || void 0;
-}
-
-// src/env.ts
-function harmonyEnv(name, env = process.env) {
-  return env[name] ?? env[`EVAL_${name}`];
-}
-
-// src/auth.ts
-var DEFAULT_SUPABASE_URL = "https://eioxsunvhakmelhanmnn.supabase.co";
-var DEFAULT_SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpb3hzdW52aGFrbWVsaGFubW5uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2NDY3NjksImV4cCI6MjA5MDIyMjc2OX0.SdbpfqRhcB21qWs6XnD6Lsj6AGX2b6tOGV3pg2iJjsw";
-var TokenExchangeError = class extends Error {
-  endpoint;
-  status;
-  body;
-  constructor(endpoint, status, body) {
-    super(`Token exchange failed (${status})`);
-    this.name = "TokenExchangeError";
-    this.endpoint = endpoint;
-    this.status = status;
-    this.body = body;
-  }
-};
-var HarmonyAuth = class {
-  apiToken;
-  accessToken = null;
-  projectId = null;
-  userId = null;
-  expiresAt = 0;
-  // B-845: single-flight guard for forceRefresh() — concurrent PGRST303 callers on ONE HarmonyAuth
-  // instance must share the SAME in-flight exchange rather than each firing their own fetch(). Set
-  // the moment a refresh starts, cleared on BOTH resolution and rejection (via .finally()) so a
-  // failed exchange can never poison the next caller into replaying a dead promise forever.
-  inFlightRefresh = null;
-  // B-1025: the Supabase pair for THIS auth instance, when the caller resolved one explicitly
-  // (the CLI's pair resolver — src/cli/resolve-supabase-target.ts). Undefined means "no explicit
-  // pair": the environment (then the built-in default) supplies it, exactly as before B-1025.
-  supabaseUrl;
-  supabaseAnonKey;
-  constructor(apiToken2, supabaseUrl, supabaseAnonKey) {
-    this.apiToken = apiToken2;
-    this.supabaseUrl = supabaseUrl;
-    this.supabaseAnonKey = supabaseAnonKey;
-  }
-  /** B-1025: the Supabase URL for THIS call — an explicit pair wins, then the environment (read
-   *  per call, so a later change is honoured), then the built-in default. */
-  getSupabaseUrl() {
-    return this.supabaseUrl ?? harmonyEnv("HARMONY_SUPABASE_URL") ?? DEFAULT_SUPABASE_URL;
-  }
-  /** B-1025: the Supabase anon key for THIS call — the counterpart of getSupabaseUrl(). */
-  getSupabaseAnonKey() {
-    return this.supabaseAnonKey ?? resolvePublicKey(
-      harmonyEnv("HARMONY_SUPABASE_ANON_KEY"),
-      harmonyEnv("HARMONY_SUPABASE_PUBLISHABLE_KEY"),
-      ["HARMONY_SUPABASE_ANON_KEY", "HARMONY_SUPABASE_PUBLISHABLE_KEY"]
-    ) ?? DEFAULT_SUPABASE_ANON_KEY;
-  }
-  async getAccessToken() {
-    if (this.accessToken && Date.now() < this.expiresAt - 6e4) {
-      return this.accessToken;
-    }
-    await this.exchange();
-    return this.accessToken;
-  }
-  /** B-845: force a FRESH token exchange, bypassing getAccessToken()'s cache/expiry check entirely
-   *  — the caller (src/daemon/write-retry.ts's withWriteRetry) already knows the cached token was
-   *  rejected (PGRST303), so replaying getAccessToken()'s cache would just hand back the same dead
-   *  token. Single-flight: a second concurrent caller gets the SAME in-flight exchange, never a
-   *  second fetch. This method deliberately does NOT call getAccessToken() — see the module-level
-   *  design note above. */
-  forceRefresh() {
-    if (!this.inFlightRefresh) {
-      this.inFlightRefresh = this.exchange().finally(() => {
-        this.inFlightRefresh = null;
-      });
-    }
-    return this.inFlightRefresh;
-  }
-  getProjectId() {
-    if (!this.projectId) throw new Error("Not authenticated yet. Call getAccessToken() first.");
-    return this.projectId;
-  }
-  getUserId() {
-    if (!this.userId) throw new Error("Not authenticated yet. Call getAccessToken() first.");
-    return this.userId;
-  }
-  async exchange() {
-    const endpoint = "/functions/v1/auth-token";
-    const publicKey = this.getSupabaseAnonKey();
-    const headers = { "Content-Type": "application/json", apikey: publicKey };
-    if (!publicKey.startsWith("sb_publishable_") && !publicKey.startsWith("sb_secret_")) {
-      headers.Authorization = `Bearer ${publicKey}`;
-    }
-    let res;
-    try {
-      res = await fetch(`${this.getSupabaseUrl()}${endpoint}`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ token: this.apiToken })
-      });
-    } catch (err) {
-      if (err instanceof Error) {
-        err.endpoint = endpoint;
-      }
-      throw err;
-    }
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      throw new TokenExchangeError(endpoint, res.status, body);
-    }
-    const data = await res.json();
-    const payloadB64 = data.access_token.split(".")[1];
-    const payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString());
-    const claimedProject = typeof payload.project_id === "string" ? payload.project_id : null;
-    if (claimedProject && data.project_id && claimedProject !== data.project_id) {
-      throw new Error(
-        `Token exchange returned a JWT scoped to project ${claimedProject} but a body naming project ${data.project_id}; refusing to use either.`
-      );
-    }
-    this.accessToken = data.access_token;
-    this.projectId = claimedProject ?? data.project_id;
-    this.expiresAt = Date.now() + data.expires_in * 1e3;
-    this.userId = payload.sub;
-  }
-};
-
 // node_modules/@supabase/supabase-js/dist/index.mjs
 var dist_exports = {};
 __export(dist_exports, {
@@ -40184,8 +40053,8 @@ var IcebergError = class extends Error {
     return this.status === 419;
   }
 };
-function buildUrl(baseUrl, path3, query) {
-  const url = new URL(path3, baseUrl);
+function buildUrl(baseUrl, path4, query) {
+  const url = new URL(path4, baseUrl);
   if (query) {
     for (const [key, value] of Object.entries(query)) {
       if (value !== void 0) {
@@ -40215,12 +40084,12 @@ function createFetchClient(options) {
   return {
     async request({
       method,
-      path: path3,
+      path: path4,
       query,
       body,
       headers
     }) {
-      const url = buildUrl(options.baseUrl, path3, query);
+      const url = buildUrl(options.baseUrl, path4, query);
       const authHeaders = await buildAuthHeaders(options.auth);
       const res = await fetchFn(url, {
         method,
@@ -41039,7 +40908,7 @@ var StorageFileApi = class extends BaseApiClient {
   * @param path The relative file path. Should be of the format `folder/subfolder/filename.png`. The bucket must already exist before attempting to upload.
   * @param fileBody The body of the file to be stored in the bucket.
   */
-  async uploadOrUpdate(method, path3, fileBody, fileOptions) {
+  async uploadOrUpdate(method, path4, fileBody, fileOptions) {
     var _this = this;
     return _this.handleOperation(async () => {
       let body;
@@ -41063,7 +40932,7 @@ var StorageFileApi = class extends BaseApiClient {
         if ((typeof ReadableStream !== "undefined" && body instanceof ReadableStream || body && typeof body === "object" && "pipe" in body && typeof body.pipe === "function") && !options.duplex) options.duplex = "half";
       }
       if (fileOptions === null || fileOptions === void 0 ? void 0 : fileOptions.headers) headers = _objectSpread22(_objectSpread22({}, headers), fileOptions.headers);
-      const cleanPath = _this._removeEmptyFolders(path3);
+      const cleanPath = _this._removeEmptyFolders(path4);
       const _path = _this._getFinalPath(cleanPath);
       const data = await (method == "PUT" ? put : post)(_this.fetch, `${_this.url}/object/${_path}`, body, _objectSpread22({ headers }, (options === null || options === void 0 ? void 0 : options.duplex) ? { duplex: options.duplex } : {}));
       return {
@@ -41117,8 +40986,8 @@ var StorageFileApi = class extends BaseApiClient {
   *   })
   * ```
   */
-  async upload(path3, fileBody, fileOptions) {
-    return this.uploadOrUpdate("POST", path3, fileBody, fileOptions);
+  async upload(path4, fileBody, fileOptions) {
+    return this.uploadOrUpdate("POST", path4, fileBody, fileOptions);
   }
   /**
   * Upload a file with a token generated from `createSignedUploadUrl`.
@@ -41151,9 +41020,9 @@ var StorageFileApi = class extends BaseApiClient {
   * }
   * ```
   */
-  async uploadToSignedUrl(path3, token, fileBody, fileOptions) {
+  async uploadToSignedUrl(path4, token, fileBody, fileOptions) {
     var _this3 = this;
-    const cleanPath = _this3._removeEmptyFolders(path3);
+    const cleanPath = _this3._removeEmptyFolders(path4);
     const _path = _this3._getFinalPath(cleanPath);
     const url = new URL(_this3.url + `/object/upload/sign/${_path}`);
     url.searchParams.set("token", token);
@@ -41209,10 +41078,10 @@ var StorageFileApi = class extends BaseApiClient {
   * }
   * ```
   */
-  async createSignedUploadUrl(path3, options) {
+  async createSignedUploadUrl(path4, options) {
     var _this4 = this;
     return _this4.handleOperation(async () => {
-      let _path = _this4._getFinalPath(path3);
+      let _path = _this4._getFinalPath(path4);
       const headers = _objectSpread22({}, _this4.headers);
       if (options === null || options === void 0 ? void 0 : options.upsert) headers["x-upsert"] = "true";
       const data = await post(_this4.fetch, `${_this4.url}/object/upload/sign/${_path}`, {}, { headers });
@@ -41221,7 +41090,7 @@ var StorageFileApi = class extends BaseApiClient {
       if (!token) throw new StorageError("No token returned by API");
       return {
         signedUrl: url.toString(),
-        path: path3,
+        path: path4,
         token
       };
     });
@@ -41270,8 +41139,8 @@ var StorageFileApi = class extends BaseApiClient {
   *   })
   * ```
   */
-  async update(path3, fileBody, fileOptions) {
-    return this.uploadOrUpdate("PUT", path3, fileBody, fileOptions);
+  async update(path4, fileBody, fileOptions) {
+    return this.uploadOrUpdate("PUT", path4, fileBody, fileOptions);
   }
   /**
   * Moves an existing file to a new path in the same bucket.
@@ -41400,10 +41269,10 @@ var StorageFileApi = class extends BaseApiClient {
   *   })
   * ```
   */
-  async createSignedUrl(path3, expiresIn, options) {
+  async createSignedUrl(path4, expiresIn, options) {
     var _this8 = this;
     return _this8.handleOperation(async () => {
-      let _path = _this8._getFinalPath(path3);
+      let _path = _this8._getFinalPath(path4);
       const hasTransform = typeof (options === null || options === void 0 ? void 0 : options.transform) === "object" && options.transform !== null && Object.keys(options.transform).length > 0;
       let data = await post(_this8.fetch, `${_this8.url}/object/sign/${_path}`, _objectSpread22({ expiresIn }, hasTransform ? { transform: options.transform } : {}), { headers: _this8.headers });
       const downloadQueryParam = (options === null || options === void 0 ? void 0 : options.download) ? `&download=${options.download === true ? "" : options.download}` : "";
@@ -41518,11 +41387,11 @@ var StorageFileApi = class extends BaseApiClient {
   *   .download('folder/avatar1.png', {}, { signal: controller.signal })
   * ```
   */
-  download(path3, options, parameters) {
+  download(path4, options, parameters) {
     const renderPath = typeof (options === null || options === void 0 ? void 0 : options.transform) !== "undefined" ? "render/image/authenticated" : "object";
     const transformationQuery = this.transformOptsToQueryString((options === null || options === void 0 ? void 0 : options.transform) || {});
     const queryString = transformationQuery ? `?${transformationQuery}` : "";
-    const _path = this._getFinalPath(path3);
+    const _path = this._getFinalPath(path4);
     const downloadFn = () => get(this.fetch, `${this.url}/${renderPath}/${_path}${queryString}`, {
       headers: this.headers,
       noResolveJson: true
@@ -41552,9 +41421,9 @@ var StorageFileApi = class extends BaseApiClient {
   * }
   * ```
   */
-  async info(path3) {
+  async info(path4) {
     var _this10 = this;
-    const _path = _this10._getFinalPath(path3);
+    const _path = _this10._getFinalPath(path4);
     return _this10.handleOperation(async () => {
       return recursiveToCamel(await get(_this10.fetch, `${_this10.url}/object/info/${_path}`, { headers: _this10.headers }));
     });
@@ -41574,9 +41443,9 @@ var StorageFileApi = class extends BaseApiClient {
   *   .exists('folder/avatar1.png')
   * ```
   */
-  async exists(path3) {
+  async exists(path4) {
     var _this11 = this;
-    const _path = _this11._getFinalPath(path3);
+    const _path = _this11._getFinalPath(path4);
     try {
       await head(_this11.fetch, `${_this11.url}/object/${_path}`, { headers: _this11.headers });
       return {
@@ -41646,8 +41515,8 @@ var StorageFileApi = class extends BaseApiClient {
   *   })
   * ```
   */
-  getPublicUrl(path3, options) {
-    const _path = this._getFinalPath(path3);
+  getPublicUrl(path4, options) {
+    const _path = this._getFinalPath(path4);
     const _queryString = [];
     const downloadQueryParam = (options === null || options === void 0 ? void 0 : options.download) ? `download=${options.download === true ? "" : options.download}` : "";
     if (downloadQueryParam !== "") _queryString.push(downloadQueryParam);
@@ -41774,10 +41643,10 @@ var StorageFileApi = class extends BaseApiClient {
   *   })
   * ```
   */
-  async list(path3, options, parameters) {
+  async list(path4, options, parameters) {
     var _this13 = this;
     return _this13.handleOperation(async () => {
-      const body = _objectSpread22(_objectSpread22(_objectSpread22({}, DEFAULT_SEARCH_OPTIONS), options), {}, { prefix: path3 || "" });
+      const body = _objectSpread22(_objectSpread22(_objectSpread22({}, DEFAULT_SEARCH_OPTIONS), options), {}, { prefix: path4 || "" });
       return await post(_this13.fetch, `${_this13.url}/object/list/${_this13.bucketId}`, body, { headers: _this13.headers }, parameters);
     });
   }
@@ -41841,11 +41710,11 @@ var StorageFileApi = class extends BaseApiClient {
     if (typeof Buffer !== "undefined") return Buffer.from(data).toString("base64");
     return btoa(data);
   }
-  _getFinalPath(path3) {
-    return `${this.bucketId}/${path3.replace(/^\/+/, "")}`;
+  _getFinalPath(path4) {
+    return `${this.bucketId}/${path4.replace(/^\/+/, "")}`;
   }
-  _removeEmptyFolders(path3) {
-    return path3.replace(/^\/|\/$/g, "").replace(/\/+/g, "/");
+  _removeEmptyFolders(path4) {
+    return path4.replace(/^\/|\/$/g, "").replace(/\/+/g, "/");
   }
   transformOptsToQueryString(transform2) {
     const params = [];
@@ -43624,6 +43493,13 @@ async function createAuthenticatedClient(auth2) {
 
 // src/tools/environment.ts
 import { readFileSync as readFileSync3 } from "node:fs";
+
+// src/env.ts
+function harmonyEnv(name, env = process.env) {
+  return env[name] ?? env[`EVAL_${name}`];
+}
+
+// src/tools/environment.ts
 import { dirname as dirname2, join as join4 } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -43857,9 +43733,9 @@ function unwrapSchema(s) {
     else return cur;
   }
 }
-function objectSchemaAt(root, path3) {
+function objectSchemaAt(root, path4) {
   let cur = unwrapSchema(root);
-  for (const seg of path3) {
+  for (const seg of path4) {
     if (cur instanceof external_exports.ZodObject) cur = unwrapSchema(cur.shape[String(seg)]);
     else if (cur instanceof external_exports.ZodRecord) cur = unwrapSchema(cur.valueSchema);
     else if (cur instanceof external_exports.ZodArray) cur = unwrapSchema(cur.element);
@@ -43876,8 +43752,8 @@ var EXAMPLE_BY_TYPE = {
   array: '["a"]',
   object: "{ }"
 };
-function keyOf(path3) {
-  return path3.length === 0 ? "(file)" : path3.join(".");
+function keyOf(path4) {
+  return path4.length === 0 ? "(file)" : path4.join(".");
 }
 function zodIssuesToConfigIssues(file, issues, root) {
   const out = [];
@@ -44031,13 +43907,13 @@ function mergeLayers(...layers) {
   delete out.version;
   return out;
 }
-function setPath(o, path3, value) {
+function setPath(o, path4, value) {
   let cur = o;
-  for (const seg of path3.slice(0, -1)) {
+  for (const seg of path4.slice(0, -1)) {
     if (!isPlain(cur[seg])) cur[seg] = {};
     cur = cur[seg];
   }
-  cur[path3[path3.length - 1]] = value;
+  cur[path4[path4.length - 1]] = value;
 }
 var ENV_LEAVES = [
   ...["channel", "profile", "plugin_dir", "config_repo", "config_ref"].map((k) => ({ path: [k], type: "string" })),
@@ -44058,8 +43934,8 @@ var ENV_LEAVES = [
   { path: ["github_app", "installation_id"], type: "string" },
   { path: ["github_app", "private_key_path"], type: "string" }
 ];
-function conductorEnvVarName(path3) {
-  return `HARMONY_CONDUCTOR_${path3.join("_").toUpperCase()}`;
+function conductorEnvVarName(path4) {
+  return `HARMONY_CONDUCTOR_${path4.join("_").toUpperCase()}`;
 }
 function envLayer(env) {
   const layer = {};
@@ -44332,11 +44208,11 @@ function evaluateConductorConfig(opts = {}) {
   const issues = [];
   const warnings = [];
   const sources = [];
-  const readText = (path3, label) => {
+  const readText = (path4, label) => {
     try {
-      return read(path3);
+      return read(path4);
     } catch (err) {
-      issues.push({ file: label, key: "(file)", problem: `could not be read: ${err instanceof Error ? err.message : String(err)}`, fix: `check that ${path3} exists and is readable` });
+      issues.push({ file: label, key: "(file)", problem: `could not be read: ${err instanceof Error ? err.message : String(err)}`, fix: `check that ${path4} exists and is readable` });
       return null;
     }
   };
@@ -44584,14 +44460,14 @@ function loadLegacyDeploymentConfig(opts = {}) {
   const env = opts.env ?? process.env;
   const exists = opts.existsSync ?? existsSync;
   const readFile = opts.readFileSync ?? ((p) => readFileSync(p, "utf8"));
-  const path3 = resolveDeploymentConfigPath({ configPath: opts.configPath, env });
-  if (!exists(path3)) return null;
+  const path4 = resolveDeploymentConfigPath({ configPath: opts.configPath, env });
+  if (!exists(path4)) return null;
   let raw;
   try {
-    raw = readFile(path3);
+    raw = readFile(path4);
   } catch (err) {
     throw new Error(
-      `could not read deployment config at ${path3}: ${err instanceof Error ? err.message : String(err)}`,
+      `could not read deployment config at ${path4}: ${err instanceof Error ? err.message : String(err)}`,
       { cause: err }
     );
   }
@@ -44600,13 +44476,13 @@ function loadLegacyDeploymentConfig(opts = {}) {
     parsed = JSON.parse(raw);
   } catch (err) {
     throw new Error(
-      `deployment config at ${path3} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+      `deployment config at ${path4} is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
       { cause: err }
     );
   }
   const result = DeploymentConfigSchema.safeParse(parsed);
   if (!result.success) {
-    throw new Error(`deployment config at ${path3} failed validation: ${result.error.message}`, {
+    throw new Error(`deployment config at ${path4} failed validation: ${result.error.message}`, {
       cause: result.error
     });
   }
@@ -45034,9 +44910,9 @@ async function registerKnowledgeTag(client, projectId, name, description) {
 function surfaceTags(paths) {
   return [
     ...new Set(
-      paths.map((path3) => path3.replace(/^\.\//, "")).filter(
-        (path3) => /^[A-Za-z0-9_.-]+\//.test(path3) && !path3.split("/").some((part) => part === ".." || part === "")
-      ).map((path3) => `surface:${path3.slice(0, path3.lastIndexOf("/"))}`)
+      paths.map((path4) => path4.replace(/^\.\//, "")).filter(
+        (path4) => /^[A-Za-z0-9_.-]+\//.test(path4) && !path4.split("/").some((part) => part === ".." || part === "")
+      ).map((path4) => `surface:${path4.slice(0, path4.lastIndexOf("/"))}`)
     )
   ].sort();
 }
@@ -47628,9 +47504,9 @@ function getLeg(env = process.env) {
 }
 function getRunConfig(env = process.env, deps = {}) {
   const readFile = deps.readFileSync ?? ((p) => nodeReadFileSync(p, "utf8"));
-  const path3 = envValue(env, "HARMONY_RUN_CONFIG_PATH");
-  if (path3) {
-    return RunConfigSchema.parse(JSON.parse(readFile(path3)));
+  const path4 = envValue(env, "HARMONY_RUN_CONFIG_PATH");
+  if (path4) {
+    return RunConfigSchema.parse(JSON.parse(readFile(path4)));
   }
   const inline = envValue(env, "HARMONY_RUN_CONFIG_JSON");
   if (inline) {
@@ -47816,7 +47692,7 @@ async function resolveModelCatalog(client, opts = {}) {
 }
 
 // src/tools/environment.ts
-var DEFAULT_SUPABASE_URL2 = "https://eioxsunvhakmelhanmnn.supabase.co";
+var DEFAULT_SUPABASE_URL = "https://eioxsunvhakmelhanmnn.supabase.co";
 var KNOWN_REFS = {
   eioxsunvhakmelhanmnn: "prod",
   meqkdgncdzromunylyxf: "staging"
@@ -47864,7 +47740,7 @@ function readEnvRunConfig(env) {
   }
 }
 async function resolveEnvironment(env = process.env, moduleUrl = import.meta.url, client, overrideUrl) {
-  const supabase_url = overrideUrl ?? harmonyEnv("HARMONY_SUPABASE_URL", env) ?? DEFAULT_SUPABASE_URL2;
+  const supabase_url = overrideUrl ?? harmonyEnv("HARMONY_SUPABASE_URL", env) ?? DEFAULT_SUPABASE_URL;
   let supabase_project_ref = "";
   try {
     supabase_project_ref = new URL(supabase_url).hostname.split(".")[0] ?? "";
@@ -49159,7 +49035,7 @@ async function settlementWarning(client, projectId, doc, changedPaths) {
     const repos = doc.frame.act?.repos ?? [];
     const prefix = repos.length === 1 ? repositoryPrefix(repos[0]) : void 0;
     const paths = (changedPaths ?? []).map(
-      (path3) => /^[^/]+\//.test(path3.replace(/^\.\//, "")) && (path3.startsWith(`${prefix}/`) || repos.length !== 1) || !prefix ? path3 : `${prefix}/${path3.replace(/^\.\//, "")}`
+      (path4) => /^[^/]+\//.test(path4.replace(/^\.\//, "")) && (path4.startsWith(`${prefix}/`) || repos.length !== 1) || !prefix ? path4 : `${prefix}/${path4.replace(/^\.\//, "")}`
     );
     const tags = surfaceTags(paths);
     if (!tags.length) return;
@@ -49386,9 +49262,9 @@ var SQL_TEST_REGEXES = [
   "**/*.spec.sql",
   "**/*_test.sql"
 ].map(globToRegExp);
-function isMigrationRiskPath(path3) {
-  if (MIGRATION_DIRECTORY_REGEXES.some((re) => re.test(path3))) return true;
-  return PATH_REGEX_TABLE["data-migration"].some((re) => re.test(path3)) && !SQL_TEST_REGEXES.some((re) => re.test(path3));
+function isMigrationRiskPath(path4) {
+  if (MIGRATION_DIRECTORY_REGEXES.some((re) => re.test(path4))) return true;
+  return PATH_REGEX_TABLE["data-migration"].some((re) => re.test(path4)) && !SQL_TEST_REGEXES.some((re) => re.test(path4));
 }
 function labelToRiskClass(label) {
   const l = label.trim().toLowerCase().replace(/^risk[:/-]/, "");
@@ -49411,16 +49287,16 @@ function labelToRiskClass(label) {
       return null;
   }
 }
-function basenameOf(path3) {
-  const idx = path3.lastIndexOf("/");
-  return idx === -1 ? path3 : path3.slice(idx + 1);
+function basenameOf(path4) {
+  const idx = path4.lastIndexOf("/");
+  return idx === -1 ? path4 : path4.slice(idx + 1);
 }
 function tokenizeBasename(basename4) {
   const spaced = basename4.replace(/([a-zA-Z])([0-9])/g, "$1 $2").replace(/([0-9])([a-zA-Z])/g, "$1 $2").replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[-_.]+/g, " ");
   return spaced.split(/\s+/).filter((t) => t.length > 0);
 }
-function authBasenameHit(path3) {
-  const tokens = tokenizeBasename(basenameOf(path3));
+function authBasenameHit(path4) {
+  const tokens = tokenizeBasename(basenameOf(path4));
   return tokens.some((t) => AUTH_WORD_REGEX.test(t) || OAUTH_WORD_REGEX.test(t));
 }
 function pathHitsClass(paths, cls) {
@@ -49557,8 +49433,8 @@ var GENERATED_VENDORED_EXCLUDE = [
   /\.(png|jpe?g|gif|svg|webp|ico|pdf|zip|gz|tgz|tar|woff2?|ttf|eot|mp4|mov|bin)$/i
   // binary/attachment paths
 ];
-function isExcludedPath(path3) {
-  return GENERATED_VENDORED_EXCLUDE.some((re) => re.test(path3));
+function isExcludedPath(path4) {
+  return GENERATED_VENDORED_EXCLUDE.some((re) => re.test(path4));
 }
 function extractCandidateValues(text3) {
   if (!text3) return [];
@@ -49606,8 +49482,8 @@ function parseDiff(diffContent) {
     const line = lines[i];
     const header = /^diff --git a\/(\S+) b\/(\S+)/.exec(line);
     if (header) {
-      const path3 = header[2] ?? header[1];
-      currentExcluded = isExcludedPath(path3);
+      const path4 = header[2] ?? header[1];
+      currentExcluded = isExcludedPath(path4);
       continue;
     }
     if (currentExcluded) continue;
@@ -50160,15 +50036,15 @@ function findConductorRepos(io, start) {
     directory = parent;
   }
 }
-function localRepoPath(io, root, path3, metaPath) {
-  if (!isAbsolute(path3)) return resolve(root, path3);
-  if (io.existsSync(path3)) return path3;
+function localRepoPath(io, root, path4, metaPath) {
+  if (!isAbsolute(path4)) return resolve(root, path4);
+  if (io.existsSync(path4)) return path4;
   if (metaPath && isAbsolute(metaPath)) {
-    const rel = relative(metaPath, path3);
+    const rel = relative(metaPath, path4);
     if (rel === "") return root;
     if (!rel.startsWith("..") && !isAbsolute(rel) && !rel.split(sep).includes("..")) return join5(root, rel);
   }
-  return path3;
+  return path4;
 }
 async function defaultBranch(io, top) {
   const head2 = await io.git(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], { cwd: top });
@@ -57216,8 +57092,8 @@ var claudeCodeAdapter = {
     extension: SESSION_EXT,
     resumeFlag: CLAUDE_RESUME_FLAG,
     sessionGlob: (id) => `${SESSION_ROOT}/*/${id}${SESSION_EXT}`,
-    sessionIdFromPath: (path3) => {
-      const m = /\/\.claude\/projects\/[^/]+\/([^/]+)\.jsonl$/.exec(path3);
+    sessionIdFromPath: (path4) => {
+      const m = /\/\.claude\/projects\/[^/]+\/([^/]+)\.jsonl$/.exec(path4);
       return m ? m[1] : null;
     }
   },
@@ -59681,13 +59557,411 @@ async function handleToolCall(name, args, client, projectId, userId) {
   }
 }
 
+// src/supabase-key.ts
+function resolvePublicKey(anonKey, publishableKey, names) {
+  if (anonKey && publishableKey && anonKey !== publishableKey) {
+    throw new Error(`Conflicting Supabase public key aliases: ${names[0]} and ${names[1]}. Supply one or identical values.`);
+  }
+  return anonKey || publishableKey || void 0;
+}
+
+// src/auth.ts
+var DEFAULT_SUPABASE_URL2 = "https://eioxsunvhakmelhanmnn.supabase.co";
+var DEFAULT_SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVpb3hzdW52aGFrbWVsaGFubW5uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2NDY3NjksImV4cCI6MjA5MDIyMjc2OX0.SdbpfqRhcB21qWs6XnD6Lsj6AGX2b6tOGV3pg2iJjsw";
+var TokenExchangeError = class extends Error {
+  endpoint;
+  status;
+  body;
+  constructor(endpoint, status, body) {
+    super(`Token exchange failed (${status})`);
+    this.name = "TokenExchangeError";
+    this.endpoint = endpoint;
+    this.status = status;
+    this.body = body;
+  }
+};
+var HarmonyAuth = class {
+  apiToken;
+  accessToken = null;
+  projectId = null;
+  userId = null;
+  expiresAt = 0;
+  // B-845: single-flight guard for forceRefresh() — concurrent PGRST303 callers on ONE HarmonyAuth
+  // instance must share the SAME in-flight exchange rather than each firing their own fetch(). Set
+  // the moment a refresh starts, cleared on BOTH resolution and rejection (via .finally()) so a
+  // failed exchange can never poison the next caller into replaying a dead promise forever.
+  inFlightRefresh = null;
+  // B-1025: the Supabase pair for THIS auth instance, when the caller resolved one explicitly
+  // (the CLI's pair resolver — src/cli/resolve-supabase-target.ts). Undefined means "no explicit
+  // pair": the environment (then the built-in default) supplies it, exactly as before B-1025.
+  supabaseUrl;
+  supabaseAnonKey;
+  // B-1501: the project id a stored entry was saved with. When set, an exchange that reaches a
+  // different project is refused, naming both — the token in that entry is not the one that was saved.
+  expected;
+  constructor(apiToken, supabaseUrl, supabaseAnonKey, opts) {
+    this.apiToken = apiToken;
+    this.supabaseUrl = supabaseUrl;
+    this.supabaseAnonKey = supabaseAnonKey;
+    if (opts?.expectedProjectId) {
+      this.expected = { projectId: opts.expectedProjectId, label: opts.expectedLabel ?? "the stored project" };
+    }
+  }
+  /** B-1025: the Supabase URL for THIS call — an explicit pair wins, then the environment (read
+   *  per call, so a later change is honoured), then the built-in default. */
+  getSupabaseUrl() {
+    return this.supabaseUrl ?? harmonyEnv("HARMONY_SUPABASE_URL") ?? DEFAULT_SUPABASE_URL2;
+  }
+  /** B-1025: the Supabase anon key for THIS call — the counterpart of getSupabaseUrl(). */
+  getSupabaseAnonKey() {
+    return this.supabaseAnonKey ?? resolvePublicKey(
+      harmonyEnv("HARMONY_SUPABASE_ANON_KEY"),
+      harmonyEnv("HARMONY_SUPABASE_PUBLISHABLE_KEY"),
+      ["HARMONY_SUPABASE_ANON_KEY", "HARMONY_SUPABASE_PUBLISHABLE_KEY"]
+    ) ?? DEFAULT_SUPABASE_ANON_KEY;
+  }
+  async getAccessToken() {
+    if (this.accessToken && Date.now() < this.expiresAt - 6e4) {
+      return this.accessToken;
+    }
+    await this.exchange();
+    return this.accessToken;
+  }
+  /** B-845: force a FRESH token exchange, bypassing getAccessToken()'s cache/expiry check entirely
+   *  — the caller (src/daemon/write-retry.ts's withWriteRetry) already knows the cached token was
+   *  rejected (PGRST303), so replaying getAccessToken()'s cache would just hand back the same dead
+   *  token. Single-flight: a second concurrent caller gets the SAME in-flight exchange, never a
+   *  second fetch. This method deliberately does NOT call getAccessToken() — see the module-level
+   *  design note above. */
+  forceRefresh() {
+    if (!this.inFlightRefresh) {
+      this.inFlightRefresh = this.exchange().finally(() => {
+        this.inFlightRefresh = null;
+      });
+    }
+    return this.inFlightRefresh;
+  }
+  getProjectId() {
+    if (!this.projectId) throw new Error("Not authenticated yet. Call getAccessToken() first.");
+    return this.projectId;
+  }
+  getUserId() {
+    if (!this.userId) throw new Error("Not authenticated yet. Call getAccessToken() first.");
+    return this.userId;
+  }
+  async exchange() {
+    const endpoint = "/functions/v1/auth-token";
+    const publicKey = this.getSupabaseAnonKey();
+    const headers = { "Content-Type": "application/json", apikey: publicKey };
+    if (!publicKey.startsWith("sb_publishable_") && !publicKey.startsWith("sb_secret_")) {
+      headers.Authorization = `Bearer ${publicKey}`;
+    }
+    let res;
+    try {
+      res = await fetch(`${this.getSupabaseUrl()}${endpoint}`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ token: this.apiToken })
+      });
+    } catch (err) {
+      if (err instanceof Error) {
+        err.endpoint = endpoint;
+      }
+      throw err;
+    }
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new TokenExchangeError(endpoint, res.status, body);
+    }
+    const data = await res.json();
+    const payloadB64 = data.access_token.split(".")[1];
+    const payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString());
+    const claimedProject = typeof payload.project_id === "string" ? payload.project_id : null;
+    if (claimedProject && data.project_id && claimedProject !== data.project_id) {
+      throw new Error(
+        `Token exchange returned a JWT scoped to project ${claimedProject} but a body naming project ${data.project_id}; refusing to use either.`
+      );
+    }
+    const reached = claimedProject ?? data.project_id;
+    if (this.expected && reached !== this.expected.projectId) {
+      throw new Error(
+        `${this.expected.label} was saved for project ${this.expected.projectId}, but its token now reaches project ${reached}; refusing to use it. Save the right token again with \`harmony download token set\` or \`harmony login --no-activate --token-stdin\`.`
+      );
+    }
+    this.accessToken = data.access_token;
+    this.projectId = reached;
+    this.expiresAt = Date.now() + data.expires_in * 1e3;
+    this.userId = payload.sub;
+  }
+};
+
+// src/cli/config.ts
+import fs2 from "node:fs";
+import path3 from "node:path";
+import os2 from "node:os";
+
+// src/cli/resolve-supabase-target.ts
+var SOURCE_LABEL = {
+  flags: "the --supabase-url flag",
+  project: "the active project's stored Supabase settings",
+  env: "HARMONY_SUPABASE_URL",
+  default: "the built-in default"
+};
+var SOURCE_REMEDY = {
+  flags: "Pass --supabase-anon-key <key> or --supabase-publishable-key <key> alongside --supabase-url \u2014 the URL and its key travel together.",
+  project: "This project has a URL without a public key. Re-run `harmony login --supabase-url <url> --supabase-publishable-key <key> --token-stdin --name <name>` (or --supabase-anon-key) to register the key.",
+  env: "Set HARMONY_SUPABASE_ANON_KEY or HARMONY_SUPABASE_PUBLISHABLE_KEY in the environment \u2014 it must sit beside HARMONY_SUPABASE_URL.",
+  default: "Supply the anon key with the URL."
+};
+var MissingAnonKeyError = class extends Error {
+  source;
+  url;
+  constructor(source, url) {
+    super(
+      `Missing Supabase anon key for ${url} (from ${SOURCE_LABEL[source]}). ${SOURCE_REMEDY[source]}`
+    );
+    this.name = "MissingAnonKeyError";
+    this.source = source;
+    this.url = url;
+  }
+};
+function resolveSupabaseTarget(input) {
+  const env = input.env ?? process.env;
+  const sources = [
+    { source: "flags", url: input.flags?.url, anonKey: input.flags?.anonKey, publishableKey: input.flags?.publishableKey },
+    {
+      source: "project",
+      url: input.project?.supabaseUrl,
+      anonKey: input.project?.supabaseAnonKey,
+      publishableKey: input.project?.supabasePublishableKey
+    },
+    {
+      source: "env",
+      url: harmonyEnv("HARMONY_SUPABASE_URL", env),
+      anonKey: harmonyEnv("HARMONY_SUPABASE_ANON_KEY", env),
+      publishableKey: harmonyEnv("HARMONY_SUPABASE_PUBLISHABLE_KEY", env)
+    }
+  ];
+  const owner = sources.find((candidate) => candidate.url);
+  if (owner) {
+    const url = owner.url;
+    const key = normalize(owner);
+    if (key) {
+      return { url, anonKey: key, source: owner.source };
+    }
+    if (url === DEFAULT_SUPABASE_URL2) {
+      return {
+        url,
+        anonKey: DEFAULT_SUPABASE_ANON_KEY,
+        source: owner.source
+      };
+    }
+    throw new MissingAnonKeyError(owner.source, url);
+  }
+  const keyOwner = sources.find((candidate) => candidate.anonKey || candidate.publishableKey);
+  return {
+    url: DEFAULT_SUPABASE_URL2,
+    anonKey: (keyOwner ? normalize(keyOwner) : void 0) ?? DEFAULT_SUPABASE_ANON_KEY,
+    source: "default"
+  };
+}
+function normalize(source) {
+  const names = {
+    flags: ["--supabase-anon-key", "--supabase-publishable-key"],
+    project: ["supabaseAnonKey", "supabasePublishableKey"],
+    env: ["HARMONY_SUPABASE_ANON_KEY", "HARMONY_SUPABASE_PUBLISHABLE_KEY"],
+    default: ["DEFAULT_SUPABASE_ANON_KEY", "DEFAULT_SUPABASE_PUBLISHABLE_KEY"]
+  };
+  return resolvePublicKey(source.anonKey, source.publishableKey, names[source.source]);
+}
+
+// src/cli/config.ts
+function getConfigDir() {
+  return process.env.HARMONY_CONFIG_DIR ?? path3.join(os2.homedir(), ".harmony");
+}
+function getConfigFile() {
+  return path3.join(getConfigDir(), "config.json");
+}
+function loadConfig() {
+  const file = getConfigFile();
+  if (!fs2.existsSync(file)) {
+    return { activeProject: null, projects: {} };
+  }
+  const raw = fs2.readFileSync(file, "utf-8");
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(`${file} is not valid JSON.`);
+  }
+  return {
+    ...parsed ?? {},
+    activeProject: parsed?.activeProject ?? null,
+    projects: parsed?.projects && typeof parsed.projects === "object" ? parsed.projects : {}
+  };
+}
+
+// src/config/project-resolution.ts
+var ProjectResolutionError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "ProjectResolutionError";
+  }
+};
+var MCP_MISSING_MESSAGE = "HARMONY_API_TOKEN environment variable is required (or set HARMONY_PROJECT to a project stored in ~/.harmony/config.json; `harmony project list` names them)";
+var OPERATOR_MISSING_MESSAGE = "Neither HARMONY_API_TOKEN nor HARMONY_PROJECT is set in the conductor's environment; `harmony conductor` never falls back to the active project. Set HARMONY_API_TOKEN (the conductor's token), or HARMONY_PROJECT to a project stored in ~/.harmony/config.json (`harmony project list` names them).";
+function trimUrl(u) {
+  return u.trim().replace(/\/+$/, "");
+}
+function readConfigOrNull(load) {
+  try {
+    return load();
+  } catch {
+    return null;
+  }
+}
+function usableActive(config2) {
+  const name = config2?.activeProject;
+  return name && config2?.projects?.[name] ? name : null;
+}
+function storedKey(p) {
+  const k = resolvePublicKey(p.supabaseAnonKey, p.supabasePublishableKey, ["supabaseAnonKey", "supabasePublishableKey"]);
+  if (k) return k;
+  if (p.supabaseUrl && trimUrl(p.supabaseUrl) === DEFAULT_SUPABASE_URL2) return DEFAULT_SUPABASE_ANON_KEY;
+  return void 0;
+}
+function checkStoredPair(key, p, env) {
+  const envUrl = harmonyEnv("HARMONY_SUPABASE_URL", env);
+  const envAnon = harmonyEnv("HARMONY_SUPABASE_ANON_KEY", env);
+  const envPub = harmonyEnv("HARMONY_SUPABASE_PUBLISHABLE_KEY", env);
+  if (p.supabaseUrl) {
+    const stored = trimUrl(p.supabaseUrl);
+    if (envUrl && trimUrl(envUrl) !== stored) {
+      throw new ProjectResolutionError(
+        `HARMONY_PROJECT=${key} is stored for ${stored} but HARMONY_SUPABASE_URL says ${trimUrl(envUrl)}; refusing to send its token to another backend. Unset HARMONY_SUPABASE_URL (the stored project carries its own pair), or name the project stored for that backend.`
+      );
+    }
+    const sk = storedKey(p);
+    for (const [name, value] of [["HARMONY_SUPABASE_ANON_KEY", envAnon], ["HARMONY_SUPABASE_PUBLISHABLE_KEY", envPub]]) {
+      if (value && sk && value !== sk) {
+        throw new ProjectResolutionError(
+          `HARMONY_PROJECT=${key} is stored for ${stored} with its own public key, but ${name} in the environment is a different key; refusing. Unset ${name} (the stored project carries its own pair).`
+        );
+      }
+    }
+  }
+  const target = resolveSupabaseTarget({ flags: {}, project: p, env });
+  if (p.verifiedUrl && trimUrl(target.url) !== trimUrl(p.verifiedUrl)) {
+    const from = target.source === "env" ? "HARMONY_SUPABASE_URL" : target.source === "default" ? "the built-in default" : "its stored Supabase settings";
+    throw new ProjectResolutionError(
+      `HARMONY_PROJECT=${key} was saved against ${trimUrl(p.verifiedUrl)} but this session would use ${trimUrl(target.url)} (from ${from}); refusing to send its token to another backend. Set HARMONY_SUPABASE_URL (and its key) for ${trimUrl(p.verifiedUrl)}, or name the project stored for this backend.`
+    );
+  }
+  return target;
+}
+function resolveProject(opts) {
+  const env = opts.env ?? process.env;
+  const load = opts.loadConfig ?? loadConfig;
+  const envToken = harmonyEnv("HARMONY_API_TOKEN", env);
+  if (envToken) {
+    const config3 = opts.surface === "cli" ? readConfigOrNull(load) : null;
+    const pairHere = opts.surface !== "mcp";
+    const active2 = usableActive(config3);
+    const activeToken = active2 ? config3?.projects[active2]?.token : void 0;
+    return {
+      source: "env-token",
+      key: null,
+      token: envToken,
+      project: null,
+      target: pairHere ? resolveSupabaseTarget({ flags: {}, project: void 0, env }) : null,
+      activeProject: active2,
+      overridesActive: Boolean(active2 && activeToken !== envToken)
+    };
+  }
+  const wanted = harmonyEnv("HARMONY_PROJECT", env)?.trim();
+  if (wanted) {
+    let config3;
+    try {
+      config3 = load();
+    } catch (e) {
+      throw new ProjectResolutionError(
+        `HARMONY_PROJECT=${wanted} is set but ${getConfigFile()} cannot be read: ${e.message}`
+      );
+    }
+    const p2 = config3.projects[wanted];
+    if (!p2 || typeof p2.token !== "string" || p2.token.length === 0) {
+      const stored = Object.keys(config3.projects);
+      throw new ProjectResolutionError(
+        `HARMONY_PROJECT=${wanted} names no project stored in ${getConfigFile()}` + (stored.length ? ` (stored: ${stored.join(", ")})` : " (none is stored)") + ". Run `harmony project list`, or save its token with `harmony login --no-activate --token-stdin`."
+      );
+    }
+    const target2 = checkStoredPair(wanted, p2, env);
+    const active2 = usableActive(config3);
+    return {
+      source: "harmony-project",
+      key: wanted,
+      token: p2.token,
+      project: p2,
+      target: target2,
+      expectedProjectId: p2.projectId,
+      expectedLabel: `HARMONY_PROJECT=${wanted}`,
+      activeProject: active2,
+      overridesActive: Boolean(active2 && active2 !== wanted)
+    };
+  }
+  if (opts.surface === "mcp") {
+    throw new ProjectResolutionError(MCP_MISSING_MESSAGE);
+  }
+  if (opts.surface === "conductor-operator") {
+    resolveSupabaseTarget({ flags: {}, project: void 0, env });
+    throw new ProjectResolutionError(OPERATOR_MISSING_MESSAGE);
+  }
+  const config2 = load();
+  const active = usableActive(config2);
+  if (!active) {
+    const stored = Object.keys(config2.projects);
+    if (stored.length > 0) {
+      throw new Error(`No active project. Run \`harmony project switch <name>\` to pick one of the stored projects: ${stored.join(", ")}.`);
+    }
+    throw new Error("No active project. Run `harmony login` to add one.");
+  }
+  const p = config2.projects[active];
+  const target = resolveSupabaseTarget({ flags: {}, project: p, env });
+  if (p.verifiedUrl && trimUrl(target.url) !== trimUrl(p.verifiedUrl)) {
+    const from = target.source === "env" ? "HARMONY_SUPABASE_URL" : target.source === "default" ? "the built-in default" : "its stored Supabase settings";
+    throw new ProjectResolutionError(
+      `The active project "${active}" was saved against ${trimUrl(p.verifiedUrl)} but this call would use ${trimUrl(target.url)} (from ${from}); refusing to send its token to another backend. Unset HARMONY_SUPABASE_URL (and its key), or switch to the project stored for that backend.`
+    );
+  }
+  return {
+    source: "active-project",
+    key: active,
+    token: p.token,
+    project: p,
+    target,
+    activeProject: active,
+    overridesActive: false
+  };
+}
+
+// src/mcp-auth.ts
+function resolveMcpAuth(env = process.env, loadConfig2) {
+  const resolved = resolveProject({ surface: "mcp", env, loadConfig: loadConfig2 });
+  const auth2 = new HarmonyAuth(resolved.token, resolved.target?.url, resolved.target?.anonKey, {
+    expectedProjectId: resolved.expectedProjectId,
+    expectedLabel: resolved.expectedLabel
+  });
+  return { auth: auth2, resolved };
+}
+
 // src/index.ts
-var apiToken = harmonyEnv("HARMONY_API_TOKEN");
-if (!apiToken) {
-  console.error("HARMONY_API_TOKEN environment variable is required");
+var auth;
+try {
+  auth = resolveMcpAuth().auth;
+} catch (err) {
+  console.error(err instanceof Error ? err.message : String(err));
   process.exit(1);
 }
-var auth = new HarmonyAuth(apiToken);
 var server = new Server(
   { name: "harmony", version: "0.1.0" },
   { capabilities: { tools: {} } }
