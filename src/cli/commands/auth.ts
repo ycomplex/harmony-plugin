@@ -6,7 +6,9 @@ import { getProject } from '../../tools/project.js';
 import { removeProject, listProjects, loadConfig, saveProject } from '../config.js';
 import { describeSource, resolveProject, type ResolvedProject } from '../../config/project-resolution.js';
 import { formatTable } from '../formatter.js';
-import { resolveSupabaseTarget } from '../resolve-supabase-target.js';
+import { resolveSupabaseTarget, type ResolvedSupabaseTarget } from '../resolve-supabase-target.js';
+import { promptHidden, TOKEN_PROMPT } from '../hidden-prompt.js';
+import fs from 'node:fs';
 
 export interface LoginFlags {
   name?: string;
@@ -71,7 +73,21 @@ export function describeStored(s: StoredToken): string[] {
     lines.push(`A different project is already stored as "${s.collidedWith}" and was left as it is; this one is stored as "${s.key}".`);
   }
   lines.push(`To use it in a project's sessions, put HARMONY_PROJECT=${s.key} in that project's .claude/settings.local.json env.`);
+  if (!s.activated) lines.push(...noActiveHint(s.key));
   return lines;
+}
+
+/** B-1501 fix 6: a non-activating save never sets the active project. When there is none, say how
+ *  to set one (a terminal outside any session uses it). Names only. */
+export function noActiveHint(key: string): string[] {
+  let active: string | null = null;
+  try {
+    const c = loadConfig();
+    active = c.activeProject && c.projects[c.activeProject] ? c.activeProject : null;
+  } catch {
+    active = null;
+  }
+  return active ? [] : [`No project is active for terminal commands outside a session. To use this one there, run: harmony project switch ${key}`];
 }
 
 /** Save a token with no flags, in-process, without changing the active project (B-1479, B-1501). */
@@ -89,8 +105,28 @@ export function currentSource(): { resolved: ResolvedProject | null; error: stri
   }
 }
 
-/** Where `harmony login --token-stdin` reads from. A test swaps the stream. */
-export const loginInput: { stdin: () => NodeJS.ReadableStream } = { stdin: () => process.stdin };
+/** Where `harmony login --token-stdin` reads from. A test swaps these. */
+export const loginInput: {
+  stdin: () => NodeJS.ReadableStream;
+  /** true when stdin is a terminal: then the token is asked for with echo off, never read plainly. */
+  isTTY: () => boolean;
+  promptHidden: (question: string) => Promise<string>;
+} = {
+  stdin: () => process.stdin,
+  isTTY: () => Boolean(process.stdin.isTTY),
+  promptHidden,
+};
+
+/** B-1501 fix 3: `--token-stdin` at a terminal asks with echo off (the hidden prompt `harmony download
+ *  token set` uses), so a pasted token is never shown; from a pipe it reads stdin. */
+export async function readLoginToken(): Promise<string> {
+  if (loginInput.isTTY()) {
+    const token = (await loginInput.promptHidden(TOKEN_PROMPT)).trim();
+    if (token === '') throw new Error('no token was given.');
+    return token;
+  }
+  return readTokenFromStdin();
+}
 
 /** B-1501: read a token piped to `harmony login --token-stdin`. One trailing newline is trimmed; the
  *  token is never echoed and never appears in any argv. */
@@ -107,7 +143,7 @@ async function loginToken(opts: { token?: string; tokenStdin?: boolean }): Promi
   if (opts.token !== undefined && opts.tokenStdin) {
     throw new Error('Pass either --token or --token-stdin, not both.');
   }
-  if (opts.tokenStdin) return readTokenFromStdin();
+  if (opts.tokenStdin) return readLoginToken();
   if (opts.token === undefined || opts.token === '') {
     throw new Error('Pass --token <token>, or pipe the token in with --token-stdin.');
   }
@@ -119,7 +155,7 @@ export function registerAuthCommands(program: Command): void {
     .command('login')
     .description('Add a project by providing an API token')
     .option('--token <token>', 'Harmony API token (prefer --token-stdin: an argument can be seen by other processes)')
-    .option('--token-stdin', 'Read the Harmony API token from stdin (one trailing newline is trimmed)', false)
+    .option('--token-stdin', 'Read the Harmony API token from stdin (one trailing newline is trimmed); at a terminal, ask for it with echo off', false)
     .option('--name <name>', 'Project name (auto-detected if not provided)')
     .option('--supabase-url <url>', 'Custom Supabase URL (advanced)')
     .option('--supabase-anon-key <key>', 'Custom Supabase anon key (advanced)')
@@ -223,7 +259,7 @@ export function registerAuthCommands(program: Command): void {
       const { resolved, error } = currentSource();
       if (json) {
         console.log(JSON.stringify(resolved
-          ? { source: resolved.source, project: resolved.key, active_project: resolved.activeProject, overrides_active: resolved.overridesActive, supabase_url: resolved.target?.url ?? null, reason: describeSource(resolved) }
+          ? { source: resolved.source, project: resolved.key, active_project: resolved.activeProject, overrides_active: resolved.overridesActive, supabase_url: resolved.target?.url ?? null, supabase_source: resolved.target?.source ?? null, reason: describeSource(resolved) }
           : { source: null, error }, null, 2));
         if (!resolved) process.exitCode = 1;
         return;
@@ -235,9 +271,58 @@ export function registerAuthCommands(program: Command): void {
       }
       console.log(`Project: ${resolved.key ?? '(the project HARMONY_API_TOKEN belongs to)'}`);
       console.log(`Source: ${describeSource(resolved)}`);
-      if (resolved.target) console.log(`Supabase: ${resolved.target.url}`);
+      if (resolved.target) console.log(`Supabase: ${resolved.target.url} (${describeTargetSource(resolved.target, resolved.source)})`);
       console.log('Order: HARMONY_API_TOKEN, then HARMONY_PROJECT, then the active project.');
     });
+}
+
+/** Where the Supabase address whoami prints comes from, so /harmony-setup can tell whether a stored
+ *  project carries its own pair. Names only, never a key. */
+export function describeTargetSource(t: Pick<ResolvedSupabaseTarget, 'source'>, source: ResolvedProject['source']): string {
+  const stored = source !== 'env-token';
+  switch (t.source) {
+    case 'project':
+      return 'the pair stored with the project';
+    case 'env':
+      return stored ? 'HARMONY_SUPABASE_URL in the environment; the project stores no pair' : 'HARMONY_SUPABASE_URL in the environment';
+    case 'default':
+      return stored ? 'the built-in default; the project stores no pair' : 'the built-in default';
+    case 'flags':
+      return 'flags';
+  }
+}
+
+/** B-1501 fix 2: move a token a project keeps in its `.claude/settings.local.json` into
+ *  ~/.harmony/config.json without the token ever being in a command line, a prompt or the agent's
+ *  view: this reads `env.HARMONY_API_TOKEN` from the file itself, checks it against Harmony, and
+ *  saves it WITHOUT activating. The file's own HARMONY_SUPABASE_URL / _ANON_KEY / _PUBLISHABLE_KEY,
+ *  when present, travel with it as the stored pair (explicit flags win). The file is not changed:
+ *  /harmony-setup removes the copy only after proving the stored one works. */
+export async function adoptSettingsToken(file: string, flags: LoginFlags = {}): Promise<StoredToken> {
+  let parsed: any;
+  try {
+    parsed = JSON.parse(fs.readFileSync(file, 'utf-8'));
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    throw new Error(code ? `${file} cannot be read (${code}).` : `${file} is not valid JSON.`);
+  }
+  const env = parsed && typeof parsed === 'object' ? parsed.env : undefined;
+  const token = env && typeof env.HARMONY_API_TOKEN === 'string' ? env.HARMONY_API_TOKEN.trim() : '';
+  if (!token) throw new Error(`${file} has no env.HARMONY_API_TOKEN to move. Nothing was changed.`);
+  const str = (v: unknown) => (typeof v === 'string' && v !== '' ? v : undefined);
+  const fromFlags = flags.supabaseUrl !== undefined || flags.supabaseAnonKey !== undefined || flags.supabasePublishableKey !== undefined;
+  const pair: LoginFlags = fromFlags
+    ? { supabaseUrl: flags.supabaseUrl, supabaseAnonKey: flags.supabaseAnonKey, supabasePublishableKey: flags.supabasePublishableKey }
+    : { supabaseUrl: str(env.HARMONY_SUPABASE_URL), supabaseAnonKey: str(env.HARMONY_SUPABASE_ANON_KEY), supabasePublishableKey: str(env.HARMONY_SUPABASE_PUBLISHABLE_KEY) };
+  const target = resolveSupabaseTarget({
+    flags: { url: pair.supabaseUrl, anonKey: pair.supabaseAnonKey, publishableKey: pair.supabasePublishableKey },
+    project: undefined,
+  });
+  try {
+    return await verifyAndStoreToken(token, target, { ...pair, name: flags.name }, { activate: false });
+  } catch (e) {
+    throw new Error(String((e as Error)?.message ?? e).split(token).join('<token>'));
+  }
 }
 
 /** `harmony projects` / `harmony project list`: names, the active and download marks, and the source in force. */

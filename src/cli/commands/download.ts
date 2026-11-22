@@ -19,6 +19,7 @@ import {
   type SwitchDeps,
 } from '../../tools/download-switch.js';
 import { saveTokenNoActivate } from './auth.js';
+import { promptHidden, TOKEN_PROMPT } from '../hidden-prompt.js';
 
 /** Runs `claude` (or HARMONY_CLAUDE_BIN) with stdin closed, capturing its output. */
 export const spawnClaude: ClaudeRunner = (args, opts) =>
@@ -56,28 +57,11 @@ export async function readAllStdin(input: NodeJS.ReadableStream = process.stdin)
   return data;
 }
 
-/** Ask for a token at a terminal without echoing it. The prompt goes to stderr. */
-export async function promptHidden(question: string): Promise<string> {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stderr, terminal: true });
-  const anyRl = rl as unknown as { _writeToOutput: (s: string) => void; output: NodeJS.WritableStream };
-  let muted = false;
-  anyRl._writeToOutput = (s: string) => {
-    if (!muted || s.includes('\n')) anyRl.output.write(muted ? '\n' : s);
-  };
-  try {
-    const p = rl.question(question);
-    muted = true;
-    return await p;
-  } finally {
-    rl.close();
-  }
-}
-
 function tokenReader(fromStdin: boolean): () => Promise<string> {
   return () =>
     fromStdin || !process.stdin.isTTY
       ? readAllStdin()
-      : promptHidden('Harmony API token (from Project Settings → Connect AI; it is not shown): ');
+      : promptHidden(TOKEN_PROMPT);
 }
 
 function realDeps(over: Partial<SwitchDeps> = {}): SwitchDeps {

@@ -11,7 +11,6 @@ import {
   switchProject,
   listProjects,
   saveProject,
-  setDownloadProject,
 } from './config.js';
 
 let tmpDir: string;
@@ -130,9 +129,15 @@ describe('saveProject', () => {
     expect(c.projects.invented).toEqual({ name: 'invented', token: 'tok-i', projectId: 'proj-i' });
   });
 
-  it('a non-activating save into an empty store activates (nothing else is active)', () => {
-    expect(saveProject({ name: 'invented', token: 't', projectId: 'p', activate: false }).activated).toBe(true);
-    expect(loadConfig().activeProject).toBe('invented');
+  it('fix 6: a non-activating save NEVER sets activeProject, even into an empty store', () => {
+    expect(saveProject({ name: 'invented', token: 't', projectId: 'p', activate: false }).activated).toBe(false);
+    expect(loadConfig().activeProject).toBeNull();
+  });
+
+  it('fix 6: a non-activating save never repairs a dangling active project either', () => {
+    fs.writeFileSync(path.join(tmpDir, 'config.json'), JSON.stringify({ activeProject: 'gone', projects: {} }));
+    expect(saveProject({ name: 'invented', token: 't', projectId: 'p', activate: false }).activated).toBe(false);
+    expect(loadConfig().activeProject).toBe('gone');
   });
 
   it('never overwrites a different project under the same name: a distinct key, and says which', () => {
@@ -153,7 +158,7 @@ describe('saveProject', () => {
     expect(loadConfig().projects.invented.token).toBe('tok-rotated');
   });
 
-  it('an entry saved before B-1501 (no projectId) with a different token is not overwritten', () => {
+  it('an entry saved before B-1501 (no projectId) with a different token and no checked backend is not overwritten', () => {
     addProject('invented', 'legacy-token');
     const r = saveProject({ name: 'invented', token: 'new-token', projectId: 'cccccccc', activate: false });
     expect(r.key).toBe('invented-cccccccc');
@@ -166,27 +171,77 @@ describe('saveProject', () => {
     expect(loadConfig().projects.invented.projectId).toBe('cccccccc');
   });
 
+  // Fix 4: rotating the token of a project saved before B-1501.
+  describe('fix 4 — a stored entry with no projectId', () => {
+    const DEFAULT = 'https://eioxsunvhakmelhanmnn.supabase.co';
+    beforeEach(() => {
+      for (const v of ['HARMONY_SUPABASE_URL', 'HARMONY_SUPABASE_ANON_KEY', 'HARMONY_SUPABASE_PUBLISHABLE_KEY']) {
+        vi.stubEnv(v, '');
+        vi.stubEnv(`EVAL_${v}`, '');
+      }
+    });
+
+    it('same key, same backend, new token: the SAME project, updated in place and stamped with the id', () => {
+      addProject('invented', 'legacy-token');
+      const r = saveProject({ name: 'invented', token: 'rotated-token', projectId: 'cccccccc', verifiedUrl: DEFAULT, activate: false });
+      expect(r).toEqual({ key: 'invented', collidedWith: undefined, activated: false });
+      const c = loadConfig();
+      expect(Object.keys(c.projects)).toEqual(['invented']);
+      expect(c.projects.invented).toMatchObject({ token: 'rotated-token', projectId: 'cccccccc', verifiedUrl: DEFAULT });
+    });
+
+    it('same key, its stored pair names the backend the token was checked against: the same project, pair kept', () => {
+      addProject('invented', 'legacy-token', { supabaseUrl: 'https://scratch.example.supabase.co', supabaseAnonKey: 'scratch-key' });
+      const r = saveProject({ name: 'invented', token: 'rotated', projectId: 'dddddddd', verifiedUrl: 'https://scratch.example.supabase.co/', activate: false });
+      expect(r.key).toBe('invented');
+      expect(r.collidedWith).toBeUndefined();
+      expect(loadConfig().projects.invented).toMatchObject({
+        token: 'rotated', projectId: 'dddddddd', supabaseUrl: 'https://scratch.example.supabase.co', supabaseAnonKey: 'scratch-key',
+      });
+    });
+
+    it('same key, a DIFFERENT backend: still a collision, the old entry untouched', () => {
+      addProject('invented', 'legacy-token', { supabaseUrl: 'https://scratch.example.supabase.co', supabaseAnonKey: 'scratch-key' });
+      const r = saveProject({ name: 'invented', token: 'other', projectId: 'eeeeeeee', verifiedUrl: DEFAULT, activate: false });
+      expect(r.collidedWith).toBe('invented');
+      expect(r.key).toBe('invented-eeeeeeee');
+      expect(loadConfig().projects.invented.token).toBe('legacy-token');
+    });
+
+    it('a known, different id is a collision even on the same backend', () => {
+      saveProject({ name: 'invented', token: 'tok-1', projectId: 'aaaaaaaa', verifiedUrl: DEFAULT, activate: false });
+      const r = saveProject({ name: 'invented', token: 'tok-2', projectId: 'bbbbbbbb', verifiedUrl: DEFAULT, activate: false });
+      expect(r.collidedWith).toBe('invented');
+    });
+
+    it('re-saving with no flags keeps the stored Supabase pair', () => {
+      saveProject({
+        name: 'invented', token: 'tok-1', projectId: 'aaaaaaaa', verifiedUrl: 'https://scratch.example.supabase.co',
+        supabaseUrl: 'https://scratch.example.supabase.co', supabasePublishableKey: 'sb_publishable_x', activate: false,
+      });
+      saveProject({ name: 'invented', token: 'tok-2', projectId: 'aaaaaaaa', verifiedUrl: 'https://scratch.example.supabase.co', activate: false });
+      expect(loadConfig().projects.invented).toEqual({
+        name: 'invented', token: 'tok-2', projectId: 'aaaaaaaa', verifiedUrl: 'https://scratch.example.supabase.co',
+        supabaseUrl: 'https://scratch.example.supabase.co', supabasePublishableKey: 'sb_publishable_x',
+      });
+    });
+  });
+
+  it('fix 5: saveConfig writes atomically (temp file in the same dir, renamed), mode 600, no temp left behind', () => {
+    const renameSpy = vi.spyOn(fs, 'renameSync');
+    saveConfig({ activeProject: null, projects: {} });
+    const file = path.join(tmpDir, 'config.json');
+    expect(renameSpy).toHaveBeenCalledTimes(1);
+    const [from, to] = renameSpy.mock.calls[0] as [string, string];
+    expect(path.dirname(String(from))).toBe(tmpDir);
+    expect(String(to)).toBe(file);
+    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    expect(fs.readdirSync(tmpDir)).toEqual(['config.json']);
+    renameSpy.mockRestore();
+  });
+
   it('reads a config with no projects key tolerantly', () => {
     fs.writeFileSync(path.join(tmpDir, 'config.json'), JSON.stringify({ activeProject: null }));
     expect(loadConfig()).toEqual({ activeProject: null, projects: {} });
-  });
-});
-
-describe('setDownloadProject', () => {
-  it('pins a stored project and never changes activeProject', () => {
-    addProject('a', 'tok-a');
-    saveProject({ name: 'b', token: 'tok-b', projectId: 'pb', activate: false });
-    setDownloadProject('b');
-    const c = loadConfig();
-    expect(c.downloadProject).toBe('b');
-    expect(c.activeProject).toBe('a');
-    expect(listProjects()).toEqual([
-      { name: 'a', active: true, download: false },
-      { name: 'b', active: false, download: true },
-    ]);
-  });
-
-  it('refuses a name that is not stored', () => {
-    expect(() => setDownloadProject('nope')).toThrow('Project "nope" not found');
   });
 });

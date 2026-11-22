@@ -305,3 +305,107 @@ describe('B-1501 — login --token-stdin', () => {
     expect(printed()).toContain('--token-stdin');
   });
 });
+
+// B-1501 fix round — the seat's review of the first PR.
+describe('B-1501 fixes 3, 6, 9 and 2', () => {
+  const original = { ...loginInput };
+  beforeEach(() => {
+    for (const v of ['HARMONY_API_TOKEN', 'HARMONY_PROJECT', 'HARMONY_SUPABASE_URL', 'HARMONY_SUPABASE_ANON_KEY', 'HARMONY_SUPABASE_PUBLISHABLE_KEY']) {
+      vi.stubEnv(v, '');
+      vi.stubEnv(`EVAL_${v}`, '');
+    }
+  });
+  afterEach(() => {
+    Object.assign(loginInput, original);
+  });
+  const stored = () => JSON.parse(fs.readFileSync(path.join(tmpDir, 'config.json'), 'utf8'));
+  const printed = () => [...logSpy.mock.calls.flat(), ...errSpy.mock.calls.flat()].join('\n');
+
+  it('fix 3: --token-stdin at a terminal prompts with echo off and never reads plain stdin', async () => {
+    const prompts: string[] = [];
+    const stdinRead = vi.fn(() => Readable.from(['must-not-be-read\n']));
+    Object.assign(loginInput, {
+      isTTY: () => true,
+      stdin: stdinRead,
+      promptHidden: async (q: string) => {
+        prompts.push(q);
+        return 'synthetic-typed-token';
+      },
+    });
+    await run(['login', '--token-stdin', '--name', 'typed', '--no-activate']);
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain('not shown');
+    expect(stdinRead).not.toHaveBeenCalled();
+    expect(stored().projects.typed.token).toBe('synthetic-typed-token');
+    expect(printed()).not.toContain('synthetic-typed-token');
+  });
+
+  it('fix 3: --token-stdin from a pipe reads plain stdin and shows no prompt', async () => {
+    const promptHidden = vi.fn(async () => 'wrong');
+    Object.assign(loginInput, { isTTY: () => false, stdin: () => Readable.from(['synthetic-piped\n']), promptHidden });
+    await run(['login', '--token-stdin', '--name', 'piped', '--no-activate']);
+    expect(promptHidden).not.toHaveBeenCalled();
+    expect(stored().projects.piped.token).toBe('synthetic-piped');
+  });
+
+  it('fix 6: login --no-activate into an empty store leaves no active project and says how to set one', async () => {
+    Object.assign(loginInput, { isTTY: () => false, stdin: () => Readable.from(['synthetic-a\n']) });
+    await run(['login', '--token-stdin', '--name', 'first', '--no-activate']);
+    expect(stored().activeProject).toBeNull();
+    expect(printed()).toContain('the active project is unchanged');
+    expect(printed()).toContain('harmony project switch first');
+  });
+
+  it('fix 9: HARMONY_PROJECT=<key> whoami prints the address and whether it is the stored pair, never a key or token', async () => {
+    const { saveProject } = await import('../config.js');
+    saveProject({
+      name: 'scratch', token: 'synthetic-scratch', projectId: 'p-s', verifiedUrl: 'https://scratch.example.supabase.co',
+      supabaseUrl: 'https://scratch.example.supabase.co', supabaseAnonKey: 'scratch-public-key', activate: false,
+    });
+    saveProject({ name: 'plain', token: 'synthetic-plain', projectId: 'p-p', activate: false });
+    vi.stubEnv('HARMONY_PROJECT', 'scratch');
+    await run(['whoami']);
+    expect(printed()).toContain('Supabase: https://scratch.example.supabase.co (the pair stored with the project)');
+    logSpy.mockClear();
+    vi.stubEnv('HARMONY_PROJECT', 'plain');
+    await run(['whoami']);
+    expect(printed()).toContain('Supabase: https://eioxsunvhakmelhanmnn.supabase.co (the built-in default; the project stores no pair)');
+    expect(printed()).not.toMatch(/synthetic|scratch-public-key|prod-baked-anon-key/);
+  });
+
+  it('fix 2: project adopt-settings-token saves the file\'s token without printing it, keeps the file, and names the key', async () => {
+    const { registerProjectCommands } = await import('./project.js');
+    const file = path.join(tmpDir, 'settings.local.json');
+    const original = JSON.stringify({ env: { HARMONY_API_TOKEN: 'synthetic-file-token', OTHER: 'x' } }, null, 2);
+    fs.writeFileSync(file, original);
+    const program = makeProgram();
+    registerProjectCommands(program);
+    await program.parseAsync(['project', 'adopt-settings-token', '--file', file], { from: 'user' });
+    expect(stored().projects['env-project'].token).toBe('synthetic-file-token');
+    expect(stored().activeProject).toBeNull();
+    expect(fs.readFileSync(file, 'utf8')).toBe(original);
+    expect(printed()).toContain('HARMONY_PROJECT=env-project');
+    expect(printed()).not.toContain('synthetic-file-token');
+  });
+
+  it('fix 2: adopt-settings-token carries the file\'s own Supabase pair into the stored entry', async () => {
+    const { registerProjectCommands } = await import('./project.js');
+    const file = path.join(tmpDir, 'settings.local.json');
+    fs.writeFileSync(file, JSON.stringify({ env: { HARMONY_API_TOKEN: 'synthetic-file-token', HARMONY_SUPABASE_URL: 'https://scratch.example.supabase.co', HARMONY_SUPABASE_ANON_KEY: 'scratch-public-key' } }));
+    const program = makeProgram();
+    registerProjectCommands(program);
+    await program.parseAsync(['project', 'adopt-settings-token', '--file', file, '--name', 'scratch'], { from: 'user' });
+    expect(stored().projects.scratch).toMatchObject({ supabaseUrl: 'https://scratch.example.supabase.co', supabaseAnonKey: 'scratch-public-key' });
+  });
+
+  it('fix 2: adopt-settings-token with no token in the file refuses, naming the file only', async () => {
+    const { registerProjectCommands } = await import('./project.js');
+    const file = path.join(tmpDir, 'settings.local.json');
+    fs.writeFileSync(file, JSON.stringify({ env: {} }));
+    const program = makeProgram();
+    registerProjectCommands(program);
+    await expect(program.parseAsync(['project', 'adopt-settings-token', '--file', file], { from: 'user' })).rejects.toThrow(ExitSentinel);
+    expect(printed()).toContain(`${file} has no env.HARMONY_API_TOKEN`);
+    expect(fs.existsSync(path.join(tmpDir, 'config.json'))).toBe(false);
+  });
+});

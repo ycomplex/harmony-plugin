@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { resolveSupabaseTarget } from './resolve-supabase-target.js';
 
 export interface ProjectConfig {
   name: string;
@@ -48,14 +49,28 @@ export function loadConfig(): HarmonyConfig {
   };
 }
 
+/** B-1501: written atomically — a temp file in the same directory (mode 600), fsynced, then renamed
+ *  over config.json — so a reader (the download helper, another CLI) never sees an empty or
+ *  half-written file. */
 export function saveConfig(config: HarmonyConfig): void {
   const dir = getConfigDir();
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(
-    path.join(dir, 'config.json'),
-    JSON.stringify(config, null, 2) + '\n',
-    { mode: 0o600 },
-  );
+  const target = path.join(dir, 'config.json');
+  const tmp = path.join(dir, `.config.json.tmp-${process.pid}-${Math.random().toString(36).slice(2, 10)}`);
+  const fd = fs.openSync(tmp, 'wx', 0o600);
+  try {
+    try {
+      fs.writeSync(fd, JSON.stringify(config, null, 2) + '\n');
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.chmodSync(tmp, 0o600);
+    fs.renameSync(tmp, target);
+  } catch (e) {
+    fs.rmSync(tmp, { force: true });
+    throw e;
+  }
 }
 
 export function addProject(
@@ -82,8 +97,8 @@ export interface SaveProjectInput {
    *  another key is not reused. */
   explicitName?: boolean;
   /** `harmony login` activates (as before B-1501); install, token set and setup do not. A
-   *  non-activating save still activates when the store has no usable active project at all, so a
-   *  terminal outside any session keeps working on a machine with one project. */
+   *  non-activating save NEVER sets activeProject, even when there is none (the seat's ruling on
+   *  B-1501): the person runs `harmony project switch <name>` if they want one. */
   activate: boolean;
 }
 
@@ -95,13 +110,34 @@ export interface SaveProjectResult {
   activated: boolean;
 }
 
-/** Is `existing` the same Harmony project as the one being saved? Ids decide when both carry one.
- *  An entry saved before B-1501 carries none: it counts as the same project only when it holds the
- *  same token, so a save can never overwrite a different project it cannot identify. */
-function sameProject(existing: ProjectConfig, input: SaveProjectInput): boolean {
+function trimUrl(u: string): string {
+  return u.trim().replace(/\/+$/, '');
+}
+
+/** The backend a stored entry was (or would be) exchanged against: the URL it was checked against
+ *  when saved, else its own stored pair's URL, else what a no-flag call resolves to now (the
+ *  environment, then the built-in default). null when that cannot be resolved. */
+function backendOf(p: ProjectConfig): string | null {
+  if (p.verifiedUrl) return trimUrl(p.verifiedUrl);
+  if (p.supabaseUrl) return trimUrl(p.supabaseUrl);
+  try {
+    return trimUrl(resolveSupabaseTarget({ flags: {}, project: undefined }).url);
+  } catch {
+    return null;
+  }
+}
+
+/** Is `existing` (stored under `key`) the same Harmony project as the one being saved? Ids decide
+ *  when both carry one: only a known, DIFFERENT id is a collision. An entry saved before B-1501
+ *  carries none: it is the same project when it holds the same token, or — a token rotation — when
+ *  it is stored under the very key being saved and its backend is the one the new token was just
+ *  checked against (fix 4). Anything else it cannot identify is left alone. */
+function sameProject(existing: ProjectConfig, key: string, input: SaveProjectInput): boolean {
   if (existing.projectId && input.projectId) return existing.projectId === input.projectId;
   if (!input.projectId) return true;
-  return existing.token === input.token;
+  if (existing.token === input.token) return true;
+  if (key !== input.name || !input.verifiedUrl) return false;
+  return backendOf(existing) === trimUrl(input.verifiedUrl);
 }
 
 /**
@@ -118,34 +154,27 @@ export function saveProject(input: SaveProjectInput): SaveProjectResult {
   }
   let collidedWith: string | undefined;
   const existing = config.projects[key];
-  if (existing && !sameProject(existing, input)) {
+  if (existing && !sameProject(existing, key, input)) {
     collidedWith = key;
     const base = input.projectId ? `${input.name}-${input.projectId.replace(/[^A-Za-z0-9]/g, '').slice(0, 8)}` : `${input.name}-2`;
     key = base;
-    for (let n = 2; config.projects[key] && !sameProject(config.projects[key], input); n++) key = `${base}-${n}`;
+    for (let n = 2; config.projects[key] && !sameProject(config.projects[key], key, input); n++) key = `${base}-${n}`;
   }
+  const previous = config.projects[key];
   const entry: ProjectConfig = { name: key, token: input.token };
-  if (input.supabaseUrl !== undefined) entry.supabaseUrl = input.supabaseUrl;
-  if (input.supabaseAnonKey !== undefined) entry.supabaseAnonKey = input.supabaseAnonKey;
-  if (input.supabasePublishableKey !== undefined) entry.supabasePublishableKey = input.supabasePublishableKey;
+  const flagsGiven = input.supabaseUrl !== undefined || input.supabaseAnonKey !== undefined || input.supabasePublishableKey !== undefined;
+  // Fix 4: a save with no Supabase flags over the same project keeps the pair it was stored with.
+  const pair = flagsGiven ? input : (previous ?? {});
+  if (pair.supabaseUrl !== undefined) entry.supabaseUrl = pair.supabaseUrl;
+  if (pair.supabaseAnonKey !== undefined) entry.supabaseAnonKey = pair.supabaseAnonKey;
+  if (pair.supabasePublishableKey !== undefined) entry.supabasePublishableKey = pair.supabasePublishableKey;
   if (input.projectId) entry.projectId = input.projectId;
   if (input.verifiedUrl) entry.verifiedUrl = input.verifiedUrl;
   config.projects[key] = entry;
-  const noUsableActive = !config.activeProject || !config.projects[config.activeProject];
-  const activated = input.activate || noUsableActive;
+  const activated = input.activate;
   if (activated) config.activeProject = key;
   saveConfig(config);
   return { key, collidedWith, activated };
-}
-
-/** B-1501: pin the download to a stored project. Never changes activeProject. */
-export function setDownloadProject(key: string): void {
-  const config = loadConfig();
-  if (!config.projects[key]) {
-    throw new Error(`Project "${key}" not found in config.`);
-  }
-  config.downloadProject = key;
-  saveConfig(config);
 }
 
 export function removeProject(name: string): void {
