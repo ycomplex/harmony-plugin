@@ -58,12 +58,19 @@ export function loadConfig(): HarmonyConfig {
 
 /** B-1501: written atomically — a temp file in the same directory (mode 600), fsynced, then renamed
  *  over config.json — so a reader (the download helper, another CLI) never sees an empty or
- *  half-written file. */
+ *  half-written file. A symlinked config.json is written THROUGH (its real path, as the download pin
+ *  write does), so the link is never replaced by a plain file. */
 export function saveConfig(config: HarmonyConfig): void {
   const dir = getConfigDir();
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const target = path.join(dir, 'config.json');
-  const tmp = path.join(dir, `.config.json.tmp-${process.pid}-${Math.random().toString(36).slice(2, 10)}`);
+  const file = path.join(dir, 'config.json');
+  let target = file;
+  try {
+    target = fs.realpathSync(file);
+  } catch {
+    // absent (or a dangling link): write config.json itself
+  }
+  const tmp = path.join(path.dirname(target), `.config.json.tmp-${process.pid}-${Math.random().toString(36).slice(2, 10)}`);
   const fd = fs.openSync(tmp, 'wx', 0o600);
   try {
     try {
@@ -115,7 +122,13 @@ export interface SaveProjectResult {
   /** Set when the wanted key held a DIFFERENT project, which was left untouched. */
   collidedWith?: string;
   activated: boolean;
+  /** Set (to the project id it now holds) when the save updated, in place, an entry saved before
+   *  project ids were recorded: such an entry cannot be told apart from another project of the same
+   *  name on the same backend, so the caller prints `legacyUpdateLine` to make the overwrite visible. */
+  updatedLegacyFor?: string;
 }
+
+export { legacyUpdateLine } from '../config/legacy-update.js';
 
 function trimUrl(u: string): string {
   return u.trim().replace(/\/+$/, '');
@@ -181,7 +194,8 @@ export function saveProject(input: SaveProjectInput): SaveProjectResult {
   const activated = input.activate;
   if (activated) config.activeProject = key;
   saveConfig(config);
-  return { key, collidedWith, activated };
+  const updatedLegacyFor = previous && !previous.projectId && input.projectId ? input.projectId : undefined;
+  return updatedLegacyFor ? { key, collidedWith, activated, updatedLegacyFor } : { key, collidedWith, activated };
 }
 
 export function removeProject(name: string): void {

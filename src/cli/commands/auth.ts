@@ -3,7 +3,7 @@ import chalk from 'chalk';
 import { HarmonyAuth } from '../../auth.js';
 import { createAuthenticatedClient } from '../../supabase.js';
 import { getProject } from '../../tools/project.js';
-import { removeProject, listProjects, loadConfig, saveProject } from '../config.js';
+import { legacyUpdateLine, removeProject, listProjects, loadConfig, saveProject } from '../config.js';
 import { describeSource, resolveProject, type ResolvedProject } from '../../config/project-resolution.js';
 import { formatTable } from '../formatter.js';
 import { resolveSupabaseTarget, type ResolvedSupabaseTarget } from '../resolve-supabase-target.js';
@@ -24,6 +24,8 @@ export interface StoredToken {
   /** Set when the wanted key held a different project, which was left untouched. */
   collidedWith?: string;
   activated: boolean;
+  /** Set when the save updated an entry saved before project ids in place (the id it now holds). */
+  updatedLegacyFor?: string;
 }
 
 /** Exchange the token against Harmony (so a bad one is refused before anything is stored), name the
@@ -69,6 +71,7 @@ export async function verifyAndStoreToken(
 /** The lines that tell a person where a save went. Names only. */
 export function describeStored(s: StoredToken): string[] {
   const lines: string[] = [];
+  if (s.updatedLegacyFor) lines.push(legacyUpdateLine(s.key, s.updatedLegacyFor));
   if (s.collidedWith) {
     lines.push(`A different project is already stored as "${s.collidedWith}" and was left as it is; this one is stored as "${s.key}".`);
   }
@@ -145,7 +148,7 @@ async function loginToken(opts: { token?: string; tokenStdin?: boolean }): Promi
   }
   if (opts.tokenStdin) return readLoginToken();
   if (opts.token === undefined || opts.token === '') {
-    throw new Error('Pass --token <token>, or pipe the token in with --token-stdin.');
+    throw new Error('Pass --token-stdin: it asks for the token with echo off at a terminal, or reads it from a pipe.');
   }
   return opts.token;
 }

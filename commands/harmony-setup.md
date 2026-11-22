@@ -30,22 +30,24 @@ CLI's active project.
 line (your shell commands and their arguments are in this session's transcript), not in a message,
 not in a file you write. `.claude/settings.local.json` may hold one (an older setup), so **never open
 it with the Read tool and never print it**: inspect and edit it only with the `node -e` commands
-below, which print key names and non-secret values only.
+below, which print every variable's name and the values of `HARMONY_PROJECT` and
+`HARMONY_SUPABASE_URL` only. The edit commands write a temporary file beside it and rename it over the
+file, keeping its mode, so the file is never left half-written.
 
 **Saving a token never changes the CLI's active project**, even on a machine that has none. Terminal
 commands outside a session use the active project; if the user wants them to use this project, tell
 them to run `harmony project switch <key>` themselves.
 
-Inspect the file (names, and values only for the non-secret variables):
+Inspect the file (every name; values only for `HARMONY_PROJECT` and `HARMONY_SUPABASE_URL`):
 
 ```bash
-node -e 'const fs=require("fs"),f=".claude/settings.local.json";if(!fs.existsSync(f)){console.log("(no .claude/settings.local.json)");process.exit(0)}let s;try{s=JSON.parse(fs.readFileSync(f,"utf8"))}catch(e){console.log("(not valid JSON)");process.exit(1)}const e=(s&&s.env)||{};for(const k of Object.keys(e))console.log(/TOKEN|SECRET|KEY/.test(k)?k+" (set; value not shown)":k+"="+e[k])'
+node -e 'const fs=require("fs"),f=".claude/settings.local.json";if(!fs.existsSync(f)){console.log("(no .claude/settings.local.json)");process.exit(0)}let s;try{s=JSON.parse(fs.readFileSync(f,"utf8"))}catch(e){console.log("(not valid JSON)");process.exit(1)}const e=(s&&s.env)||{},shown=["HARMONY_PROJECT","HARMONY_SUPABASE_URL"];for(const k of Object.keys(e))console.log(shown.includes(k)?k+"="+e[k]:k+" (set; value not shown)")'
 ```
 
 Set `env.HARMONY_PROJECT` (and, only when step 3 says so, the Supabase pair), keeping every other setting:
 
 ```bash
-node -e 'const fs=require("fs"),f=".claude/settings.local.json";const s=fs.existsSync(f)?JSON.parse(fs.readFileSync(f,"utf8")):{};const [p,u,k]=process.argv.slice(1);s.env=Object.assign({},s.env,{HARMONY_PROJECT:p},u?{HARMONY_SUPABASE_URL:u,HARMONY_SUPABASE_ANON_KEY:k}:{});fs.mkdirSync(".claude",{recursive:true});fs.writeFileSync(f,JSON.stringify(s,null,2)+"\n")' '<key>' # [ '<supabase-url>' '<anon-key>' ]
+node -e 'const fs=require("fs"),f=".claude/settings.local.json";const s=fs.existsSync(f)?JSON.parse(fs.readFileSync(f,"utf8")):{};const [p,u,k]=process.argv.slice(1);s.env=Object.assign({},s.env,{HARMONY_PROJECT:p},u?{HARMONY_SUPABASE_URL:u,HARMONY_SUPABASE_ANON_KEY:k}:{});fs.mkdirSync(".claude",{recursive:true});const w=(f,s)=>{const st=fs.existsSync(f)?fs.statSync(f):null,m=st?st.mode&0o777:0o600,t=f+".tmp-"+process.pid;fs.writeFileSync(t,JSON.stringify(s,null,2)+"\n",{mode:m});fs.chmodSync(t,m);fs.renameSync(t,f)};w(f,s)' '<key>' # [ '<supabase-url>' '<anon-key>' ]
 ```
 
 Then ensure `.claude/settings.local.json` is in `.gitignore` (check and add if missing).
@@ -107,7 +109,7 @@ token; the command reads it from the file itself:
 - Only when both pass, remove the file's copy, keeping everything else:
 
   ```bash
-  node -e 'const fs=require("fs"),f=".claude/settings.local.json";const s=JSON.parse(fs.readFileSync(f,"utf8"));if(s.env)delete s.env.HARMONY_API_TOKEN;fs.writeFileSync(f,JSON.stringify(s,null,2)+"\n")'
+  node -e 'const fs=require("fs"),f=".claude/settings.local.json";const s=JSON.parse(fs.readFileSync(f,"utf8"));if(s.env)delete s.env.HARMONY_API_TOKEN;const w=(f,s)=>{const st=fs.existsSync(f)?fs.statSync(f):null,m=st?st.mode&0o777:0o600,t=f+".tmp-"+process.pid;fs.writeFileSync(t,JSON.stringify(s,null,2)+"\n",{mode:m});fs.chmodSync(t,m);fs.renameSync(t,f)};w(f,s)'
   ```
 
   Run the inspect command once more: `HARMONY_API_TOKEN` must no longer be listed. If the file held a

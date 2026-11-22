@@ -59,17 +59,19 @@ export interface LifecycleDeps {
   /** B-1172: the conductor-registry client, authenticated as `env` resolves (operatorAuth). Rejects when nothing resolves. */
   registryClient(env: Record<string, string | undefined>): Promise<RegistryClient>;
   /** B-1501: null when the operator-side reads (status's board, the registry) can authenticate in `env`
-   *  through the shared resolver (HARMONY_API_TOKEN, then HARMONY_PROJECT, then the active project);
+   *  through the shared resolver (HARMONY_API_TOKEN, then HARMONY_PROJECT; never the active project);
    *  otherwise why not, names only. The daemon's own HARMONY_API_TOKEN requirement is the pre-flight's. */
   operatorCredential(env: Record<string, string | undefined>): string | null;
 }
 
 /** B-1501 fix 8: the operator's HarmonyAuth, through the shared resolver (src/config/project-resolution.ts)
  *  rather than `env.HARMONY_API_TOKEN` alone: HARMONY_API_TOKEN with `env`'s pair (the conductor's
- *  settings when they set it), then HARMONY_PROJECT's stored entry and pair, then the active project. */
+ *  settings when they set it), then HARMONY_PROJECT's stored entry and pair. Never the CLI's active
+ *  project (surface 'conductor-operator'): `env` is the conductor's composed environment, and its
+ *  Supabase pair must not be paired with a token the CLI happens to have active. */
 export function operatorAuth(env: Record<string, string | undefined>): HarmonyAuth {
   const e = env as NodeJS.ProcessEnv;
-  const r = resolveProject({ surface: 'cli', env: e });
+  const r = resolveProject({ surface: 'conductor-operator', env: e });
   const target = r.target ?? resolveSupabaseTarget({ flags: {}, project: undefined, env: e });
   return new HarmonyAuth(r.token, target.url, target.anonKey, { expectedProjectId: r.expectedProjectId, expectedLabel: r.expectedLabel });
 }
@@ -174,7 +176,7 @@ export function defaultLifecycleDeps(): LifecycleDeps {
     },
     operatorCredential: (env) => {
       try {
-        resolveProject({ surface: 'cli', env: env as NodeJS.ProcessEnv });
+        resolveProject({ surface: 'conductor-operator', env: env as NodeJS.ProcessEnv });
         return null;
       } catch (err) {
         return err instanceof Error ? err.message : String(err);

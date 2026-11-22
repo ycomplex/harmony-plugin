@@ -5,6 +5,7 @@
 // and its leases untouched. Every check is reported by NAME; credentials are reported by NAME only, never by
 // value. The config check is `harmony conductor config doctor`'s own logic (runDoctor), not a copy.
 
+import { OPERATOR_MISSING_MESSAGE } from '../../config/project-resolution.js';
 import { basename, join } from 'node:path';
 import {
   evaluateConductorConfig,
@@ -184,13 +185,15 @@ async function authPluginFix(deps: LifecycleDeps, env: Env): Promise<string> {
 /** B-808: why HARMONY_API_TOKEN is not set, and what to do. Names the cause the settings loader saw (no host
  *  file, no secrets.api_token entry in it, or a failed Secret Manager read), never a value. */
 /** B-1501: why the OPERATOR-side reads (status's board, the registry) cannot authenticate, or null when they
- *  can. They resolve through the shared resolver, so HARMONY_PROJECT (or the active project) serves when
- *  HARMONY_API_TOKEN is absent. A HARMONY_PROJECT that does not resolve is named as such; otherwise the B-808
- *  reason for the missing HARMONY_API_TOKEN. */
+ *  can. They resolve through the shared resolver, so HARMONY_PROJECT serves when HARMONY_API_TOKEN is absent;
+ *  the CLI's active project never does. The resolver's own reason is reported whenever it is not the
+ *  "neither variable" stop (a HARMONY_PROJECT that does not resolve, a URL without its key, a contradicting
+ *  pair); for that stop, the B-808 reason HARMONY_API_TOKEN is missing, plus the HARMONY_PROJECT alternative. */
 export function operatorTokenProblem(deps: LifecycleDeps, s: ConductorSettings): string | null {
   const why = deps.operatorCredential(s.env);
   if (why === null) return null;
-  return s.env.HARMONY_PROJECT ? why : missingTokenReason(deps, s);
+  if (why !== OPERATOR_MISSING_MESSAGE) return why;
+  return `${missingTokenReason(deps, s)}. Or set HARMONY_PROJECT to a project stored in ~/.harmony/config.json; \`harmony conductor\` never uses the active project`;
 }
 
 export function missingTokenReason(deps: LifecycleDeps, s: ConductorSettings): string {

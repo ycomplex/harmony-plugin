@@ -348,6 +348,15 @@ describe('B-1501 fixes 3, 6, 9 and 2', () => {
     expect(stored().projects.piped.token).toBe('synthetic-piped');
   });
 
+  it('E: login over an entry saved before project ids prints one line naming the key and the project it now holds', async () => {
+    fs.writeFileSync(path.join(tmpDir, 'config.json'), JSON.stringify({ activeProject: 'first', projects: { first: { name: 'first', token: 'synthetic-old' } } }));
+    Object.assign(loginInput, { isTTY: () => false, stdin: () => Readable.from(['synthetic-old\n']) });
+    await run(['login', '--token-stdin', '--name', 'first', '--no-activate']);
+    const lines = printed().split('\n').filter((l) => l.includes('in place'));
+    expect(lines).toEqual(['Updated the entry "first" in place: it was saved before project ids were recorded, and it now holds project proj-stub.']);
+    expect(printed()).not.toContain('synthetic-old');
+  });
+
   it('fix 6: login --no-activate into an empty store leaves no active project and says how to set one', async () => {
     Object.assign(loginInput, { isTTY: () => false, stdin: () => Readable.from(['synthetic-a\n']) });
     await run(['login', '--token-stdin', '--name', 'first', '--no-activate']);

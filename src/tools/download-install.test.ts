@@ -225,6 +225,14 @@ describe('harmony download install', () => {
     expect(readStoreJson().downloadProject).toBe('invented-abcd1234');
   });
 
+  it('E: a save that updated an entry saved before project ids says so, naming the key and project', async () => {
+    h.saveResult = { key: 'invented', updatedLegacyFor: 'proj-invented' };
+    expect(await runDownloadInstall({}, h.deps)).toBe(0);
+    expect(h.out.filter((l) => l.includes('in place'))).toEqual([
+      'Updated the entry "invented" in place: it was saved before project ids were recorded, and it now holds project proj-invented.',
+    ]);
+  });
+
   it("any failure to disable today's copy is only a note on a first install", async () => {
     h.responses.set(`plugin disable ${TODAYS_ID} --scope user`, { code: 1, stdout: '', stderr: 'permission denied' });
     expect(await runDownloadInstall({}, h.deps)).toBe(0);
@@ -375,16 +383,15 @@ describe('fix 5: the helper fails closed on a config.json it cannot read and par
     ['an empty file', ''],
     ['truncated JSON (no downloadProject in what was written)', '{"activeProject": "a", "proj'],
     ['truncated JSON that names downloadProject', '{"downloadProject": "b", "projects": {'],
+    // B-1501 second pass, F: a file that parses to a non-object is not a config: fail closed too.
     ['JSON null', 'null'],
+    ['a JSON number', '42'],
+    ['a JSON array', '[{"downloadProject": "b"}]'],
+    ['a JSON string', '"downloadProject"'],
   ] as const) {
     it(`${label}: exit 1, the fix named on stderr, HARMONY_API_TOKEN never sent`, () => {
       fs.writeFileSync(h.store, content);
       const r = runIt();
-      if (content === 'null') {
-        // `null` parses: it holds no pin, so the legacy order applies (it is not a half-written file).
-        expect(r.status).toBe(0);
-        return;
-      }
       expect(r.status).toBe(1);
       expect(r.stdout).toBe('');
       expect(r.stdout + r.stderr).not.toContain(ENV_TOKEN);

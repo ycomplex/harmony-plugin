@@ -19,8 +19,12 @@
  *       and, after the exchange, when the token reaches a different project than the entry's saved
  *       `projectId` (HarmonyAuth's expectedProjectId).
  *   (c) else, on the CLI only (a terminal outside any session), the active project, as before.
- *       The MCP server with neither (a) nor (b) stops with its old message, naming HARMONY_PROJECT
- *       as the alternative.
+ *       Refused, by name (URLs only), when the entry was saved against a backend (`verifiedUrl`)
+ *       other than the one this call would use; an entry saved before B-1501 has none and is read
+ *       as before. The MCP server with neither (a) nor (b) stops with its old message, naming
+ *       HARMONY_PROJECT as the alternative. `harmony conductor`'s operator-side reads (surface
+ *       'conductor-operator') have no (c) either: they stop naming both variables, so a
+ *       conductor's composed environment is never paired with the CLI's active project.
  *
  * Change of behaviour (B-1501): before, the CLI preferred the active project over
  * HARMONY_API_TOKEN. Now the environment wins, and the CLI prints one stderr line per process when
@@ -66,8 +70,14 @@ export class ProjectResolutionError extends Error {
 export const MCP_MISSING_MESSAGE =
   'HARMONY_API_TOKEN environment variable is required (or set HARMONY_PROJECT to a project stored in ~/.harmony/config.json; `harmony project list` names them)';
 
+/** `harmony conductor`'s operator-side reads with neither variable (B-1501): never the active project. */
+export const OPERATOR_MISSING_MESSAGE =
+  'Neither HARMONY_API_TOKEN nor HARMONY_PROJECT is set in the conductor\'s environment; `harmony conductor` never falls back to the active project. ' +
+  'Set HARMONY_API_TOKEN (the conductor\'s token), or HARMONY_PROJECT to a project stored in ~/.harmony/config.json (`harmony project list` names them).';
+
 export interface ResolveOptions {
-  surface: 'mcp' | 'cli';
+  /** 'conductor-operator': the CLI's resolution without the active-project rung. */
+  surface: 'mcp' | 'cli' | 'conductor-operator';
   env?: NodeJS.ProcessEnv;
   /** Defaults to reading config.json (src/cli/config.ts). */
   loadConfig?: () => HarmonyConfig;
@@ -140,6 +150,7 @@ export function resolveProject(opts: ResolveOptions): ResolvedProject {
   const envToken = harmonyEnv('HARMONY_API_TOKEN', env);
   if (envToken) {
     const config = opts.surface === 'cli' ? readConfigOrNull(load) : null;
+    const pairHere = opts.surface !== 'mcp';
     const active = usableActive(config);
     const activeToken = active ? config?.projects[active]?.token : undefined;
     return {
@@ -147,7 +158,7 @@ export function resolveProject(opts: ResolveOptions): ResolvedProject {
       key: null,
       token: envToken,
       project: null,
-      target: opts.surface === 'cli' ? resolveSupabaseTarget({ flags: {}, project: undefined, env }) : null,
+      target: pairHere ? resolveSupabaseTarget({ flags: {}, project: undefined, env }) : null,
       activeProject: active,
       overridesActive: Boolean(active && activeToken !== envToken),
     };
@@ -192,18 +203,35 @@ export function resolveProject(opts: ResolveOptions): ResolvedProject {
   if (opts.surface === 'mcp') {
     throw new ProjectResolutionError(MCP_MISSING_MESSAGE);
   }
+  if (opts.surface === 'conductor-operator') {
+    // A URL without its key is named first (MissingAnonKeyError), so the person fixes that half too.
+    resolveSupabaseTarget({ flags: {}, project: undefined, env });
+    throw new ProjectResolutionError(OPERATOR_MISSING_MESSAGE);
+  }
   const config = load();
   const active = usableActive(config);
   if (!active) {
+    const stored = Object.keys(config.projects);
+    if (stored.length > 0) {
+      throw new Error(`No active project. Run \`harmony project switch <name>\` to pick one of the stored projects: ${stored.join(', ')}.`);
+    }
     throw new Error('No active project. Run `harmony login` to add one.');
   }
   const p = config.projects[active];
+  const target = resolveSupabaseTarget({ flags: {}, project: p, env });
+  if (p.verifiedUrl && trimUrl(target.url) !== trimUrl(p.verifiedUrl)) {
+    const from = target.source === 'env' ? 'HARMONY_SUPABASE_URL' : target.source === 'default' ? 'the built-in default' : 'its stored Supabase settings';
+    throw new ProjectResolutionError(
+      `The active project "${active}" was saved against ${trimUrl(p.verifiedUrl)} but this call would use ${trimUrl(target.url)} (from ${from}); refusing to send its token to another backend. ` +
+        `Unset HARMONY_SUPABASE_URL (and its key), or switch to the project stored for that backend.`,
+    );
+  }
   return {
     source: 'active-project',
     key: active,
     token: p.token,
     project: p,
-    target: resolveSupabaseTarget({ flags: {}, project: p, env }),
+    target,
     activeProject: active,
     overridesActive: false,
   };

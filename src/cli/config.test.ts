@@ -11,6 +11,7 @@ import {
   switchProject,
   listProjects,
   saveProject,
+  legacyUpdateLine,
 } from './config.js';
 
 let tmpDir: string;
@@ -165,6 +166,16 @@ describe('saveProject', () => {
     expect(loadConfig().projects.invented.token).toBe('legacy-token');
   });
 
+  it('E: updating an entry saved before B-1501 in place says so; a new or id-carrying entry does not', () => {
+    addProject('invented', 'same-token');
+    expect(saveProject({ name: 'invented', token: 'same-token', projectId: 'cccccccc', activate: false }).updatedLegacyFor).toBe('cccccccc');
+    expect(saveProject({ name: 'invented', token: 'rotated', projectId: 'cccccccc', activate: false }).updatedLegacyFor).toBeUndefined();
+    expect(saveProject({ name: 'fresh', token: 'x', projectId: 'dddddddd', activate: false }).updatedLegacyFor).toBeUndefined();
+    expect(legacyUpdateLine('invented', 'cccccccc')).toBe(
+      'Updated the entry "invented" in place: it was saved before project ids were recorded, and it now holds project cccccccc.',
+    );
+  });
+
   it('an entry saved before B-1501 with the same token is the same project, upgraded in place', () => {
     addProject('invented', 'same-token');
     expect(saveProject({ name: 'invented', token: 'same-token', projectId: 'cccccccc', activate: false }).key).toBe('invented');
@@ -184,7 +195,7 @@ describe('saveProject', () => {
     it('same key, same backend, new token: the SAME project, updated in place and stamped with the id', () => {
       addProject('invented', 'legacy-token');
       const r = saveProject({ name: 'invented', token: 'rotated-token', projectId: 'cccccccc', verifiedUrl: DEFAULT, activate: false });
-      expect(r).toEqual({ key: 'invented', collidedWith: undefined, activated: false });
+      expect(r).toEqual({ key: 'invented', collidedWith: undefined, activated: false, updatedLegacyFor: 'cccccccc' });
       const c = loadConfig();
       expect(Object.keys(c.projects)).toEqual(['invented']);
       expect(c.projects.invented).toMatchObject({ token: 'rotated-token', projectId: 'cccccccc', verifiedUrl: DEFAULT });
@@ -238,6 +249,24 @@ describe('saveProject', () => {
     expect(fs.statSync(file).mode & 0o777).toBe(0o600);
     expect(fs.readdirSync(tmpDir)).toEqual(['config.json']);
     renameSpy.mockRestore();
+  });
+
+  it('G: saveConfig writes THROUGH a symlinked config.json (its real path), never replacing the link', () => {
+    const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'harmony-real-'));
+    try {
+      const real = path.join(elsewhere, 'real-config.json');
+      fs.writeFileSync(real, JSON.stringify({ activeProject: null, projects: {} }), { mode: 0o600 });
+      const link = path.join(tmpDir, 'config.json');
+      fs.symlinkSync(real, link);
+      saveProject({ name: 'invented', token: 'synthetic-t', projectId: 'p-inv', activate: true });
+      expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
+      expect(JSON.parse(fs.readFileSync(real, 'utf8')).activeProject).toBe('invented');
+      expect(fs.statSync(real).mode & 0o777).toBe(0o600);
+      expect(fs.readdirSync(elsewhere)).toEqual(['real-config.json']);
+      expect(fs.readdirSync(tmpDir)).toEqual(['config.json']);
+    } finally {
+      fs.rmSync(elsewhere, { recursive: true, force: true });
+    }
   });
 
   it('reads a config with no projects key tolerantly', () => {

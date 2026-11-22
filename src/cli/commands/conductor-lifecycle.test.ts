@@ -2,6 +2,7 @@
 // table, a launchctl/systemctl/git/kubectl/gcloud that record every call, a board that follows the process
 // table, and a fake clock that sleep() advances. Nothing here runs launchctl, systemctl, git or a signal.
 
+import { OPERATOR_MISSING_MESSAGE } from '../../config/project-resolution.js';
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -51,7 +52,7 @@ interface Opts {
   keyMissing?: boolean;
   branch?: string;
   registry?: RegistryClient;
-  /** B-1501: what the operator-side resolver says (null: a project resolves). Default: only an env token resolves. */
+  /** B-1501: what the operator-side resolver says (null: a project resolves). Default: only an env token resolves, else the real resolver's "neither variable" stop. */
   operatorReason?: string | null;
 }
 
@@ -191,7 +192,7 @@ function makeWorld(o: Opts = {}) {
     rmSync: (p) => { vfs.delete(p); },
     readBoard: async () => board.map((b) => ({ ...b })),
     registryClient: async () => (o.registry ?? unavailableRegistry()),
-    operatorCredential: (e) => (o.operatorReason !== undefined ? o.operatorReason : e.HARMONY_API_TOKEN ? null : 'No active project. Run `harmony login` to add one.'),
+    operatorCredential: (e) => (o.operatorReason !== undefined ? o.operatorReason : e.HARMONY_API_TOKEN ? null : OPERATOR_MISSING_MESSAGE),
   };
   return { deps, calls, order, written, vfs, board, w, addProc };
 }

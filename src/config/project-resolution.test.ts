@@ -118,6 +118,20 @@ describe('resolveProject: (c) the active project', () => {
     );
   });
 
+  it('cli: projects stored but none active: names `harmony project switch <name>` and the stored names only', () => {
+    const c = cfg({ activeProject: null });
+    let msg = '';
+    try {
+      resolveProject({ surface: 'cli', env: {}, loadConfig: load(c) });
+    } catch (e) {
+      msg = (e as Error).message;
+    }
+    expect(msg).toContain('harmony project switch <name>');
+    expect(msg).toContain('active-one, invented');
+    expect(msg).not.toContain('harmony login');
+    expect(msg).not.toContain('tok-');
+  });
+
   it('mcp: never falls to the active project; the old message, naming HARMONY_PROJECT', () => {
     expect(() => resolveProject({ surface: 'mcp', env: {}, loadConfig: load(cfg()) })).toThrow(MCP_MISSING_MESSAGE);
     expect(MCP_MISSING_MESSAGE).toMatch(/^HARMONY_API_TOKEN environment variable is required/);

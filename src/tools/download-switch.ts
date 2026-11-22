@@ -33,6 +33,7 @@
 import nodeFs from 'node:fs';
 import path from 'node:path';
 import { scrubTokenShapes } from './token-shapes.js';
+import { legacyUpdateLine } from '../config/legacy-update.js';
 
 export const DEFAULT_BASE = 'https://plugin.harmony.ad';
 export const MARKETPLACE_NAME = 'harmony';
@@ -127,6 +128,8 @@ export interface SwitchDeps {
 export interface SavedToken {
   key: string;
   collidedWith?: string;
+  /** The project id an entry saved before project ids now holds, when the save updated it in place. */
+  updatedLegacyFor?: string;
 }
 
 export type FetchLike = (url: string, init: { method: string; headers: Record<string, string>; redirect: 'manual'; signal?: AbortSignal }) => Promise<{ status: number }>;
@@ -188,11 +191,14 @@ const HELPER_JS = [
   'const fs = require("fs"); const f = process.argv[1];',
   'const fix = "Run `harmony download token use <project>` or `harmony download token set`.";',
   'const fail = (m) => { process.stderr.write("harmony: " + m + " " + fix + "\\n"); process.exit(1); };',
-  // B-1501 fix 5: fail CLOSED. Only an ABSENT file (or one that parses with no pin) means "no pin";
+  // B-1501 fix 5: fail CLOSED. Only an ABSENT file (or a JSON object with no pin) means "no pin";
   // a file that exists but cannot be read, or is empty / half-written / not JSON, stops here, so a
   // pinned machine never falls back to HARMONY_API_TOKEN because of a bad read.
   'let raw = null; try { raw = fs.readFileSync(f, "utf8"); } catch (e) { if (!e || e.code !== "ENOENT") fail(f + " exists but cannot be read (" + ((e && e.code) || "error") + "), so whether a token is pinned is unknown; nothing was sent. Fix its permissions (it should be yours, mode 600)."); }',
   'let c = null; if (raw !== null) { try { c = JSON.parse(raw); } catch (e) { fail(f + " is empty or not valid JSON (it may be half-written), so whether a token is pinned is unknown; nothing was sent. Try again in a moment; if it stays broken, repair the file."); } }',
+  // B-1501 second pass, F: a file that parses to null, a number, an array or a string is not a config
+  // either: fail closed, as for a half-written file.
+  'if (raw !== null && (c === null || typeof c !== "object" || Array.isArray(c))) fail(f + " does not hold a JSON object (it may be damaged), so whether a token is pinned is unknown; nothing was sent. Repair the file.");',
   'const ps = c && c.projects && typeof c.projects === "object" ? c.projects : {};',
   'const has = (p) => p && typeof p.token === "string" && p.token.length > 0;',
   'const pin = c && typeof c.downloadProject === "string" && c.downloadProject ? c.downloadProject : null;',
@@ -550,6 +556,7 @@ function redact(e: any, token: string): string {
 
 function describeSaved(saved: SavedToken, paths: Paths, fs: FsOps): string[] {
   const lines = [`Saved the token in ${paths.storePath} as project "${saved.key}".`];
+  if (saved.updatedLegacyFor) lines.push(legacyUpdateLine(saved.key, saved.updatedLegacyFor));
   if (saved.collidedWith) {
     lines.push(`A different project is already stored as "${saved.collidedWith}" and was left as it is. In a project's settings, name this one HARMONY_PROJECT=${saved.key}.`);
   }

@@ -100,7 +100,7 @@ if command -v harmony >/dev/null 2>&1 || [ -x "$REPO_ROOT/dist/bin/harmony.js" ]
 else
   echo "Note: 'harmony' CLI not on PATH; skipped registering the 'staging' project." >&2
   echo "Run this once to register it manually:" >&2
-  echo "  node $REPO_ROOT/dist/bin/harmony.js login --supabase-url $STAGING_URL --supabase-anon-key <key> --token <token> --name staging" >&2
+  echo "  node $REPO_ROOT/dist/bin/harmony.js login --supabase-url $STAGING_URL --supabase-anon-key <key> --token-stdin --name staging" >&2
 fi
 
 echo "Staging channel configured in $DOGFOOD_DIR"
