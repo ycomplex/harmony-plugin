@@ -179,3 +179,79 @@ it('rejects conflicting flags before client creation without reporting either va
   expect(errSpy.mock.calls.flat().join(' ')).not.toContain('synthetic-old');
   expect(errSpy.mock.calls.flat().join(' ')).not.toContain('sb_publishable_synthetic');
 });
+
+// B-1501: the non-activating login, and the commands that say which source is in force.
+describe('B-1501 — login --no-activate, whoami, project list / switch', () => {
+  beforeEach(() => {
+    for (const v of ['HARMONY_API_TOKEN', 'HARMONY_PROJECT', 'HARMONY_SUPABASE_URL', 'HARMONY_SUPABASE_ANON_KEY', 'HARMONY_SUPABASE_PUBLISHABLE_KEY']) {
+      vi.stubEnv(v, '');
+      vi.stubEnv(`EVAL_${v}`, '');
+    }
+  });
+
+  const stored = () => JSON.parse(fs.readFileSync(path.join(tmpDir, 'config.json'), 'utf8'));
+  const logged = () => logSpy.mock.calls.flat().join('\n');
+  const errored = () => errSpy.mock.calls.flat().join('\n');
+
+  it('login stores the project id and the URL it was checked against, and activates (as before)', async () => {
+    await run(['login', '--token', 'synthetic-a', '--name', 'first']);
+    expect(stored().activeProject).toBe('first');
+    expect(stored().projects.first).toMatchObject({ projectId: 'proj-stub', verifiedUrl: 'https://eioxsunvhakmelhanmnn.supabase.co' });
+  });
+
+  it('login --no-activate stores without changing the active project, and names HARMONY_PROJECT', async () => {
+    await run(['login', '--token', 'synthetic-a', '--name', 'first']);
+    supabaseMock.getProject.mockResolvedValue({ name: 'Second One' });
+    await run(['login', '--token', 'synthetic-a', '--no-activate']);
+    expect(stored().activeProject).toBe('first');
+    expect(logged()).toContain('the active project is unchanged');
+    expect(logged()).toContain('HARMONY_PROJECT=first');
+    expect(logged()).not.toContain('synthetic-a');
+  });
+
+  it('whoami names the source in force and never prints a token', async () => {
+    await run(['login', '--token', 'synthetic-a', '--name', 'first']);
+    logSpy.mockClear();
+    await run(['whoami']);
+    expect(logged()).toContain('Project: first');
+    expect(logged()).toContain('the active project "first" (neither HARMONY_API_TOKEN nor HARMONY_PROJECT is set)');
+    vi.stubEnv('HARMONY_API_TOKEN', 'synthetic-env');
+    logSpy.mockClear();
+    await run(['whoami']);
+    expect(logged()).toContain('HARMONY_API_TOKEN in the environment (it wins over the active project "first")');
+    expect(logged()).not.toContain('synthetic');
+  });
+
+  it('projects (and project list) says which source is in force, with one stderr line when the env overrides', async () => {
+    await run(['login', '--token', 'synthetic-a', '--name', 'first']);
+    vi.stubEnv('HARMONY_API_TOKEN', 'synthetic-env');
+    logSpy.mockClear();
+    errSpy.mockClear();
+    await run(['projects']);
+    expect(logged()).toContain('first');
+    expect(logged()).toContain('In this shell: HARMONY_API_TOKEN in the environment');
+    expect(errSpy).toHaveBeenCalledTimes(1);
+    expect(errored()).toContain('the environment overrides the active project "first"');
+
+    const { registerProjectCommands } = await import('./project.js');
+    const program = makeProgram();
+    registerProjectCommands(program);
+    logSpy.mockClear();
+    await program.parseAsync(['project', 'list'], { from: 'user' });
+    expect(logged()).toContain('In this shell: HARMONY_API_TOKEN in the environment');
+  });
+
+  it('project switch says when the environment keeps winning', async () => {
+    await run(['login', '--token', 'synthetic-a', '--name', 'first']);
+    const { saveProject } = await import('../config.js');
+    saveProject({ name: 'second', token: 'synthetic-b', projectId: 'p2', activate: false });
+    vi.stubEnv('HARMONY_PROJECT', 'first');
+    const { registerProjectCommands } = await import('./project.js');
+    const program = makeProgram();
+    registerProjectCommands(program);
+    errSpy.mockClear();
+    await program.parseAsync(['project', 'switch', 'second'], { from: 'user' });
+    expect(stored().activeProject).toBe('second');
+    expect(errored()).toContain('HARMONY_PROJECT=first is set in this shell and wins over the active project');
+  });
+});

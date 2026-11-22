@@ -34,9 +34,9 @@ import { hostname } from 'node:os';
 import type { Command } from 'commander';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { HarmonyAuth } from '../../auth.js';
-import { harmonyEnv } from '../../env.js';
 import { startHintSubscription, type HintChannelLike } from '../../daemon/hint-subscription.js';
-import { getActiveProject, type ProjectConfig } from '../config.js';
+import { getActiveProject, type HarmonyConfig } from '../config.js';
+import { resolveProject } from '../../config/project-resolution.js';
 import { resolveSupabaseTarget } from '../resolve-supabase-target.js';
 import { createBoardReader, type BoardReader, type MilestoneInfo, type ProjectInfo } from '../../watch/board-read.js';
 import { healthEvent, ownerFor, startEvent, type WatchEvent } from '../../watch/classify.js';
@@ -150,20 +150,16 @@ export function realSleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-/** HarmonyAuth built the way the CLI builds it (src/cli/auth.ts): active project, else env token. */
-export function makeCliAuth(): HarmonyAuth {
-  let project: ProjectConfig;
-  let usedFallback = false;
-  try {
-    project = getActiveProject();
-  } catch (configErr) {
-    const token = harmonyEnv('HARMONY_API_TOKEN');
-    if (!token) throw configErr;
-    project = { name: '(env token)', token };
-    usedFallback = true;
-  }
-  const target = resolveSupabaseTarget({ flags: {}, project: usedFallback ? undefined : project });
-  return new HarmonyAuth(project.token, target.url, target.anonKey);
+/** HarmonyAuth built the way the CLI builds it (src/cli/auth.ts), through the shared resolver
+ *  (src/config/project-resolution.ts, B-1501): HARMONY_API_TOKEN, then HARMONY_PROJECT, then the
+ *  active project. With neither variable set it follows the active project exactly as before. */
+export function makeCliAuth(env: NodeJS.ProcessEnv = process.env, loadConfig?: () => HarmonyConfig): HarmonyAuth {
+  const resolved = resolveProject({ surface: 'cli', env, loadConfig });
+  const target = resolved.target ?? resolveSupabaseTarget({ flags: {}, project: undefined, env });
+  return new HarmonyAuth(resolved.token, target.url, target.anonKey, {
+    expectedProjectId: resolved.expectedProjectId,
+    expectedLabel: resolved.expectedLabel,
+  });
 }
 
 // ---------------------------------------------------------------------------

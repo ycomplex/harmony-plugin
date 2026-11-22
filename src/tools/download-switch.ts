@@ -17,6 +17,18 @@
 //   4. a record of the above in `download-switch.json` (never the token).
 //
 // Exit codes: 0 done; 1 refused or failed (the message names which); 2 the person has to act first.
+//
+// B-1501 adds the download PIN and the first install:
+//   - config.json's top-level `downloadProject` names the stored project whose token the helper sends.
+//     With a pin the helper consults nothing else (not HARMONY_API_TOKEN, not the active project); with
+//     none (a machine that ran the 0.17.66 switch) it keeps the old order. Pinning never changes
+//     activeProject.
+//   - `harmony download token use <project>` / `token set` pin a stored / a new token, after checking it
+//     against the download (GET <base>/prod/marketplace.json with the token; the fetch is injected).
+//   - `harmony download install` is the first install on a bare machine (the public installer runs it,
+//     the token on stdin): check the token, save it without activating, pin it, then the switch's steps.
+//   - `harmony download switch` now always leaves a pinned helper behind (it pins the active project,
+//     or asks which stored project on a terminal); only --undo leaves none.
 
 import nodeFs from 'node:fs';
 import path from 'node:path';
@@ -38,6 +50,8 @@ export const BACKUP_SUFFIX = '.before-harmony-download';
  *  `claude -p --max-turns 0 hi` fetch it too but each send a model request; `--version`, `mcp list`,
  *  `doctor`, `auth status`, `plugin list`, `plugin validate`, `plugin marketplace update` fetch nothing. */
 export const START_ARGS = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose'];
+
+export const PIN_FIX = 'Run `harmony download token use <project>` (a project already stored) or `harmony download token set` (a new token).';
 
 export const NO_TOKEN_HELP = [
   'Harmony needs your API token where the download can read it. Do one of these, then run `harmony download switch` again:',
@@ -85,12 +99,24 @@ export interface SwitchDeps {
   err: (line: string) => void;
   ask: (question: string) => Promise<string>;
   runClaude: ClaudeRunner;
-  /** Verify a token against Harmony and store it in the CLI store (the `harmony login` path). Returns the project name. */
-  saveToken: (token: string) => Promise<string>;
+  /** Verify a token against Harmony and store it in the CLI store WITHOUT activating it (B-1501).
+   *  Returns the stored key, and the key it collided with when a different project held that name. */
+  saveToken: (token: string) => Promise<SavedToken>;
+  /** GET for the download check (B-1501). Defaults to the global fetch; tests always inject a stub. */
+  fetch?: FetchLike;
+  /** Read a new token: stdin, or a hidden prompt at a terminal (B-1501). Never echoes it. */
+  readToken?: () => Promise<string>;
   now: () => Date;
   pid: number;
   fs?: FsOps;
 }
+
+export interface SavedToken {
+  key: string;
+  collidedWith?: string;
+}
+
+export type FetchLike = (url: string, init: { method: string; headers: Record<string, string>; redirect: 'manual'; signal?: AbortSignal }) => Promise<{ status: number }>;
 
 export interface SwitchOptions {
   undo?: boolean;
@@ -143,25 +169,53 @@ export function desiredEntry(url: string, helperPath: string): Record<string, un
   return { source: { source: 'url', url, headersHelper: helperPath }, autoUpdate: true };
 }
 
+/** The helper's node part, run as `node -e <this> <config.json>`. It prints the whole header, or a
+ *  message on stderr and exit 1. It contains no single quote (it sits inside a single-quoted sh word). */
+const HELPER_JS = [
+  'const fs = require("fs"); const f = process.argv[1];',
+  'const fix = "Run `harmony download token use <project>` or `harmony download token set`.";',
+  'const fail = (m) => { process.stderr.write("harmony: " + m + " " + fix + "\\n"); process.exit(1); };',
+  'let raw = null; try { raw = fs.readFileSync(f, "utf8"); } catch (e) {}',
+  'let c = null; if (raw !== null) { try { c = JSON.parse(raw); } catch (e) { if (raw.includes("downloadProject")) fail(f + " is not valid JSON, so the pinned token cannot be read."); } }',
+  'const ps = c && c.projects && typeof c.projects === "object" ? c.projects : {};',
+  'const has = (p) => p && typeof p.token === "string" && p.token.length > 0;',
+  'const pin = c && typeof c.downloadProject === "string" && c.downloadProject ? c.downloadProject : null;',
+  'let t = "";',
+  'if (pin) { if (!has(ps[pin])) fail("the download is pinned to project \\"" + pin + "\\", but " + f + " holds no token for it."); t = ps[pin].token; }',
+  'else { t = process.env.HARMONY_API_TOKEN || ""; if (!t && c && c.activeProject && has(ps[c.activeProject])) t = ps[c.activeProject].token; if (!t) fail("no Harmony token found."); }',
+  'process.stdout.write(JSON.stringify({ Authorization: "Bearer " + t.replace(/[\\r\\n]/g, "") }));',
+].join('\n');
+
 /** The helper Claude Code runs for each download. POSIX sh. It prints only the header on stdout; it never
- *  writes the token to a file or log and never prints it to stderr. Token order matches the setup's:
- *  HARMONY_API_TOKEN, then the active project's token in config.json beside the helper. */
+ *  writes the token to a file or log and never prints it to stderr. It holds no token: it reads config.json
+ *  beside it. B-1501: when config.json pins a download project (`downloadProject`), that project's token is
+ *  sent and nothing else is consulted; with no pin (a machine switched before B-1501) the order is the old
+ *  one, HARMONY_API_TOKEN then the active project. Without node on PATH it can only serve an unpinned
+ *  machine from HARMONY_API_TOKEN, and otherwise says that node is missing. */
 export function helperScript(): string {
-  return `#!/bin/sh
-# Written by \`harmony download switch\`. Claude Code runs it to get the header for Harmony's plugin download.
-# It prints {"Authorization":"Bearer <token>"} and nothing else. It holds no token: it reads HARMONY_API_TOKEN,
-# or the active project's token in config.json beside it (where \`harmony login\` stores it).
-t="\${HARMONY_API_TOKEN:-}"
-if [ -z "$t" ]; then
-  t=$(node -e 'try { const c = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); const p = c && c.activeProject && c.projects && c.projects[c.activeProject]; if (p && typeof p.token === "string") process.stdout.write(p.token); } catch (e) {}' "$(dirname "$0")/config.json" 2>/dev/null) || t=""
-fi
-if [ -z "$t" ]; then
-  echo "harmony: no Harmony token found" >&2
-  exit 1
-fi
-t=$(printf '%s' "$t" | tr -d '\\r\\n' | sed -e 's/\\\\/\\\\\\\\/g' -e 's/"/\\\\"/g')
-printf '{"Authorization":"Bearer %s"}' "$t"
-`;
+  return [
+    '#!/bin/sh',
+    "# Written by `harmony download`. Claude Code runs it to get the header for Harmony's plugin download.",
+    '# It prints {"Authorization":"Bearer <token>"} and nothing else. It holds no token: it reads config.json beside it',
+    '# (where `harmony` stores tokens). A pinned download project (downloadProject) is the only source when set;',
+    '# otherwise HARMONY_API_TOKEN, then the active project. Change the pin: harmony download token use|set.',
+    'c="$(dirname "$0")/config.json"',
+    'if command -v node >/dev/null 2>&1; then',
+    `  exec node -e '${HELPER_JS}' "$c"`,
+    'fi',
+    'if [ -f "$c" ] && grep -q \'"downloadProject"\' "$c"; then',
+    '  echo "harmony: node is not on the PATH Claude Code gave this helper, so it cannot read the pinned token in $c. Make node available in your login shell, then run: claude plugin marketplace update harmony" >&2',
+    '  exit 1',
+    'fi',
+    't="${HARMONY_API_TOKEN:-}"',
+    'if [ -z "$t" ]; then',
+    '  echo "harmony: no Harmony token found, and node is not on PATH to read $c. Make node available in your login shell, then run: claude plugin marketplace update harmony" >&2',
+    '  exit 1',
+    'fi',
+    `t=$(printf '%s' "$t" | tr -d '\\r\\n' | sed -e 's/\\\\/\\\\\\\\/g' -e 's/"/\\\\"/g')`,
+    `printf '{"Authorization":"Bearer %s"}' "$t"`,
+    '',
+  ].join('\n');
 }
 
 export class SwitchError extends Error {
@@ -170,20 +224,113 @@ export class SwitchError extends Error {
   }
 }
 
-type TokenSource = 'env' | 'store';
+type TokenSource = 'pin' | 'env' | 'store';
 
-/** Where a token is, without printing or returning it. The order the helper uses: env, then store. */
-export function findToken(deps: Pick<SwitchDeps, 'env'>, paths: Paths, fs: FsOps): TokenSource | null {
-  if (deps.env.HARMONY_API_TOKEN) return 'env';
+/** The parts of config.json the download reads. Tokens are read only to be handed on, never printed. */
+export interface StoreShape {
+  activeProject?: string | null;
+  projects?: Record<string, { token?: unknown } | undefined>;
+  downloadProject?: string;
+}
+
+/** config.json beside the helper; null when it is absent or unreadable. */
+export function readStore(paths: Paths, fs: FsOps): StoreShape | null {
   if (!fs.existsSync(paths.storePath)) return null;
   try {
     const c = JSON.parse(String(fs.readFileSync(paths.storePath, 'utf-8')));
-    const p = c?.activeProject ? c?.projects?.[c.activeProject] : undefined;
-    if (p && typeof p.token === 'string' && p.token.length > 0) return 'store';
+    return isPlainObject(c) ? (c as StoreShape) : null;
   } catch {
-    /* an unreadable store counts as no token */
+    return null;
   }
+}
+
+function hasToken(c: StoreShape | null, key: string | null | undefined): key is string {
+  if (!c || !key) return false;
+  const t = c.projects?.[key]?.token;
+  return typeof t === 'string' && t.length > 0;
+}
+
+/** The stored keys that hold a token. Names only. */
+export function storedProjects(c: StoreShape | null): string[] {
+  return Object.keys(c?.projects ?? {}).filter((k) => hasToken(c, k));
+}
+
+/** Where a token is, without printing or returning it: a usable pin first, then the unpinned helper's
+ *  order (env, then the active project in the store), then any stored project. */
+export function findToken(deps: Pick<SwitchDeps, 'env'>, paths: Paths, fs: FsOps): TokenSource | null {
+  const c = readStore(paths, fs);
+  if (hasToken(c, c?.downloadProject)) return 'pin';
+  if (deps.env.HARMONY_API_TOKEN) return 'env';
+  if (hasToken(c, c?.activeProject)) return 'store';
+  // A stored project that is not active can still be pinned (the switch asks which).
+  if (storedProjects(c).length > 0) return 'store';
   return null;
+}
+
+export type HelperSource =
+  | { kind: 'pinned'; key: string; usable: boolean }
+  | { kind: 'env' }
+  | { kind: 'active'; key: string }
+  | { kind: 'none' };
+
+/** What the helper written by this version would send, as names only. `env` is the environment the
+ *  helper itself would see: Claude Code's, which is usually the login shell's. */
+export function helperSource(env: NodeJS.ProcessEnv, paths: Paths, fs: FsOps): HelperSource {
+  const c = readStore(paths, fs);
+  if (c?.downloadProject) return { kind: 'pinned', key: c.downloadProject, usable: hasToken(c, c.downloadProject) };
+  if (env.HARMONY_API_TOKEN) return { kind: 'env' };
+  if (hasToken(c, c?.activeProject)) return { kind: 'active', key: c!.activeProject as string };
+  return { kind: 'none' };
+}
+
+/** Pin the download to a stored project: config.json's `downloadProject`, written atomically at mode 600.
+ *  activeProject and every entry are left exactly as they are. */
+export function pinDownloadProject(paths: Paths, key: string, pid: number, fs: FsOps): void {
+  let raw: string;
+  try {
+    raw = String(fs.readFileSync(paths.storePath, 'utf-8'));
+  } catch {
+    throw new SwitchError(1, `${paths.storePath} does not exist, so there is no stored project "${key}" to pin.`);
+  }
+  let c: unknown;
+  try {
+    c = JSON.parse(raw);
+  } catch {
+    throw new SwitchError(1, `${paths.storePath} is not valid JSON. Nothing was changed.`);
+  }
+  if (!isPlainObject(c) || !hasToken(c as StoreShape, key)) {
+    throw new SwitchError(1, `${paths.storePath} holds no token for project "${key}". Nothing was changed.`);
+  }
+  const next = { ...c, downloadProject: key };
+  atomicWrite(paths.storePath, JSON.stringify(next, null, 2) + '\n', 0o600, pid, fs);
+}
+
+/** Check a token against the download itself: GET <base>/prod/marketplace.json with it, expecting 200.
+ *  The token goes only into the Authorization header; no message ever carries it. */
+export async function verifyDownloadToken(base: string, token: string, fetchImpl?: FetchLike): Promise<void> {
+  const url = marketplaceUrl(base);
+  const f = fetchImpl ?? (globalThis.fetch as unknown as FetchLike);
+  let status: number;
+  try {
+    const r = await f(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${token}` },
+      redirect: 'manual',
+      signal: AbortSignal.timeout(30_000),
+    });
+    status = r.status;
+  } catch (e: any) {
+    const msg = String(e?.message ?? e).split(token).join('<token>');
+    throw new SwitchError(1, `could not reach ${url} to check the token (${msg}). Nothing was changed.`);
+  }
+  if (status === 200) return;
+  if (status === 401 || status === 403) {
+    throw new SwitchError(
+      1,
+      `the download refused this token (HTTP ${status} from ${url}). Check it is a current Harmony API token (Project Settings → Connect AI). Nothing was changed.`,
+    );
+  }
+  throw new SwitchError(1, `the download answered HTTP ${status} from ${url}, not 200. Nothing was changed.`);
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
@@ -361,9 +508,21 @@ export async function runDownloadSwitch(opts: SwitchOptions, deps: SwitchDeps): 
   }
 }
 
-async function ensureToken(paths: Paths, deps: SwitchDeps, fs: FsOps, dryRun: boolean): Promise<TokenSource | 'saved'> {
+function redact(e: any, token: string): string {
+  return String(e?.message ?? e).split(token).join('<token>');
+}
+
+function describeSaved(saved: SavedToken, paths: Paths): string[] {
+  const lines = [`Saved the token in ${paths.storePath} as project "${saved.key}".`];
+  if (saved.collidedWith) {
+    lines.push(`A different project is already stored as "${saved.collidedWith}" and was left as it is. In a project's settings, name this one HARMONY_PROJECT=${saved.key}.`);
+  }
+  return lines;
+}
+
+async function ensureToken(paths: Paths, deps: SwitchDeps, fs: FsOps, dryRun: boolean): Promise<SavedToken | null> {
   const found = findToken(deps, paths, fs);
-  if (found) return found;
+  if (found) return null;
   const projectFile = fs.existsSync(paths.projectLocalSettingsPath);
   if (projectFile && deps.isTTY && !dryRun) {
     const token = readProjectFileToken(paths, fs);
@@ -372,14 +531,14 @@ async function ensureToken(paths: Paths, deps: SwitchDeps, fs: FsOps, dryRun: bo
         'Found a Harmony token in this project\'s .claude/settings.local.json. Save this token to the harmony store (~/.harmony/config.json) so the download can use it? [y/N] ',
       );
       if (/^\s*y(es)?\s*$/i.test(answer)) {
+        let saved: SavedToken;
         try {
-          const name = await deps.saveToken(token);
-          deps.out(`Saved the token to the harmony store (project "${name}", now active).`);
-          return 'saved';
+          saved = await deps.saveToken(token);
         } catch (e: any) {
-          const msg = String(e?.message ?? e).split(token).join('<token>');
-          throw new SwitchError(1, `the token could not be verified, so it was not saved: ${msg}`);
+          throw new SwitchError(1, `the token could not be verified, so it was not saved: ${redact(e, token)}`);
         }
+        for (const l of describeSaved(saved, paths)) deps.out(l);
+        return saved;
       }
     }
   }
@@ -394,6 +553,77 @@ async function ensureToken(paths: Paths, deps: SwitchDeps, fs: FsOps, dryRun: bo
   throw new SwitchError(2, [...lines, ...NO_TOKEN_HELP].join('\n'));
 }
 
+export const ENV_ONLY_HELP =
+  'The download now reads ONE pinned token from ~/.harmony/config.json, and no project is stored there (HARMONY_API_TOKEN alone cannot be pinned). ' +
+  'Run `harmony download token set` (it reads the token, checks it, saves it and pins it), then run this again.';
+
+type PinPlan =
+  | { kind: 'keep'; key: string }
+  | { kind: 'active'; key: string; dangling?: string }
+  | { kind: 'ask'; choices: string[]; dangling?: string }
+  | { kind: 'offer-env'; dangling?: string }
+  | { kind: 'stop'; message: string };
+
+/** What the switch will pin. Pure: reads config.json only. */
+function planPin(paths: Paths, deps: Pick<SwitchDeps, 'env' | 'isTTY'>, fs: FsOps): PinPlan {
+  const c = readStore(paths, fs);
+  const pin = c?.downloadProject;
+  if (hasToken(c, pin)) return { kind: 'keep', key: pin };
+  const dangling = pin || undefined;
+  if (hasToken(c, c?.activeProject)) return { kind: 'active', key: c!.activeProject as string, dangling };
+  const choices = storedProjects(c);
+  if (choices.length > 0) {
+    if (deps.isTTY) return { kind: 'ask', choices, dangling };
+    return { kind: 'stop', message: `no project is pinned for the download and there is no active project to pin. ${PIN_FIX}` };
+  }
+  if (deps.env.HARMONY_API_TOKEN && deps.isTTY) return { kind: 'offer-env', dangling };
+  return { kind: 'stop', message: ENV_ONLY_HELP };
+}
+
+/** Leave config.json pinned (B-1501): keep a usable pin, else pin the active project, else ask on a terminal. */
+async function ensurePin(paths: Paths, deps: SwitchDeps, fs: FsOps, saved: SavedToken | null): Promise<string> {
+  if (saved) {
+    pinDownloadProject(paths, saved.key, deps.pid, fs);
+    deps.out(`Pinned the download to project "${saved.key}" (downloadProject in ${paths.storePath}; the active project is unchanged).`);
+    return saved.key;
+  }
+  const plan = planPin(paths, deps, fs);
+  if (plan.kind === 'stop') throw new SwitchError(2, plan.message);
+  if (plan.kind === 'keep') {
+    deps.out(`The download stays pinned to project "${plan.key}".`);
+    return plan.key;
+  }
+  if (plan.dangling) deps.out(`The download was pinned to "${plan.dangling}", which ${paths.storePath} no longer holds a token for.`);
+  let key: string;
+  if (plan.kind === 'active') {
+    key = plan.key;
+  } else if (plan.kind === 'ask') {
+    const list = plan.choices.map((k, i) => `  ${i + 1}. ${k}`).join('\n');
+    const answer = (await deps.ask(`Which stored project's token should the plugin download use?\n${list}\nNumber or name: `)).trim();
+    const n = Number(answer);
+    const picked = Number.isInteger(n) && n >= 1 && n <= plan.choices.length ? plan.choices[n - 1] : plan.choices.find((k) => k === answer);
+    if (!picked) throw new SwitchError(2, `"${answer}" is not one of the stored projects. Nothing was pinned. ${PIN_FIX}`);
+    key = picked;
+  } else {
+    const answer = await deps.ask(
+      'The download needs its own copy of your token. Save HARMONY_API_TOKEN to the harmony store (~/.harmony/config.json) and pin it for the download? [y/N] ',
+    );
+    if (!/^\s*y(es)?\s*$/i.test(answer)) throw new SwitchError(2, ENV_ONLY_HELP);
+    const token = deps.env.HARMONY_API_TOKEN as string;
+    let s: SavedToken;
+    try {
+      s = await deps.saveToken(token);
+    } catch (e: any) {
+      throw new SwitchError(1, `the token could not be verified, so it was not saved: ${redact(e, token)}`);
+    }
+    for (const l of describeSaved(s, paths)) deps.out(l);
+    key = s.key;
+  }
+  pinDownloadProject(paths, key, deps.pid, fs);
+  deps.out(`Pinned the download to project "${key}" (downloadProject in ${paths.storePath}; the active project is unchanged).`);
+  return key;
+}
+
 async function doSwitch(opts: SwitchOptions, deps: SwitchDeps): Promise<number> {
   const fs = deps.fs ?? (nodeFs as unknown as FsOps);
   const base = normalizeBase(opts.base);
@@ -403,9 +633,19 @@ async function doSwitch(opts: SwitchOptions, deps: SwitchDeps): Promise<number> 
 
   if (opts.dryRun) return dryRun(base, url, paths, entry, deps, fs);
 
-  await ensureToken(paths, deps, fs, false);
+  const saved = await ensureToken(paths, deps, fs, false);
   const settings = planSettings(paths, entry, fs);
+  const pinned = await ensurePin(paths, deps, fs, saved);
+  return applySteps({ base, url, paths, settings, pinned, mode: 'switch' }, deps, fs);
+}
 
+/** The switch's steps after the token is pinned: helper, settings, Claude Code's own state, record. */
+async function applySteps(
+  ctx: { base: string; url: string; paths: Paths; settings: SettingsPlan; pinned: string; mode: 'switch' | 'install' },
+  deps: SwitchDeps,
+  fs: FsOps,
+): Promise<number> {
+  const { base, url, paths, settings } = ctx;
   const helperWritten = writeHelper(paths, fs);
   deps.out(helperWritten ? `Wrote the helper ${paths.helperPath}` : `The helper ${paths.helperPath} is already in place.`);
 
@@ -429,9 +669,9 @@ async function doSwitch(opts: SwitchOptions, deps: SwitchDeps): Promise<number> 
     if (!(await marketplaceKnown(deps))) {
       deps.err(
         [
-          'Claude Code has not fetched the Harmony marketplace yet. The settings and helper are in place.',
+          'Claude Code has not fetched the Harmony marketplace yet. The settings and helper are in place, and your token is pinned.',
           'Start Claude Code once (open it, wait for the prompt, then /exit), then run `harmony download switch` again.',
-          'If it still fails, check your token works: run `harmony projects`, or check HARMONY_API_TOKEN is set.',
+          'If it still fails, check your token works: run `harmony download status`, then `harmony download token use <project>` or `harmony download token set`.',
         ].join('\n'),
       );
       return 2;
@@ -441,13 +681,18 @@ async function doSwitch(opts: SwitchOptions, deps: SwitchDeps): Promise<number> 
   const install = await runOrFail(deps, ['plugin', 'install', INSTALL_ID], /already installed/i);
   deps.out(install.tolerated ? `${INSTALL_ID} is already installed.` : `Installed ${INSTALL_ID}.`);
 
-  const disable = await runOrFail(
-    deps,
-    ['plugin', 'disable', TODAYS_ID, '--scope', 'user'],
-    /already disabled|not installed|not found/i,
-  );
-  const disabledTodaysCopy = !disable.tolerated;
-  deps.out(disabledTodaysCopy ? `Disabled today's copy (${TODAYS_ID}) for your user.` : `Today's copy (${TODAYS_ID}) was already disabled for your user (or is not installed).`);
+  let disabledTodaysCopy: boolean;
+  const disableArgs = ['plugin', 'disable', TODAYS_ID, '--scope', 'user'];
+  if (ctx.mode === 'install') {
+    // A bare machine has no copy of today's plugin; any failure here is only a note.
+    const r = await deps.runClaude(disableArgs);
+    disabledTodaysCopy = r.code === 0;
+    deps.out(disabledTodaysCopy ? `Disabled today's copy (${TODAYS_ID}) for your user.` : `Today's copy (${TODAYS_ID}) is not installed for your user; nothing to disable.`);
+  } else {
+    const disable = await runOrFail(deps, disableArgs, /already disabled|not installed|not found/i);
+    disabledTodaysCopy = !disable.tolerated;
+    deps.out(disabledTodaysCopy ? `Disabled today's copy (${TODAYS_ID}) for your user.` : `Today's copy (${TODAYS_ID}) was already disabled for your user (or is not installed).`);
+  }
 
   const projectEnables = projectEnablesTodaysCopy(paths, fs);
   if (projectEnables) deps.out(PROJECT_DISABLE_HINT);
@@ -459,12 +704,14 @@ async function doSwitch(opts: SwitchOptions, deps: SwitchDeps): Promise<number> 
     settings_path: paths.settingsPath,
     backup_path: backup,
     disabled_ycomplex_user_scope: disabledTodaysCopy,
+    download_project: ctx.pinned,
+    via: ctx.mode,
     switched_at: deps.now().toISOString(),
   };
   fs.writeFileSync(paths.recordPath, JSON.stringify(record, null, 2) + '\n', { mode: 0o600 });
 
   deps.out('');
-  deps.out(`Done: ${INSTALL_ID} is installed from ${url}.`);
+  deps.out(`Done: ${INSTALL_ID} is installed from ${url}, using project "${ctx.pinned}"'s token.`);
   deps.out('Check it: `claude plugin list` shows harmony-plugin@harmony enabled. In a FRESH Claude Code session (not /reload-plugins), run `harmony --version`.');
   deps.out(backup ? `Your original settings are saved at ${backup}` : 'There was no settings file before, so there is no backup.');
   deps.out('To go back: harmony download switch --undo');
@@ -510,8 +757,24 @@ function dryRun(base: string, url: string, paths: Paths, entry: Record<string, u
     deps.err(`harmony download switch: ${[...lines, ...NO_TOKEN_HELP].join('\n')}`);
     return 2;
   }
-  deps.out(`Token: found (${token === 'env' ? 'HARMONY_API_TOKEN' : 'the harmony store'}).`);
-  return 0;
+  const plan = planPin(paths, deps, fs);
+  switch (plan.kind) {
+    case 'keep':
+      deps.out(`Token: the download stays pinned to project "${plan.key}".`);
+      return 0;
+    case 'active':
+      deps.out(`Token: would pin the download to the active project "${plan.key}" (the active project is unchanged).`);
+      return 0;
+    case 'ask':
+      deps.out(`Token: would ask which stored project to pin (${plan.choices.join(', ')}).`);
+      return 0;
+    case 'offer-env':
+      deps.out('Token: would offer to save HARMONY_API_TOKEN to the harmony store and pin it.');
+      return 0;
+    case 'stop':
+      deps.err(`harmony download switch: a real run would stop here: ${plan.message}`);
+      return 2;
+  }
 }
 
 async function undo(opts: SwitchOptions, deps: SwitchDeps): Promise<number> {
@@ -551,4 +814,159 @@ async function undo(opts: SwitchOptions, deps: SwitchDeps): Promise<number> {
   if (fs.existsSync(paths.backupPath)) deps.out(`Your settings backup is kept at ${paths.backupPath}`);
   deps.out('Start a fresh Claude Code session to use today\'s copy again.');
   return 0;
+}
+
+// ---------------------------------------------------------------------------------------------------
+// B-1501: the pin commands, the status and the first install.
+// ---------------------------------------------------------------------------------------------------
+
+async function withErrors(label: string, deps: SwitchDeps, run: () => Promise<number>): Promise<number> {
+  try {
+    return await run();
+  } catch (e) {
+    if (e instanceof SwitchError) {
+      deps.err(`harmony download ${label}: ${e.message}`);
+      return e.code;
+    }
+    throw e;
+  }
+}
+
+async function readNewToken(deps: SwitchDeps): Promise<string> {
+  if (!deps.readToken) throw new SwitchError(1, 'no way to read a token here.');
+  const token = (await deps.readToken()).trim();
+  if (!token) throw new SwitchError(1, 'no token was given. Nothing was changed.');
+  if (/\s/.test(token)) throw new SwitchError(1, 'the token has spaces or several lines in it. Give the one token, on one line. Nothing was changed.');
+  return token;
+}
+
+async function saveNew(token: string, deps: SwitchDeps, paths: Paths): Promise<SavedToken> {
+  let saved: SavedToken;
+  try {
+    saved = await deps.saveToken(token);
+  } catch (e: any) {
+    throw new SwitchError(1, `Harmony did not accept the token, so it was not saved: ${redact(e, token)}`);
+  }
+  for (const l of describeSaved(saved, paths)) deps.out(l);
+  return saved;
+}
+
+function settingsDeclareHarmony(paths: Paths, fs: FsOps): boolean {
+  const s = fs.existsSync(paths.settingsPath) ? (readJsonOrNull(paths.settingsPath, fs) as any) : null;
+  return s?.extraKnownMarketplaces?.[MARKETPLACE_NAME] !== undefined;
+}
+
+function afterPin(paths: Paths, key: string, deps: SwitchDeps, fs: FsOps): number {
+  pinDownloadProject(paths, key, deps.pid, fs);
+  const wrote = writeHelper(paths, fs);
+  deps.out(`The plugin download now uses project "${key}"'s token (downloadProject in ${paths.storePath}). The active project is unchanged.`);
+  deps.out(wrote ? `Wrote the helper ${paths.helperPath}` : `The helper ${paths.helperPath} is already in place.`);
+  if (!settingsDeclareHarmony(paths, fs)) {
+    deps.out('The download is not set up in Claude Code on this machine yet: run `harmony download install` (a new machine) or `harmony download switch` (today\'s copy installed).');
+  }
+  return 0;
+}
+
+/** `harmony download token use <project>`: pin an already-stored project, after the download accepts its token. */
+export async function runDownloadTokenUse(project: string, opts: { base?: string }, deps: SwitchDeps): Promise<number> {
+  return withErrors('token use', deps, async () => {
+    const fs = deps.fs ?? (nodeFs as unknown as FsOps);
+    const base = normalizeBase(opts.base);
+    const paths = resolvePaths(deps);
+    const c = readStore(paths, fs);
+    if (!hasToken(c, project)) {
+      const stored = storedProjects(c);
+      throw new SwitchError(
+        1,
+        `"${project}" is not a project stored in ${paths.storePath}${stored.length ? ` (stored: ${stored.join(', ')})` : ' (none is stored)'}. Save a new token with \`harmony download token set\`.`,
+      );
+    }
+    await verifyDownloadToken(base, c!.projects![project]!.token as string, deps.fetch);
+    deps.out(`The download accepted project "${project}"'s token.`);
+    return afterPin(paths, project, deps, fs);
+  });
+}
+
+/** `harmony download token set`: read a new token, check it with the download and Harmony, save it without
+ *  activating, and pin it. */
+export async function runDownloadTokenSet(opts: { base?: string }, deps: SwitchDeps): Promise<number> {
+  return withErrors('token set', deps, async () => {
+    const fs = deps.fs ?? (nodeFs as unknown as FsOps);
+    const base = normalizeBase(opts.base);
+    const paths = resolvePaths(deps);
+    const token = await readNewToken(deps);
+    await verifyDownloadToken(base, token, deps.fetch);
+    deps.out('The download accepted the token.');
+    const saved = await saveNew(token, deps, paths);
+    return afterPin(paths, saved.key, deps, fs);
+  });
+}
+
+/** `harmony download status`: which project is pinned and which source the helper will use. Names only. */
+export function runDownloadStatus(deps: SwitchDeps): number {
+  const fs = deps.fs ?? (nodeFs as unknown as FsOps);
+  const paths = resolvePaths(deps);
+  const c = readStore(paths, fs);
+  deps.out(`Token store: ${paths.storePath}${c ? '' : ' (absent or unreadable)'}`);
+  deps.out(`Pinned download project: ${c?.downloadProject ? `"${c.downloadProject}"${hasToken(c, c.downloadProject) ? '' : ' (NOT stored with a token)'}` : 'none'}`);
+  deps.out(`Active project: ${hasToken(c, c?.activeProject) ? `"${c!.activeProject}"` : 'none'}`);
+  let helper = 'absent';
+  if (fs.existsSync(paths.helperPath)) {
+    helper = String(fs.readFileSync(paths.helperPath, 'utf-8')) === helperScript() ? 'current' : 'an older version (run `harmony download token use <project>` to rewrite it)';
+  }
+  deps.out(`Helper: ${paths.helperPath} (${helper})`);
+  deps.out(`Claude Code settings: ${settingsDeclareHarmony(paths, fs) ? `declare the "${MARKETPLACE_NAME}" marketplace` : `do not declare the "${MARKETPLACE_NAME}" marketplace`} (${paths.settingsPath})`);
+  const src = helperSource(deps.env, paths, fs);
+  const line =
+    src.kind === 'pinned'
+      ? src.usable
+        ? `the pinned project "${src.key}" (nothing else is consulted)`
+        : `nothing: it is pinned to "${src.key}", which holds no token, so the download fails. ${PIN_FIX}`
+      : src.kind === 'env'
+        ? 'HARMONY_API_TOKEN, if Claude Code sees it as this shell does (no project is pinned)'
+        : src.kind === 'active'
+          ? `the active project "${src.key}" (no project is pinned, and HARMONY_API_TOKEN is not set here)`
+          : `nothing: no project is pinned and no token is found. ${PIN_FIX}`;
+  deps.out(`The helper will send: ${line}`);
+  if (src.kind !== 'pinned') deps.out(`Recommended: pin one token with \`harmony download token use <project>\`.`);
+  return src.kind === 'none' || (src.kind === 'pinned' && !src.usable) ? 1 : 0;
+}
+
+export interface InstallOptions {
+  base?: string;
+  dryRun?: boolean;
+}
+
+/** `harmony download install`: the first install on a bare machine. The public installer runs it with the
+ *  token on stdin. Order: check the settings file, read the token, check it with the download, save it
+ *  (never activating over an existing active project), pin it, then the switch's steps. The token is held
+ *  in memory only, is never printed, never put in a child's argv, and is written only to config.json. */
+export async function runDownloadInstall(opts: InstallOptions, deps: SwitchDeps): Promise<number> {
+  return withErrors('install', deps, async () => {
+    const fs = deps.fs ?? (nodeFs as unknown as FsOps);
+    const base = normalizeBase(opts.base);
+    const url = marketplaceUrl(base);
+    const paths = resolvePaths(deps);
+    const entry = desiredEntry(url, paths.helperPath);
+
+    if (opts.dryRun) {
+      deps.out('Dry run: no token is read, nothing is changed and no claude command is run.');
+      deps.out(`Download: ${base}`);
+      deps.out(`Would read your Harmony API token (stdin, or a hidden prompt), check it with GET ${url}, and save it in ${paths.storePath} (mode 600).`);
+      deps.out(`Would pin it for the download (downloadProject) and write the helper ${paths.helperPath} (mode 700).`);
+      const s = planSettings(paths, entry, fs);
+      deps.out(s.merged ? `Would add the "${MARKETPLACE_NAME}" marketplace to ${paths.settingsPath}${s.exists ? `, after saving it as ${paths.backupPath}` : ''}.` : `${paths.settingsPath} already declares the "${MARKETPLACE_NAME}" marketplace.`);
+      deps.out(`Would run: claude ${START_ARGS.join(' ')} (from an empty temporary directory), claude plugin install ${INSTALL_ID}, claude plugin disable ${TODAYS_ID} --scope user (a failure there is fine).`);
+      return 0;
+    }
+
+    const settings = planSettings(paths, entry, fs);
+    const token = await readNewToken(deps);
+    await verifyDownloadToken(base, token, deps.fetch);
+    deps.out('The download accepted the token.');
+    const saved = await saveNew(token, deps, paths);
+    pinDownloadProject(paths, saved.key, deps.pid, fs);
+    deps.out(`Pinned the download to project "${saved.key}" (downloadProject in ${paths.storePath}).`);
+    return applySteps({ base, url, paths, settings, pinned: saved.key, mode: 'install' }, deps, fs);
+  });
 }

@@ -7,8 +7,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { getAuthenticatedContext } from './auth.js';
-import { addProject } from './config.js';
+import { getAuthenticatedContext, resetAuthNoticesForTest } from './auth.js';
+import { addProject, saveProject } from './config.js';
 
 let tmpDir: string;
 
@@ -31,6 +31,12 @@ function jsonResponse(body: unknown, init: { ok?: boolean; status?: number } = {
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'harmony-auth-test-'));
   vi.stubEnv('HARMONY_CONFIG_DIR', tmpDir);
+  // B-1501: the environment wins now, so no test may inherit the runner's own variables.
+  for (const v of ['HARMONY_API_TOKEN', 'HARMONY_PROJECT', 'HARMONY_SUPABASE_URL', 'HARMONY_SUPABASE_ANON_KEY', 'HARMONY_SUPABASE_PUBLISHABLE_KEY']) {
+    vi.stubEnv(v, '');
+    vi.stubEnv(`EVAL_${v}`, '');
+  }
+  resetAuthNoticesForTest();
 });
 
 afterEach(() => {
@@ -61,9 +67,9 @@ describe('getAuthenticatedContext() — B-1070 HARMONY_API_TOKEN fallback', () =
     expect(noticeCalls).toHaveLength(1);
   });
 
-  it('2. active project configured + env token set → the configured project wins, no notice printed', async () => {
+  it('2. B-1501: active project configured + a different env token → the ENV token wins, with ONE override line naming the project', async () => {
     addProject('demo', 'configured-token');
-    vi.stubEnv('HARMONY_API_TOKEN', 'env-token-should-be-ignored');
+    vi.stubEnv('HARMONY_API_TOKEN', 'env-token-wins');
     const fetchMock = vi.fn().mockResolvedValue(
       jsonResponse({ access_token: fakeJwt('u1'), expires_in: 3600, project_id: 'proj-configured' }),
     );
@@ -76,12 +82,23 @@ describe('getAuthenticatedContext() — B-1070 HARMONY_API_TOKEN fallback', () =
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [, requestInit] = fetchMock.mock.calls[0];
     const sentBody = JSON.parse((requestInit as RequestInit).body as string);
-    expect(sentBody.token).toBe('configured-token');
+    expect(sentBody.token).toBe('env-token-wins');
 
-    const noticeCalls = errorSpy.mock.calls.filter((call) =>
-      call.some((arg) => typeof arg === 'string' && arg.includes('using HARMONY_API_TOKEN')),
-    );
-    expect(noticeCalls).toHaveLength(0);
+    await getAuthenticatedContext();
+    const lines = errorSpy.mock.calls.flat().filter((a) => typeof a === 'string') as string[];
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('using HARMONY_API_TOKEN from the environment, not the active project "demo"');
+    expect(lines.join('\n')).not.toContain('env-token-wins');
+    expect(lines.join('\n')).not.toContain('configured-token');
+  });
+
+  it('2b. the env token equal to the active project token is no override: no line printed', async () => {
+    addProject('demo', 'same-token');
+    vi.stubEnv('HARMONY_API_TOKEN', 'same-token');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse({ access_token: fakeJwt('u1'), expires_in: 3600, project_id: 'p' })));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await getAuthenticatedContext();
+    expect(errorSpy).not.toHaveBeenCalled();
   });
 
   it('3. invalid token → the TokenExchangeError-derived message, never "No active project"', async () => {
@@ -162,4 +179,108 @@ it.each(["ENOTFOUND","ECONNRESET","UND_ERR_CONNECT_TIMEOUT","CERT_HAS_EXPIRED"])
  let message="";try{await getAuthenticatedContext();}catch(e){message=(e as Error).message;}
  expect(message).toBe(`Could not reach Harmony to validate HARMONY_API_TOKEN: fetch failed (host: example.invalid; cause: ${code}: network failure [redacted] Bearer [redacted])`);
  expect(message).not.toContain("sensitive-token");expect(message).not.toContain("hidden");
+});
+
+// B-1501: the CLI surface of the shared resolver's three rungs.
+describe('getAuthenticatedContext() — B-1501 HARMONY_PROJECT rung', () => {
+  function okFetch(projectId: string) {
+    return vi.fn().mockResolvedValue(jsonResponse({ access_token: fakeJwt('u1'), expires_in: 3600, project_id: projectId }));
+  }
+
+  it('HARMONY_PROJECT picks the stored entry: its token and its own stored pair, with one override line', async () => {
+    addProject('active-one', 'active-token');
+    saveProject({ name: 'invented', token: 'invented-token', projectId: 'proj-inv', supabaseUrl: 'https://inv.example.supabase.co', supabaseAnonKey: 'inv-key', activate: false });
+    vi.stubEnv('HARMONY_PROJECT', 'invented');
+    const fetchMock = okFetch('proj-inv');
+    vi.stubGlobal('fetch', fetchMock);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const ctx = await getAuthenticatedContext();
+    expect(ctx.projectId).toBe('proj-inv');
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('https://inv.example.supabase.co/functions/v1/auth-token');
+    expect(JSON.parse((init as RequestInit).body as string).token).toBe('invented-token');
+    const lines = errorSpy.mock.calls.flat() as string[];
+    expect(lines).toEqual(['harmony: using HARMONY_PROJECT=invented from the environment, not the active project "active-one" (the environment wins; unset HARMONY_PROJECT to use "active-one")']);
+  });
+
+  it('HARMONY_API_TOKEN beats HARMONY_PROJECT', async () => {
+    saveProject({ name: 'invented', token: 'invented-token', projectId: 'proj-inv', activate: false });
+    vi.stubEnv('HARMONY_PROJECT', 'invented');
+    vi.stubEnv('HARMONY_API_TOKEN', 'env-first');
+    const fetchMock = okFetch('proj-env');
+    vi.stubGlobal('fetch', fetchMock);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    await getAuthenticatedContext();
+    expect(JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string).token).toBe('env-first');
+  });
+
+  it('a HARMONY_PROJECT that names no stored entry is refused, never falling back to the active project', async () => {
+    addProject('active-one', 'active-token');
+    vi.stubEnv('HARMONY_PROJECT', 'missing');
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(getAuthenticatedContext()).rejects.toThrow(/HARMONY_PROJECT=missing names no project stored .*stored: active-one/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('a token that now reaches a different project than the one saved is refused, naming both ids', async () => {
+    saveProject({ name: 'invented', token: 'invented-token', projectId: 'proj-saved', activate: false });
+    vi.stubEnv('HARMONY_PROJECT', 'invented');
+    vi.stubGlobal('fetch', okFetch('proj-other'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    await expect(getAuthenticatedContext()).rejects.toThrow(/HARMONY_PROJECT=invented was saved for project proj-saved, but its token now reaches project proj-other/);
+  });
+
+  it('HARMONY_SUPABASE_URL contradicting the stored pair is refused by name, URLs only, before any call', async () => {
+    saveProject({ name: 'invented', token: 'invented-token', projectId: 'p', supabaseUrl: 'https://a.example.supabase.co', supabaseAnonKey: 'secret-ish-key-a', activate: false });
+    vi.stubEnv('HARMONY_PROJECT', 'invented');
+    vi.stubEnv('HARMONY_SUPABASE_URL', 'https://b.example.supabase.co');
+    vi.stubEnv('HARMONY_SUPABASE_ANON_KEY', 'secret-ish-key-b');
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const err = await getAuthenticatedContext().catch((e: Error) => e);
+    expect((err as Error).message).toContain('HARMONY_PROJECT=invented is stored for https://a.example.supabase.co but HARMONY_SUPABASE_URL says https://b.example.supabase.co');
+    expect((err as Error).message).not.toContain('secret-ish-key');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('HARMONY_SUPABASE_PUBLISHABLE_KEY contradicting the stored key is refused by name, never printing either key', async () => {
+    saveProject({ name: 'invented', token: 'invented-token', projectId: 'p', supabaseUrl: 'https://a.example.supabase.co', supabasePublishableKey: 'sb_publishable_a', activate: false });
+    vi.stubEnv('HARMONY_PROJECT', 'invented');
+    vi.stubEnv('HARMONY_SUPABASE_PUBLISHABLE_KEY', 'sb_publishable_b');
+    vi.stubGlobal('fetch', vi.fn());
+    const err = await getAuthenticatedContext().catch((e: Error) => e);
+    expect((err as Error).message).toContain('HARMONY_SUPABASE_PUBLISHABLE_KEY');
+    expect((err as Error).message).not.toContain('sb_publishable_');
+  });
+
+  it('a matching env pair is fine', async () => {
+    saveProject({ name: 'invented', token: 'invented-token', projectId: 'p', supabaseUrl: 'https://a.example.supabase.co/', supabaseAnonKey: 'key-a', activate: false });
+    vi.stubEnv('HARMONY_PROJECT', 'invented');
+    vi.stubEnv('HARMONY_SUPABASE_URL', 'https://a.example.supabase.co');
+    vi.stubEnv('HARMONY_SUPABASE_ANON_KEY', 'key-a');
+    vi.stubGlobal('fetch', okFetch('p'));
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect((await getAuthenticatedContext()).projectId).toBe('p');
+  });
+
+  it('an entry with no stored pair saved against one backend is refused when this session would use another', async () => {
+    saveProject({ name: 'invented', token: 'invented-token', projectId: 'p', verifiedUrl: 'https://staging.example.supabase.co', activate: false });
+    vi.stubEnv('HARMONY_PROJECT', 'invented');
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(getAuthenticatedContext()).rejects.toThrow(/was saved against https:\/\/staging\.example\.supabase\.co but this session would use .* \(from the built-in default\)/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('with neither variable set, the active project is used exactly as before, with no line printed', async () => {
+    addProject('active-one', 'active-token');
+    const fetchMock = okFetch('proj-active');
+    vi.stubGlobal('fetch', fetchMock);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect((await getAuthenticatedContext()).projectId).toBe('proj-active');
+    expect(JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string).token).toBe('active-token');
+    expect(errorSpy).not.toHaveBeenCalled();
+  });
 });

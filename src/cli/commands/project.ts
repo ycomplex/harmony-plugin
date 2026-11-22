@@ -5,6 +5,7 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import { getProject } from '../../tools/project.js';
 import { switchProject } from '../config.js';
+import { currentSource, printProjectList } from './auth.js';
 import { runCommand } from '../run-command.js';
 import { formatDetail } from '../formatter.js';
 
@@ -47,6 +48,12 @@ export function registerProjectCommands(program: Command): void {
       );
     });
 
+  project.command('list')
+    .description('List stored projects (names only), the active and download marks, and the source this shell uses')
+    .action(async () => {
+      printProjectList(Boolean(program.opts().json));
+    });
+
   project.command('switch')
     .description('Switch the active project (local config only)')
     .argument('<name>', 'Project name to switch to')
@@ -54,10 +61,17 @@ export function registerProjectCommands(program: Command): void {
       const json = program.opts().json;
       try {
         switchProject(name);
+        // B-1501: the environment wins over the active project. Say so when it does here.
+        const { resolved } = currentSource();
+        const overridden = resolved && resolved.source !== 'active-project' && resolved.key !== name;
         if (json) {
-          console.log(JSON.stringify({ name, status: 'switched' }));
+          console.log(JSON.stringify({ name, status: 'switched', in_force: resolved?.source ?? null }));
         } else {
           console.log(chalk.green(`Switched to project "${name}".`));
+        }
+        if (overridden) {
+          const v = resolved.source === 'env-token' ? 'HARMONY_API_TOKEN' : `HARMONY_PROJECT=${resolved.key}`;
+          console.error(`harmony: ${v} is set in this shell and wins over the active project, so commands here still use it, not "${name}". Unset it to use "${name}".`);
         }
       } catch (err: any) {
         if (json) {
