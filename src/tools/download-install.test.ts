@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
+import { spawnSync } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   INSTALL_ID,
@@ -338,5 +339,154 @@ describe('harmony download status', () => {
 describe('readAllStdin', () => {
   it('reads everything piped in', async () => {
     expect(await readAllStdin(Readable.from(['abc', 'def\n']))).toBe('abcdef\n');
+  });
+});
+
+// B-1501 fix round — the seat's review.
+describe('fix 5: the helper fails closed on a config.json it cannot read and parse', () => {
+  const ENV_TOKEN = 'env-fixture-must-not-leak';
+  function writeHelperHere() {
+    fs.mkdirSync(h.harmonyDir, { recursive: true });
+    fs.writeFileSync(h.helper, helperScript(), { mode: 0o700 });
+  }
+  function runIt() {
+    return spawnSync('sh', [h.helper], { env: { PATH: process.env.PATH, HARMONY_API_TOKEN: ENV_TOKEN }, encoding: 'utf-8' });
+  }
+  beforeEach(writeHelperHere);
+
+  it('missing config.json: the legacy order (HARMONY_API_TOKEN)', () => {
+    const r = runIt();
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe(`{"Authorization":"Bearer ${ENV_TOKEN}"}`);
+  });
+
+  it('parsed with no downloadProject: the legacy order', () => {
+    store({ activeProject: 'a', projects: { a: { name: 'a', token: 'store-fixture' } } });
+    expect(runIt().stdout).toBe(`{"Authorization":"Bearer ${ENV_TOKEN}"}`);
+  });
+
+  it('pinned: the pinned token', () => {
+    store({ activeProject: null, downloadProject: 'b', projects: { b: { name: 'b', token: 'pinned-fixture' } } });
+    expect(runIt().stdout).toBe('{"Authorization":"Bearer pinned-fixture"}');
+  });
+
+  for (const [label, content] of [
+    ['an empty file', ''],
+    ['truncated JSON (no downloadProject in what was written)', '{"activeProject": "a", "proj'],
+    ['truncated JSON that names downloadProject', '{"downloadProject": "b", "projects": {'],
+    ['JSON null', 'null'],
+  ] as const) {
+    it(`${label}: exit 1, the fix named on stderr, HARMONY_API_TOKEN never sent`, () => {
+      fs.writeFileSync(h.store, content);
+      const r = runIt();
+      if (content === 'null') {
+        // `null` parses: it holds no pin, so the legacy order applies (it is not a half-written file).
+        expect(r.status).toBe(0);
+        return;
+      }
+      expect(r.status).toBe(1);
+      expect(r.stdout).toBe('');
+      expect(r.stdout + r.stderr).not.toContain(ENV_TOKEN);
+      expect(r.stderr).toContain(h.store);
+      expect(r.stderr).toContain('harmony download token use <project>');
+    });
+  }
+
+  const root = typeof process.getuid === 'function' && process.getuid() === 0;
+  it.skipIf(root)('an unreadable file (chmod 000): exit 1, HARMONY_API_TOKEN never sent (skipped as root: root reads a mode-000 file)', () => {
+    store({ activeProject: null, projects: {} });
+    fs.chmodSync(h.store, 0o000);
+    try {
+      const r = runIt();
+      expect(r.status).toBe(1);
+      expect(r.stdout + r.stderr).not.toContain(ENV_TOKEN);
+      expect(r.stderr).toContain('cannot be read');
+    } finally {
+      fs.chmodSync(h.store, 0o600);
+    }
+  });
+
+  it('without node on PATH: an empty or half-written file stops too', () => {
+    const bin = path.join(h.root, 'bin-no-node');
+    fs.mkdirSync(bin);
+    for (const tool of ['dirname', 'grep', 'tr', 'sed', 'printf']) {
+      const found = spawnSync('sh', ['-c', `command -v ${tool}`], { encoding: 'utf-8' }).stdout.trim();
+      if (found.startsWith('/')) fs.symlinkSync(found, path.join(bin, tool));
+    }
+    const noNode = () => spawnSync('/bin/sh', [h.helper], { env: { PATH: bin, HARMONY_API_TOKEN: ENV_TOKEN }, encoding: 'utf-8' });
+    for (const content of ['', '{"activeProject": "a", "proj']) {
+      fs.writeFileSync(h.store, content);
+      const r = noNode();
+      expect(r.status).toBe(1);
+      expect(r.stdout + r.stderr).not.toContain(ENV_TOKEN);
+    }
+    store({ activeProject: null, projects: {} });
+    expect(noNode().stdout).toBe(`{"Authorization":"Bearer ${ENV_TOKEN}"}`);
+  });
+});
+
+describe('fix 7: the settings write re-reads at the moment of writing, and writes through a symlink', () => {
+  it('a concurrent edit made between the first read and the write survives', async () => {
+    fs.mkdirSync(h.claudeDir, { recursive: true });
+    fs.writeFileSync(h.settings, JSON.stringify({ theme: 'dark' }));
+    h.deps.readToken = async () => {
+      // someone (another Claude Code) edits settings.json while the token is being typed
+      fs.writeFileSync(h.settings, JSON.stringify({ theme: 'dark', concurrent: { kept: true } }));
+      return TOKEN;
+    };
+    expect(await runDownloadInstall({}, h.deps)).toBe(0);
+    const s = JSON.parse(fs.readFileSync(h.settings, 'utf-8'));
+    expect(s.concurrent).toEqual({ kept: true });
+    expect(s.extraKnownMarketplaces.harmony).toBeDefined();
+  });
+
+  it('a symlinked settings.json stays a symlink, and its target gets the entry', async () => {
+    const real = path.join(h.root, 'dotfiles', 'claude-settings.json');
+    fs.mkdirSync(path.dirname(real), { recursive: true });
+    fs.writeFileSync(real, JSON.stringify({ theme: 'light' }), { mode: 0o640 });
+    fs.mkdirSync(h.claudeDir, { recursive: true });
+    fs.symlinkSync(real, h.settings);
+    expect(await runDownloadInstall({}, h.deps)).toBe(0);
+    expect(fs.lstatSync(h.settings).isSymbolicLink()).toBe(true);
+    expect(fs.readlinkSync(h.settings)).toBe(real);
+    const s = JSON.parse(fs.readFileSync(real, 'utf-8'));
+    expect(s.theme).toBe('light');
+    expect(s.extraKnownMarketplaces.harmony).toBeDefined();
+    expect(fs.statSync(real).mode & 0o777).toBe(0o640);
+    expect(fs.readdirSync(path.dirname(real))).toEqual(['claude-settings.json']);
+  });
+});
+
+describe('fix 10c: a failing claude command is reported with token-shaped text redacted', () => {
+  it('redacts a token-shaped string in claude stderr from the printed failure', async () => {
+    const leaked = `harmony_${'ab12'.repeat(16)}`;
+    h.known = true;
+    h.responses.set(`plugin install ${INSTALL_ID}`, { code: 1, stdout: '', stderr: `fetch failed with Authorization: Bearer ${leaked}\nsecond line` });
+    expect(await runDownloadInstall({}, h.deps)).toBe(1);
+    const printed = h.err.join('\n');
+    expect(printed).toContain(`claude plugin install ${INSTALL_ID}\` failed (exit 1)`);
+    expect(printed).toContain('[redacted]');
+    expect(printed).not.toContain(leaked);
+  });
+
+  it('redacts the token just read even when it has no known shape', async () => {
+    h.known = true;
+    h.responses.set(`plugin install ${INSTALL_ID}`, { code: 1, stdout: `echoed ${TOKEN}`, stderr: '' });
+    expect(await runDownloadInstall({}, h.deps)).toBe(1);
+    expect(h.err.join('\n')).not.toContain(TOKEN);
+  });
+});
+
+describe('fix 6: the non-activating save leaves no active project and says how to set one', () => {
+  it('install on a bare machine names `harmony project switch <key>` when no project is active', async () => {
+    expect(await runDownloadInstall({}, h.deps)).toBe(0);
+    expect(readStoreJson().activeProject).toBeNull();
+    expect(h.out.join('\n')).toContain('harmony project switch invented');
+  });
+
+  it('says nothing about switching when a project is already active', async () => {
+    store({ activeProject: 'other', projects: { other: { name: 'other', token: 'other-fixture' } } });
+    expect(await runDownloadInstall({}, h.deps)).toBe(0);
+    expect(h.out.join('\n')).not.toContain('harmony project switch');
   });
 });

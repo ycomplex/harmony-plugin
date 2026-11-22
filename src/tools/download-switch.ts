@@ -32,6 +32,7 @@
 
 import nodeFs from 'node:fs';
 import path from 'node:path';
+import { scrubTokenShapes } from './token-shapes.js';
 
 export const DEFAULT_BASE = 'https://plugin.harmony.ad';
 export const MARKETPLACE_NAME = 'harmony';
@@ -86,6 +87,18 @@ export interface FsOps {
   rmSync: typeof nodeFs.rmSync;
   writeFileSync: typeof nodeFs.writeFileSync;
   mkdtempSync: typeof nodeFs.mkdtempSync;
+  /** Optional: defaults to node:fs. Used to write THROUGH a symlinked settings.json or config.json. */
+  realpathSync?: typeof nodeFs.realpathSync;
+}
+
+/** The file a write to `p` must land in: `p`'s real path when it is (or sits under) a symlink, so the
+ *  link is never replaced by a plain file (B-1501 fix 7); `p` itself when it does not exist yet. */
+export function writeTarget(p: string, fs: FsOps): string {
+  try {
+    return (fs.realpathSync ?? nodeFs.realpathSync)(p);
+  } catch {
+    return p;
+  }
 }
 
 export interface SwitchDeps {
@@ -175,8 +188,11 @@ const HELPER_JS = [
   'const fs = require("fs"); const f = process.argv[1];',
   'const fix = "Run `harmony download token use <project>` or `harmony download token set`.";',
   'const fail = (m) => { process.stderr.write("harmony: " + m + " " + fix + "\\n"); process.exit(1); };',
-  'let raw = null; try { raw = fs.readFileSync(f, "utf8"); } catch (e) {}',
-  'let c = null; if (raw !== null) { try { c = JSON.parse(raw); } catch (e) { if (raw.includes("downloadProject")) fail(f + " is not valid JSON, so the pinned token cannot be read."); } }',
+  // B-1501 fix 5: fail CLOSED. Only an ABSENT file (or one that parses with no pin) means "no pin";
+  // a file that exists but cannot be read, or is empty / half-written / not JSON, stops here, so a
+  // pinned machine never falls back to HARMONY_API_TOKEN because of a bad read.
+  'let raw = null; try { raw = fs.readFileSync(f, "utf8"); } catch (e) { if (!e || e.code !== "ENOENT") fail(f + " exists but cannot be read (" + ((e && e.code) || "error") + "), so whether a token is pinned is unknown; nothing was sent. Fix its permissions (it should be yours, mode 600)."); }',
+  'let c = null; if (raw !== null) { try { c = JSON.parse(raw); } catch (e) { fail(f + " is empty or not valid JSON (it may be half-written), so whether a token is pinned is unknown; nothing was sent. Try again in a moment; if it stays broken, repair the file."); } }',
   'const ps = c && c.projects && typeof c.projects === "object" ? c.projects : {};',
   'const has = (p) => p && typeof p.token === "string" && p.token.length > 0;',
   'const pin = c && typeof c.downloadProject === "string" && c.downloadProject ? c.downloadProject : null;',
@@ -202,6 +218,18 @@ export function helperScript(): string {
     'c="$(dirname "$0")/config.json"',
     'if command -v node >/dev/null 2>&1; then',
     `  exec node -e '${HELPER_JS}' "$c"`,
+    'fi',
+    // Fix 5, without node: an unreadable, empty or visibly truncated file stops too (fail closed).
+    'if [ -e "$c" ]; then',
+    '  if [ ! -r "$c" ] || [ ! -s "$c" ]; then',
+    '    echo "harmony: $c exists but cannot be read or is empty, so whether a token is pinned is unknown; nothing was sent. Fix the file, then run: claude plugin marketplace update harmony" >&2',
+    '    exit 1',
+    '  fi',
+    `  last=$(tr -d ' \\t\\r\\n' < "$c" | sed -e 's/^.*\\(.\\)$/\\1/')`,
+    '  if [ "$last" != "}" ]; then',
+    '    echo "harmony: $c looks half-written (it does not end in }), so whether a token is pinned is unknown; nothing was sent. Try again in a moment, then run: claude plugin marketplace update harmony" >&2',
+    '    exit 1',
+    '  fi',
     'fi',
     'if [ -f "$c" ] && grep -q \'"downloadProject"\' "$c"; then',
     '  echo "harmony: node is not on the PATH Claude Code gave this helper, so it cannot read the pinned token in $c. Make node available in your login shell, then run: claude plugin marketplace update harmony" >&2',
@@ -302,7 +330,7 @@ export function pinDownloadProject(paths: Paths, key: string, pid: number, fs: F
     throw new SwitchError(1, `${paths.storePath} holds no token for project "${key}". Nothing was changed.`);
   }
   const next = { ...c, downloadProject: key };
-  atomicWrite(paths.storePath, JSON.stringify(next, null, 2) + '\n', 0o600, pid, fs);
+  atomicWrite(writeTarget(paths.storePath, fs), JSON.stringify(next, null, 2) + '\n', 0o600, pid, fs);
 }
 
 /** Check a token against the download itself: GET <base>/prod/marketplace.json with it, expecting 200.
@@ -456,16 +484,24 @@ function readProjectFileToken(paths: Paths, fs: FsOps): string | null {
   return typeof t === 'string' && t.length > 0 ? t : null;
 }
 
-function describeFailure(args: string[], r: ClaudeResult): string {
+/** Remove every known secret and every token-shaped string (src/tools/token-shapes.ts) from text that
+ *  came from outside, such as `claude`'s own output, before it is printed (B-1501 fix 10c). */
+export function redactOutput(text: string, secrets: Array<string | undefined>): string {
+  let out = text;
+  for (const s of secrets) if (s && s.length >= 4) out = out.split(s).join('<token>');
+  return scrubTokenShapes(out);
+}
+
+function describeFailure(args: string[], r: ClaudeResult, secrets: Array<string | undefined> = []): string {
   const text = `${r.stdout}\n${r.stderr}`.trim().split('\n').filter((l) => l.trim() !== '').slice(-3).join(' / ');
-  return `\`claude ${args.join(' ')}\` failed (exit ${r.code})${text ? `: ${text}` : ''}`;
+  return `\`claude ${args.join(' ')}\` failed (exit ${r.code})${text ? `: ${redactOutput(text, secrets)}` : ''}`;
 }
 
 async function runOrFail(deps: SwitchDeps, args: string[], tolerate?: RegExp): Promise<ClaudeResult & { tolerated: boolean }> {
   const r = await deps.runClaude(args);
   if (r.code === 0) return { ...r, tolerated: false };
   if (tolerate && tolerate.test(`${r.stdout}\n${r.stderr}`)) return { ...r, tolerated: true };
-  throw new SwitchError(1, describeFailure(args, r));
+  throw new SwitchError(1, describeFailure(args, r, [deps.env.HARMONY_API_TOKEN]));
 }
 
 /** Is the `harmony` marketplace known to Claude Code (fetched at least once)? */
@@ -482,7 +518,7 @@ export async function marketplaceKnown(deps: SwitchDeps): Promise<boolean> {
   }
   const plain = ['plugin', 'marketplace', 'list'];
   const t = await deps.runClaude(plain);
-  if (t.code !== 0) throw new SwitchError(1, describeFailure(plain, t));
+  if (t.code !== 0) throw new SwitchError(1, describeFailure(plain, t, [deps.env.HARMONY_API_TOKEN]));
   return new RegExp(`(^|\\s)${MARKETPLACE_NAME}\\s*$`, 'm').test(t.stdout);
 }
 
@@ -512,10 +548,14 @@ function redact(e: any, token: string): string {
   return String(e?.message ?? e).split(token).join('<token>');
 }
 
-function describeSaved(saved: SavedToken, paths: Paths): string[] {
+function describeSaved(saved: SavedToken, paths: Paths, fs: FsOps): string[] {
   const lines = [`Saved the token in ${paths.storePath} as project "${saved.key}".`];
   if (saved.collidedWith) {
     lines.push(`A different project is already stored as "${saved.collidedWith}" and was left as it is. In a project's settings, name this one HARMONY_PROJECT=${saved.key}.`);
+  }
+  // B-1501 fix 6: this save never sets the active project; say how, when there is none.
+  if (!hasToken(readStore(paths, fs), readStore(paths, fs)?.activeProject)) {
+    lines.push(`No project is active for terminal commands outside a session. To use this one there, run: harmony project switch ${saved.key}`);
   }
   return lines;
 }
@@ -537,7 +577,7 @@ async function ensureToken(paths: Paths, deps: SwitchDeps, fs: FsOps, dryRun: bo
         } catch (e: any) {
           throw new SwitchError(1, `the token could not be verified, so it was not saved: ${redact(e, token)}`);
         }
-        for (const l of describeSaved(saved, paths)) deps.out(l);
+        for (const l of describeSaved(saved, paths, fs)) deps.out(l);
         return saved;
       }
     }
@@ -616,7 +656,7 @@ async function ensurePin(paths: Paths, deps: SwitchDeps, fs: FsOps, saved: Saved
     } catch (e: any) {
       throw new SwitchError(1, `the token could not be verified, so it was not saved: ${redact(e, token)}`);
     }
-    for (const l of describeSaved(s, paths)) deps.out(l);
+    for (const l of describeSaved(s, paths, fs)) deps.out(l);
     key = s.key;
   }
   pinDownloadProject(paths, key, deps.pid, fs);
@@ -634,21 +674,26 @@ async function doSwitch(opts: SwitchOptions, deps: SwitchDeps): Promise<number> 
   if (opts.dryRun) return dryRun(base, url, paths, entry, deps, fs);
 
   const saved = await ensureToken(paths, deps, fs, false);
-  const settings = planSettings(paths, entry, fs);
+  // A pre-check only: refuse a broken settings file before anything is pinned. applySteps reads and
+  // plans it again immediately before writing (fix 7).
+  planSettings(paths, entry, fs);
   const pinned = await ensurePin(paths, deps, fs, saved);
-  return applySteps({ base, url, paths, settings, pinned, mode: 'switch' }, deps, fs);
+  return applySteps({ base, url, paths, entry, pinned, mode: 'switch' }, deps, fs);
 }
 
 /** The switch's steps after the token is pinned: helper, settings, Claude Code's own state, record. */
 async function applySteps(
-  ctx: { base: string; url: string; paths: Paths; settings: SettingsPlan; pinned: string; mode: 'switch' | 'install' },
+  ctx: { base: string; url: string; paths: Paths; entry: Record<string, unknown>; pinned: string; mode: 'switch' | 'install' },
   deps: SwitchDeps,
   fs: FsOps,
 ): Promise<number> {
-  const { base, url, paths, settings } = ctx;
+  const { base, url, paths } = ctx;
   const helperWritten = writeHelper(paths, fs);
   deps.out(helperWritten ? `Wrote the helper ${paths.helperPath}` : `The helper ${paths.helperPath} is already in place.`);
 
+  // B-1501 fix 7: read and plan settings.json again HERE, immediately before the write, so an edit made
+  // while the token was being read (another Claude Code, an editor) is merged, not overwritten.
+  const settings = planSettings(paths, ctx.entry, fs);
   let backup: string | null = fs.existsSync(paths.backupPath) ? paths.backupPath : null;
   if (settings.merged) {
     fs.mkdirSync(paths.claudeDir, { recursive: true });
@@ -657,7 +702,8 @@ async function applySteps(
       backup = paths.backupPath;
       deps.out(`Saved your settings as ${paths.backupPath}`);
     }
-    atomicWrite(paths.settingsPath, JSON.stringify(settings.merged, null, 2) + '\n', settings.mode ?? 0o600, deps.pid, fs);
+    // A symlinked settings.json (dotfiles) is written THROUGH: its target gets the entry, the link stays.
+    atomicWrite(writeTarget(paths.settingsPath, fs), JSON.stringify(settings.merged, null, 2) + '\n', settings.mode ?? 0o600, deps.pid, fs);
     deps.out(`Added the "${MARKETPLACE_NAME}" marketplace to ${paths.settingsPath}`);
   } else {
     deps.out(`${paths.settingsPath} already declares the "${MARKETPLACE_NAME}" marketplace.`);
@@ -841,14 +887,14 @@ async function readNewToken(deps: SwitchDeps): Promise<string> {
   return token;
 }
 
-async function saveNew(token: string, deps: SwitchDeps, paths: Paths): Promise<SavedToken> {
+async function saveNew(token: string, deps: SwitchDeps, paths: Paths, fs: FsOps): Promise<SavedToken> {
   let saved: SavedToken;
   try {
     saved = await deps.saveToken(token);
   } catch (e: any) {
     throw new SwitchError(1, `Harmony did not accept the token, so it was not saved: ${redact(e, token)}`);
   }
-  for (const l of describeSaved(saved, paths)) deps.out(l);
+  for (const l of describeSaved(saved, paths, fs)) deps.out(l);
   return saved;
 }
 
@@ -898,7 +944,7 @@ export async function runDownloadTokenSet(opts: { base?: string }, deps: SwitchD
     const token = await readNewToken(deps);
     await verifyDownloadToken(base, token, deps.fetch);
     deps.out('The download accepted the token.');
-    const saved = await saveNew(token, deps, paths);
+    const saved = await saveNew(token, deps, paths, fs);
     return afterPin(paths, saved.key, deps, fs);
   });
 }
@@ -961,13 +1007,20 @@ export async function runDownloadInstall(opts: InstallOptions, deps: SwitchDeps)
       return 0;
     }
 
-    const settings = planSettings(paths, entry, fs);
+    // A pre-check only (refuse a broken settings file before a token is read); applySteps re-reads it.
+    planSettings(paths, entry, fs);
     const token = await readNewToken(deps);
-    await verifyDownloadToken(base, token, deps.fetch);
-    deps.out('The download accepted the token.');
-    const saved = await saveNew(token, deps, paths);
-    pinDownloadProject(paths, saved.key, deps.pid, fs);
-    deps.out(`Pinned the download to project "${saved.key}" (downloadProject in ${paths.storePath}).`);
-    return applySteps({ base, url, paths, settings, pinned: saved.key, mode: 'install' }, deps, fs);
+    try {
+      await verifyDownloadToken(base, token, deps.fetch);
+      deps.out('The download accepted the token.');
+      const saved = await saveNew(token, deps, paths, fs);
+      pinDownloadProject(paths, saved.key, deps.pid, fs);
+      deps.out(`Pinned the download to project "${saved.key}" (downloadProject in ${paths.storePath}).`);
+      return await applySteps({ base, url, paths, entry, pinned: saved.key, mode: 'install' }, deps, fs);
+    } catch (e) {
+      // Fix 10c: the token just read never reaches a printed message, whatever echoed it.
+      if (e instanceof SwitchError) throw new SwitchError(e.code, e.message.split(token).join('<token>'));
+      throw e;
+    }
   });
 }
