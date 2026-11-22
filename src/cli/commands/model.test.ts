@@ -623,3 +623,29 @@ describe('B-1178 inactive offers: explicit names pass, lists and defaults stay a
     expect(logSpy).toHaveBeenLastCalledWith('or/retired');
   });
 });
+
+// B-1501 fix 8: the profile follows the URL the exchange will actually use, which is the
+// environment's when HARMONY_API_TOKEN is in force — not the active project's stored URL.
+describe('B-1501 pinned-default follows the project resolution in force', () => {
+  it('with HARMONY_API_TOKEN and a staging HARMONY_SUPABASE_URL, an active project stored for prod does not decide the profile', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'b1501-model-'));
+    tempDirs.push(dir);
+    const { writeFileSync } = await import('node:fs');
+    writeFileSync(join(dir, 'config.json'), JSON.stringify({
+      activeProject: 'prod-one',
+      projects: { 'prod-one': { name: 'prod-one', token: 'synthetic-prod', supabaseUrl: 'https://eioxsunvhakmelhanmnn.supabase.co', supabaseAnonKey: 'k' } },
+    }));
+    vi.stubEnv('HARMONY_CONFIG_DIR', dir);
+    vi.stubEnv('HARMONY_API_TOKEN', 'synthetic-env');
+    vi.stubEnv('HARMONY_PROJECT', '');
+    vi.stubEnv('HARMONY_SUPABASE_URL', 'https://meqkdgncdzromunylyxf.supabase.co');
+    vi.stubEnv('HARMONY_SUPABASE_ANON_KEY', 'staging-public-key');
+    const stagingOnly = {
+      alias: 'codex-staging-only', label: 'x', context_budget_bytes: 7000, active: true, verified_at: null,
+      agent: 'codex', model_id: 'gpt-staging-only', pinned_default_profiles: ['staging'],
+    };
+    stubCatalogWith({ data: [liveOnlyRow, stagingOnly], error: null });
+    await run(['model', 'pinned-default', '--agent', 'codex']);
+    expect(logSpy).toHaveBeenCalledWith('gpt-staging-only');
+  });
+});

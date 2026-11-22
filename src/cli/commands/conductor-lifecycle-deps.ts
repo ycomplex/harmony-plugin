@@ -13,6 +13,8 @@ import { parsePsOutput, type ProcessEntry } from '../../daemon/conductor-process
 import type { BoardRow } from '../../daemon/conductor-board.js';
 import { listActiveConductions } from './conductions.js';
 import { createRegistryClient, rpcFromClient, type RegistryClient } from '../../daemon/conductor-registry.js';
+import { resolveProject } from '../../config/project-resolution.js';
+import { resolveSupabaseTarget } from '../resolve-supabase-target.js';
 
 export interface ExecResult {
   code: number;
@@ -52,10 +54,24 @@ export interface LifecycleDeps {
   writeFileSync(path: string, text: string, mode: number): void;
   mkdirSync(path: string): void;
   rmSync(path: string): void;
-  /** Active conductions on the board, read with the conductor's own token (from `env`). */
+  /** Active conductions on the board, read with the project `env` resolves to (operatorAuth below). */
   readBoard(env: Record<string, string | undefined>): Promise<BoardRow[]>;
-  /** B-1172: the conductor-registry client, authenticated with the token in `env`. Rejects when there is none. */
+  /** B-1172: the conductor-registry client, authenticated as `env` resolves (operatorAuth). Rejects when nothing resolves. */
   registryClient(env: Record<string, string | undefined>): Promise<RegistryClient>;
+  /** B-1501: null when the operator-side reads (status's board, the registry) can authenticate in `env`
+   *  through the shared resolver (HARMONY_API_TOKEN, then HARMONY_PROJECT, then the active project);
+   *  otherwise why not, names only. The daemon's own HARMONY_API_TOKEN requirement is the pre-flight's. */
+  operatorCredential(env: Record<string, string | undefined>): string | null;
+}
+
+/** B-1501 fix 8: the operator's HarmonyAuth, through the shared resolver (src/config/project-resolution.ts)
+ *  rather than `env.HARMONY_API_TOKEN` alone: HARMONY_API_TOKEN with `env`'s pair (the conductor's
+ *  settings when they set it), then HARMONY_PROJECT's stored entry and pair, then the active project. */
+export function operatorAuth(env: Record<string, string | undefined>): HarmonyAuth {
+  const e = env as NodeJS.ProcessEnv;
+  const r = resolveProject({ surface: 'cli', env: e });
+  const target = r.target ?? resolveSupabaseTarget({ flags: {}, project: undefined, env: e });
+  return new HarmonyAuth(r.token, target.url, target.anonKey, { expectedProjectId: r.expectedProjectId, expectedLabel: r.expectedLabel });
 }
 
 export function defaultLifecycleDeps(): LifecycleDeps {
@@ -152,16 +168,20 @@ export function defaultLifecycleDeps(): LifecycleDeps {
     },
     rmSync: (p) => rmSync(p, { force: true }),
     readBoard: async (env) => {
-      const token = env.HARMONY_API_TOKEN;
-      if (!token) throw new Error('HARMONY_API_TOKEN is not set');
-      const auth = new HarmonyAuth(token);
+      const auth = operatorAuth(env);
       const client = await createAuthenticatedClient(auth);
       return listActiveConductions(client, auth.getProjectId());
     },
+    operatorCredential: (env) => {
+      try {
+        resolveProject({ surface: 'cli', env: env as NodeJS.ProcessEnv });
+        return null;
+      } catch (err) {
+        return err instanceof Error ? err.message : String(err);
+      }
+    },
     registryClient: async (env) => {
-      const token = env.HARMONY_API_TOKEN;
-      if (!token) throw new Error('HARMONY_API_TOKEN is not set');
-      const auth = new HarmonyAuth(token);
+      const auth = operatorAuth(env);
       const client = await createAuthenticatedClient(auth);
       return createRegistryClient({
         rpc: rpcFromClient(client as unknown as Parameters<typeof rpcFromClient>[0]),

@@ -56,4 +56,25 @@ describe('makeCliAuth (harmony watch)', () => {
     await auth.getAccessToken();
     expect(JSON.parse(fetchMock.mock.calls[0][1].body).token).toBe('tok-inv');
   });
+
+  it('B-1501 fix 8: prints the override notice when the environment overrides a different active project', () => {
+    addProject('watched', 'tok-watched');
+    saveProject({ name: 'invented', token: 'tok-inv', projectId: 'p-inv', activate: false });
+    const lines: string[] = [];
+    makeCliAuth({ HARMONY_PROJECT: 'invented' }, undefined, (l) => lines.push(l));
+    expect(lines).toEqual([
+      'harmony: using HARMONY_PROJECT=invented from the environment, not the active project "watched" (the environment wins; unset HARMONY_PROJECT to use "watched")',
+    ]);
+    lines.length = 0;
+    makeCliAuth({}, undefined, (l) => lines.push(l));
+    expect(lines).toEqual([]);
+  });
+
+  it('B-1501 fix 8: describeWatchSource names the source in force, never a token', async () => {
+    const { describeWatchSource } = await import('./watch.js');
+    addProject('watched', 'tok-watched');
+    expect(describeWatchSource({})).toBe('the active project "watched" (neither HARMONY_API_TOKEN nor HARMONY_PROJECT is set)');
+    expect(describeWatchSource({ HARMONY_API_TOKEN: 'tok-env' })).toBe('HARMONY_API_TOKEN in the environment (it wins over the active project "watched")');
+    expect(describeWatchSource({ HARMONY_PROJECT: 'nope' })).toBeNull();
+  });
 });

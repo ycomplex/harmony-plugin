@@ -183,6 +183,16 @@ async function authPluginFix(deps: LifecycleDeps, env: Env): Promise<string> {
 
 /** B-808: why HARMONY_API_TOKEN is not set, and what to do. Names the cause the settings loader saw (no host
  *  file, no secrets.api_token entry in it, or a failed Secret Manager read), never a value. */
+/** B-1501: why the OPERATOR-side reads (status's board, the registry) cannot authenticate, or null when they
+ *  can. They resolve through the shared resolver, so HARMONY_PROJECT (or the active project) serves when
+ *  HARMONY_API_TOKEN is absent. A HARMONY_PROJECT that does not resolve is named as such; otherwise the B-808
+ *  reason for the missing HARMONY_API_TOKEN. */
+export function operatorTokenProblem(deps: LifecycleDeps, s: ConductorSettings): string | null {
+  const why = deps.operatorCredential(s.env);
+  if (why === null) return null;
+  return s.env.HARMONY_PROJECT ? why : missingTokenReason(deps, s);
+}
+
 export function missingTokenReason(deps: LifecycleDeps, s: ConductorSettings): string {
   const hostFile = s.paths.hostFile;
   const fix = 'create it by hand (docs/conductor-lifecycle.md, "Minimal operator-laptop host file") or export HARMONY_API_TOKEN';

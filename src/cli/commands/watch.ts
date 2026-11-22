@@ -13,7 +13,7 @@
  * Exit codes: 0 event (until-event) / done (once, follow); 3 `--max-wait` passed with nothing
  * seat-owned (or `--once` could not reach the board); 2 bad arguments, a lock held by another
  * watch, a rejected token at startup, a scope that cannot resolve (a key, or a milestone, not in
- * the CLI's active project), or a seat profile whose `project:` is not that project; 130 stopped
+ * the project the CLI resolves: HARMONY_API_TOKEN, HARMONY_PROJECT, then the active project), or a seat profile whose `project:` is not that project; 130 stopped
  * by SIGINT; 143 stopped by SIGTERM; 141 the reader of stdout went away (EPIPE). `status`:
  * 0 alive, 1 none or stale.
  *
@@ -35,8 +35,8 @@ import type { Command } from 'commander';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { HarmonyAuth } from '../../auth.js';
 import { startHintSubscription, type HintChannelLike } from '../../daemon/hint-subscription.js';
-import { getActiveProject, type HarmonyConfig } from '../config.js';
-import { resolveProject } from '../../config/project-resolution.js';
+import type { HarmonyConfig } from '../config.js';
+import { describeSource, overrideNotice, resolveProject } from '../../config/project-resolution.js';
 import { resolveSupabaseTarget } from '../resolve-supabase-target.js';
 import { createBoardReader, type BoardReader, type MilestoneInfo, type ProjectInfo } from '../../watch/board-read.js';
 import { healthEvent, ownerFor, startEvent, type WatchEvent } from '../../watch/classify.js';
@@ -113,8 +113,9 @@ export interface WatchCliDeps {
   settleMs?: number;
   /** The board target of a Supabase URL (default: src/tools/environment.ts's resolver). */
   resolveTarget?(url: string): Promise<BoardTarget>;
-  /** The CLI's active project config name, read locally; null when there is none. */
-  activeProjectName?(): string | null;
+  /** B-1501: which project source is in force in this shell, and why (describeSource: names only);
+   *  null when no project resolves. Read locally, never from the network. */
+  projectSource?(): string | null;
 }
 
 export type BoardTarget = 'prod' | 'staging' | 'custom';
@@ -128,9 +129,11 @@ export async function resolveBoardTarget(url: string): Promise<BoardTarget> {
   }
 }
 
-function localActiveProjectName(): string | null {
+/** B-1501 fix 8: the source the shared resolver picks in this shell, in plain words (names only);
+ *  null when no project resolves. */
+export function describeWatchSource(env: NodeJS.ProcessEnv = process.env, loadConfig?: () => HarmonyConfig): string | null {
   try {
-    return getActiveProject().name;
+    return describeSource(resolveProject({ surface: 'cli', env, loadConfig }));
   } catch {
     return null;
   }
@@ -153,8 +156,16 @@ export function realSleep(ms: number, signal?: AbortSignal): Promise<void> {
 /** HarmonyAuth built the way the CLI builds it (src/cli/auth.ts), through the shared resolver
  *  (src/config/project-resolution.ts, B-1501): HARMONY_API_TOKEN, then HARMONY_PROJECT, then the
  *  active project. With neither variable set it follows the active project exactly as before. */
-export function makeCliAuth(env: NodeJS.ProcessEnv = process.env, loadConfig?: () => HarmonyConfig): HarmonyAuth {
+export function makeCliAuth(
+  env: NodeJS.ProcessEnv = process.env,
+  loadConfig?: () => HarmonyConfig,
+  notice: (line: string) => void = (line) => process.stderr.write(`${line}\n`),
+): HarmonyAuth {
   const resolved = resolveProject({ surface: 'cli', env, loadConfig });
+  // B-1501 fix 8: the same one stderr line every other CLI path prints when the environment
+  // overrides a different active project.
+  const line = overrideNotice(resolved);
+  if (line) notice(line);
   const target = resolved.target ?? resolveSupabaseTarget({ flags: {}, project: undefined, env });
   return new HarmonyAuth(resolved.token, target.url, target.anonKey, {
     expectedProjectId: resolved.expectedProjectId,
@@ -328,7 +339,7 @@ function defaultDeps(): WatchCliDeps {
     },
     installGuards: (onHealth) => installProcessGuards(onHealth),
     resolveTarget: resolveBoardTarget,
-    activeProjectName: localActiveProjectName,
+    projectSource: () => describeWatchSource(),
     now: () => Date.now(),
     sleep: realSleep,
     out: (line) => {
@@ -549,7 +560,10 @@ export async function runWatchCommand(args: WatchArgs, deps: WatchCliDeps): Prom
         onFailure: (err, attempt) => {
           if (isScopeError(err)) {
             const p = bootProject as ProjectInfo | null;
-            fatal = `${safeErrorMessage(err)}; the CLI's active project is ${p ? `${p.name} (${p.key})` : 'unknown'} on ${target} (check \`harmony project info\`, change it with \`harmony project switch <name>\`)`;
+            const source = (deps.projectSource ?? (() => describeWatchSource()))();
+            fatal =
+              `${safeErrorMessage(err)}; this watch reached ${p ? `${p.name} (${p.key})` : 'an unknown project'} on ${target}` +
+              `${source ? `, chosen by ${source}` : ''} (check \`harmony whoami\`; change it with \`harmony project switch <name>\`, or HARMONY_PROJECT / HARMONY_API_TOKEN when the environment chose it)`;
             return 'stop';
           }
           if (isAuthError(err)) {
@@ -716,7 +730,7 @@ export async function runWatchCommand(args: WatchArgs, deps: WatchCliDeps): Prom
 export function runWatchStatus(
   seat: string | null,
   json: boolean,
-  deps: Pick<WatchCliDeps, 'now' | 'out' | 'err' | 'home' | 'activeProjectName'>,
+  deps: Pick<WatchCliDeps, 'now' | 'out' | 'err' | 'home' | 'projectSource'>,
 ): number {
   if (!seat) {
     deps.err('harmony watch status: --seat <name> is required');
@@ -731,10 +745,10 @@ export function runWatchStatus(
   if (profile.status === 'ok' && profile.value.project) {
     // The CLI's local config stores a project's name, token and URL, never its key, so the
     // profile's `project:` can only be checked against the board. Say so; never go to the network.
-    const active = (deps.activeProjectName ?? localActiveProjectName)();
+    const source = (deps.projectSource ?? (() => describeWatchSource()))();
     deps.err(
-      `harmony watch status: not checking the profile's project ${profile.value.project} against the CLI's active project` +
-        `${active ? ` "${active}"` : ''}: its key is known only from the board. \`harmony watch\` checks it at start (exit 2 on a mismatch).`,
+      `harmony watch status: not checking the profile's project ${profile.value.project} against the project this shell uses` +
+        `${source ? ` (${source})` : ''}: its key is known only from the board. \`harmony watch\` checks it at start (exit 2 on a mismatch).`,
     );
   }
   const projects =

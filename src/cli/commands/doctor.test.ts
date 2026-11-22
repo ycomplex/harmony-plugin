@@ -709,3 +709,33 @@ describe('resolveDefaultProjectRef', () => {
     expect(ref).toBeNull();
   });
 });
+
+// B-1501 fix 8: `harmony doctor auth-hook`'s default --project-ref is the Supabase project the CLI
+// would talk to in this shell, through the shared resolver — the environment's when it is in force.
+describe('defaultProjectRefForThisShell (B-1501)', () => {
+  it('HARMONY_API_TOKEN with its env pair wins over the active project stored for another backend', async () => {
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const { vi } = await import('vitest');
+    const { defaultProjectRefForThisShell } = await import('./doctor.js');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'b1501-doctor-'));
+    try {
+      fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+        activeProject: 'a',
+        projects: { a: { name: 'a', token: 'synthetic-a', supabaseUrl: 'https://active-ref.supabase.co', supabaseAnonKey: 'k' } },
+      }));
+      vi.stubEnv('HARMONY_CONFIG_DIR', dir);
+      vi.stubEnv('HARMONY_PROJECT', '');
+      vi.stubEnv('HARMONY_API_TOKEN', 'synthetic-env');
+      vi.stubEnv('HARMONY_SUPABASE_URL', 'https://env-ref.supabase.co');
+      vi.stubEnv('HARMONY_SUPABASE_ANON_KEY', 'env-key');
+      expect(defaultProjectRefForThisShell()).toBe('env-ref');
+      vi.stubEnv('HARMONY_API_TOKEN', '');
+      expect(defaultProjectRefForThisShell()).toBe('active-ref');
+    } finally {
+      vi.unstubAllEnvs();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

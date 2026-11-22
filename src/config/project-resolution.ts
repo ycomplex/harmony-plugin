@@ -233,3 +233,17 @@ export function overrideNotice(r: ResolvedProject): string | null {
   }
   return `harmony: using HARMONY_PROJECT=${r.key} from the environment, not the active project "${r.activeProject}" (the environment wins; unset HARMONY_PROJECT to use "${r.activeProject}")`;
 }
+
+/** B-1501 fix 8: the Supabase URL the CLI's token exchange will use in this shell — the same
+ *  resolution getAuthenticatedContext makes (HARMONY_API_TOKEN with the environment's pair, then
+ *  HARMONY_PROJECT's stored pair, then the active project's). undefined when no project resolves
+ *  (the caller falls back to the environment / built-in default, as before). Names a URL only. */
+export function resolvedCliSupabaseUrl(opts: { env?: NodeJS.ProcessEnv; loadConfig?: () => HarmonyConfig } = {}): string | undefined {
+  const env = opts.env ?? process.env;
+  try {
+    const r = resolveProject({ surface: 'cli', env, loadConfig: opts.loadConfig });
+    return (r.target ?? resolveSupabaseTarget({ flags: {}, project: undefined, env })).url;
+  } catch {
+    return undefined;
+  }
+}
