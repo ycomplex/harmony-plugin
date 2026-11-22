@@ -12,7 +12,9 @@ export type HarmonyConnectionVar =
   | 'HARMONY_API_TOKEN'
   | 'HARMONY_SUPABASE_URL'
   | 'HARMONY_SUPABASE_ANON_KEY'
-  | 'HARMONY_SUPABASE_PUBLISHABLE_KEY';
+  | 'HARMONY_SUPABASE_PUBLISHABLE_KEY'
+  // B-1501: names a project stored in ~/.harmony/config.json (src/config/project-resolution.ts).
+  | 'HARMONY_PROJECT';
 
 export function harmonyEnv(
   name: HarmonyConnectionVar,

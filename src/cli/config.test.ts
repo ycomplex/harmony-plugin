@@ -10,6 +10,8 @@ import {
   removeProject,
   switchProject,
   listProjects,
+  saveProject,
+  legacyUpdateLine,
 } from './config.js';
 
 let tmpDir: string;
@@ -111,8 +113,178 @@ describe('listProjects', () => {
     addProject('b', 'tok-b');
     const list = listProjects();
     expect(list).toEqual([
-      { name: 'a', active: false },
-      { name: 'b', active: true },
+      { name: 'a', active: false, download: false },
+      { name: 'b', active: true, download: false },
     ]);
+  });
+});
+
+// B-1501: project identity by id, the non-activating save, and the download pin.
+describe('saveProject', () => {
+  it('stores projectId and does not activate over an existing active project', () => {
+    addProject('active-one', 'tok-a');
+    const r = saveProject({ name: 'invented', token: 'tok-i', projectId: 'proj-i', activate: false });
+    expect(r).toEqual({ key: 'invented', collidedWith: undefined, activated: false });
+    const c = loadConfig();
+    expect(c.activeProject).toBe('active-one');
+    expect(c.projects.invented).toEqual({ name: 'invented', token: 'tok-i', projectId: 'proj-i' });
+  });
+
+  it('fix 6: a non-activating save NEVER sets activeProject, even into an empty store', () => {
+    expect(saveProject({ name: 'invented', token: 't', projectId: 'p', activate: false }).activated).toBe(false);
+    expect(loadConfig().activeProject).toBeNull();
+  });
+
+  it('fix 6: a non-activating save never repairs a dangling active project either', () => {
+    fs.writeFileSync(path.join(tmpDir, 'config.json'), JSON.stringify({ activeProject: 'gone', projects: {} }));
+    expect(saveProject({ name: 'invented', token: 't', projectId: 'p', activate: false }).activated).toBe(false);
+    expect(loadConfig().activeProject).toBe('gone');
+  });
+
+  it('never overwrites a different project under the same name: a distinct key, and says which', () => {
+    saveProject({ name: 'invented', token: 'tok-1', projectId: 'aaaaaaaa-1111', activate: true });
+    const r = saveProject({ name: 'invented', token: 'tok-2', projectId: 'bbbbbbbb-2222', activate: false });
+    expect(r.collidedWith).toBe('invented');
+    expect(r.key).toBe('invented-bbbbbbbb');
+    const c = loadConfig();
+    expect(c.projects.invented.token).toBe('tok-1');
+    expect(c.projects['invented-bbbbbbbb'].token).toBe('tok-2');
+  });
+
+  it('the same project saved again updates its own entry, wherever it is stored', () => {
+    saveProject({ name: 'invented', token: 'tok-1', projectId: 'aaaaaaaa', activate: true });
+    saveProject({ name: 'other', token: 'tok-x', projectId: 'bbbbbbbb', activate: false });
+    const r = saveProject({ name: 'invented', token: 'tok-rotated', projectId: 'aaaaaaaa', activate: false });
+    expect(r).toEqual({ key: 'invented', collidedWith: undefined, activated: false });
+    expect(loadConfig().projects.invented.token).toBe('tok-rotated');
+  });
+
+  it('an entry saved before B-1501 (no projectId) with a different token and no checked backend is not overwritten', () => {
+    addProject('invented', 'legacy-token');
+    const r = saveProject({ name: 'invented', token: 'new-token', projectId: 'cccccccc', activate: false });
+    expect(r.key).toBe('invented-cccccccc');
+    expect(loadConfig().projects.invented.token).toBe('legacy-token');
+  });
+
+  it('E: updating an entry saved before B-1501 in place says so; a new or id-carrying entry does not', () => {
+    addProject('invented', 'same-token');
+    expect(saveProject({ name: 'invented', token: 'same-token', projectId: 'cccccccc', activate: false }).updatedLegacyFor).toBe('cccccccc');
+    expect(saveProject({ name: 'invented', token: 'rotated', projectId: 'cccccccc', activate: false }).updatedLegacyFor).toBeUndefined();
+    expect(saveProject({ name: 'fresh', token: 'x', projectId: 'dddddddd', activate: false }).updatedLegacyFor).toBeUndefined();
+    expect(legacyUpdateLine('invented', 'cccccccc')).toBe(
+      'Updated the entry "invented" in place: it was saved before project ids were recorded, and it now holds project cccccccc.',
+    );
+  });
+
+  it('an entry saved before B-1501 with the same token is the same project, upgraded in place', () => {
+    addProject('invented', 'same-token');
+    expect(saveProject({ name: 'invented', token: 'same-token', projectId: 'cccccccc', activate: false }).key).toBe('invented');
+    expect(loadConfig().projects.invented.projectId).toBe('cccccccc');
+  });
+
+  // Fix 4: rotating the token of a project saved before B-1501.
+  describe('fix 4 — a stored entry with no projectId', () => {
+    const DEFAULT = 'https://eioxsunvhakmelhanmnn.supabase.co';
+    beforeEach(() => {
+      for (const v of ['HARMONY_SUPABASE_URL', 'HARMONY_SUPABASE_ANON_KEY', 'HARMONY_SUPABASE_PUBLISHABLE_KEY']) {
+        vi.stubEnv(v, '');
+        vi.stubEnv(`EVAL_${v}`, '');
+      }
+    });
+
+    it('same key, same backend, new token: the SAME project, updated in place and stamped with the id', () => {
+      addProject('invented', 'legacy-token');
+      const r = saveProject({ name: 'invented', token: 'rotated-token', projectId: 'cccccccc', verifiedUrl: DEFAULT, activate: false });
+      expect(r).toEqual({ key: 'invented', collidedWith: undefined, activated: false, updatedLegacyFor: 'cccccccc' });
+      const c = loadConfig();
+      expect(Object.keys(c.projects)).toEqual(['invented']);
+      expect(c.projects.invented).toMatchObject({ token: 'rotated-token', projectId: 'cccccccc', verifiedUrl: DEFAULT });
+    });
+
+    it('same key, its stored pair names the backend the token was checked against: the same project, pair kept', () => {
+      addProject('invented', 'legacy-token', { supabaseUrl: 'https://scratch.example.supabase.co', supabaseAnonKey: 'scratch-key' });
+      const r = saveProject({ name: 'invented', token: 'rotated', projectId: 'dddddddd', verifiedUrl: 'https://scratch.example.supabase.co/', activate: false });
+      expect(r.key).toBe('invented');
+      expect(r.collidedWith).toBeUndefined();
+      expect(loadConfig().projects.invented).toMatchObject({
+        token: 'rotated', projectId: 'dddddddd', supabaseUrl: 'https://scratch.example.supabase.co', supabaseAnonKey: 'scratch-key',
+      });
+    });
+
+    it('same key, a DIFFERENT backend: still a collision, the old entry untouched', () => {
+      addProject('invented', 'legacy-token', { supabaseUrl: 'https://scratch.example.supabase.co', supabaseAnonKey: 'scratch-key' });
+      const r = saveProject({ name: 'invented', token: 'other', projectId: 'eeeeeeee', verifiedUrl: DEFAULT, activate: false });
+      expect(r.collidedWith).toBe('invented');
+      expect(r.key).toBe('invented-eeeeeeee');
+      expect(loadConfig().projects.invented.token).toBe('legacy-token');
+    });
+
+    it('a known, different id is a collision even on the same backend', () => {
+      saveProject({ name: 'invented', token: 'tok-1', projectId: 'aaaaaaaa', verifiedUrl: DEFAULT, activate: false });
+      const r = saveProject({ name: 'invented', token: 'tok-2', projectId: 'bbbbbbbb', verifiedUrl: DEFAULT, activate: false });
+      expect(r.collidedWith).toBe('invented');
+    });
+
+    it('re-saving with no flags keeps the stored Supabase pair', () => {
+      saveProject({
+        name: 'invented', token: 'tok-1', projectId: 'aaaaaaaa', verifiedUrl: 'https://scratch.example.supabase.co',
+        supabaseUrl: 'https://scratch.example.supabase.co', supabasePublishableKey: 'sb_publishable_x', activate: false,
+      });
+      saveProject({ name: 'invented', token: 'tok-2', projectId: 'aaaaaaaa', verifiedUrl: 'https://scratch.example.supabase.co', activate: false });
+      expect(loadConfig().projects.invented).toEqual({
+        name: 'invented', token: 'tok-2', projectId: 'aaaaaaaa', verifiedUrl: 'https://scratch.example.supabase.co',
+        supabaseUrl: 'https://scratch.example.supabase.co', supabasePublishableKey: 'sb_publishable_x',
+      });
+    });
+  });
+
+  it('fix 5: saveConfig writes atomically (temp file in the same dir, renamed), mode 600, no temp left behind', () => {
+    const renameSpy = vi.spyOn(fs, 'renameSync');
+    saveConfig({ activeProject: null, projects: {} });
+    const file = path.join(tmpDir, 'config.json');
+    expect(renameSpy).toHaveBeenCalledTimes(1);
+    const [from, to] = renameSpy.mock.calls[0] as [string, string];
+    expect(path.dirname(String(from))).toBe(tmpDir);
+    expect(String(to)).toBe(file);
+    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    expect(fs.readdirSync(tmpDir)).toEqual(['config.json']);
+    renameSpy.mockRestore();
+  });
+
+  it('G: saveConfig writes THROUGH a symlinked config.json (its real path), never replacing the link', () => {
+    const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'harmony-real-'));
+    try {
+      const real = path.join(elsewhere, 'real-config.json');
+      fs.writeFileSync(real, JSON.stringify({ activeProject: null, projects: {} }), { mode: 0o600 });
+      const link = path.join(tmpDir, 'config.json');
+      fs.symlinkSync(real, link);
+      saveProject({ name: 'invented', token: 'synthetic-t', projectId: 'p-inv', activate: true });
+      expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
+      expect(JSON.parse(fs.readFileSync(real, 'utf8')).activeProject).toBe('invented');
+      expect(fs.statSync(real).mode & 0o777).toBe(0o600);
+      expect(fs.readdirSync(elsewhere)).toEqual(['real-config.json']);
+      expect(fs.readdirSync(tmpDir)).toEqual(['config.json']);
+    } finally {
+      fs.rmSync(elsewhere, { recursive: true, force: true });
+    }
+  });
+
+  it('reads a config with no projects key tolerantly', () => {
+    fs.writeFileSync(path.join(tmpDir, 'config.json'), JSON.stringify({ activeProject: null }));
+    expect(loadConfig()).toEqual({ activeProject: null, projects: {} });
+  });
+});
+
+describe('loadConfig on a broken file (B-1501)', () => {
+  it('names the file only, never quoting its content (JSON.parse quotes the start of the text)', () => {
+    fs.writeFileSync(path.join(tmpDir, 'config.json'), 'tok harmony_synthetic_secret_value');
+    let msg = '';
+    try {
+      loadConfig();
+    } catch (e) {
+      msg = (e as Error).message;
+    }
+    expect(msg).toBe(`${path.join(tmpDir, 'config.json')} is not valid JSON.`);
+    expect(msg).not.toContain('harmony_');
   });
 });

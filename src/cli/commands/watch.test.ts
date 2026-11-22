@@ -70,7 +70,7 @@ function fake(over: Partial<WatchCliDeps> = {}): Fake {
     startHints: () => null,
     installGuards: () => () => {},
     resolveTarget: async () => 'prod',
-    activeProjectName: () => 'backlogs',
+    projectSource: () => 'the active project "backlogs" (neither HARMONY_API_TOKEN nor HARMONY_PROJECT is set)',
     now: clock.now,
     sleep: clock.sleep,
     out: (l) => out.push(l),
@@ -491,7 +491,7 @@ describe('scope and board checks (release-gate finding on 7cd36ba)', () => {
     const f = fake({ makeReader: (_c, projectId) => createBoardReader(client as never, projectId), resolveTarget: async () => 'staging' });
     const code = await runWatchCommand(parseWatchArgs([], { milestone: FOREIGN, once: true }, true), f.deps);
     expect(code).toBe(2);
-    expect(f.err.join('\n')).toMatch(new RegExp(`milestone ${FOREIGN} is not in project BVS; the CLI's active project is Backlogs Staging \\(BVS\\) on staging`));
+    expect(f.err.join('\n')).toMatch(new RegExp(`milestone ${FOREIGN} is not in project BVS; this watch reached Backlogs Staging \\(BVS\\) on staging, chosen by the active project "backlogs"`));
   });
 
   it('a real milestone with no tickets is not fatal: it starts, counts 0 and says nothing is waiting', async () => {
@@ -594,10 +594,11 @@ describe('scope and board checks (release-gate finding on 7cd36ba)', () => {
 
   it('status with a profile project cannot check it offline: it says so on stderr and keeps its exit code', () => {
     profileFor('B');
-    const f = fake({ activeProjectName: () => 'staging' });
+    const f = fake({ projectSource: () => 'HARMONY_PROJECT=staging in the environment' });
     expect(runWatchStatus('orch', false, f.deps)).toBe(1);
     expect(f.out).toEqual(['watch orch: none (no heartbeat)']);
-    expect(f.err.join('\n')).toMatch(/not checking the profile's project B against the CLI's active project "staging"/);
+    expect(f.err.join('\n')).toMatch(/not checking the profile's project B against the project this shell uses \(HARMONY_PROJECT=staging in the environment\)/);
+    expect(f.err.join('\n')).not.toContain("the CLI's active project");
   });
 });
 

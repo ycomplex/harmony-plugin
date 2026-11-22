@@ -111,6 +111,7 @@ function world(o: World = {}) {
     existsSync: (p) => p in files, readFileSync: (p) => { if (!(p in files)) throw new Error(`ENOENT ${p}`); return files[p]; },
     writeFileSync: () => { throw new Error('must not write'); }, mkdirSync: () => {}, rmSync: () => {},
     readBoard: async () => [], registryClient: async () => client,
+    operatorCredential: () => null,
   };
   return { deps, calls, completes, kubectl: () => calls.filter((c) => c.file === 'kubectl').map((c) => c.args.join(' ')) };
 }

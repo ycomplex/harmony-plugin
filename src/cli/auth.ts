@@ -2,8 +2,8 @@ import { redactFigmaMessage } from "./figma-errors.js";
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { HarmonyAuth, TokenExchangeError } from '../auth.js';
 import { createAuthenticatedClient } from '../supabase.js';
-import { getActiveProject, ProjectConfig } from './config.js';
-import { harmonyEnv } from '../env.js';
+import type { ProjectConfig } from './config.js';
+import { overrideNotice, resolveProject } from '../config/project-resolution.js';
 import { resolveSupabaseTarget } from './resolve-supabase-target.js';
 
 export interface AuthenticatedContext {
@@ -14,55 +14,47 @@ export interface AuthenticatedContext {
 
 // B-1070: print the "using HARMONY_API_TOKEN" fallback notice at most once per process — repeated
 // CLI calls within the same run (or the same long-lived daemon process) share one config-less
-// session and shouldn't re-announce it on every call.
+// session and shouldn't re-announce it on every call. B-1501: the same once-per-process rule covers
+// the override line (an environment token or HARMONY_PROJECT winning over a different active project).
 let fallbackNoticePrinted = false;
+
+/** Test hook: let a test see the once-per-process notice again. */
+export function resetAuthNoticesForTest(): void {
+  fallbackNoticePrinted = false;
+}
 
 export async function getAuthenticatedContext(projectConfig?: ProjectConfig): Promise<AuthenticatedContext> {
   let project: ProjectConfig;
   let usedFallback = false;
+  let target: { url: string; anonKey: string };
+  let expected: { expectedProjectId?: string; expectedLabel?: string } = {};
 
   if (projectConfig) {
     project = projectConfig;
+    target = resolveSupabaseTarget({ flags: {}, project });
   } else {
-    try {
-      project = getActiveProject();
-    } catch (configErr) {
-      const token = harmonyEnv('HARMONY_API_TOKEN');
-      if (!token) {
-        throw configErr;
+    // B-1501: ONE resolver for the CLI and the MCP server (src/config/project-resolution.ts):
+    // HARMONY_API_TOKEN, then HARMONY_PROJECT, then the active project. Before B-1501 the CLI
+    // preferred the active project over the environment; the environment now wins, and says so once.
+    //
+    // B-1025: the Supabase pair is resolved per call, by name, and handed to the auth instance —
+    // never written into process.env (the auth module used to capture it at import).
+    const resolved = resolveProject({ surface: 'cli' });
+    usedFallback = resolved.source === 'env-token';
+    project = resolved.project ?? { name: '(env token)', token: resolved.token };
+    target = resolved.target ?? resolveSupabaseTarget({ flags: {}, project: undefined });
+    expected = { expectedProjectId: resolved.expectedProjectId, expectedLabel: resolved.expectedLabel };
+    if (!fallbackNoticePrinted) {
+      const notice = overrideNotice(resolved) ??
+        (usedFallback && !resolved.activeProject ? 'harmony: using HARMONY_API_TOKEN (no active project configured)' : null);
+      if (notice) {
+        console.error(notice);
+        fallbackNoticePrinted = true;
       }
-      // B-1025: the pseudo-project carries the TOKEN only. The Supabase pair is resolved by the
-      // resolver below, whose environment tier reads the same two variables — so the outcome is
-      // unchanged, but the pair now has ONE owner instead of two half-copies.
-      project = {
-        name: '(env token)',
-        token,
-      };
-      usedFallback = true;
     }
   }
 
-  // B-1025: resolve the Supabase URL + anon key PAIR for THIS call.
-  //
-  // This used to write the project's stored values into process.env and let the auth module read
-  // them back — but the auth module had already captured them at IMPORT time, so the mutation
-  // was dead code: every CLI call was exchanged against whatever the ENVIRONMENT said, and a
-  // second project's URL silently went to the first project's server (the founder's 2026-09-14
-  // 401). The pair is now resolved here, by name, and handed to the auth instance explicitly.
-  //
-  // The fallback (no configured project) resolves through the environment tier, so it behaves
-  // exactly as before.
-  const target = resolveSupabaseTarget({
-    flags: {},
-    project: usedFallback ? undefined : project,
-  });
-
-  if (usedFallback && !fallbackNoticePrinted) {
-    console.error('harmony: using HARMONY_API_TOKEN (no active project configured)');
-    fallbackNoticePrinted = true;
-  }
-
-  const auth = new HarmonyAuth(project.token, target.url, target.anonKey);
+  const auth = new HarmonyAuth(project.token, target.url, target.anonKey, expected);
   let client: SupabaseClient;
   try {
     client = await createAuthenticatedClient(auth);

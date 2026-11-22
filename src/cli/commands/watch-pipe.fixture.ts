@@ -40,7 +40,7 @@ registerWatchCommands(program, {
   makeReader: () => board,
   startHints: () => null,
   resolveTarget: async () => 'custom',
-  activeProjectName: () => null,
+  projectSource: () => null,
   now: clock.now,
   // Fake time, but a real turn of the event loop per sleep, so stdout's error can be delivered.
   sleep: async (ms, signal) => {

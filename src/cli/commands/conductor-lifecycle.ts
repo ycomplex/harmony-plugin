@@ -58,7 +58,7 @@ import {
   failedNames,
   formatChecks,
   loadSettings,
-  missingTokenReason,
+  operatorTokenProblem,
   runPreflight,
   type ConductorSettings,
   type Env,
@@ -143,7 +143,8 @@ function launcherArgsFrom(o: { config?: string; profile?: string }): string[] {
 }
 
 async function safeBoard(deps: LifecycleDeps, s: ConductorSettings): Promise<{ rows: BoardRow[] | null; error?: string }> {
-  if (!s.env.HARMONY_API_TOKEN) return { rows: null, error: missingTokenReason(deps, s) };
+  const problem = operatorTokenProblem(deps, s);
+  if (problem) return { rows: null, error: problem };
   try {
     return { rows: await deps.readBoard(s.env) };
   } catch (err) {

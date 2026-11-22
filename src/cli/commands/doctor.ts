@@ -57,7 +57,7 @@
 // seat/founder step on this command's release brief.
 
 import { Command } from 'commander';
-import { getActiveProject } from '../config.js';
+import { resolvedCliSupabaseUrl } from '../../config/project-resolution.js';
 import { DEFAULT_SUPABASE_URL } from '../../tools/environment.js';
 
 /** The result of one call to the Supabase Management API's `GET /v1/projects/<ref>/config/auth`.
@@ -155,6 +155,17 @@ export function resolveDefaultProjectRef(input: {
   } catch {
     return null;
   }
+}
+
+/** B-1501 fix 8: the default --project-ref for THIS shell: the URL the CLI's exchange will use,
+ *  through the shared resolver (src/config/project-resolution.ts) — the environment's pair when
+ *  HARMONY_API_TOKEN is in force, HARMONY_PROJECT's stored pair, else the active project's. Before
+ *  B-1501 fix 8 this read the active project's URL even when the environment was in force. */
+export function defaultProjectRefForThisShell(): string | null {
+  return resolveDefaultProjectRef({
+    activeProjectSupabaseUrl: resolvedCliSupabaseUrl(),
+    envSupabaseUrl: process.env.HARMONY_SUPABASE_URL,
+  });
 }
 
 function errMessage(err: unknown): string {
@@ -556,18 +567,7 @@ export function registerDoctorCommands(program: Command): void {
       let probeMemo: Promise<FunctionExistenceFetchResult> | undefined;
       const deps: DoctorAuthHookDeps = {
         projectRefFlag: opts.projectRef,
-        resolveDefaultProjectRef: () => {
-          let activeProjectSupabaseUrl: string | undefined;
-          try {
-            activeProjectSupabaseUrl = getActiveProject().supabaseUrl;
-          } catch {
-            activeProjectSupabaseUrl = undefined;
-          }
-          return resolveDefaultProjectRef({
-            activeProjectSupabaseUrl,
-            envSupabaseUrl: process.env.HARMONY_SUPABASE_URL,
-          });
-        },
+        resolveDefaultProjectRef: defaultProjectRefForThisShell,
         accessToken,
         fetchAuthConfig: (projectRef, token) => {
           const configPromise = fetchAuthConfig(projectRef, token);
