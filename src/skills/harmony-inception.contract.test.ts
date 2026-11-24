@@ -267,3 +267,116 @@ describe('B-1384 deliverable stamping', () => {
   expect(spine).toMatch(/do not leave both/);
  });
 });
+
+// --- B-1498: no gate-meaning question before S1; the S2 decisions that own them record them ----
+describe('B-1498 gate meanings move to the S2 decisions', () => {
+  const RUN_LAST = '## Gate meanings: the run-last step (B-1498)';
+  const runLast = section(RUN_LAST);
+  const s3b = section('### 3b.');
+
+  it('asks no gate-meaning question in S0 or anywhere before S1', () => {
+    for (const s of [section('## 1. S0'), section('### 1a.')]) {
+      expect(s).not.toMatch(/start_elicitation/);
+      expect(s).not.toMatch(/inception-semantics/);
+    }
+    const beforeS1 = skill.body.slice(0, skill.body.indexOf('## 2. S1'));
+    expect(skill.body.indexOf('## 2. S1')).toBeGreaterThan(0);
+    expect(beforeS1).not.toMatch(/inception-semantics/);
+    expect(skill.body).not.toMatch(/### 1b\./);
+  });
+
+  it('places the run-last section after §3i and before §4, and says so', () => {
+    const at = skill.body.indexOf(RUN_LAST);
+    expect(at).toBeGreaterThan(skill.body.indexOf('### 3i.'));
+    expect(skill.body.indexOf('### 3i.')).toBeGreaterThan(skill.body.indexOf('## 3.'));
+    expect(at).toBeLessThan(skill.body.indexOf('## 4. Set the completion marker'));
+    expect(runLast).toMatch(/after the §3 scaffold stamp/);
+    expect(runLast).toMatch(/before the §4[\s\S]{0,5}completion marker/);
+  });
+
+  const prefixes = [...runLast.matchAll(/^- (Deployed|Release gate|Verified): `([^`]+)`$/gm)].map((m) => m[2]);
+
+  it('defines the three title prefixes once and reuses them verbatim in the lookup and the §3b seeds', () => {
+    expect(prefixes).toEqual([
+      "<project>: 'Deployed' means",
+      '<project>: release gate requires',
+      "<project>: 'Verified' means",
+    ]);
+    const lookup = section('### Re-run lookup, before asking anything');
+    const seeds = s3b.slice(s3b.indexOf('`## Gate meaning this decision records`'));
+    for (const p of prefixes) {
+      expect(lookup, `lookup misses ${p}`).toContain(p);
+      expect(seeds, `§3b seed misses ${p}`).toContain(p);
+    }
+  });
+
+  it('carries the gate-meaning seed section on exactly the three owning tickets', () => {
+    expect(s3b.match(/> `## Gate meaning this decision records`/g)).toHaveLength(3);
+    for (const t of [
+      'Decide the environment topology & deploy triggers',
+      'Decide the CI/CD approach',
+      'Decide the testing approach',
+    ]) {
+      expect(s3b).toContain(`For \`${t}\`:\n> \`## Gate meaning this decision records\``);
+    }
+    expect(s3b).toMatch(/\*\*ONLY `Decide the environment topology & deploy triggers`/);
+  });
+
+  const FALLBACK =
+    "<project>: each gate meaning falls back to the founder's sign-off until its owning decision records it";
+
+  it('pins the fixed fallback title in the run-last section and the §0 lookup table', () => {
+    expect(runLast).toContain(FALLBACK);
+    const rows = tableRows(section('## 0.')).map((r) => r.join(' | '));
+    expect(rows.some((r) => r.includes(FALLBACK))).toBe(true);
+    expect(rows.some((r) => /S0 semantics/.test(r))).toBe(false);
+  });
+
+  it('matches the release prefix whatever its source_activity', () => {
+    expect(runLast).toMatch(/release gate requires`,\s+\*\*whatever its `source_activity`\*\*/);
+  });
+
+  it('states both provenance values and the honest wording for skipped or missing meanings', () => {
+    expect(runLast).toMatch(/human-in-session/);
+    expect(runLast).toMatch(/agent-synthesized/);
+    expect(runLast).toMatch(/default assumed, not confirmed/);
+    expect(runLast).toMatch(/not found at inception/);
+  });
+
+  it('writes no CLAUDE.md line', () => {
+    expect(runLast).toMatch(/writes no line to the project's CLAUDE\.md/);
+    expect(runLast).not.toMatch(/(`Write`|`Edit`)[^\n]*CLAUDE\.md/);
+    expect(runLast).not.toMatch(/CLAUDE\.md[^\n]*(`Write`|`Edit`)/);
+  });
+
+  it('re-owns the gate-label row of the §3i map to the three S2 decisions', () => {
+    const row = tableRows(section('### 3i.')).find((r) => r[0] === 'What the gate labels mean here');
+    expect(row).toBeTruthy();
+    expect(row).toHaveLength(3);
+    expect(row![2]).toMatch(/environment topology/);
+    expect(row![2]).toMatch(/CI\/CD/);
+    expect(row![2]).toMatch(/testing/);
+  });
+
+  it('keeps the nine S2 titles in the §3b table unchanged', () => {
+    const titles = tableRows(s3b).map((r) => r[0]);
+    expect(titles).toEqual([
+      'Decide the architecture',
+      'Decide the repo & workspace topology',
+      'Decide the environment topology & deploy triggers',
+      'Decide the data & migration tooling',
+      'Decide the CI/CD approach',
+      'Decide the testing approach',
+      'Decide the coding standards',
+      'Decide the authentication & identity approach',
+      'Decide the design system',
+    ]);
+  });
+
+  it('keeps the completed-project repair create-nothing and stop', () => {
+    const preflight = section('## 0.');
+    expect(preflight).toMatch(/create nothing/);
+    expect(preflight).toMatch(/then STOP/);
+    expect(runLast).toMatch(/B-1396 marker-only repair\) is NOT this step/);
+  });
+});
