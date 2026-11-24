@@ -16,11 +16,11 @@ allowed-tools: mcp__harmony__* Read Grep Glob Write Edit
 # Harmony Inception (Day-1 genesis — B-397)
 
 Inception is a **graph-seeder, not a decision-maker** (product-design `e340b661`; technical-design
-`826c5088`). One run performs **S0** configure Harmony for this project + elicit its per-gate
-semantics; **S1** capture the founding proposition by running the `clarify` gate on a bounded
+`826c5088`). One run performs **S0** configure Harmony for this project and stamp the milestone fence; **S1** capture the founding proposition by running the `clarify` gate on a bounded
 proposition-root ticket; and **stamps the fixed genesis scaffold** — the portable foundational-spine
 decision tickets, the bootstrap umbrellas, the dependency edges, and the founding persona + feature
-entity nodes. **The scaffold stamp is order-independent (B-796):** it is proposition-independent and
+entity nodes. The gate meanings are recorded later, by the S2 decisions that own them, and the run
+ends with one builder check and a fallback convention. **The scaffold stamp is order-independent (B-796):** it is proposition-independent and
 idempotent, so it may run before or independently of S1 — a run that stamps first is correct, not out of
 order. The ONE ordering dependency that still holds is §2c's entity-node lifecycle rule: the persona +
 feature nodes are seeded only AFTER the founding proposition is Accepted, because they are born from its
@@ -34,7 +34,7 @@ layer already have (skills are stateless executors — the board + KB are the me
 > knowledge).
 
 > Before recording any knowledge, follow `skills/harmony-shared/knowledge-discipline.md`. The elicitation
-> in S0 and S1 is the SHARED engine — `skills/harmony-shared/elicitation-engine.md` and its four tools
+> in S1 and the run-last builder check is the SHARED engine — `skills/harmony-shared/elicitation-engine.md` and its four tools
 > (`start_elicitation`, `file_elicitation_round`, `get_elicitation`, `conclude_elicitation`). A behaviour
 > gap is an ENGINE amendment to surface, never a local workaround.
 
@@ -99,14 +99,14 @@ up exactly where it stopped.
 | Proposition-root, S2 tickets, S3 umbrellas, the S4 roadmap slot | deterministic title + the `inception-scaffold` label (tasks have no per-project title uniqueness); the proposition-root and S4 slot carry `capture-only`; all nine S2 rows carry `decision-only` (§2c, §3e) |
 | The `v1` / `deferred` milestones (§1a) | milestone title |
 | Persona / feature entity nodes | `create_entity` upserts on `(workspace, kind, name)` |
-| `convention` entries (S0 semantics) | knowledge title uniqueness — skip on the friendly "already exists" error |
+| The gate-meaning fallback convention, and the gate-meaning entries (*Gate meanings: the run-last step*) | the fallback by its exact fixed title `<project>: each gate meaning falls back to the founder's sign-off until its owning decision records it`, knowledge title uniqueness — skip on the friendly "already exists" error; the gate-meaning entries are matched by their three title prefixes |
 | DAG edges (§3d) | `list_dependencies` first; add only what is missing |
 | The `.gitignore` ignore line (§3g) | `Grep` for the line before any `Edit` |
 | The scaffold-complete marker (§4) | knowledge title uniqueness — the project-level backstop |
 
-## 1. S0 — configure Harmony for this project + elicit its semantics
+## 1. S0 — configure Harmony for this project
 
-S0 is the substrate the other strata run on. It has two parts.
+S0 is the substrate the other strata run on. It has one part.
 
 ### 1a. Instantiate + pick mode + stamp the milestone fence (existing ops)
 Ensure the project entity exists and set the **mode** (Guided vs Freeform) via the existing project
@@ -123,38 +123,9 @@ Then stamp the **default milestone fence** specified in §3f — `create_milesto
 > fence exists to prevent. Creating two milestones presumes nothing about the product, so it is safe this
 > early; the S4 conduct renames them once the founder knows what the first release is actually called.
 
-### 1b. Per-gate semantics elicitation → project CLAUDE.md + `convention` entries
-Elicit **what each gate MEANS and REQUIRES for THIS project**, through the shared engine:
-
-```
-mcp__harmony__start_elicitation({ task_id: <proposition-root or a config ticket>, trigger: 'inception-semantics', gate: 'inception' })
-mcp__harmony__file_elicitation_round({ task_id, context_line: "...", questions: [...] })
-```
-
-Ask, per gate, the questions whose answers only the builder holds — e.g.:
-- **What does "Deployed" correspond to here** — staging, pre-prod, or prod? What triggers each?
-- **Does release require code review?** Is there a human finish-gate?
-- **What does "Verified" require** — tests green, a staging smoke, a founder sign-off?
-
-Then write the builder's answers to **two** places:
-- The project's **own `CLAUDE.md`** (create/append via `Write`/`Edit`) — the label's meaning in prose,
-  where the builder and future agents read it.
-- A **`convention` knowledge entry per semantic** via
-  `mcp__harmony__record_decision({ claim: "<one sentence stating what this entry establishes>", type: 'convention', title: "<project>: 'Deployed' means <X> here",
-  content: "...", domain: ['process'], source_activity: 'inception',
-  provenance: 'human-in-session' })` — B-1000: the builder's own answer, recorded in this session.
-
-> **NEVER seed Harmony's OWN semantics.** Record the PROJECT's mapping ("Deployed = live on Cloudflare
-> Pages for *this* project"), never the generic state-machine definition. The generic lifecycle is baked
-> into Harmony's skills; re-seeding it would be noise.
-
-> **S0↔S2 boundary — cross-reference, never restate.** S0 records the *label's meaning* (the semantic).
-> The *implementation* ("how staging actually deploys") is the conducted S2 environment-topology
-> decision's OUTPUT. On conflict, S2 is authoritative for the mechanism, S0 for the label. Don't define
-> the deploy mechanism at S0 — only what the label means.
-
-Convention entries dedupe on the knowledge title-uniqueness constraint, so a resumed run re-authoring the
-same semantic is caught (skip on the friendly "already exists" error).
+> **Gate meanings are not asked here (B-1498).** Nothing exists yet that could answer them. They are
+> recorded by the S2 decisions that own them, and the run ends with the step in *Gate meanings: the
+> run-last step* below.
 
 ## 2. S1 — capture the founding proposition (the proposition-root + clarify gate)
 
@@ -291,6 +262,39 @@ founder to paste pre-formed direction into:
 >
 > *"Anything here is a starting proposal. This ticket's clarify gate treats it as a candidate to validate,
 > and its design gate must still record real alternatives and may reject it."*
+
+**ONLY `Decide the environment topology & deploy triggers`, `Decide the CI/CD approach` and `Decide the
+testing approach` additionally carry a section headed exactly `## Gate meaning this decision records`
+(B-1498).** Its prefix is the one defined in *Gate meanings: the run-last step*, character for character.
+For `Decide the environment topology & deploy triggers`:
+> `## Gate meaning this decision records`
+>
+> *"This decision's last design brief declares `reach_level: this_product` with one `frame.rules`
+> `create` item, `knowledge_scope: deployment`, whose wording begins with `<project>: 'Deployed' means`
+> and keeps its first sentence under 80 characters (the rule's title is the first 80 characters of its
+> wording), e.g. "<project>: 'Deployed' means live on staging here." The brief's `Project context summary`
+> states the same meaning."*
+
+For `Decide the CI/CD approach`:
+> `## Gate meaning this decision records`
+>
+> *"This decision's last design brief declares `reach_level: this_product` with one `frame.rules`
+> `create` item, `knowledge_scope: deployment`, whose wording begins with `<project>: release gate requires`
+> and keeps its first sentence under 80 characters (the rule's title is the first 80 characters of its
+> wording), e.g. "<project>: release gate requires one review, approved by the founder." The brief's
+> `Project context summary` states the same meaning."*
+
+For `Decide the testing approach`:
+> `## Gate meaning this decision records`
+>
+> *"This decision's last design brief declares `reach_level: this_product` with one `frame.rules`
+> `create` item, `knowledge_scope: deployment`, whose wording begins with `<project>: 'Verified' means`
+> and keeps its first sentence under 80 characters (the rule's title is the first 80 characters of its
+> wording), e.g. "<project>: 'Verified' means the founder signed off on staging." The brief's
+> `Project context summary` states the same meaning."*
+
+No other S2 ticket carries this section, and no seed tells anyone to write a gate-meaning line into
+CLAUDE.md.
 
 **`Decide the repo & workspace topology` additionally carries the repo-hygiene clause (§3g):**
 > *"Whatever repo count and boundaries you decide, every repository created under them carries
@@ -471,7 +475,7 @@ up, which ticket owns it, and what happens if it is not settled there?**
 
 | Decision | Owning stage | May defer to (deferral must be RECORDED) |
 |---|---|---|
-| What the gate labels mean here | S0 semantics | — (S0 is the floor) |
+| What the gate labels mean here | Inception's fallback convention (*Gate meanings: the run-last step*) | S2 · environment topology (Deployed), CI/CD (release gate), testing (Verified) — deferral recorded by the fallback convention |
 | Purpose, personas, features | S1 proposition | — |
 | Language / runtime, UI framework, module map | S2 · Decide the architecture | Bootstrap the stack's clarify |
 | Repo count and boundaries | S2 · Decide the repo & workspace topology | — |
@@ -492,9 +496,99 @@ its decision output and **name where it will be decided** — the "May defer to"
 choice that appears in prose without an owning ticket and without a recorded deferral is a defect, and this
 map is what makes it visible as one.
 
+## Gate meanings: the run-last step (B-1498)
+
+**When it runs:** after the §3 scaffold stamp (it needs the three S2 ticket ids) and before the §4
+completion marker. Never before S1: inception asks no gate-meaning question until the proposition is
+captured and the scaffold exists.
+
+**The three title prefixes, defined once here.** These exact strings are what both the lookup below and
+§3b's `## Gate meaning this decision records` seed text use:
+
+- Deployed: `<project>: 'Deployed' means`
+- Release gate: `<project>: release gate requires`
+- Verified: `<project>: 'Verified' means`
+
+**The fallback convention's fixed title:**
+`<project>: each gate meaning falls back to the founder's sign-off until its owning decision records it`
+
+### Re-run lookup, before asking anything
+
+`mcp__harmony__query_knowledge({ type: 'convention', status: 'Accepted' })` and again with
+`status: 'Asserted'`, over current (not superseded) entries. Read both: the gate-meaning entries an older
+inception wrote were recorded without a status, so they are **Asserted**, and the default (Accepted-only)
+read would miss them and re-ask. Then:
+
+- **Fallback present** (exact fixed title) → write nothing, ask nothing; done.
+- **Deployed found** = a convention whose title starts with `<project>: 'Deployed' means`.
+  **Verified found** = a convention whose title starts with `<project>: 'Verified' means`.
+- **Release gate found** = a convention whose title starts with `<project>: release gate requires`,
+  **whatever its `source_activity`** (so a run interrupted before the fallback was written and resumed
+  after the CI/CD decision counts it), OR a convention with `source_activity: 'inception'`, not
+  superseded, whose title contains "release" or "review" (case-insensitive) and which is neither the
+  fallback nor the `inception:scaffold-complete` marker (this catches an older project's free-titled
+  gate-meaning entry).
+- **All three found** → write no fallback and ask nothing.
+- **Otherwise** → leave every found entry untouched, ask the builder check once, then write the fallback.
+
+A meaning that was not found is listed as **"not found at inception"**, never as "not decided".
+
+The completed-project branch (§0, the B-1396 marker-only repair) is NOT this step: it stays label-only and
+writes no fallback.
+
+### The builder check
+
+One validate question, filed on the proposition-root through the existing engine:
+
+```
+mcp__harmony__start_elicitation({ task_id: <proposition-root>, trigger: 'inception-semantics', gate: 'inception' })
+mcp__harmony__file_elicitation_round({ task_id, context_line: "...", questions: [<one validate question: "You are the only builder and approver for now: right?">] })
+```
+
+'best efforts, proceed' (force-quit) is honoured from round one: it skips the question.
+
+### Write the fallback
+
+```
+mcp__harmony__record_decision({ type: 'convention',
+  title: "<project>: each gate meaning falls back to the founder's sign-off until its owning decision records it",
+  claim: "<one sentence: until its owning decision records it, each gate meaning falls back to <approver>'s sign-off>",
+  content: "Written at inception on <date>. 'Deployed' is recorded by <environment-topology ticket>, the release gate by <CI/CD ticket>, 'Verified' by <testing ticket>, each as an Accepted rule whose title starts with its prefix above. Where no such rule exists, <approver> approves every release and 'Verified' means <approver>'s sign-off. Builder check: <confirmed by the founder | approver named by the founder | skipped: default assumed, not confirmed>. Found at inception: <titles, or none>. Not found at inception: <meanings, or none>.",
+  status: 'Accepted', domain: ['process'], source_activity: 'inception',
+  provenance: <see below> })
+```
+
+**Provenance:** `'human-in-session'` when the founder answered the builder check (confirmed, or named
+another approver; then `<approver>` is that person). `'agent-synthesized'` (`'agent-synthesized:<mode>'`
+under a conduct) when it was skipped; then `<approver>` is the founder as an assumed default and the body
+says "default assumed, not confirmed".
+
+Title uniqueness makes a resumed write a no-op (skip on the friendly "already exists" error).
+
+### No CLAUDE.md write
+
+This step writes no line to the project's CLAUDE.md. Until an S2 decision is accepted, the B-1388 managed
+block shows that category as `Undecided: see <ticket>`; after it, the block shows that decision's
+`Project context summary`, which states the meaning. The "who approves until then" sentence lives only in
+the fallback entry, which the block's header tells agents to query.
+
+### Never edited later
+
+The fallback is static and conditional: no S2 decision updates or retires it, so the three decisions have
+no order among themselves, and a project without it needs nothing. A meaning is pending exactly when its
+rule does not exist.
+
+> **NEVER seed Harmony's OWN semantics.** Record the project's mapping, never the generic state-machine
+> definition ("Deployed = live on Cloudflare Pages for *this* project", not what Deployed means in
+> Harmony). The generic lifecycle is baked into Harmony's skills; re-seeding it would be noise.
+
+> **S0↔S2 boundary — cross-reference, never restate.** The label's meaning is recorded by the owning S2
+> decision (its rule and its `Project context summary`). The mechanism ("how staging actually deploys")
+> is that decision's output too. This step records only the conditional fallback, never a meaning.
+
 ## 4. Set the completion marker
 
-Once every artifact above is present, author the project-level completion marker so a subsequent clean
+Once every artifact above is present, and after *Gate meanings: the run-last step*, author the project-level completion marker so a subsequent clean
 re-run fast-paths to a no-op (step 0.2):
 
 ```
@@ -511,7 +605,7 @@ exists no-ops on the friendly "already exists" error.
 ## 5. Report
 
 Summarize what was stamped (the milestone fence, proposition-root id, the S2 + S3 + S4 ticket ids, the
-edges, the seeded persona/feature nodes, the semantics conventions) and the immediate next moves. **Two
+edges, the seeded persona/feature nodes, the gate-meaning fallback convention (or that all three meanings were found)) and the immediate next moves. **Two
 tickets are unblocked from the start, and they answer different questions:**
 
 - **Conduct the architecture decision** — it has no blockers, and accepting it unblocks *Bootstrap the
@@ -546,4 +640,4 @@ completes; it does not fire during inception. See B-397's build notes for the fl
 
 ## Project context (B-1388)
 
-Follow `harmony-shared/project-context.md` when authoring the proposition summary, consuming its completing accept, and stamping Bootstrap. The first commit carries regenerated source-linked CLAUDE.md context alongside the stage semantics. Foundational decisions add bounded source-linked outcomes; Harmony remains authoritative.
+Follow `harmony-shared/project-context.md` when authoring the proposition summary, consuming its completing accept, and stamping Bootstrap. The first commit carries regenerated source-linked CLAUDE.md context; inception writes no hand-written gate-meaning line there. Foundational decisions add bounded source-linked outcomes; Harmony remains authoritative.
