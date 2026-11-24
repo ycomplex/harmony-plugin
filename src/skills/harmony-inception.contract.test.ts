@@ -373,7 +373,7 @@ describe('B-1498 gate meanings move to the S2 decisions', () => {
     ]);
   });
 
-  it('reads Asserted entries too, so an older project's status-less gate-meaning entries are found', () => {
+  it('reads Asserted entries too, so an older project status-less gate-meaning entries are found', () => {
     expect(runLast).toMatch(/status: 'Accepted'/);
     expect(runLast).toMatch(/status: 'Asserted'/);
   });
