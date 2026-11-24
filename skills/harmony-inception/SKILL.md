@@ -89,6 +89,16 @@ Do not re-stamp tickets, edges, milestones, entities or the completion marker it
 ensure pass, report "already seeded" with the ticket ids and markers repaired, or "already seeded —
 markers already correct" when no repair was needed, then STOP. No other writes run on this branch.
 
+Before that report, one read-only step (B-1507): look up **Build the application shell and navigation**
+by its title + the `inception-scaffold` label. If it is absent (a project seeded before the shell
+umbrella existed), the "already seeded" report adds one line naming the missing shell umbrella and saying
+the project needs its own one-off shell ticket if it has an interface. This step creates nothing — no
+ticket, no edge.
+
+A run interrupted before the completion marker takes the RESUME path instead, and stamps the shell
+umbrella exactly like the other three: lookup-before-create on its deterministic title + the
+`inception-scaffold` label.
+
 Treat S0 → S1 → scaffold as steps that each **check-then-create**. Interrupted anywhere, a re-run picks
 up exactly where it stopped.
 
@@ -96,7 +106,7 @@ up exactly where it stopped.
 
 | Artifact | Lookup-before-create key |
 |---|---|
-| Proposition-root, S2 tickets, S3 umbrellas, the S4 roadmap slot | deterministic title + the `inception-scaffold` label (tasks have no per-project title uniqueness); the proposition-root and S4 slot carry `capture-only`; all nine S2 rows carry `decision-only` (§2c, §3e) |
+| Proposition-root, S2 tickets, all four S3 umbrellas (Bootstrap the stack, Set up CI/CD, Wire the test runner, Build the application shell and navigation), the S4 roadmap slot | deterministic title + the `inception-scaffold` label (tasks have no per-project title uniqueness); the proposition-root and S4 slot carry `capture-only`; all nine S2 rows carry `decision-only` (§2c, §3e) |
 | The `v1` / `deferred` milestones (§1a) | milestone title |
 | Persona / feature entity nodes | `create_entity` upserts on `(workspace, kind, name)` |
 | The gate-meaning fallback convention, and the gate-meaning entries (*Gate meanings: the run-last step*) | the fallback by its exact fixed title `<project>: each gate meaning falls back to the founder's sign-off until its owning decision records it`, knowledge title uniqueness — skip on the friendly "already exists" error; the gate-meaning entries are matched by their three title prefixes |
@@ -312,6 +322,7 @@ self-decompose later, reading the knowledge their upstream S2 decisions produce:
 - **Bootstrap the stack**
 - **Set up CI/CD**
 - **Wire the test runner**
+- **Build the application shell and navigation**
 
 Each S3 umbrella's **description carries the other half of the paired contract (AC A11).** Take
 `<upstream S2 decisions>` verbatim from **this umbrella's row in §3d's table** — never re-derive or
@@ -333,6 +344,13 @@ re-type the list here, which is exactly how the two authorings drifted before:
 > uncommitted it collides on every concurrent pair of workers, and committed it puts a conduct loop artifact
 > in the product tree."*
 
+**Build the application shell and navigation additionally carries the shell clause (B-1507):**
+> *"Build the frame every screen lives in, once, before any feature with a screen is built. Build the layout or root navigation of whatever interface the architecture decided: for example a web app's layout and menus, a mobile app's tab bar and screen stacks, a desktop app's window and menus, or a command-line tool's command layout and help text. Build the design system's base as the design-system decision settled it: colours, type and the layout pieces every screen uses. If that decision settled on no design system, say so here and build only the frame. Build the signed-in and signed-out frames if the authentication decision gives the product sign-in; sign-in itself stays a feature. Build empty states. Design the navigation model for every feature the founding proposition names: read the feature entity nodes, the deferred milestone and the roadmap's first-milestone backlog. Build places only for the first-milestone features, so later milestones add places without reorganising the navigation. Build no feature behaviour: each feature adds its own entry to the navigation you define. Your design gate always runs its UX/UI track, so the founder sees the navigation and the design system's base before anything is built on them. If you decompose, the child that carries the navigation inherits this paragraph. Record the navigation model in that UX/UI design as a product-wide rule; a feature that needs a new top-level place proposes it as an amendment of that rule in its own design. At your clarify, check that every first-milestone feature with a screen depends on you, and add any missing edge. If the product has no interface a person uses at all (an API or a library), your clarify asks the founder to confirm that, records 'not applicable, and why', and proposes the capture-only label, so the accept completes this ticket with nothing built. A command-line tool is not in that case."*
+
+This umbrella is stamped on every run, never conditionally on the product's shape (the §3b rule), and it
+is ordinary build work like the other three umbrellas: it is neither capture-only nor decision-only at
+stamp time, and only its own clarify may propose capture-only, for an API or a library.
+
 ### 3d. The canonical genesis DAG — ONE table, cited twice
 
 **This table is the single source of truth for the genesis DAG.** Both the dependency wiring below AND
@@ -351,6 +369,7 @@ without removing the duplication would only have reset the clock.
 | S3 · Bootstrap the stack | Decide the architecture · Decide the repo & workspace topology · Decide the data & migration tooling · Decide the coding standards |
 | S3 · Set up CI/CD | Decide the CI/CD approach · Decide the repo & workspace topology · Decide the environment topology & deploy triggers |
 | S3 · Wire the test runner | Decide the testing approach · Bootstrap the stack |
+| S3 · Build the application shell and navigation | Bootstrap the stack · Decide the design system · Decide the authentication & identity approach · Define the roadmap & first-milestone backlog |
 
 Wire them with `manage_dependencies({ task_id, add: [<ids it depends on>] })`. **Skip-if-exists** —
 `list_dependencies` first, add only the missing edges.
@@ -361,14 +380,19 @@ Notes on particular rows:
 - **S4 depends on the proposition-root ONLY** (§3e). Which features ship first is a product question, not
   an architecture-dependent one, so the roadmap is conducted EARLY. The *late* things are its OUTPUT
   tickets — standalone tickets in the first milestone, never its children — which carry their own edges
-  onto the S3 umbrellas — see §3e's contract.
+  onto the S3 umbrellas, a feature with a screen onto Build the application shell and navigation too —
+  see §3e's contract.
 - **Bootstrap the stack reads four decisions**, matching the description it stamps: architecture and repo
   topology for the shape, data & migration tooling for the persistence layer, coding standards for house
   style.
-- **The two newer S2 categories — authentication & identity, and the design system — carry no S3 edge.**
-  No bootstrap umbrella names either as a read-input; they are read by the S4 roadmap's feature work
-  instead. Blanket-wiring every S2 onto an umbrella would conflate the umbrella split, which is the same
-  error in the opposite direction.
+- **The authentication & identity and design-system decisions are read by Build the application shell
+  and navigation (B-1507)** — the umbrella that builds the frame, the design system's base and the
+  signed-in and signed-out frames. It also reads the roadmap ticket, because the navigation is a map of the
+  proposition's features: it waits until the first milestone's features are agreed. The graph stays
+  acyclic: screen features wait on the shell, the shell waits on the roadmap, and the roadmap waits only on
+  the proposition-root, so nothing upstream waits on a feature. Every other S2 still has exactly the edges
+  its row names: blanket-wiring every S2 onto an umbrella would conflate the umbrella split, which is the
+  same error in the opposite direction.
 
 (These are the genesis DAG's standard edges — the one *process* archetype inception carries. The S2
 tickets have no blockers among themselves, so the founder conducts the architecture decision first and
@@ -390,7 +414,9 @@ existing job. This slot invents no minting mechanism:
 > the B-681 decision-only doctrine): file **one STANDALONE ticket per agreed feature** — `create_task` (or
 > `bulk_create_tasks`) with `milestone_id` = the first milestone and **no `parent_task_id`** — and wire each
 > depends-on the S3 bootstrap umbrellas it needs (`manage_dependencies`) — no feature can be built before
-> the stack it runs on exists. **A feature is never a child of this ticket.** This ticket is a planning
+> the stack it runs on exists. Every feature that has a screen ALSO depends on **Build the application
+> shell and navigation**: it adds its own entry to the navigation the shell defines and does not choose
+> its own placement. **A feature is never a child of this ticket.** This ticket is a planning
 > artefact; its deliverable is the filed backlog, so it completes Clarified → Verified by the trailing
 > `advance_workflow('fast-forwarding')` the moment the backlog exists — it does not wait on the features
 > being built. Milestone writes are `update_milestone` to rename the defaults and `create_milestone` for
@@ -483,8 +509,8 @@ up, which ticket owns it, and what happens if it is not settled there?**
 | Pipeline, required checks, promote method | S2 · Decide the CI/CD approach | Set up CI/CD's clarify |
 | Test framework and runner | S2 · Decide the testing approach | Wire the test runner's clarify |
 | Lint, format, review policy | S2 · Decide the coding standards | Bootstrap the stack's clarify |
-| Auth model and provider | S2 · Decide the authentication & identity approach | the first feature that needs identity |
-| Design system: whether, when, what it governs | S2 · Decide the design system | the first UI feature |
+| Auth model and provider | S2 · Decide the authentication & identity approach | Build the application shell and navigation's clarify (a product with no interface: the first feature that needs identity) |
+| Design system: whether, when, what it governs | S2 · Decide the design system | Build the application shell and navigation's clarify |
 | Milestone set, first-milestone scope | S4 roadmap | — |
 
 **The governing rule: a stack specific belongs to the S2 category that owns its layer.** A UI framework is
@@ -593,7 +619,7 @@ re-run fast-paths to a no-op (step 0.2):
 
 ```
 mcp__harmony__record_decision({ claim: "<one sentence stating what this entry establishes>", type: 'convention', title: "inception:scaffold-complete — <project>",
-  content: "Genesis scaffold stamped: v1+deferred milestone fence, proposition-root, S2 spine, S3 umbrellas, S4 roadmap slot, edges, persona+feature nodes.",
+  content: "Genesis scaffold stamped: v1+deferred milestone fence, proposition-root, S2 spine, S3 umbrellas (Bootstrap the stack, Set up CI/CD, Wire the test runner, Build the application shell and navigation), S4 roadmap slot, edges, persona+feature nodes.",
   status: 'Accepted', domain: ['process'], source_activity: 'inception',
   // B-1000: Day-1 inception runs directly under a human invocation.
   provenance: 'human-in-session' })
@@ -604,8 +630,9 @@ exists no-ops on the friendly "already exists" error.
 
 ## 5. Report
 
-Summarize what was stamped (the milestone fence, proposition-root id, the S2 + S3 + S4 ticket ids, the
-edges, the seeded persona/feature nodes, the gate-meaning fallback convention (or that all three meanings were found)) and the immediate next moves. **Two
+Summarize what was stamped (the milestone fence, proposition-root id, the S2 ticket ids, the four S3
+umbrellas' ids (Bootstrap the stack, Set up CI/CD, Wire the test runner, Build the application shell and
+navigation), the S4 ticket id, the edges, the seeded persona/feature nodes, the gate-meaning fallback convention (or that all three meanings were found)) and the immediate next moves. **Two
 tickets are unblocked from the start, and they answer different questions:**
 
 - **Conduct the architecture decision** — it has no blockers, and accepting it unblocks *Bootstrap the
@@ -616,6 +643,9 @@ tickets are unblocked from the start, and they answer different questions:**
 
 Name both. A founder told only about the architecture decision gets a spine and still cannot answer what
 ships first — the gap this scaffold now closes.
+
+*Build the application shell and navigation* unblocks once the stack, the design-system and
+authentication decisions and the roadmap are done; every first-milestone feature with a screen waits on it.
 
 ## What inception must NEVER do
 - Make a technical decision (choose a stack, a framework, a repo count). It seeds the *category*; conduct
