@@ -514,7 +514,10 @@ captured and the scaffold exists.
 
 ### Re-run lookup, before asking anything
 
-`mcp__harmony__query_knowledge({ type: 'convention' })` over current (not superseded) entries, then:
+`mcp__harmony__query_knowledge({ type: 'convention', status: 'Accepted' })` and again with
+`status: 'Asserted'`, over current (not superseded) entries. Read both: the gate-meaning entries an older
+inception wrote were recorded without a status, so they are **Asserted**, and the default (Accepted-only)
+read would miss them and re-ask. Then:
 
 - **Fallback present** (exact fixed title) → write nothing, ask nothing; done.
 - **Deployed found** = a convention whose title starts with `<project>: 'Deployed' means`.
