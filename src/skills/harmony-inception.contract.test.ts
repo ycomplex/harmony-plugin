@@ -385,3 +385,100 @@ describe('B-1498 gate meanings move to the S2 decisions', () => {
     expect(runLast).toMatch(/B-1396 marker-only repair\) is NOT this step/);
   });
 });
+
+// --- B-1507: a fourth S3 umbrella builds the application shell and navigation -----------------
+describe('B-1507 the application shell and navigation umbrella', () => {
+  const SHELL = 'Build the application shell and navigation';
+  const s3c = section('### 3c.');
+  const dag = tableRows(section('### 3d.')).map((r) => ({
+    node: bareName(r[0]),
+    reads: r[1]
+      .split('·')
+      .map((x) => bareName(x))
+      .filter(Boolean),
+  }));
+
+  it('§3c stamps exactly the four S3 umbrellas, the shell among them', () => {
+    const umbrellas = [...s3c.matchAll(/^- \*\*(.+?)\*\*$/gm)].map((m) => m[1].trim());
+    expect(umbrellas).toEqual([
+      'Bootstrap the stack',
+      'Set up CI/CD',
+      'Wire the test runner',
+      SHELL,
+    ]);
+  });
+
+  it('§3d wires the shell to the stack, the two decisions and the roadmap', () => {
+    const row = dag.find((r) => r.node === SHELL);
+    expect(row, 'no §3d row for the shell umbrella').toBeTruthy();
+    expect(row!.reads).toHaveLength(4);
+    expect(row!.reads).toEqual(
+      expect.arrayContaining([
+        'Bootstrap the stack',
+        'Decide the design system',
+        'Decide the authentication & identity approach',
+        'Define the roadmap & first-milestone backlog',
+      ]),
+    );
+  });
+
+  it('§3d no longer says the auth and design-system decisions carry no S3 edge', () => {
+    const s3d = section('### 3d.');
+    expect(s3d).not.toMatch(/carry no S3 edge/);
+    expect(s3d).toMatch(/acyclic/);
+    expect(s3d).toMatch(/Every other S2 still has exactly the edges/);
+  });
+
+  it('§3c carries the shell clause with its key phrases', () => {
+    const at = s3c.indexOf(`**${SHELL} additionally carries the shell clause (B-1507):**`);
+    expect(at).toBeGreaterThan(-1);
+    const clause = s3c.slice(at);
+    for (const phrase of [
+      "design system's base",
+      'signed-in and signed-out frames',
+      "command-line tool's command layout and help text",
+      'an API or a library',
+      'capture-only',
+      'always runs its UX/UI track',
+      'add any missing edge',
+      'every feature the founding proposition names',
+    ]) {
+      expect(clause, `shell clause misses "${phrase}"`).toContain(phrase);
+    }
+    expect(clause).toMatch(/stamped on every run, never conditionally/);
+  });
+
+  it('§3e makes every feature with a screen depend on the shell', () => {
+    const s3e = section('### 3e. Stamp the S4 roadmap slot');
+    expect(s3e).toMatch(/Every feature that has a screen ALSO depends on \*\*Build the application\s+(> )?shell and navigation\*\*/);
+  });
+
+  it('§3i defers the auth and design-system specifics to the shell clarify', () => {
+    const map = tableRows(section('### 3i.'));
+    for (const decision of ['Auth model and provider', 'Design system: whether, when, what it governs']) {
+      const row = map.find((r) => r[0] === decision);
+      expect(row, `no §3i row ${decision}`).toBeTruthy();
+      expect(row).toHaveLength(3);
+      expect(row![2]).toContain(SHELL);
+    }
+  });
+
+  it('§0 covers four umbrellas, and the marker-only repair names a missing shell and creates nothing', () => {
+    const preflight = section('## 0.');
+    const rows = tableRows(preflight).map((r) => r.join(' | '));
+    expect(rows.some((r) => /all four S3 umbrellas/.test(r) && r.includes(SHELL))).toBe(true);
+    expect(preflight).toMatch(/look up \*\*Build the application shell and navigation\*\*/);
+    expect(preflight).toMatch(/missing shell umbrella/);
+    expect(preflight).toMatch(/creates nothing — no\s+ticket, no edge/);
+    expect(preflight).toMatch(/stamps the shell\s+umbrella exactly like the other three/);
+  });
+
+  it('§4 and §5 name the four umbrellas, the shell among them', () => {
+    expect(section('## 4. Set the completion marker')).toContain(
+      'S3 umbrellas (Bootstrap the stack, Set up CI/CD, Wire the test runner, Build the application shell and navigation)',
+    );
+    const report = section('## 5. Report');
+    expect(report).toMatch(/four S3\s+umbrellas/);
+    expect(report).toMatch(/Build the application shell and\s+navigation/);
+  });
+});
