@@ -1,6 +1,6 @@
 # Workspace Figma: founder rollout (B-1201)
 
-> **Living · project · Tier 2** · verified against plugin 0.17.50 / web 541092e on 2026-11-12 · **revise when:** the connection switch, a Figma identity or secret slot, the refresh image's build or CronJobs, or the enable gate's proofs change. Convention: harmony-workspace `docs/README.md` (B-1044).
+> **Living · project · Tier 2** · verified against plugin 0.17.69 / web ff859e6 on 2026-11-26 (the operator step re-read after its first cross-project run; the other sections were not touched by this release) · **revise when:** the connection switch, a Figma identity or secret slot, the refresh image's build or CronJobs, or the enable gate's proofs change. Convention: harmony-workspace `docs/README.md` (B-1044).
 
 Nothing here authorizes a promote, IAM change or cluster apply by a worker. Use placeholders for
 identifiers; never paste credentials into board comments. Run **staging first**, prove it, then prod.
@@ -272,6 +272,10 @@ them into the per-leg Kubernetes Secret.
 
 The operator sends back confirmation that the three slots exist and are bound: the policies the script
 prints at the end. No secret value is in them.
+
+First run for a workspace whose conductor is in another Google Cloud project: 2026-11-25, by the founder,
+dry run first. The printed policies matched the table above, with the conductor's account absent from
+`-grant`. The workspace and the other project are not named here.
 
 The owner then connects:
 
