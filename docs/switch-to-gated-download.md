@@ -36,6 +36,9 @@ marketplace file from `https://plugin.harmony.ad/prod/marketplace.json` and the 
    harmony download token set             # a new token: it asks for it without showing it
    ```
 
+   Either command also writes the helper file `~/.harmony/download-headers.sh` (Step 2 describes it). Step 2 then
+   reports that file as already in place.
+
    If your token is only in `HARMONY_API_TOKEN` (a shell profile), the switch asks, in a terminal, whether to save
    it to `~/.harmony/config.json` and pin it; otherwise it stops and points at `harmony download token set`.
    If you set your token up with `/harmony-setup` before it stored tokens in `~/.harmony`, it is in your project's
@@ -61,10 +64,11 @@ Then start a **fresh** Claude Code session (a new `claude`), quit it, and check:
 harmony download switch --help
 ```
 
-If it says the command is unknown, run `harmony --version`; if it prints an older version, start one more fresh
-session and check again.
+If it prints the general `harmony` help instead of the switch's own usage, the `harmony` on your PATH is still
+an older version. Run `harmony --version`; if it prints an older version than `claude plugin list` shows, start
+one more fresh session and check again.
 
-## Step 1: see what it will do (optional)
+## Step 1: see what it will do (recommended)
 
 ```bash
 harmony download switch --dry-run
@@ -72,6 +76,10 @@ harmony download switch --dry-run
 
 This prints the files it would write, the settings change and the Claude Code commands it would run. It changes
 nothing and runs nothing.
+
+Read its `Token: would pin the download to the active project "<name>"` line. The switch pins whichever project
+your command line has active, which may not be the one you mean if you work on several. If the name is wrong, pin
+the right one first with `harmony download token use <project>`, then run the dry run again.
 
 ## Step 2: switch
 
@@ -112,7 +120,14 @@ it tells you when the folder you ran it in is one of them. In each such project 
 claude plugin disable harmony-plugin@ycomplex --scope project
 ```
 
-Do not commit the change this makes to the project's `.claude/settings.json`.
+That command changes the project's shared `.claude/settings.json` (`"harmony-plugin@ycomplex": true` becomes
+`false`). Do not commit it while anyone on the project is still on today's copy: the committed line is what
+turns the plugin on for them, and they would lose it at their next pull.
+
+Once everyone on the project has switched, one person commits the removal of the `harmony-plugin@ycomplex`
+entry from that file (remove the line; do not commit `false`, and do not name the new copy there, which each
+person's own settings enable). Everyone else then discards their local edit before pulling:
+`git checkout .claude/settings.json`.
 
 Keep only one copy enabled. Both are called `harmony-plugin`, and with both on you cannot tell which one you are
 running.
@@ -123,7 +138,9 @@ running.
    claude plugin list
    ```
 
-   Expect `harmony-plugin@harmony` enabled, and every `harmony-plugin@ycomplex` line disabled.
+   Expect `harmony-plugin@harmony` enabled, and every `harmony-plugin@ycomplex` line disabled. A disabled
+   `harmony-plugin@ycomplex` line at project or local scope can stay listed even after no settings file names it:
+   Claude Code keeps its own record of the install. It does nothing; leave it.
 2. Start a **fresh** Claude Code session (a new `claude`, not `/reload-plugins`). Run a skill, for example
    `/harmony-plugin:harmony-queue`. Expect your queue.
 3. In a terminal:
