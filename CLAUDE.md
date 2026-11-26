@@ -1,6 +1,6 @@
 # Harmony Plugin for Claude Code
 
-> **Living · project · Tier 1** · verified against plugin 0.17.50 / web 541092e on 2026-11-12 · **revise when:** versioning, the staging channel, a release rule or a plugin convention changes. Convention: harmony-workspace `docs/README.md` (B-1044).
+> **Living · project · Tier 1** · verified against plugin 0.17.69 / web ff859e6 on 2026-11-26 · **revise when:** versioning, the staging channel, a release rule or a plugin convention changes. Convention: harmony-workspace `docs/README.md` (B-1044).
 
 This is the Harmony plugin for Claude Code — an MCP server, CLI, and workflow skills for Harmony project management.
 
@@ -103,9 +103,11 @@ also dropped it from [`.harmony/project.yml`](.harmony/project.yml)'s `release.b
 nothing tracked under `dist/` on `main`, `git diff --exit-code dist` always exits 0, so the step
 would have degraded into a silent no-op pass (false confidence, not a check).
 
-**The marketplace pin is UNCHANGED by B-1007.** The `ycomplex/plugins` manifest still pins this
-plugin to `source.ref: "prod"`, exactly as before — no file in this repo alters it, and installed
-plugins keep updating only when `prod` moves.
+**What installed plugins follow is UNCHANGED by B-1007: the `prod` branch.** The released download's
+`prod` channel is built from it (B-1475; installs are `harmony-plugin@harmony` since B-1477 and B-1501),
+and the older public `ycomplex/plugins` manifest still pins `source.ref: "prod"` for an install that has
+not switched. No file in this repo alters either, and installed plugins keep updating only when `prod`
+moves.
 
 **Generation is merge-only, never a reset.** `prod` is *fast-forwarded* from `staging`, so
 `origin/prod` must stay an ancestor of `origin/staging`. `scripts/generate-staging.sh` therefore
@@ -116,9 +118,11 @@ double bump, no empty commit).
 
 ### Release gate: `main` is dev, `prod` is what ships
 
-The `ycomplex` marketplace pins this plugin to the **`prod`** branch (`source.ref: "prod"`), **not**
-`main` and not `staging`. So merging to `main` does *not* reach installed plugins on its own —
-Claude Code's auto-update only advances when the `prod` branch moves.
+Installed plugins follow the **`prod`** branch, **not** `main` and not `staging`: the gated download's
+`prod` channel is built from it, and the older `ycomplex` marketplace pins it (`source.ref: "prod"`). So
+merging to `main` does *not* reach installed plugins on its own — Claude Code's auto-update only advances
+when the `prod` branch moves, and for the download only once the release build that follows the push has
+finished (a few minutes).
 
 **Why:** the MCP server selects columns/RPCs from the production Supabase DB, which deploys only from harmony-web's `prod` branch and deliberately lags staging during active schema work. If the plugin tracked `main`, a fresh session could auto-update to a version that selects schema prod doesn't have yet, hard-breaking core tools (the `WITHIN GROUP … mode` / `column tasks.workflow_state does not exist` failures — see Harmony **B-383**).
 
@@ -134,10 +138,11 @@ Plugin-only changes with no new schema dependency (skills, CLI, bug fixes) are s
 
 ### `dist/` is generated on `staging`, gitignored on `main`
 
-Claude Code plugins aren't npm-installed (the marketplace copies files directly into
+Claude Code plugins aren't npm-installed (the files are copied directly into
 `~/.claude/plugins/cache/` without running `npm install`), so the compiled `dist/` output **must be
-committed on the branch the marketplace serves** — that is how the MCP server runs immediately on a
-fresh install. The bundle is produced by `esbuild --bundle`, so all runtime deps are inlined and no
+committed on the branch installs are served from** — the released zip is a `git archive` of that commit,
+and the older marketplace copies the branch. That is how the MCP server runs immediately on a fresh
+install. The bundle is produced by `esbuild --bundle`, so all runtime deps are inlined and no
 `node_modules/` is needed at runtime.
 
 Since B-1007, the branch that carries it is **`staging` (and, by fast-forward, `prod`) — not
@@ -197,7 +202,7 @@ checkout, and then never again. This was proven live at B-1007 design time again
 checkout: the hook-built bundle was byte-identical to the committed one. Nothing about the channel's
 setup changes; just expect that one first-launch pause.
 
-The script writes the dogfood dir's `.claude/settings.local.json` (staging `HARMONY_SUPABASE_URL` / `HARMONY_SUPABASE_ANON_KEY` / `HARMONY_API_TOKEN`) — that triple serves the **MCP server** under `claude --plugin-dir`, which still reads env at import — and ALSO registers a `staging` project in `~/.harmony/config.json` via `harmony login --supabase-url … --supabase-anon-key …` so the **CLI** can run with no env (`harmony project switch` moves between it and prod). It disables the marketplace-installed `harmony-plugin@ycomplex` in that dir's `.claude/settings.json` so the local checkout is the only Harmony plugin loaded, and ensures `.claude/` is excluded in this checkout's git exclude file. It is idempotent and merge-safe.
+The script writes the dogfood dir's `.claude/settings.local.json` (staging `HARMONY_SUPABASE_URL` / `HARMONY_SUPABASE_ANON_KEY` / `HARMONY_API_TOKEN`) — that triple serves the **MCP server** under `claude --plugin-dir`, which still reads env at import — and ALSO registers a `staging` project in `~/.harmony/config.json` via `harmony login --supabase-url … --supabase-anon-key …` so the **CLI** can run with no env (`harmony project switch` moves between it and prod). It disables the marketplace-installed `harmony-plugin@ycomplex` in that dir's `.claude/settings.json` so the local checkout is the only Harmony plugin loaded. It does not yet name the gated download's copy: on a machine that installed `harmony-plugin@harmony`, that copy stays enabled in the dogfood dir until you add `"harmony-plugin@harmony": false` to the same `enabledPlugins` block by hand. It also ensures `.claude/` is excluded in this checkout's git exclude file. It is idempotent and merge-safe.
 
 **B-1025:** the Supabase URL + anon key pair is now resolved PER CALL, not frozen at module import. `harmony login --supabase-url <url> --supabase-anon-key <key>` actually reaches the token exchange now (both flags used to be dead code — the plugin read the env at import time, before any CLI command ran, and `--supabase-url` never made it past `process.env`). The CLI's pair precedence is **flags → registered project → environment → built-in defaults**, and the first source that names a URL owns the pair (a URL with no key beside it is refused by name with the remedy message in `MissingAnonKeyError`).
 
@@ -207,7 +212,7 @@ The script writes the dogfood dir's `.claude/settings.local.json` (staging `HARM
 
 **Confirm the pairing before trusting any verify result:** call `get_project` and check its `environment` block — `target` must be `staging` and `plugin_version` must be the version you built. On a `main` checkout that version now reads `0.0.0-dev` (the inert source-only marker), which is itself the confirmation that you are running local source rather than the installed prod plugin.
 
-**Fallback on identity collision:** if `--plugin-dir` collides with the marketplace install (same plugin name resolving to the cached copy), use the cache-overwrite generalization — rsync (copy-paste) `dist/`, `skills/`, and `.claude-plugin/` over `~/.claude/plugins/cache/ycomplex/harmony-plugin/<installed-version>/`. Run `npm run build` first: on `main` the `dist/` you are copying is a local build artefact, not a committed one. It is reversible by reinstalling the plugin from the marketplace. This supersedes the old skills-only cache hack (overwriting just `skills/` in the cache) — the generalized form covers MCP code too.
+**Fallback on identity collision:** if `--plugin-dir` collides with the marketplace install (same plugin name resolving to the cached copy), use the cache-overwrite generalization — rsync (copy-paste) `dist/`, `skills/`, and `.claude-plugin/` over `~/.claude/plugins/cache/ycomplex/harmony-plugin/<installed-version>/` (`…/cache/harmony/harmony-plugin/<installed-version>/` for an install from the gated download). Run `npm run build` first: on `main` the `dist/` you are copying is a local build artefact, not a committed one. It is reversible by reinstalling the plugin from the marketplace. This supersedes the old skills-only cache hack (overwriting just `skills/` in the cache) — the generalized form covers MCP code too.
 
 **Successor:** this channel becomes a proper two-marketplace setup (a staging marketplace entry alongside prod) once the upstream Claude Code same-name plugin collision bug is fixed; until then `--plugin-dir` + the cache-overwrite fallback is the supported path.
 

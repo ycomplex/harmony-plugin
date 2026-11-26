@@ -306,8 +306,16 @@ No new secret is needed, and no `.github` change.
 
 1. Create the bucket:
    `gcloud storage buckets create gs://<RELEASE_BUCKET> --project=<PROJECT> --location=<REGION> --uniform-bucket-level-access --public-access-prevention`
+   A new bucket also carries automatic grants to the project's editors and viewers: `projectEditor` on
+   `roles/storage.legacyBucketOwner` and `roles/storage.legacyObjectOwner`, and `projectViewer` on
+   `roles/storage.legacyBucketReader` and `roles/storage.legacyObjectReader`. Remove them, and do not add them
+   back. Whoever can write this bucket decides what every install receives, so the only writer should be the
+   trigger's account below and the only other reader the download endpoint's read-only account.
 2. Let the trigger's service account write to it:
    `gcloud storage buckets add-iam-policy-binding gs://<RELEASE_BUCKET> --member=serviceAccount:<TRIGGER_SERVICE_ACCOUNT> --role=roles/storage.objectAdmin`
+   Use a dedicated account for the two triggers, not the project's default compute account. Besides the bucket
+   role it needs the project role `roles/logging.logWriter`, because `release/cloudbuild.yaml` logs to Cloud
+   Logging only.
 3. Create the prod trigger:
    `gcloud builds triggers create github --name=harmony-plugin-release-prod --repo-owner=ycomplex --repo-name=harmony-plugin --branch-pattern='^prod$' --build-config=release/cloudbuild.yaml --service-account=<TRIGGER_SERVICE_ACCOUNT> --substitutions=_RELEASE_BUCKET=<RELEASE_BUCKET>,_PUBLIC_BASE_URL=<ENDPOINT_BASE_URL>`
 4. Create the staging trigger: the same command with `--name=harmony-plugin-release-staging` and
