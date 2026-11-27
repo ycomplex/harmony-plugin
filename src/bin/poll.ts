@@ -21,12 +21,14 @@
 // server, NOT the CLI subprocess, NOT the existing committed dist (those self-execute / carry their own
 // process lifecycle). This is a NEW entrypoint precisely so the read path is a plain function call.
 //
-// Pinning (B-532 AC2): auth + project are captured ONCE at launch directly from HARMONY_API_TOKEN. We
-// deliberately do NOT use getAuthenticatedContext() (src/cli/auth.ts) — it reads ~/.harmony/config.json's
-// active-project pointer and mutates process.env, so a mid-watch `harmony` project switch would repoint the
-// watch. Constructing HarmonyAuth from the token and reading getProjectId() once makes the watch immune.
+// Pinning (B-532 AC2): auth + project are resolved ONCE at launch through the shared B-1501 resolver on
+// its MCP surface (resolveMcpAuth, via resolvePollAuth in src/conductor/poll-auth.ts): HARMONY_API_TOKEN,
+// else HARMONY_PROJECT naming a stored project — never the active project in ~/.harmony/config.json. So a
+// mid-watch `harmony project switch` cannot repoint the watch (B-1522). We still deliberately do NOT use
+// getAuthenticatedContext() (src/cli/auth.ts, the CLI surface) — it carries the active-project rung and
+// mutates process.env. Reading getProjectId() once from the launch-time auth keeps the watch immune.
 
-import { HarmonyAuth } from '../auth.js';
+import { resolvePollAuth } from '../conductor/poll-auth.js';
 import { createAuthenticatedClient } from '../supabase.js';
 import { getTask } from '../tools/tasks.js';
 import {
@@ -46,7 +48,7 @@ function sleep(ms: number): Promise<void> {
 const EXIT = {
   changed: 0, // a change was detected — re-read get_task and consume
   timeout: 2, // ~90-min window expired — degrade to persist-and-resume
-  error: 1, // could not run (no token / unrecoverable error)
+  error: 1, // could not run (no credentials resolved / unrecoverable error)
   // B-691: armed against a non-pause — the ball was never with the human, so this watch can never
   // fire. Distinct from `timeout` because the conductor's response differs: timeout degrades to
   // persist-and-resume, this files a worker-question elicitation round (harmony-conduct §4c/§4e).
@@ -60,14 +62,13 @@ async function main(): Promise<number> {
     return EXIT.error;
   }
 
-  const token = process.env.HARMONY_API_TOKEN;
-  if (!token) {
-    process.stderr.write('HARMONY_API_TOKEN is not set\n');
+  // Resolve auth + project ONCE — the watch is pinned for its whole lifetime (AC2, B-1522).
+  const resolvedAuth = resolvePollAuth();
+  if (!resolvedAuth.ok) {
+    process.stderr.write(resolvedAuth.message + '\n');
     return EXIT.error;
   }
-
-  // Capture auth + project ONCE — the watch is pinned for its whole lifetime (AC2).
-  const auth = new HarmonyAuth(token);
+  const auth = resolvedAuth.auth;
   const client = await createAuthenticatedClient(auth);
   const projectId = auth.getProjectId();
 

@@ -1332,8 +1332,9 @@ step-0 guard below: the run exits at the pause instead — the conductor owns wa
 **Claude Code — how to actually arm (the current recipe, B-532).** The watch is a **plugin-bundled
 background poll script** — `dist/bin/poll.js`. It reads the ticket **IN-PROCESS** via the shared-core
 `get_task` (`getTask`) — **not** MCP, **not** the CLI subprocess, **not** the self-executing committed
-`dist/index.js` — with auth + project **pinned once at launch from `HARMONY_API_TOKEN`** (immune to a
-mid-watch `~/.harmony` active-project switch). It exits the instant the human resolves — the **canonical exit
+`dist/index.js` — with auth + project **pinned once at launch through the shared resolver's MCP surface** (`HARMONY_API_TOKEN`,
+else `HARMONY_PROJECT` naming a stored project, never the active project; B-1522), so it stays immune to a
+mid-watch `~/.harmony` active-project switch. It exits the instant the human resolves — the **canonical exit
 signal is `awaiting_human_input` clearing (true→false)** (B-611), after which it classifies what the human did
 (state advanced / `pending_resolution` reshape / a Discuss request (`discuss-requested`, B-461) / an `edited-in-tool` request (B-1204) / `Parked` /
 submitted elicitation answers (`answers-landed`, B-645) / a non-advancing sub-track accept) — it also exits on
